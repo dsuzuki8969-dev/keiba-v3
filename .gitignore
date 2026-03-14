@@ -1,0 +1,101 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+*.egg
+
+# 仮想環境
+venv/
+.venv/
+env/
+
+# データ（大容量ファイル — Gitに入れない）
+data/keiba.db
+data/keiba.db-shm
+data/keiba.db-wal
+data/keiba_v3.db
+data/cache/
+data/backup/
+data/export/
+data/ml/
+data/training_ml/
+data/models/*.bin
+data/models/*.pt
+data/models/*.txt
+data/models/*.onnx
+data/predictions/
+data/results/
+data/analysis/
+data/e2e_seed/
+data/bloodline/
+data/tunnel.log
+data/cleanup.log
+data/confidence_analysis.json
+
+# 出力
+output/
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE
+.vscode/settings.json
+.idea/
+
+# 環境変数
+.env
+.env.local
+
+# ログ
+*.log
+*.txt
+!requirements.txt
+!README.md
+!CLAUDE.md
+
+# pickle/キャッシュ
+*.pkl
+*.pickle
+
+# バイナリ・画像
+*.exe
+*.png
+*.jpg
+*.jpeg
+
+# Claude設定（ローカル）
+.claude/
+
+# Cursor設定
+.cursor/
+
+# Playwright MCP
+.playwright-mcp/
+
+# Flask PID
+.flask_pid
+
+# ワークスペースファイル
+*.code-workspace
+
+# MCP設定
+.mcp.json
+
+# データJSON（大容量の生成データ）
+data/*.json
+!data/masters/**
+
+# フロントエンド（別リポジトリ）
+frontend/
+
+# ルートの一時ファイル
+keiba.db
+nul
+temp_*.html
+cross_validate_*.txt

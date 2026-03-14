@@ -1,0 +1,592 @@
+"""
+日付指定・全レース予想スクリプト。
+使い方:
+  python run_analysis_date.py YYYY-MM-DD
+  python run_analysis_date.py YYYY-MM-DD --no-html   # HTML不要・JSON保存のみ（高速）
+  例: python run_analysis_date.py 2026-02-22
+中央（JRA）・地方（NAR）の当日全レースを順次分析し、
+個別HTMLと YYYYMMDD_全レース.html を生成する。
+--no-html 指定時はHTML生成をスキップし、予想JSONの保存のみ行う。
+"""
+import sys, io, os, time
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', line_buffering=True)
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+import re
+
+from src.log import get_logger
+
+logger = get_logger(__name__)
+
+try:
+    from rich.console import Console
+    console = Console()
+    P = console.print
+except ImportError:
+    P = print
+
+if len(sys.argv) < 2:
+    P("[bold red]日付を指定してください（例: 2026-02-22）[/]")
+    sys.exit(1)
+
+DATE = sys.argv[1].strip()
+if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", DATE):
+    P(f"[bold red]日付フォーマット不正: {DATE}  → YYYY-MM-DD で指定[/]")
+    sys.exit(1)
+
+NO_HTML = "--no-html" in sys.argv
+NO_PURGE = "--no-purge" in sys.argv
+IGNORE_TTL = "--ignore-ttl" in sys.argv
+RACE_IDS_FROM_DB = "--race-ids-from-db" in sys.argv
+# --workers N: 並列プリフェッチのワーカー数（デフォルト3）
+_workers_idx = next((i for i, a in enumerate(sys.argv) if a == "--workers"), -1)
+WORKERS = int(sys.argv[_workers_idx + 1]) if _workers_idx >= 0 and _workers_idx + 1 < len(sys.argv) else 5
+
+DATE_KEY = DATE.replace("-", "")
+P(f"\n[bold white on #0d2b5e]  D-AI 競馬予想  日付: {DATE}（全レース）  [/]\n")
+t0 = time.time()
+
+# ─── 1. 基盤準備 ─────────────────────────────────────────────────
+P("[bold cyan]\\[1/N][/] 初期化...")
+from data.masters.course_master import get_all_courses
+from src.scraper.auth import PremiumNetkeibaScraper
+from src.scraper.race_results import (
+    StandardTimeDBBuilder, Last3FDBBuilder,
+    build_course_db_from_past_runs,
+    build_course_style_stats_db, build_gate_bias_db,
+    build_position_sec_per_rank_db,
+    build_trainer_baseline_db, load_trainer_baseline_db,
+    save_trainer_baseline_db, merge_trainer_baseline,
+)
+from src.scraper.course_db_collector import load_preload_course_db
+from src.scraper.personnel import PersonnelDBManager, enrich_personnel_with_condition_records
+from src.engine import RaceAnalysisEngine, enrich_course_aptitude_with_style_bias
+if not NO_HTML:
+    from src.output.formatter import HTMLFormatter, minify_html
+from config.settings import COURSE_DB_PRELOAD_PATH, TRAINER_BASELINE_DB_PATH, BLOODLINE_DB_PATH
+from src.scraper.improvement_dbs import build_bloodline_db
+
+try:
+    from tqdm import tqdm
+except ImportError:
+    def tqdm(iterable, **_kw):
+        return iterable
+
+all_courses = get_all_courses()
+scraper = PremiumNetkeibaScraper(all_courses, ignore_ttl=IGNORE_TTL)
+scraper.login()
+scraper.training.login()
+
+# 起動時に古いキャッシュを自動パージ（30日超）
+if not NO_PURGE:
+    from src.scraper.netkeiba import purge_old_cache
+    _purge = purge_old_cache(max_age_days=30)
+    if _purge["removed"]:
+        P(f"  キャッシュパージ: {_purge['removed']}件削除 ({_purge['freed_mb']}MB解放)")
+else:
+    P("  [dim]キャッシュパージ: スキップ (--no-purge)[/dim]")
+P(f"  経過: {time.time()-t0:.1f}s")
+
+# ─── 2. 基準タイムDB ─────────────────────────────────────────────
+P("[bold cyan]\\[2/N][/] 基準タイムDB読み込み...")
+P(f"  ローリングウィンドウ基準日: {DATE}")
+std_db = StandardTimeDBBuilder()
+course_db_base = std_db.get_course_db()
+preload = load_preload_course_db(COURSE_DB_PRELOAD_PATH, target_date=DATE)
+for cid, runs in preload.items():
+    course_db_base.setdefault(cid, []).extend(runs)
+P(f"  {len(course_db_base)}コース / {sum(len(v) for v in course_db_base.values()):,}走")
+
+course_style_db     = build_course_style_stats_db(course_db_base, target_date=DATE)
+gate_bias_db        = build_gate_bias_db(course_db_base, target_date=DATE)
+position_sec_db     = build_position_sec_per_rank_db(course_db_base, target_date=DATE)
+l3f_db_base         = Last3FDBBuilder().build(course_db_base)
+trainer_baseline_db = load_trainer_baseline_db(TRAINER_BASELINE_DB_PATH)
+P(f"  経過: {time.time()-t0:.1f}s")
+
+# ─── 3. 当日レースID取得 ──────────────────────────────────────────
+P(f"[bold cyan]\\[3/N][/] {DATE} のレースID取得...")
+if RACE_IDS_FROM_DB:
+    import sqlite3 as _sql3
+    _conn = _sql3.connect("data/keiba.db")
+    race_ids = [r[0] for r in _conn.execute(
+        "SELECT DISTINCT race_id FROM race_log WHERE race_date = ? ORDER BY race_id",
+        (DATE,),
+    ).fetchall()]
+    _conn.close()
+    P(f"  [yellow]race_logから取得: {len(race_ids)}レース[/]")
+else:
+    race_ids = scraper.fetch_date(DATE)
+if not race_ids:
+    P(f"[bold red]{DATE} のレースが見つかりません[/]")
+    sys.exit(1)
+P(f"  {len(race_ids)}レース: {race_ids}")
+
+# ─── 4. 各レースを分析 ────────────────────────────────────────────
+if not NO_HTML:
+    os.makedirs("output", exist_ok=True)
+    formatter = HTMLFormatter()
+else:
+    formatter = None
+results = []   # (race_id, html_path, race_name, ok, race_meta_dict)
+failed  = []
+
+# 中断再開: 完了済みレースをスキップ
+_done_marker = f"output/.done_{DATE_KEY}.txt"
+_done_ids: set = set()
+if os.path.exists(_done_marker):
+    with open(_done_marker, "r") as _f:
+        _done_ids = {line.strip() for line in _f if line.strip()}
+    if _done_ids:
+        P(f"  [yellow]中断再開: {len(_done_ids)}レース完了済み → スキップ[/]")
+
+# 未処理レースを特定（中断再開対応）
+_ids_to_fetch = [rid for rid in race_ids if rid not in _done_ids]
+for rid in _done_ids:
+    if rid in race_ids:
+        results.append((rid, "", rid, True, {}))
+
+# ─── 4a. 並列プリフェッチ ─────────────────────────────────────────
+prefetched: dict = {}  # race_id → (race_info, horses)
+effective_workers = max(1, min(WORKERS, len(_ids_to_fetch)))
+
+if _ids_to_fetch and effective_workers > 1:
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    P(f"[bold cyan]\\[4a/N][/] 並列プリフェッチ中... (ワーカー数: {effective_workers}, {len(_ids_to_fetch)}R)")
+    worker_pool = [scraper] + [scraper.clone_worker() for _ in range(effective_workers - 1)]
+
+    def _prefetch(args):
+        idx, race_id = args
+        w = worker_pool[idx % len(worker_pool)]
+        for attempt in range(2):
+            try:
+                ri, hs = w.fetch_race(race_id, fetch_history=True, fetch_odds=True, fetch_training=True, target_date=DATE, prefer_cache=RACE_IDS_FROM_DB)
+                return race_id, ri, hs
+            except Exception as e:
+                if attempt == 0:
+                    logger.debug("prefetch retry %s: %s", race_id, e)
+                else:
+                    logger.warning("prefetch failed %s: %s", race_id, e)
+        return race_id, None, []
+
+    done_count = 0
+    with ThreadPoolExecutor(max_workers=effective_workers) as pool:
+        futs = {pool.submit(_prefetch, (i, rid)): rid for i, rid in enumerate(_ids_to_fetch)}
+        for fut in as_completed(futs):
+            race_id, ri, hs = fut.result()
+            prefetched[race_id] = (ri, hs)
+            done_count += 1
+            if ri:
+                P(f"  ({done_count}/{len(_ids_to_fetch)}) {ri.venue}{ri.race_no}R ({len(hs)}頭)")
+            else:
+                P(f"  ({done_count}/{len(_ids_to_fetch)}) {race_id} [スキップ]")
+    P(f"  プリフェッチ完了: {done_count}R  経過: {time.time()-t0:.1f}s")
+elif _ids_to_fetch:
+    P(f"[bold cyan]\\[4a/N][/] 逐次取得中... ({len(_ids_to_fetch)}R)")
+    for race_id in _ids_to_fetch:
+        try:
+            ri, hs = scraper.fetch_race(race_id, fetch_history=True, fetch_odds=True, fetch_training=True, target_date=DATE, prefer_cache=RACE_IDS_FROM_DB)
+            prefetched[race_id] = (ri, hs)
+        except Exception as e:
+            logger.warning("fetch failed %s: %s", race_id, e)
+            prefetched[race_id] = (None, [])
+
+# ─── 4a+. プリフェッチ後の一括事前構築（並列化安全のため4bから移動）────
+_all_prefetched_horses = []
+for _ri, _hs in prefetched.values():
+    if _hs:
+        _all_prefetched_horses.extend(_hs)
+
+_all_jockey_db: dict = {}   # 必ずここで初期化（4a+例外時のNameError防止）
+_all_trainer_db: dict = {}
+
+if _all_prefetched_horses:
+    P(f"[bold cyan]\\[4a+/N][/] 事前構築中... ({len(_all_prefetched_horses)}頭)")
+
+    # trainer_baseline: 全馬分を一括マージ・保存（4bループ内でのマージを不要にする）
+    _t_sub = time.time()
+    _baseline_all = build_trainer_baseline_db(_all_prefetched_horses)
+    trainer_baseline_db = merge_trainer_baseline(_baseline_all, trainer_baseline_db)
+    save_trainer_baseline_db(TRAINER_BASELINE_DB_PATH, trainer_baseline_db)
+    P(f"  [dim]  trainer_baseline: {time.time()-_t_sub:.1f}s[/dim]")
+
+    # personnel: 全馬分の騎手・厩舎DBを一括構築・保存
+    # ★ NAR騎手/調教師のcourse_dbフォールバックを有効にするため、
+    #    preload(JRAのみ) + 全馬過去走から構築したcourse_dbを渡す
+    _t_sub = time.time()
+    _personnel_course_db = build_course_db_from_past_runs(
+        _all_prefetched_horses, dict(course_db_base), target_date=DATE
+    )
+    P(f"  [dim]  personnel_course_db: {time.time()-_t_sub:.1f}s[/dim]")
+
+    _t_sub = time.time()
+    _all_personnel_mgr = PersonnelDBManager()
+    _all_jockey_db, _all_trainer_db = _all_personnel_mgr.build_from_horses(
+        _all_prefetched_horses, scraper.client, course_db=_personnel_course_db, save=True
+    )
+    P(f"  [dim]  personnel_build: {time.time()-_t_sub:.1f}s  (騎手{len(_all_jockey_db)} / 厩舎{len(_all_trainer_db)})[/dim]")
+
+    # bloodline: 未キャッシュ血統IDを事前取得・キャッシュ保存
+    _t_sub = time.time()
+    _bloodline_db = build_bloodline_db(_all_prefetched_horses, netkeiba_client=scraper.client, cache_path=BLOODLINE_DB_PATH)
+    P(f"  [dim]  bloodline_db: {time.time()-_t_sub:.1f}s[/dim]")
+
+    # キャリブレーションキャッシュを事前初期化（並列時のTOCTOU競合防止）
+    _t_sub = time.time()
+    from config.settings import get_composite_weights
+    get_composite_weights()
+    P(f"  [dim]  calibration_cache: {time.time()-_t_sub:.1f}s[/dim]")
+
+    P(f"  事前構築完了  経過: {time.time()-t0:.1f}s")
+else:
+    _all_jockey_db, _all_trainer_db = {}, {}
+
+# ─── 4b. 並列分析 ─────────────────────────────────────────────────
+
+# MLモデルキャッシュをウォームアップ（並列時のTOCTOU防止）
+if _ids_to_fetch:
+    P("[dim]  MLモデルキャッシュ ウォームアップ...[/dim]")
+    _warmup = RaceAnalysisEngine(
+        course_db=dict(course_db_base), all_courses=all_courses,
+        jockey_db={}, trainer_db={},
+        trainer_baseline_db=trainer_baseline_db,
+        pace_last3f_db=l3f_db_base,
+        course_style_stats_db=course_style_db,
+        gate_bias_db=gate_bias_db,
+        position_sec_per_rank_db=position_sec_db,
+        is_jra=True, target_date=DATE,
+    )
+    del _warmup
+
+
+def _analyze_one_race(race_id):
+    """1レースを分析して結果タプルを返す（スレッドセーフ）"""
+    try:
+        race_info, horses = prefetched.get(race_id, (None, []))
+        if not race_info or not horses:
+            logger.warning("データ取得失敗: %s", race_id)
+            return (race_id, "", race_id, False, {})
+
+        race_name = race_info.race_name or f"{race_info.venue}{race_info.race_no}R"
+
+        course_db = build_course_db_from_past_runs(horses, dict(course_db_base), target_date=DATE)
+        l3f_db    = Last3FDBBuilder().build(course_db)
+        # personnel: 事前構築済みDBからレース出走馬分をフィルタ
+        _race_jids = {h.jockey_id for h in horses if h.jockey_id}
+        _race_tids = {h.trainer_id for h in horses if h.trainer_id}
+        jockey_db = {k: v for k, v in _all_jockey_db.items() if k in _race_jids}
+        trainer_db = {k: v for k, v in _all_trainer_db.items() if k in _race_tids}
+        enrich_personnel_with_condition_records(jockey_db, trainer_db, course_db)
+
+        engine = RaceAnalysisEngine(
+            course_db=course_db, all_courses=all_courses,
+            jockey_db=jockey_db, trainer_db=trainer_db,
+            trainer_baseline_db=trainer_baseline_db,
+            pace_last3f_db=l3f_db,
+            course_style_stats_db=course_style_db,
+            gate_bias_db=gate_bias_db,
+            position_sec_per_rank_db=position_sec_db,
+            is_jra=race_info.is_jra,
+            target_date=DATE,
+        )
+        analysis = engine.analyze(race_info, horses, custom_stake=None, netkeiba_client=None)
+        analysis = enrich_course_aptitude_with_style_bias(engine, analysis)
+
+        if not NO_HTML:
+            out_file = f"output/{DATE_KEY}_{race_info.venue}{race_info.race_no}R.html"
+            html = minify_html(formatter.render(analysis))
+            with open(out_file, "w", encoding="utf-8") as f:
+                f.write(html)
+        else:
+            out_file = ""
+        meta = {
+            "venue":        race_info.venue,
+            "race_no":      race_info.race_no,
+            "name":         race_name,
+            "surface":      getattr(race_info.course, "surface", ""),
+            "distance":     getattr(race_info.course, "distance", 0),
+            "grade":        race_info.grade or "",
+            "post_time":    race_info.post_time or "",
+            "head_count":   len(horses),
+            "analysis_obj": analysis,
+        }
+        return (race_id, out_file, race_name, True, meta)
+
+    except Exception as e:
+        logger.warning("race analysis failed %s: %s", race_id, e, exc_info=True)
+        return (race_id, "", race_id, False, {})
+
+
+if _ids_to_fetch:
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    _4b_workers = max(1, min(WORKERS, len(_ids_to_fetch)))
+    P(f"[bold cyan]\\[4b/N][/] 各レース並列分析中... ({len(_ids_to_fetch)}R, {_4b_workers}ワーカー)")
+
+    done_4b = 0
+    with ThreadPoolExecutor(max_workers=_4b_workers) as pool:
+        futs = {pool.submit(_analyze_one_race, rid): rid for rid in _ids_to_fetch}
+        for fut in as_completed(futs):
+            result_tuple = fut.result()
+            rid_done = result_tuple[0]
+            ok = result_tuple[3]
+            meta = result_tuple[4] if len(result_tuple) > 4 else {}
+
+            # メインスレッドで結果収集（スレッドセーフ）
+            results.append(result_tuple)
+            if not ok:
+                failed.append(rid_done)
+            done_4b += 1
+
+            # プログレス表示
+            _v = meta.get("venue", "")
+            _rn = meta.get("race_no", "")
+            P(f"  ({done_4b}/{len(_ids_to_fetch)}) {_v}{_rn}R {'完了' if ok else '失敗'}")
+
+            # 中断再開用マーカー記録
+            with open(_done_marker, "a") as _df:
+                _df.write(rid_done + "\n")
+
+            # pred.json を段階的に保存（5レースごと、lightweight=コメント/LLMスキップ）
+            _ok_in_run = sum(1 for r in results if r[3] and r[4].get("analysis_obj"))
+            if _ok_in_run % 5 == 0 and _ok_in_run > 0:
+                try:
+                    from src.results_tracker import save_prediction as _sp_inc
+                    _abv_inc: dict = {}
+                    for _r in results:
+                        if not _r[3]:
+                            continue
+                        _m = _r[4] if len(_r) > 4 else {}
+                        _ao = _m.get("analysis_obj")
+                        if _ao:
+                            _vv = _m.get("venue", "不明")
+                            _rrn = _m.get("race_no", 0)
+                            _abv_inc.setdefault(_vv, {})[_rrn] = _ao
+                    if _abv_inc:
+                        _sp_inc(DATE, _abv_inc, lightweight=True)
+                except Exception as _se:
+                    logger.warning("pred.json incremental save failed: %s", _se, exc_info=True)
+
+    P(f"  並列分析完了: {done_4b}R  経過: {time.time()-t0:.1f}s")
+
+# 全レース完了 → 中断再開マーカー削除
+if os.path.exists(_done_marker) and not failed:
+    os.remove(_done_marker)
+
+# ─── 5. 予想JSON保存（結果照合用） ──────────────────────────────────
+P("[bold cyan]\\[N/N-1][/] 予想JSON保存...")
+try:
+    from src.results_tracker import save_prediction
+    analyses_by_venue: dict = {}
+    for row in results:
+        if not row[3]:
+            continue
+        meta = row[4] if len(row) > 4 else {}
+        venue = meta.get("venue", "不明")
+        race_no = meta.get("race_no", 0)
+        analysis_obj = meta.get("analysis_obj")
+        if analysis_obj:
+            if venue not in analyses_by_venue:
+                analyses_by_venue[venue] = {}
+            analyses_by_venue[venue][race_no] = analysis_obj
+    if analyses_by_venue:
+        pred_path = save_prediction(DATE, analyses_by_venue)
+        P(f"  予想JSON保存: {pred_path}")
+    else:
+        P("  予想JSONなし（analysisオブジェクト未格納）")
+except Exception as e:
+    logger.warning("prediction JSON save failed: %s", e, exc_info=True)
+
+# ─── 6. 全レースまとめHTML生成（ネット競馬風UI） ─────────────────
+if NO_HTML:
+    ok_count = sum(1 for r in results if r[3])
+    total_t  = time.time() - t0
+    P(f"\n[bold green]完了: {ok_count}/{len(results)}レース  総実行時間: {total_t:.0f}秒[/]")
+    sys.exit(0)
+
+P("[bold cyan]\\[N/N][/] 全レースまとめHTML生成...")
+ok_count = sum(1 for r in results if r[3])
+total_t  = time.time() - t0
+
+# 競馬場ごとにグループ化（出馬表順を維持）
+venue_order = []
+venue_races = {}
+for row in results:
+    race_id, path, name, ok = row[0], row[1], row[2], row[3]
+    meta = row[4] if len(row) > 4 else {}
+    venue = meta.get("venue", "") or name[:3]
+    if venue not in venue_races:
+        venue_order.append(venue)
+        venue_races[venue] = []
+    venue_races[venue].append({"race_id": race_id, "path": path, "name": name, "ok": ok, **meta})
+
+# タブHTML生成
+def _surf_badge(surface):
+    if surface in ("芝", "障"):
+        return f'<span style="color:#1a7a3a;font-weight:700;font-size:11px">{surface}</span>'
+    if surface == "ダート":
+        return f'<span style="color:#8b5e2a;font-weight:700;font-size:11px">ダ</span>'
+    return f'<span style="font-size:11px">{surface or "?"}</span>'
+
+def _grade_badge(grade):
+    if grade in ("G1",):
+        return '<span style="background:#c0392b;color:#fff;font-size:10px;font-weight:700;padding:1px 5px;border-radius:3px">G1</span>'
+    if grade in ("G2",):
+        return '<span style="background:#2c6dbf;color:#fff;font-size:10px;font-weight:700;padding:1px 5px;border-radius:3px">G2</span>'
+    if grade in ("G3",):
+        return '<span style="background:#27ae60;color:#fff;font-size:10px;font-weight:700;padding:1px 5px;border-radius:3px">G3</span>'
+    if grade in ("L", "OP"):
+        return f'<span style="background:#e67e22;color:#fff;font-size:10px;font-weight:700;padding:1px 5px;border-radius:3px">{grade}</span>'
+    if "重賞" in grade:
+        return '<span style="background:#c0392b;color:#fff;font-size:10px;font-weight:700;padding:1px 5px;border-radius:3px">重賞</span>'
+    return ""
+
+tab_buttons = ""
+tab_panels  = ""
+for vi, venue in enumerate(venue_order):
+    races = venue_races[venue]
+    active = "active" if vi == 0 else ""
+    tab_buttons += f'<button class="vtab {active}" onclick="showVenue({vi})" id="vtab-{vi}">{venue}</button>\n'
+    cards = ""
+    for r in sorted(races, key=lambda x: x.get("race_no", 0)):
+        fname   = os.path.basename(r["path"]) if r["ok"] else ""
+        race_no = r.get("race_no", "?")
+        rname   = r.get("name", f"{race_no}R")
+        surface = r.get("surface", "")
+        dist    = r.get("distance", 0)
+        grade   = r.get("grade", "")
+        ptime   = r.get("post_time", "")
+        heads   = r.get("head_count", 0)
+        sbadge  = _surf_badge(surface)
+        gbadge  = _grade_badge(grade)
+        dist_s  = f"{dist}m" if dist else ""
+        head_s  = f"{heads}頭" if heads else ""
+        time_s  = ptime or ""
+        if r["ok"] and fname:
+            card_inner = f'<a href="{fname}" class="race-card-link">'
+        else:
+            card_inner = '<div class="race-card-ng">'
+        card_close = "</a>" if (r["ok"] and fname) else "</div>"
+        status_icon = "" if r["ok"] else '<span style="color:#c0392b;font-size:10px">❌</span>'
+        cards += f"""
+<div class="race-card{"" if r["ok"] else " race-card--ng"}">
+  {card_inner}
+    <div class="rc-header">
+      <span class="rc-no">{race_no}R</span>
+      {gbadge}
+      {status_icon}
+    </div>
+    <div class="rc-name">{rname}</div>
+    <div class="rc-meta">
+      <span style="font-size:11px;color:#6b7280">{time_s}</span>
+      {sbadge}{dist_s} {head_s}
+    </div>
+    <div class="rc-ipat">予想を見る</div>
+  {card_close}
+</div>"""
+    tab_panels += f'<div class="vpanel {active}" id="vpanel-{vi}">\n<div class="race-grid">{cards}</div>\n</div>\n'
+
+combined_html = f"""<!DOCTYPE html>
+<html lang="ja"><head>
+<meta charset="UTF-8">
+<title>{DATE} 全レース予想</title>
+<style>
+*{{box-sizing:border-box;margin:0;padding:0}}
+body{{font-family:"Hiragino Sans","Yu Gothic UI",sans-serif;background:#f2f4f8;color:#1a1a2e;min-height:100vh}}
+.header{{background:#0d2b5e;color:#fff;padding:10px 20px;display:flex;align-items:center;gap:12px}}
+.header h1{{font-size:16px;font-weight:700}}
+.header .date-badge{{background:#c9952a;color:#fff;font-size:12px;font-weight:700;
+  padding:3px 10px;border-radius:4px}}
+.meta-bar{{background:#fff;border-bottom:1px solid #dde3ee;padding:6px 20px;
+  font-size:12px;color:#6b7280;display:flex;gap:16px}}
+.container{{max-width:960px;margin:0 auto;padding:16px 12px}}
+/* 場タブ */
+.venue-tabs{{display:flex;gap:0;background:#fff;border-radius:8px 8px 0 0;
+  box-shadow:0 1px 3px rgba(0,0,0,.1);overflow:hidden;flex-wrap:wrap}}
+.vtab{{flex:1;min-width:80px;padding:10px 8px;font-size:13px;font-weight:700;
+  border:none;background:#f8f9fb;color:#555;cursor:pointer;
+  border-bottom:3px solid transparent;transition:.15s}}
+.vtab:hover{{background:#eef1f9;color:#0d2b5e}}
+.vtab.active{{background:#fff;color:#0d2b5e;border-bottom:3px solid #c9952a}}
+.vpanel{{display:none;background:#fff;border-radius:0 0 8px 8px;
+  box-shadow:0 2px 8px rgba(0,0,0,.08);padding:14px}}
+.vpanel.active{{display:block}}
+/* レースカードグリッド */
+.race-grid{{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:10px}}
+.race-card{{border:1px solid #dde3ee;border-radius:8px;overflow:hidden;
+  background:#fafbfc;transition:.15s}}
+.race-card:hover{{border-color:#9ab3cc;box-shadow:0 2px 8px rgba(0,0,0,.12);transform:translateY(-1px)}}
+.race-card--ng{{opacity:.5}}
+.race-card-link{{display:block;text-decoration:none;color:inherit;padding:10px 12px}}
+.race-card-ng{{display:block;padding:10px 12px}}
+.rc-header{{display:flex;align-items:center;gap:5px;margin-bottom:5px}}
+.rc-no{{font-weight:700;font-size:14px;color:#0d2b5e;min-width:28px}}
+.rc-name{{font-size:12px;font-weight:700;color:#1a1a2e;margin-bottom:4px;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}}
+.rc-meta{{font-size:11px;color:#6b7280;margin-bottom:6px;display:flex;align-items:center;gap:4px}}
+.rc-ipat{{font-size:10px;color:#2563eb;font-weight:700;text-align:right}}
+.footer{{text-align:center;font-size:11px;color:#9ca3af;margin:20px 0 8px}}
+</style>
+</head><body>
+<div class="header">
+  <h1>🏇 D-AI 競馬予想</h1>
+  <span class="date-badge">{DATE}</span>
+</div>
+<div class="meta-bar">
+  <span>分析: {ok_count}/{len(results)}レース</span>
+  <span>失敗: {len(failed)}レース</span>
+  <span>所要: {total_t:.0f}秒</span>
+</div>
+<div class="container">
+  <div class="venue-tabs">
+{tab_buttons}  </div>
+{tab_panels}
+</div>
+<div class="footer">D-AI 競馬予想システム</div>
+<script>
+function showVenue(idx){{
+  document.querySelectorAll('.vtab').forEach((t,i)=>t.classList.toggle('active',i===idx));
+  document.querySelectorAll('.vpanel').forEach((p,i)=>p.classList.toggle('active',i===idx));
+}}
+</script>
+</body></html>"""
+
+combined_path = f"output/{DATE_KEY}_全レース.html"
+with open(combined_path, "w", encoding="utf-8") as f:
+    f.write(combined_html)
+P(f"  → {combined_path}")
+
+# ダッシュボード更新
+try:
+    import scripts.generate_portfolio as _gp
+    _gp.main()
+except Exception as _e:
+    logger.warning("dashboard update skipped: %s", _e, exc_info=True)
+
+# 配布用1ファイルHTML生成
+P("[bold cyan]\\[N/N+1][/] 配布用HTML生成...")
+try:
+    import subprocess as _sp
+    _r = _sp.run(
+        [sys.executable, "run_export_daily.py", DATE],
+        cwd=os.path.dirname(os.path.abspath(__file__)),
+        capture_output=True, text=True, encoding="utf-8"
+    )
+    if _r.returncode == 0:
+        for _line in _r.stdout.strip().splitlines():
+            P(f"  {_line}")
+    else:
+        logger.warning("配布用HTML生成失敗: %s", _r.stderr[:200])
+except Exception as _e:
+    logger.warning("export HTML generation skipped: %s", _e, exc_info=True)
+
+nc = scraper.client
+kc = scraper.training.client if hasattr(scraper, "training") and hasattr(scraper.training, "client") else None
+ne_c, ne_f, ne_s = getattr(nc, "_stats_cache", 0), getattr(nc, "_stats_fetch", 0), getattr(nc, "_stats_skip", 0)
+kb_c, kb_f = (getattr(kc, "_stats_cache", 0), getattr(kc, "_stats_fetch", 0)) if kc else (0, 0)
+total_req = ne_c + ne_f + kb_c + kb_f
+cache_pct = (ne_c + kb_c) / max(total_req, 1) * 100
+P(f"\n[bold green]完了: {ok_count}/{len(results)}レース  総実行時間: {total_t:.0f}秒[/]")
+P(f"  リクエスト: netkeiba={ne_c}cache+{ne_f}fetch+{ne_s}skip  keibabook={kb_c}cache+{kb_f}fetch  キャッシュ率={cache_pct:.0f}%")
+abs_out = os.path.abspath(combined_path)
+P(f"OUTPUT_FILE:{abs_out}")

@@ -1,0 +1,69 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "ダッシュボード起動",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/main.py",
+      "args": ["--serve"],
+      "console": "integratedTerminal",
+      "justMyCode": true
+    },
+    {
+      "name": "日付分析 (今日)",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/main.py",
+      "args": [
+        "--analyze_date", "${input:analysisDate}",
+        "--jra_only"
+      ],
+      "console": "integratedTerminal",
+      "justMyCode": true
+    },
+    {
+      "name": "日付分析 (地方のみ)",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/main.py",
+      "args": [
+        "--analyze_date", "${input:analysisDate}",
+        "--nar_only"
+      ],
+      "console": "integratedTerminal",
+      "justMyCode": true
+    },
+    {
+      "name": "1レース分析",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/main.py",
+      "args": ["--race_id", "${input:raceId}"],
+      "console": "integratedTerminal",
+      "justMyCode": true
+    },
+    {
+      "name": "現在のファイルをデバッグ",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${file}",
+      "console": "integratedTerminal",
+      "justMyCode": true
+    }
+  ],
+  "inputs": [
+    {
+      "id": "analysisDate",
+      "type": "promptString",
+      "description": "分析日付 (YYYY-MM-DD)",
+      "default": "2026-02-28"
+    },
+    {
+      "id": "raceId",
+      "type": "promptString",
+      "description": "レースID (例: 202501050511)",
+      "default": ""
+    }
+  ]
+}

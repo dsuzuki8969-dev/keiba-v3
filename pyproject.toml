@@ -1,0 +1,55 @@
+[project]
+name = "keiba-v3"
+version = "3.0.0"
+requires-python = ">=3.11"
+
+# ============================================================
+# Ruff - リンター & フォーマッター設定
+# ============================================================
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+src = ["src", "config", "data", "scripts"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+docstring-code-format = true
+
+[tool.ruff.lint]
+select = [
+  "E",     # pycodestyle errors
+  "W",     # pycodestyle warnings
+  "F",     # pyflakes
+  "I",     # isort (import順)
+  "UP",    # pyupgrade (古い書き方を検出)
+  "B",     # flake8-bugbear (よくあるバグパターン)
+  "SIM",   # flake8-simplify (簡素化できるコード)
+  "RUF",   # Ruff固有ルール
+]
+ignore = [
+  "E501",    # 行長は formatter に任せる
+  "E701",    # 1行 if 文（既存コードで多用、可読性OK）
+  "E731",    # lambda 代入（既存コードスタイル）
+  "E741",    # 変数名 l/O/I の警告（競馬コードでは使う場面あり）
+  "B008",    # 関数引数のデフォルト値に関数呼び出し（Flask route等）
+  "B905",    # zip() の strict 引数（既存コードとの互換性）
+  "SIM108",  # 三項演算子への変換（可読性優先）
+  "RUF001",  # 全角文字の使用（日本語プロジェクト）
+  "RUF002",  # docstring内の全角文字
+  "RUF003",  # コメント内の全角文字
+  "RUF012",  # クラス変数の型注釈（既存コードスタイル）
+  "RUF013",  # Optional の暗黙的 None（既存コードスタイル）
+  "UP006",   # List[x] → list[x] 書き換え（段階的移行）
+  "UP007",   # Union[X, Y] → X | Y 書き換え（段階的移行）
+  "UP015",   # open() の冗長モード引数
+  "UP035",   # typing からの非推奨 import（段階的移行）
+  "UP045",   # Optional[X] → X | None 書き換え（段階的移行）
+]
+
+[tool.ruff.lint.per-file-ignores]
+"config/settings.py" = ["E266"]  # 設定ファイルのブロックコメント
+"main.py" = ["E402"]             # sys.path 操作後の import
+
+[tool.ruff.lint.isort]
+known-first-party = ["src", "config", "data"]
