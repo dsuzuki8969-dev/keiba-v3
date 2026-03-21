@@ -1,12 +1,15 @@
 """
 全頭診断用グレード算出ユーティリティ
 
-偏差値ベースの統一グレード体系（6段階）:
-  SS: 70.0+   S: 63.0-69.9   A: 56.0-62.9
-  B:  50.0-55.9  C: 44.0-49.9   D: <44.0
+偏差値ベースの統一グレード体系（7段階）:
+  SS: ≥65   S: 61-64.9   A: 56-60.9
+  B: 49-55.9   C: 44-48.9   D: 39-43.9   E: <39
+
+目標分布 (N(52.5, 6.4) ベース):
+  SS=2.5%, S=7.5%, A=20%, B=40%, C=20%, D=7.5%, E=2.5%
 
 各セクション（騎手/調教師/血統/コース適性）の詳細項目を
-SS〜D のグレードに変換して返す。
+SS〜E のグレードに変換して返す。
 """
 
 from typing import Any, Dict, List, Optional, Tuple
@@ -18,21 +21,22 @@ from typing import Any, Dict, List, Optional, Tuple
 
 _GRADE_THRESHOLDS = [
     (65.0, "SS"),
-    (60.0, "S"),
-    (55.0, "A"),
-    (50.0, "B"),
-    (45.0, "C"),
+    (61.0, "S"),
+    (56.0, "A"),
+    (49.0, "B"),
+    (44.0, "C"),
+    (39.0, "D"),
 ]
 
 
 def dev_to_grade(value: Optional[float]) -> str:
-    """偏差値 → SS/S/A/B/C/D"""
+    """偏差値 → SS/S/A/B/C/D/E"""
     if value is None:
         return "—"
     for threshold, grade in _GRADE_THRESHOLDS:
         if value >= threshold:
             return grade
-    return "D"
+    return "E"
 
 
 def rate_to_dev(rate: float, mean: float = 0.10, sigma: float = 0.05) -> float:
@@ -61,6 +65,49 @@ def _weighted_avg(records: List[Tuple[float, int]]) -> Optional[float]:
     if total_w == 0:
         return None
     return sum(d * n for d, n in records) / total_w
+
+
+def compute_category_deviation(
+    factor_rates: Dict[str, Optional[float]],
+    factor_runs: Dict[str, int],
+    factor_weights: Dict[str, float],
+    base_mean: float = 0.10,
+    base_sigma: float = 0.05,
+    min_runs: int = 3,
+) -> Optional[float]:
+    """複数ファクターの複勝率から加重平均偏差値を算出。
+
+    1. 各ファクターの rate → rate_to_dev(rate, mean, sigma)
+    2. サンプル数 × ファクター重みで加重平均
+    3. 30-70 クランプ
+
+    Args:
+        factor_rates: {"overall": 0.35, "venue": 0.28, ...} (None=データなし)
+        factor_runs: {"overall": 100, "venue": 15, ...}
+        factor_weights: {"overall": 1.0, "venue": 0.8, ...}
+        base_mean: 母集団平均（複勝率）
+        base_sigma: 母集団標準偏差
+        min_runs: 最低サンプル数（これ未満のファクターは無視）
+    """
+    w_sum = 0.0
+    dev_sum = 0.0
+    for key, rate in factor_rates.items():
+        if rate is None:
+            continue
+        runs = factor_runs.get(key, 0)
+        if runs < min_runs:
+            continue
+        weight = factor_weights.get(key, 0.0)
+        if weight <= 0:
+            continue
+        dev = rate_to_dev(rate, base_mean, base_sigma)
+        w = weight * min(runs, 100)  # サンプル数上限100で飽和（過大重み防止）
+        w_sum += w
+        dev_sum += dev * w
+    if w_sum == 0:
+        return None
+    result = dev_sum / w_sum
+    return max(30.0, min(70.0, result))
 
 
 # G5: 血統 rate_to_dev 用の距離帯×面別パラメータ
@@ -793,7 +840,7 @@ def compute_bloodline_detail_grades(
         if blood_grade:
             # 騎手・血統の両方をスコア化して平均
             jockey_g = dev_to_grade(jockey_dev)
-            _g2d = {"SS": 73, "S": 66, "A": 59, "B": 53, "C": 47, "D": 40}
+            _g2d = {"SS": 70, "S": 63, "A": 58.5, "B": 52.5, "C": 46.5, "D": 41.5, "E": 35}
             j_score = _g2d.get(jockey_g, 50)
             b_score = _g2d.get(blood_grade, 50)
             synergy_dev = (j_score + b_score) / 2
@@ -1085,7 +1132,7 @@ def compute_profile_grades(
         if sire_data:
             all_recs = []
             for _dk, stats in sire_data.get("distance", {}).items():
-                if stats.get("runs", 0) >= 5:
+                if stats.get("runs", 0) >= 2:
                     pr = stats.get("place_rate", 0)
                     # G5: キーから距離帯×面を抽出して適切なパラメータを使用
                     if isinstance(_dk, tuple):
@@ -1113,7 +1160,7 @@ def compute_profile_grades(
         if mgs_data:
             all_recs = []
             for _dk, stats in mgs_data.get("distance", {}).items():
-                if stats.get("runs", 0) >= 5:
+                if stats.get("runs", 0) >= 2:
                     pr = stats.get("place_rate", 0)
                     # G5: キーから距離帯×面を抽出して適切なパラメータを使用
                     if isinstance(_dk, tuple):

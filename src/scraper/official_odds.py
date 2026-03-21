@@ -65,6 +65,81 @@ _NAR_BABA_CODES = {
 _JRA_NAME_TO_CODE = {v: k for k, v in _JRA_VENUE_NAMES.items()}
 
 
+def _parse_payout_row_entries(cells) -> List[dict]:
+    """払戻行のセルリストから組番号・払戻金・人気のエントリを抽出
+
+    Args:
+        cells: 券種名セル以降のtdセルリスト
+
+    Returns:
+        [{"combo": "3-8", "payout": 2340, "popularity": 8}, ...]
+    """
+    entries = []
+    if not cells:
+        return entries
+
+    # セルのテキストを取得
+    texts = [c.get_text(strip=True) for c in cells]
+
+    # パターン1: [組番号, 払戻金, 人気] の3セット
+    # パターン2: [組番号, 払戻金] の2セット（人気なし）
+    # 組番号: 数字 or 数字-数字 or 数字-数字-数字
+    combo_pat = re.compile(r"^\d{1,2}(?:\s*[-−ー]\s*\d{1,2}){0,2}$")
+    # 払戻金: カンマ区切り数字、"円" 付きの場合もある
+    payout_pat = re.compile(r"[\d,]+")
+    # 人気: 数字のみ
+    pop_pat = re.compile(r"^\d{1,3}$")
+
+    i = 0
+    while i < len(texts):
+        txt = texts[i]
+        if not txt:
+            i += 1
+            continue
+
+        # 組番号を検出
+        # ハイフン正規化（全角ダッシュ等）
+        normalized = re.sub(r"[−ー―–]", "-", txt).strip()
+        if not combo_pat.match(normalized):
+            i += 1
+            continue
+
+        combo = normalized.replace(" ", "")
+        payout = 0
+        popularity = 0
+
+        # 次のセルから払戻金を取得
+        if i + 1 < len(texts):
+            payout_text = texts[i + 1].replace(",", "").replace("円", "").replace("¥", "").strip()
+            m = payout_pat.match(payout_text)
+            if m:
+                try:
+                    payout = int(m.group().replace(",", ""))
+                except ValueError:
+                    pass
+
+        # その次のセルから人気を取得
+        if i + 2 < len(texts):
+            pop_text = texts[i + 2].strip()
+            if pop_pat.match(pop_text):
+                try:
+                    popularity = int(pop_text)
+                except ValueError:
+                    pass
+            i += 3
+        else:
+            i += 2
+
+        if payout > 0:
+            entries.append({
+                "combo": combo,
+                "payout": payout,
+                "popularity": popularity,
+            })
+
+    return entries
+
+
 class OfficialOddsScraper:
     """JRA/NAR 公式サイトからオッズを取得"""
 
@@ -88,6 +163,8 @@ class OfficialOddsScraper:
         self._lock = threading.Lock()
         # JRA レース結果ページキャッシュ（セッション内メモリ）
         self._result_page_cache: Dict[str, dict] = {}
+        # ばんえい: 直近の DebaTable から取得した馬場水分量
+        self._last_banei_moisture: Optional[float] = None
 
     def _wait(self):
         """リクエスト間隔を確保（スレッドセーフ）"""
@@ -134,6 +211,17 @@ class OfficialOddsScraper:
         else:
             return self._get_nar_odds(race_id)
 
+    def get_sanrenpuku_odds(self, race_id: str) -> Dict[Tuple[int, ...], float]:
+        """三連複オッズを公式サイトから取得
+
+        Returns: {(馬番1, 馬番2, 馬番3): オッズ}  ※タプルはソート済み
+        """
+        venue_code = race_id[4:6]
+        if venue_code in _JRA_VENUE_CODES:
+            return self._get_jra_sanrenpuku(race_id)
+        else:
+            return self._get_nar_sanrenpuku(race_id)
+
     def get_result_cname(self, race_id: str) -> str:
         """JRA結果ページのCNAMEを取得（キャッシュ付き）
 
@@ -172,6 +260,93 @@ class OfficialOddsScraper:
             return self._get_jra_weights(race_id)
         else:
             return self._get_nar_weights(race_id)
+
+    def get_banei_moisture(self, race_id: str) -> Optional[float]:
+        """ばんえいの馬場水分量を取得。
+        get_weights() と連携して使用: get_weights() 呼出後に
+        _last_banei_moisture がセットされるため、追加リクエスト不要。
+        単体で呼ばれた場合は DebaTable を取得する。
+        """
+        venue_code = race_id[4:6]
+        if venue_code not in ("52", "65"):
+            return None
+        if self._last_banei_moisture is not None:
+            return self._last_banei_moisture
+        # get_weights が先に呼ばれていない場合のフォールバック
+        self._get_nar_weights(race_id)
+        return self._last_banei_moisture
+
+    def get_jra_result(self, race_id: str) -> Optional[dict]:
+        """JRA公式サイトからレース結果（着順・払戻・ラップ）を取得
+
+        Args:
+            race_id: netkeiba形式のレースID (YYYYVVRRTTRR)
+
+        Returns:
+            {
+                "order": [{"horse_no": int, "finish": int, "last_3f": float, "corners": [int]}, ...],
+                "payouts": {"tansho": [...], "fukusho": [...], ...},
+                "lap_times": {"first_3f": float, "last_3f": float, "laps": [float]}
+            }
+            取得できない場合は None
+        """
+        if not race_id or len(race_id) < 12:
+            return None
+        venue_code = race_id[4:6]
+        if venue_code not in _JRA_VENUE_CODES:
+            logger.debug("get_jra_result: NARレースは非対応: %s", race_id)
+            return None
+
+        # Step 1: CNAME を取得
+        cname = self.get_result_cname(race_id)
+        if not cname:
+            logger.debug("get_jra_result: CNAMEが見つからない: %s", race_id)
+            return None
+
+        # Step 2: 結果ページのHTMLを取得
+        try:
+            self._wait()
+            resp = self._session.post(
+                "https://www.jra.go.jp/JRADB/accessS.html",
+                data={"cname": cname},
+                headers={
+                    **_HEADERS,
+                    "Content-Type": "application/x-www-form-urlencoded",
+                    "Referer": "https://www.jra.go.jp/JRADB/accessS.html",
+                },
+                timeout=15,
+            )
+            if resp.status_code != 200:
+                logger.warning("get_jra_result: HTTP %d: %s", resp.status_code, race_id)
+                return None
+            resp.encoding = "shift_jis"
+            html = resp.text
+        except Exception as e:
+            logger.warning("get_jra_result: 取得失敗: %s (%s)", race_id, e)
+            return None
+
+        # Step 3: 着順テーブルをパース（orderリスト構築）
+        order = self._parse_jra_result_order(html)
+
+        # Step 4: 払戻テーブルをパース
+        payouts = self._parse_jra_payouts(html)
+
+        # Step 5: ラップタイムをパース
+        lap_times = self._parse_jra_lap_times(html)
+
+        result = {
+            "order": order,
+            "payouts": payouts,
+        }
+        if lap_times is not None:
+            result["lap_times"] = lap_times
+
+        logger.info(
+            "get_jra_result: %s -> 着順%d頭, 払戻%d券種, ラップ%s",
+            race_id, len(order), len(payouts),
+            "あり" if lap_times else "なし",
+        )
+        return result
 
     # ================================================================
     # JRA 公式 (jra.go.jp)
@@ -1354,7 +1529,10 @@ class OfficialOddsScraper:
         # Step 3: PastRun オブジェクト構築
         past_runs = []
         for run_data in basic_runs:
-            run_data.pop("_result_cname", None)
+            # _result_cname → result_cname としてPastRunに渡す
+            _rcname = run_data.pop("_result_cname", "")
+            if _rcname:
+                run_data["result_cname"] = _rcname
             pr = self._build_past_run_from_profile(run_data)
             if pr:
                 past_runs.append(pr)
@@ -1726,6 +1904,330 @@ class OfficialOddsScraper:
 
         return result
 
+    def _parse_jra_result_order(self, html: str) -> List[dict]:
+        """JRA結果ページHTMLから着順リストを構築
+
+        _parse_jra_race_result() は {horse_id: enrichment} 形式を返すが、
+        このメソッドは着順付きリストを返す。
+
+        Returns:
+            [{"horse_no": int, "finish": int, "last_3f": float, "corners": [int]}, ...]
+        """
+        soup = BeautifulSoup(html, "html.parser")
+        order = []
+
+        # 着順テーブルを探す
+        tables = soup.select("table")
+        race_table = None
+        for tbl in tables:
+            rows = tbl.select("tr")
+            num_rows = sum(
+                1 for r in rows
+                if r.select("td") and
+                r.select("td")[0].get_text(strip=True).isdigit()
+            )
+            if num_rows >= 3:
+                race_table = tbl
+                break
+
+        if not race_table:
+            return order
+
+        for row in race_table.select("tr"):
+            cells = row.select("td")
+            if len(cells) < 8:
+                continue
+
+            try:
+                # 着順 (1列目)
+                pos_text = cells[0].get_text(strip=True)
+                if not pos_text.isdigit():
+                    continue
+                finish = int(pos_text)
+
+                # 馬番 (3列目)
+                umaban_text = cells[2].get_text(strip=True)
+                if not umaban_text.isdigit():
+                    continue
+                horse_no = int(umaban_text)
+
+                entry = {
+                    "horse_no": horse_no,
+                    "finish": finish,
+                }
+
+                # 残りのセルから上がり3F、通過順位を探す
+                for ci in range(4, len(cells)):
+                    text = cells[ci].get_text(strip=True)
+                    if not text:
+                        continue
+
+                    # 上がり3F: XX.X 形式 (30-45秒)
+                    if "last_3f" not in entry:
+                        m_3f = re.match(r"^(\d{2}\.\d)$", text)
+                        if m_3f:
+                            f3 = float(m_3f.group(1))
+                            if 30.0 <= f3 <= 45.0:
+                                entry["last_3f"] = f3
+                                continue
+
+                    # 通過順位: "2-2-2-2" 形式
+                    if "corners" not in entry:
+                        if re.match(r"^\d+-\d+(-\d+)*$", text):
+                            corners = [int(x) for x in text.split("-")]
+                            entry["corners"] = corners
+                            continue
+
+                order.append(entry)
+
+            except Exception as e:
+                logger.debug("Result order parse error: %s", e)
+                continue
+
+        return order
+
+    @staticmethod
+    def _parse_jra_payouts(html: str) -> dict:
+        """JRA結果ページのHTMLから払戻金テーブルをパース
+
+        返却形式 (netkeiba互換):
+            {
+                "tansho": [{"combo": "3", "payout": 450, "popularity": 2}],
+                "fukusho": [{"combo": "3", "payout": 180, "popularity": 2}, ...],
+                "wakuren": [{"combo": "2-5", "payout": 1230, "popularity": 5}],
+                "umaren": [{"combo": "3-8", "payout": 2340, "popularity": 8}],
+                "wide": [{"combo": "3-5", "payout": 560, "popularity": 3}, ...],
+                "umatan": [{"combo": "3-8", "payout": 4560, "popularity": 12}],
+                "sanrenpuku": [{"combo": "3-5-8", "payout": 12340, "popularity": 35}],
+                "sanrentan": [{"combo": "3-8-5", "payout": 78900, "popularity": 123}],
+            }
+            パースできない場合は空dict {} を返す
+        """
+        # 券種名 → 内部キー名のマッピング
+        _BET_TYPE_MAP = {
+            "単勝": "tansho",
+            "複勝": "fukusho",
+            "枠連": "wakuren",
+            "馬連": "umaren",
+            "ワイド": "wide",
+            "馬単": "umatan",
+            "三連複": "sanrenpuku",
+            "三連単": "sanrentan",
+        }
+
+        try:
+            soup = BeautifulSoup(html, "html.parser")
+            result = {}
+
+            # 払戻テーブルを特定: 券種名テキストを含むテーブルを探す
+            payout_tables = []
+            for tbl in soup.select("table"):
+                tbl_text = tbl.get_text()
+                # 「単勝」と「払戻」または「人気」を含むテーブルを払戻テーブルと判定
+                if "単勝" in tbl_text and ("払戻" in tbl_text or "人気" in tbl_text
+                                           or "円" in tbl_text):
+                    payout_tables.append(tbl)
+
+            if not payout_tables:
+                # フォールバック: 着順テーブル以外のテーブルで券種名を含むものを探す
+                for tbl in soup.select("table"):
+                    tbl_text = tbl.get_text()
+                    bet_type_count = sum(
+                        1 for bt in _BET_TYPE_MAP if bt in tbl_text
+                    )
+                    if bet_type_count >= 3:
+                        payout_tables.append(tbl)
+
+            if not payout_tables:
+                return {}
+
+            for tbl in payout_tables:
+                for row in tbl.select("tr"):
+                    cells = row.select("td")
+                    if len(cells) < 3:
+                        continue
+
+                    # 券種名を含むセルを探す
+                    bet_key = None
+                    bet_cell_idx = -1
+                    for ci, cell in enumerate(cells):
+                        cell_text = cell.get_text(strip=True)
+                        for jp_name, key in _BET_TYPE_MAP.items():
+                            if jp_name in cell_text:
+                                bet_key = key
+                                bet_cell_idx = ci
+                                break
+                        if bet_key:
+                            break
+
+                    if not bet_key:
+                        # 複勝・ワイドの継続行（券種名セルがない行）
+                        # 直前の券種が複数行タイプの場合に該当
+                        continue
+
+                    # 券種名セル以降のセルから組番号・払戻金・人気を抽出
+                    remaining = cells[bet_cell_idx + 1:]
+                    if len(remaining) < 2:
+                        continue
+
+                    # rowspan で複数行にまたがる場合があるため、
+                    # 同じテーブル内の後続行も同じ券種として処理する
+                    # まず現在行のデータを取得
+                    entries = _parse_payout_row_entries(remaining)
+                    if entries:
+                        if bet_key not in result:
+                            result[bet_key] = []
+                        result[bet_key].extend(entries)
+
+                    # rowspan がある場合、後続行を処理
+                    # 券種名セルの rowspan を確認
+                    bet_cell = cells[bet_cell_idx]
+                    rowspan = 1
+                    try:
+                        rowspan = int(bet_cell.get("rowspan", 1))
+                    except (ValueError, TypeError):
+                        pass
+
+                    if rowspan > 1:
+                        # 後続行を探す（同じテーブル内）
+                        current_row = row
+                        for _ in range(rowspan - 1):
+                            current_row = current_row.find_next_sibling("tr")
+                            if not current_row:
+                                break
+                            sub_cells = current_row.select("td")
+                            if not sub_cells:
+                                continue
+                            sub_entries = _parse_payout_row_entries(sub_cells)
+                            if sub_entries:
+                                if bet_key not in result:
+                                    result[bet_key] = []
+                                result[bet_key].extend(sub_entries)
+
+            return result
+
+        except Exception as e:
+            logger.debug("払戻テーブルのパースに失敗: %s", e)
+            return {}
+
+    @staticmethod
+    def _parse_jra_lap_times(html: str) -> Optional[dict]:
+        """JRA結果ページのHTMLからハロンタイム（ラップタイム）をパース
+
+        Returns:
+            {
+                "first_3f": 35.7,   # 最初の3ハロン合計
+                "last_3f": 36.0,    # 最後の3ハロン合計
+                "laps": [12.5, 11.2, 12.0, ...]  # 各ハロン
+            }
+            パースできない場合は None を返す
+        """
+        try:
+            soup = BeautifulSoup(html, "html.parser")
+
+            # ラップテーブルを探す: "ラップ" ヘッダーの近くのテーブル
+            lap_table = None
+            for header in soup.find_all(["h2", "h3", "h4", "th", "dt"]):
+                header_text = header.get_text()
+                if "ラップ" not in header_text and "lap" not in header_text.lower():
+                    continue
+                table = header.find_next("table")
+                if table:
+                    lap_table = table
+                    break
+
+            if not lap_table:
+                # フォールバック: 200, 400, 600... のヘッダーパターンを探す
+                for tbl in soup.select("table"):
+                    first_row = tbl.select_one("tr")
+                    if not first_row:
+                        continue
+                    header_cells = first_row.find_all(["th", "td"])
+                    dist_count = sum(
+                        1 for c in header_cells
+                        if re.match(r"^\d{3,4}(m)?$", c.get_text(strip=True))
+                    )
+                    if dist_count >= 3:
+                        lap_table = tbl
+                        break
+
+            if not lap_table:
+                return None
+
+            rows = lap_table.select("tr")
+            if len(rows) < 2:
+                return None
+
+            # ヘッダー行から距離列を解析
+            header_row = rows[0]
+            header_cells = header_row.find_all(["th", "td"])
+
+            # ラップ値の行を探す: XX.X 形式の数値が複数あるデータ行
+            laps = []
+            lap_pat = re.compile(r"^\d{1,2}\.\d$")
+
+            for row in rows[1:]:
+                rcells = row.select("td") or row.find_all("td")
+                if not rcells:
+                    continue
+                # ラップ候補を集める
+                candidate_laps = []
+                for c in rcells:
+                    txt = c.get_text(strip=True).replace(",", ".")
+                    if lap_pat.match(txt):
+                        candidate_laps.append(float(txt))
+                # ラップ行と判定: 3つ以上のラップ値がある行
+                if len(candidate_laps) >= 3:
+                    laps = candidate_laps
+                    break
+
+            # 累積タイムの行からラップを逆算する方式（フォールバック）
+            if not laps:
+                for row in rows[1:]:
+                    rcells = row.select("td") or row.find_all("td")
+                    if not rcells:
+                        continue
+                    # 累積タイム: "M:SS.S" または "SS.S" 形式
+                    cumulative = []
+                    for c in rcells:
+                        txt = c.get_text(strip=True).replace(",", ".")
+                        try:
+                            if ":" in txt:
+                                parts = txt.split(":")
+                                val = int(parts[0]) * 60 + float(parts[1])
+                            else:
+                                val = float(txt)
+                            cumulative.append(val)
+                        except (ValueError, IndexError):
+                            continue
+                    # 累積値は単調増加するはず
+                    if (len(cumulative) >= 3 and
+                            all(cumulative[i] < cumulative[i + 1]
+                                for i in range(len(cumulative) - 1))):
+                        # 累積値からラップを計算
+                        laps = [cumulative[0]]
+                        for i in range(1, len(cumulative)):
+                            laps.append(round(cumulative[i] - cumulative[i - 1], 1))
+                        break
+
+            if not laps or len(laps) < 3:
+                return None
+
+            # first_3f: 最初の3ハロン合計
+            first_3f = round(sum(laps[:3]), 1)
+            # last_3f: 最後の3ハロン合計
+            last_3f = round(sum(laps[-3:]), 1)
+
+            return {
+                "first_3f": first_3f,
+                "last_3f": last_3f,
+                "laps": laps,
+            }
+
+        except Exception as e:
+            logger.debug("ラップタイムのパースに失敗: %s", e)
+            return None
+
     def _build_past_run_from_profile(self, data: dict):
         """プロフィール解析データから PastRun を構築"""
         from src.models import PastRun
@@ -1783,6 +2285,7 @@ class OfficialOddsScraper:
                 positions_corners=positions_corners,
                 jockey_id=data.get("jockey_id", ""),
                 popularity_at_race=data.get("popularity"),
+                result_cname=data.get("result_cname", ""),
             )
         except Exception as e:
             logger.debug("PastRun build error: %s", e)
@@ -1868,6 +2371,15 @@ class OfficialOddsScraper:
         soup = BeautifulSoup(html, "html.parser")
         result: Dict[int, Dict] = {}
 
+        # ばんえい: dataArea から馬場水分量を取得
+        self._last_banei_moisture = None
+        da = soup.select_one("ul.dataArea")
+        if da:
+            da_text = da.get_text()
+            wm = re.search(r"馬場[：:]\s*([\d.]+)", da_text)
+            if wm:
+                self._last_banei_moisture = float(wm.group(1))
+
         # 馬番セルを持つ行を見つけて、そこから5行ブロックを構成
         table = soup.select_one("section.cardTable table")
         if not table:
@@ -1926,27 +2438,26 @@ class OfficialOddsScraper:
 
             row_in_block += 1
 
-            # Row 3: 調教師 + 馬体重 (td.odds_weight に体重がある)
-            if row_in_block == 3:
-                # 調教師名: TrainerMark リンクから取得
-                trainer_links = [
-                    a for a in row.select("a")
-                    if "TrainerMark" in a.get("href", "")
-                ]
-                if trainer_links:
-                    result[current_horse_no]["trainer_name"] = trainer_links[0].get_text(strip=True)
+            # 調教師名: TrainerMark リンクがある行から取得
+            trainer_links = [
+                a for a in row.select("a")
+                if "TrainerMark" in a.get("href", "")
+            ]
+            if trainer_links:
+                result[current_horse_no]["trainer_name"] = trainer_links[0].get_text(strip=True)
 
-                wt_cell = row.select_one("td.odds_weight")
-                if wt_cell:
-                    wt_text = wt_cell.get_text(strip=True)
-                    # "444(0)" or "444(-2)" or "444(+4)"
-                    m = re.match(r"(\d+)\(([+-]?\d+)\)", wt_text)
-                    if m:
-                        result[current_horse_no]["weight"] = int(m.group(1))
-                        result[current_horse_no]["weight_change"] = int(m.group(2))
+            # 馬体重: td.odds_weight がある行から取得（ばんえいは行がずれるため行番号不問）
+            wt_cell = row.select_one("td.odds_weight")
+            if wt_cell and result[current_horse_no]["weight"] is None:
+                wt_text = wt_cell.get_text(strip=True)
+                # "444(0)" or "444(-2)" or "444(+4)"
+                m = re.match(r"(\d+)\(([+-]?\d+)\)", wt_text)
+                if m:
+                    result[current_horse_no]["weight"] = int(m.group(1))
+                    result[current_horse_no]["weight_change"] = int(m.group(2))
 
             # Row 4: 馬主 (class なしの td)
-            elif row_in_block == 4:
+            if row_in_block == 4:
                 # 馬主は列位置で特定 (騎手/調教師/馬主列)
                 for cell in cells:
                     text = cell.get_text(strip=True)
@@ -2066,5 +2577,151 @@ class OfficialOddsScraper:
             sorted_by_odds = sorted(result.items(), key=lambda x: x[1][0])
             for rank, (no, (odds, _)) in enumerate(sorted_by_odds, 1):
                 result[no] = (odds, rank)
+
+        return result
+
+    # ================================================================
+    # JRA 三連複オッズ (jra.go.jp)
+    # ================================================================
+
+    def _get_jra_sanrenpuku(self, race_id: str) -> Dict[Tuple[int, ...], float]:
+        """JRA公式から三連複オッズを取得（CNAME導出方式）
+
+        単勝CNAMEの pw151ou を pw156ou に変換して三連複ページを取得。
+        JRA公式の券種別CNAMEプレフィックス:
+          1=単複, 2=枠連, 3=馬連, 4=ワイド, 5=馬単, 6=三連複, 7=三連単
+        """
+        tansho_cname = self._get_jra_cname(race_id)
+        if not tansho_cname or not tansho_cname.startswith("pw151ou"):
+            logger.debug("JRA三連複: 単勝CNAMEが取得できない: %s", race_id)
+            return {}
+
+        # pw151ou → pw156ou (三連複)
+        san_cname = "pw156ou" + tansho_cname[7:]
+        try:
+            self._wait()
+            resp = self._session.post(
+                "https://www.jra.go.jp/JRADB/accessO.html",
+                data={"cname": san_cname},
+                headers={
+                    **_HEADERS,
+                    "Content-Type": "application/x-www-form-urlencoded",
+                    "Referer": "https://www.jra.go.jp/JRADB/accessO.html",
+                },
+                timeout=15,
+            )
+            if resp.status_code != 200:
+                logger.warning("JRA三連複: HTTP %d: %s", resp.status_code, race_id)
+                return {}
+            resp.encoding = "shift_jis"
+        except Exception as e:
+            logger.warning("JRA三連複: 取得失敗: %s (%s)", race_id, e)
+            return {}
+
+        result = self._parse_sanrenpuku_table(resp.text)
+        if result:
+            logger.info("JRA三連複オッズ: %s → %d組取得", race_id, len(result))
+        else:
+            logger.debug("JRA三連複: パース結果0件（ページ構造が異なる可能性）: %s", race_id)
+        return result
+
+    # ================================================================
+    # NAR 三連複オッズ (keiba.go.jp)
+    # ================================================================
+
+    def _get_nar_sanrenpuku(self, race_id: str) -> Dict[Tuple[int, ...], float]:
+        """NAR公式サイトから三連複オッズを取得
+
+        注意: keiba.go.jp は単勝/複勝のみ提供。三連複は OddsPark に
+        リダイレクトされるため取得不可の場合が多い。
+        """
+        venue_code = race_id[4:6]
+        baba_code = _NAR_BABA_CODES.get(venue_code)
+        if not baba_code:
+            logger.debug("NAR三連複: venue code %s not mapped", venue_code)
+            return {}
+
+        race_no = int(race_id[10:12]) if len(race_id) >= 12 else 0
+        if not race_no:
+            return {}
+
+        from datetime import datetime
+        today = datetime.now().strftime("%Y/%m/%d")
+
+        # keiba.go.jp の三連複は存在しない場合が多い（404）
+        # それでも将来提供される可能性があるためリクエストは残す
+        try:
+            self._wait()
+            resp = self._session.get(
+                "https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/OddsSanrenFuku",
+                params={
+                    "k_raceDate": today,
+                    "k_raceNo": str(race_no),
+                    "k_babaCode": baba_code,
+                },
+                headers=_HEADERS,
+                timeout=15,
+            )
+            if resp.status_code != 200:
+                # NAR公式は三連複非対応が通常（404）→ debug レベル
+                logger.debug("NAR三連複: HTTP %d（NAR公式は三連複非対応）: %s", resp.status_code, race_id)
+                return {}
+        except Exception as e:
+            logger.debug("NAR三連複: 取得失敗: %s (%s)", race_id, e)
+            return {}
+
+        result = self._parse_sanrenpuku_table(resp.text)
+        if result:
+            logger.info("NAR三連複オッズ: %s → %d組取得", race_id, len(result))
+        return result
+
+    # ================================================================
+    # 三連複テーブルパーサー（JRA/NAR共通）
+    # ================================================================
+
+    def _parse_sanrenpuku_table(self, html: str) -> Dict[Tuple[int, ...], float]:
+        """三連複オッズHTMLテーブルをパース（JRA公式/NAR公式共通）
+
+        組番号の形式: "1-2-3", "1−2−3", "1 - 2 - 3" 等
+        テーブル行ごとに組番号セルとオッズセルを探索。
+        """
+        soup = BeautifulSoup(html, "html.parser")
+        result: Dict[Tuple[int, ...], float] = {}
+
+        # 3頭の組番号パターン（各種ハイフン・スペース対応）
+        combo_pat = re.compile(
+            r"(\d{1,2})\s*[-\u2010-\u2015\u2212\u30FC\uFF0D]\s*"
+            r"(\d{1,2})\s*[-\u2010-\u2015\u2212\u30FC\uFF0D]\s*"
+            r"(\d{1,2})"
+        )
+
+        for table in soup.select("table"):
+            for row in table.select("tr"):
+                cells = row.select("td")
+                if len(cells) < 2:
+                    continue
+                # 各セルを走査して組番号を探す
+                for i, cell in enumerate(cells):
+                    text = cell.get_text(strip=True)
+                    m = combo_pat.search(text)
+                    if not m:
+                        continue
+                    a, b, c = int(m.group(1)), int(m.group(2)), int(m.group(3))
+                    if not (1 <= a <= 18 and 1 <= b <= 18 and 1 <= c <= 18):
+                        continue
+                    # 組番号の次のセルからオッズを取得
+                    for j in range(i + 1, len(cells)):
+                        odds_text = cells[j].get_text(strip=True).replace(",", "").replace("円", "")
+                        if not odds_text or odds_text in ("---", "---.-", "-", ""):
+                            break
+                        try:
+                            odds = float(odds_text)
+                            if 1.0 < odds < 999999:
+                                key = tuple(sorted([a, b, c]))
+                                result[key] = odds
+                                break
+                        except ValueError:
+                            continue
+                    break  # 組番号が見つかったらこの行は完了
 
         return result

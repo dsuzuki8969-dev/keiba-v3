@@ -75,7 +75,7 @@ HEADERS = {
 }
 
 # コース文字列 → CourseMasterキー変換
-SURFACE_MAP = {"芝": "芝", "ダ": "ダート", "障": "障害"}
+SURFACE_MAP = {"芝": "芝", "ダ": "ダート", "障": "障害", "直": "ダート"}
 DIRECTION_MAP = {"右": "右", "左": "左"}
 
 # 出馬表の調教師セルに含まれる所属プレフィックス
@@ -405,42 +405,67 @@ class RaceListScraper:
         Returns: race_id のリスト (例: "202501050101")
 
         netkeibaは2段階: ①日付タブ取得 ② race_list_sub でレース一覧取得
+        JRA取得失敗時もNAR（ばんえい含む）は常に試行する
         """
         date_key = date.replace("-", "")
+        race_ids = []
+
+        # ── JRA（race.netkeiba.com）──
         # ① 日付タブから current_group を取得
         date_url = f"{RACE_URL}/top/race_list_get_date_list.html"
         date_soup = self.client.get(date_url, params={"kaisai_date": date_key, "encoding": "UTF-8"})
-        if not date_soup:
-            return []
 
         group = ""
-        for li in date_soup.select("li[date][group]"):
-            if li.get("date") == date_key:
-                group = li.get("group", "")
-                break
-        if not group:
-            # Active な日付の group を拾う
-            active = date_soup.select_one("li.Active[group]")
-            if active and active.get("date") == date_key:
-                group = active.get("group", "")
+        if date_soup:
+            for li in date_soup.select("li[date][group]"):
+                if li.get("date") == date_key:
+                    group = li.get("group", "")
+                    break
+            if not group:
+                # Active な日付の group を拾う
+                active = date_soup.select_one("li.Active[group]")
+                if active and active.get("date") == date_key:
+                    group = active.get("group", "")
 
-        # ② race_list_sub でレース一覧取得（groupがなくても取得を試す）
-        sub_url = f"{RACE_URL}/top/race_list_sub.html"
-        params = {"kaisai_date": date_key, "encoding": "UTF-8"}
-        if group:
-            params["current_group"] = group
-        sub_soup = self.client.get(sub_url, params=params)
-        if not sub_soup:
-            return []
+            # ② race_list_sub でレース一覧取得（groupがなくても取得を試す）
+            sub_url = f"{RACE_URL}/top/race_list_sub.html"
+            params = {"kaisai_date": date_key, "encoding": "UTF-8"}
+            if group:
+                params["current_group"] = group
+            sub_soup = self.client.get(sub_url, params=params)
+            if sub_soup:
+                for a_tag in sub_soup.select("a[href*='race_id=']"):
+                    href = a_tag.get("href", "")
+                    m = re.search(r"race_id=(\d{12})", href)
+                    if m:
+                        race_ids.append(m.group(1))
+        else:
+            logger.warning("JRA race list取得失敗（レート制限の可能性）、NARのみ取得")
 
-        race_ids = []
-        for a_tag in sub_soup.select("a[href*='race_id=']"):
-            href = a_tag.get("href", "")
-            m = re.search(r"race_id=(\d{12})", href)
-            if m:
-                race_ids.append(m.group(1))
+        # JRAレースが0件の場合、current_group付きキャッシュを検索してフォールバック
+        if not race_ids and not group:
+            import glob as _glob
+            _pattern = os.path.join(
+                self.client.cache_dir,
+                f"race.netkeiba.com_top_race_list_sub.html_current_group=*_*kaisai_date={date_key}*"
+            )
+            for _cached in _glob.glob(_pattern):
+                try:
+                    import lz4.frame as _lz4
+                    with open(_cached, "rb") as _cf:
+                        _html = _lz4.decompress(_cf.read()).decode("utf-8", errors="replace")
+                    _cached_soup = BeautifulSoup(_html, "html.parser")
+                    for _a in _cached_soup.select("a[href*='race_id=']"):
+                        _m = re.search(r"race_id=(\d{12})", _a.get("href", ""))
+                        if _m:
+                            race_ids.append(_m.group(1))
+                    if race_ids:
+                        logger.info("JRAキャッシュフォールバック: %s から %d件取得", os.path.basename(_cached), len(race_ids))
+                        break
+                except Exception:
+                    continue
 
-        # 地方競馬（金沢・高知・佐賀等）を追加
+        # ── NAR地方（nar.netkeiba.com）── JRA成否に関わらず常に取得
         nar_ids = self._get_nar_race_ids(date_key)
         race_ids.extend(nar_ids)
 
@@ -485,8 +510,6 @@ class RaceListScraper:
                     m = re.search(r"race_id=(\d{12})", href)
                     if m:
                         rid = m.group(1)
-                        if is_banei(rid[4:6]):
-                            continue
                         if mmdd and rid[6:10] != mmdd:
                             continue
                         ids.append(rid)
@@ -579,7 +602,7 @@ class RaceEntryParser:
             horse_link = row.select_one("a[href*='/horse/']")
             if not horse_link:
                 continue
-            m = re.search(r"/horse/(\d+)", horse_link.get("href", ""))
+            m = re.search(r"/horse/([A-Za-z]?\d+)", horse_link.get("href", ""))
             if not m:
                 continue
             hid = m.group(1)
@@ -594,6 +617,12 @@ class RaceEntryParser:
                     cells = row.select("td")
                     for i, c in enumerate(cells):
                         if "Barei" in (c.get("class") or []):
+                            # 性齢を補完（例: "牡4", "牝3", "セ5"）
+                            barei_text = c.get_text(strip=True)
+                            bm = re.match(r"([牡牝セ])(\d+)", barei_text)
+                            if bm:
+                                h.sex = bm.group(1)
+                                h.age = int(bm.group(2))
                             if i + 1 < len(cells):
                                 wtext = cells[i + 1].get_text(strip=True)
                                 if re.match(r"\d+\.?\d*", wtext):
@@ -603,7 +632,7 @@ class RaceEntryParser:
                     wh_cell = row.select_one("td.Weight")
                     if wh_cell:
                         wh_text = wh_cell.get_text(strip=True)
-                        wh_m = re.search(r"(\d{3})\(([+-]?\d+)\)", wh_text)
+                        wh_m = re.search(r"(\d{3,4})\(([+-]?\d+)\)", wh_text)
                         if wh_m:
                             h.horse_weight = int(wh_m.group(1))
                             h.weight_change = int(wh_m.group(2))
@@ -628,18 +657,21 @@ class RaceEntryParser:
             surface, direction, distance = "芝", "右", 2000
             track_turf, track_dirt = "", ""
             post_time_str = ""
+            _banei_water_content = None
             if race_data_el:
                 text = race_data_el.get_text()
                 pt_m = re.search(r"(\d{1,2}):(\d{2})発走", text)
                 if pt_m:
                     post_time_str = f"{int(pt_m.group(1)):02d}:{pt_m.group(2)}"
-                sm = re.search(r"(芝|ダ|障)", text)
+                sm = re.search(r"(芝|ダ|障|直)", text)
                 dm = re.search(r"(右|左)", text)
                 nm = re.search(r"(\d{3,4})m", text)
                 if sm:
                     surface = SURFACE_MAP.get(sm.group(1), "芝")
                 if dm:
                     direction = dm.group(1)
+                elif sm and sm.group(1) == "直":
+                    direction = "直"  # ばんえい（直線コース）
                 if nm:
                     distance = int(nm.group(1))
                 baba_m = re.search(r"馬場[：:]\s*([良稍重不]+)", text)
@@ -656,6 +688,22 @@ class RaceEntryParser:
                 baba_both_d = re.search(r"ダ[：:]?\s*([良稍重不]+)", text)
                 if baba_both_d:
                     track_dirt = baba_both_d.group(1)
+                # ばんえい: 水分量からcondition推定
+                if is_banei(get_venue_code_from_race_id(race_id)):
+                    water_m = re.search(r"水分量[：:]\s*([\d.]+)", text)
+                    if water_m:
+                        wc = float(water_m.group(1))
+                        _banei_water_content = wc
+                        if wc <= 1.5:
+                            track_dirt = "良"
+                        elif wc <= 2.5:
+                            track_dirt = "稍重"
+                        elif wc <= 3.5:
+                            track_dirt = "重"
+                        else:
+                            track_dirt = "不良"
+                    else:
+                        track_dirt = "良"
 
             # 競馬場: RaceData02 の span から取得（race_id より優先）
             venue_code = get_venue_code_from_race_id(race_id)
@@ -707,19 +755,20 @@ class RaceEntryParser:
                 if candidates:
                     course = min(candidates, key=lambda c: abs(c.distance - distance))
                 else:
+                    _is_banei_course = is_banei(venue_code)
                     course = CourseMaster(
                         venue=venue,
                         venue_code=venue_code,
                         distance=distance,
                         surface=surface,
                         direction=direction,
-                        straight_m=350,
-                        corner_count=4,
-                        corner_type="大回り",
-                        first_corner="平均",
-                        slope_type="坂なし",
-                        inside_outside=inside_outside,
-                        is_jra=True,
+                        straight_m=200 if _is_banei_course else 350,
+                        corner_count=0 if _is_banei_course else 4,
+                        corner_type="" if _is_banei_course else "大回り",
+                        first_corner="" if _is_banei_course else "平均",
+                        slope_type="坂あり" if _is_banei_course else "坂なし",
+                        inside_outside="なし" if _is_banei_course else inside_outside,
+                        is_jra=False if _is_banei_course else True,
                     )
 
             # 条件・グレード
@@ -746,6 +795,9 @@ class RaceEntryParser:
             ri.track_condition_turf = track_turf
             ri.track_condition_dirt = track_dirt
             ri.post_time = post_time_str
+            # ばんえい水分量を moisture_dirt に設定（特徴量として利用）
+            if _banei_water_content is not None:
+                ri.moisture_dirt = _banei_water_content
             return ri
         except Exception as e:
             logger.warning("race info parse error %s: %s", race_id, e, exc_info=True)
@@ -790,7 +842,7 @@ class RaceEntryParser:
                 horse_name = horse_link.get_text(strip=True) if horse_link else ""
                 horse_id = ""
                 if horse_link:
-                    m = re.search(r"/horse/(\d+)", horse_link.get("href", ""))
+                    m = re.search(r"/horse/([A-Za-z]?\d+)", horse_link.get("href", ""))
                     if m:
                         horse_id = m.group(1)
 
@@ -947,7 +999,7 @@ class RaceEntryParser:
                 horse_name = horse_link.get_text(strip=True) if horse_link else ""
                 horse_id = ""
                 if horse_link:
-                    m = re.search(r"/horse/(\d+)", horse_link.get("href", ""))
+                    m = re.search(r"/horse/([A-Za-z]?\d+)", horse_link.get("href", ""))
                     if m:
                         horse_id = m.group(1)
 
@@ -1003,7 +1055,7 @@ class RaceEntryParser:
                 wh_cell = row.select_one("td.Weight")
                 if wh_cell:
                     wh_text = wh_cell.get_text(strip=True)
-                    wh_m = re.search(r"(\d{3})\(([+-]?\d+)\)", wh_text)
+                    wh_m = re.search(r"(\d{3,4})\(([+-]?\d+)\)", wh_text)
                     if wh_m:
                         weight_horse = int(wh_m.group(1))
                         weight_change = int(wh_m.group(2))
@@ -1283,6 +1335,7 @@ class HorseHistoryParser:
             "水沢",
             "高知",
             "佐賀",
+            "帯広",
         ):
             if v in kaisai:
                 return v
@@ -1355,16 +1408,34 @@ class HorseHistoryParser:
             return None
         race_date = f"{m.group(1)}-{int(m.group(2)):02d}-{int(m.group(3)):02d}"
 
+        # race_id: cells[4]のレース名リンクから抽出
+        race_id = ""
+        if len(cells) > 4:
+            race_link = cells[4].select_one("a[href*='/race/']")
+            if race_link:
+                rid_m = re.search(r"/race/(\d{12})/", race_link.get("href", ""))
+                if rid_m:
+                    race_id = rid_m.group(1)
+
         # 開催 (1) 例 "5阪神8" → 阪神
         kaisai = cells[1].get_text(strip=True)
         venue = self._extract_venue_from_kaisai(kaisai)
 
-        # 距離 (14) 例 "ダ1400" or "芝2000"
+        # ばんえい判定（開催に「帯広」含む）
+        _is_banei = "帯広" in kaisai
+
+        # 距離 (14) 例 "ダ1400" or "芝2000"、ばんえい: "200"
         course_text = cells[14].get_text(strip=True) if len(cells) > 14 else ""
-        surface_key = course_text[0] if course_text else "芝"
-        surface = SURFACE_MAP.get(surface_key, "芝")
-        dist_m_match = re.search(r"(\d{3,4})", course_text)
-        distance = int(dist_m_match.group(1)) if dist_m_match else 2000
+        if _is_banei:
+            # ばんえいは surface 文字なし、常にダート扱い
+            surface = "ダート"
+            dist_m_match = re.search(r"(\d+)", course_text)
+            distance = int(dist_m_match.group(1)) if dist_m_match else 200
+        else:
+            surface_key = course_text[0] if course_text else "芝"
+            surface = SURFACE_MAP.get(surface_key, "芝")
+            dist_m_match = re.search(r"(\d{3,4})", course_text)
+            distance = int(dist_m_match.group(1)) if dist_m_match else 2000
 
         # venue_master.py の VENUE_NAME_TO_CODE と完全一致させる
         venue_code_map = {
@@ -1399,8 +1470,23 @@ class HorseHistoryParser:
         vc = venue_code_map.get(venue, "05")
         course_id = f"{vc}_{surface}_{distance}"
 
-        # 馬場 (16)
-        condition = cells[16].get_text(strip=True) if len(cells) > 16 else ""
+        # 馬場 (16)。ばんえい: cells[15]に水分量（数値）→ 馬場状態を推定
+        if _is_banei:
+            water_text = cells[15].get_text(strip=True) if len(cells) > 15 else ""
+            try:
+                wc = float(water_text)
+                if wc <= 1.5:
+                    condition = "良"
+                elif wc <= 2.5:
+                    condition = "稍重"
+                elif wc <= 3.5:
+                    condition = "重"
+                else:
+                    condition = "不良"
+            except (ValueError, TypeError):
+                condition = ""
+        else:
+            condition = cells[16].get_text(strip=True) if len(cells) > 16 else ""
         class_text = cells[4].get_text(strip=True) if len(cells) > 4 else ""
         grade = self._infer_grade(class_text)
 
@@ -1444,16 +1530,21 @@ class HorseHistoryParser:
         weight_text = cells[13].get_text(strip=True) if len(cells) > 13 else ""
         weight_kg = float(weight_text) if re.match(r"\d+\.?\d*", weight_text) else 55.0
 
-        # 馬体重(24) 例: 480, 484(+4), 472(-8)
+        # 馬体重: 通常[24]、ばんえいはカラムずれで[27]付近
         horse_weight, weight_change = None, None
-        if len(cells) > 24:
-            wt_text = cells[24].get_text(strip=True)
+        _hw_candidates = [24] if not _is_banei else range(24, min(len(cells), 30))
+        for _hw_idx in _hw_candidates:
+            if _hw_idx >= len(cells):
+                break
+            wt_text = cells[_hw_idx].get_text(strip=True)
             wh_m = re.match(r"(\d+)\s*\(([+-]?\d+)\)\s*$", wt_text)
             if wh_m:
                 horse_weight = int(wh_m.group(1))
                 weight_change = int(wh_m.group(2))
-            elif re.match(r"^\d+$", wt_text):
+                break
+            elif re.match(r"^\d{3,4}$", wt_text):
                 horse_weight = int(wt_text)
+                break
 
         # タイム(18) 着差(19) 通過(21) ペース(22) 上り(23)
         time_text = cells[18].get_text(strip=True) if len(cells) > 18 else ""
@@ -1468,7 +1559,7 @@ class HorseHistoryParser:
         pace_text = cells[22].get_text(strip=True) if len(cells) > 22 else ""
         first_3f = self._parse_first3f(pace_text)
         last3f_text = cells[23].get_text(strip=True) if len(cells) > 23 else ""
-        last3f = float(last3f_text) if re.match(r"\d+\.?\d*", last3f_text) else 35.5
+        last3f = float(last3f_text) if re.match(r"\d+\.?\d*", last3f_text) else (0.0 if _is_banei else 35.5)
         # ペース: 戦績テーブルにはH/M/Sが無いため first_3f から推定
         pace = None
         if first_3f is not None:
@@ -1507,6 +1598,7 @@ class HorseHistoryParser:
             pace=pace,
             tansho_odds=tansho_odds,
             popularity_at_race=popularity_at_race,
+            race_id=race_id,
         )
 
     def _parse_time(self, text: str) -> float:
@@ -1785,6 +1877,129 @@ class OddsScraper:
                 continue
         return result
 
+    def get_sanrenpuku_odds(self, race_id: str) -> Dict[Tuple[int, ...], float]:
+        """三連複オッズを取得。
+        Returns: {(馬番1, 馬番2, 馬番3): オッズ値, ...}  キーは昇順ソート済み
+        """
+        vc = get_venue_code_from_race_id(race_id)
+
+        # 1) JRA API (リアルタイム)
+        if vc in JRA_CODES:
+            result = self._get_sanrenpuku_from_api(race_id)
+            if result:
+                return result
+
+        # 2) HTML odds page (JRA + NAR)
+        result = self._get_sanrenpuku_from_html(race_id)
+        return result
+
+    def _get_sanrenpuku_from_api(self, race_id: str) -> Dict[Tuple[int, ...], float]:
+        """JRA AJAX API から三連複オッズを取得"""
+        try:
+            session = getattr(self.client, "session", None)
+            if not session:
+                return {}
+            api_url = f"{RACE_URL}/api/api_get_jra_odds.html"
+            resp = session.get(
+                api_url,
+                params={"race_id": race_id, "type": "7"},
+                headers={
+                    **HEADERS,
+                    "X-Requested-With": "XMLHttpRequest",
+                    "Referer": f"{RACE_URL}/odds/index.html?race_id={race_id}&type=b7",
+                },
+                timeout=20,
+            )
+            if resp.status_code != 200:
+                return {}
+            data = resp.json()
+            odds_data = data.get("data", {})
+            if not isinstance(odds_data, dict):
+                return {}
+            # API応答: {"odds": {"7": {"0102": [["15.3"]], ...}}} or similar
+            trio = odds_data.get("odds", {})
+            # type=7 のキーを探す
+            trio_dict = trio.get("7", trio.get("b7", {}))
+            if not isinstance(trio_dict, dict):
+                return {}
+            result: Dict[Tuple[int, ...], float] = {}
+            for combo_key, vals in trio_dict.items():
+                try:
+                    # コンボキー: "010203" (2桁ずつ) or "1-2-3"
+                    nums = []
+                    if "-" in combo_key:
+                        nums = [int(x) for x in combo_key.split("-")]
+                    else:
+                        # 2桁ずつ分割
+                        nums = [int(combo_key[i:i+2]) for i in range(0, len(combo_key), 2)]
+                    if len(nums) != 3:
+                        continue
+                    # オッズ値取得
+                    if isinstance(vals, list):
+                        # [[odds_str]] or [odds_str]
+                        v = vals[0] if vals else "0"
+                        if isinstance(v, list):
+                            v = v[0] if v else "0"
+                        odds_val = float(v)
+                    elif isinstance(vals, (int, float)):
+                        odds_val = float(vals)
+                    else:
+                        odds_val = float(str(vals))
+                    if 1.0 < odds_val < 999999:
+                        result[tuple(sorted(nums))] = odds_val
+                except (ValueError, TypeError, IndexError):
+                    continue
+            return result
+        except Exception:
+            return {}
+
+    def _get_sanrenpuku_from_html(self, race_id: str) -> Dict[Tuple[int, ...], float]:
+        """HTML odds page から三連複オッズを取得（JRA/NAR共通）"""
+        base = NAR_URL if get_venue_code_from_race_id(race_id) not in JRA_CODES else RACE_URL
+        url = f"{base}/odds/index.html"
+        soup = self.client.get(url, params={"race_id": race_id, "type": "b7"}, use_cache=False)
+        if not soup:
+            return {}
+
+        result: Dict[Tuple[int, ...], float] = {}
+
+        # パターン1: 組み合わせテーブル（各行にコンボ+オッズ）
+        for tr in soup.select("tr"):
+            cells = tr.select("td")
+            if len(cells) < 2:
+                continue
+            # 組み合わせセル: "1 - 3 - 5" or "01-03-05" 等のパターン
+            combo_text = cells[0].get_text(strip=True)
+            # 数字を3つ抽出
+            nums = re.findall(r'\d+', combo_text)
+            if len(nums) != 3:
+                # 2番目のセルが組み合わせの場合もある
+                combo_text = cells[1].get_text(strip=True) if len(cells) > 1 else ""
+                nums = re.findall(r'\d+', combo_text)
+            if len(nums) != 3:
+                continue
+            horse_nos = tuple(sorted(int(x) for x in nums))
+            if max(horse_nos) > 18 or min(horse_nos) < 1:
+                continue
+
+            # オッズセル: 最後のセルまたは特定クラスのセル
+            odds_text = ""
+            for cell in reversed(cells):
+                text = cell.get_text(strip=True).replace(",", "")
+                if re.match(r'[\d.]+$', text):
+                    odds_text = text
+                    break
+            if not odds_text:
+                continue
+            try:
+                odds_val = float(odds_text)
+                if 1.0 < odds_val < 999999:
+                    result[horse_nos] = odds_val
+            except ValueError:
+                continue
+
+        return result
+
     def get_weights(self, race_id: str) -> Dict[int, Tuple[Optional[int], Optional[int]]]:
         """shutuba.html から馬体重を取得。
         Returns: {馬番: (horse_weight, weight_change)}  拾えなければ空dict
@@ -1808,7 +2023,7 @@ class OddsScraper:
                 if not wh_cell:
                     continue
                 wh_text = wh_cell.get_text(strip=True)
-                m = re.search(r"(\d{3})\(([+-]?\d+)\)", wh_text)
+                m = re.search(r"(\d{3,4})\(([+-]?\d+)\)", wh_text)
                 if m:
                     result[no] = (int(m.group(1)), int(m.group(2)))
             except (ValueError, TypeError):

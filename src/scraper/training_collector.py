@@ -171,7 +171,6 @@ def collect_training_data(
                 _update_state(state, date_str, total_races, total_horses, processed_days)
                 continue
 
-            race_ids = [r for r in race_ids if not is_banei(get_venue_code_from_race_id(r))]
             if jra_only:
                 race_ids = [r for r in race_ids if get_venue_code_from_race_id(r) in JRA_CODES]
             elif nar_only:

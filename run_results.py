@@ -58,7 +58,7 @@ def show_summary(year: str = "all"):
 
     if data.get("by_confidence"):
         print(f"\n  【自信度別】")
-        for conf in ["SS","S","A","B","C","D"]:
+        for conf in ["SS","S","A","B","C","D","E"]:
             s = data["by_confidence"].get(conf)
             if not s or s["races"] == 0:
                 continue
@@ -67,6 +67,36 @@ def show_summary(year: str = "all"):
             print(f"    {conf:4s}: {s['races']}R  的中{s['hits']}  "
                   f"回収率{roi:.1f}%  収支{_fmt_money(prof)}")
     print()
+
+
+def _init_scrapers():
+    """全スクレイパーインスタンスを生成（利用可能なもののみ）"""
+    scrapers = {"official": None, "kb_client": None, "rakuten": None}
+
+    # JRA/NAR公式スクレイパー
+    try:
+        from src.scraper.official_odds import OfficialOddsScraper
+        scrapers["official"] = OfficialOddsScraper()
+    except Exception:
+        pass
+
+    # 競馬ブッククライアント
+    try:
+        from src.scraper.keibabook_training import KeibabookClient
+        kb = KeibabookClient()
+        if kb.login():
+            scrapers["kb_client"] = kb
+    except Exception:
+        pass
+
+    # 楽天競馬スクレイパー
+    try:
+        from src.scraper.rakuten_keiba import RakutenKeibaScraper
+        scrapers["rakuten"] = RakutenKeibaScraper()
+    except Exception:
+        pass
+
+    return scrapers
 
 
 def run_fetch_and_compare(date: str):
@@ -79,7 +109,20 @@ def run_fetch_and_compare(date: str):
     print(f"[1/2] {date} の実際の着順を取得中...")
     from src.scraper.netkeiba import NetkeibaClient
     client = NetkeibaClient()
-    fetch_actual_results(date, client)
+
+    # 全スクレイパーを初期化
+    scrapers = _init_scrapers()
+    active = [k for k, v in scrapers.items() if v]
+    if active:
+        print(f"  利用可能ソース: netkeiba + {', '.join(active)}")
+
+    fetch_actual_results(
+        date,
+        client,
+        official_scraper=scrapers["official"],
+        kb_client=scrapers["kb_client"],
+        rakuten_client=scrapers["rakuten"],
+    )
 
     print(f"[2/2] 照合・集計中...")
     result = compare_and_aggregate(date)

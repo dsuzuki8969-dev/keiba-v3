@@ -30,18 +30,19 @@ LGB_PARAMS = {
     "objective": "binary",
     "metric": ["binary_logloss", "auc"],
     "boosting_type": "gbdt",
-    "num_leaves": 63,
-    "learning_rate": 0.02,      # 0.05→0.02: early stopping早すぎ問題を修正
-    "feature_fraction": 0.8,
-    "bagging_fraction": 0.8,
+    "num_leaves": 31,           # 63→31: 浅い木でツリー数増加を促進
+    "learning_rate": 0.005,     # 0.02→0.005: 非常に緩やかに学習
+    "feature_fraction": 0.7,    # 0.8→0.7: ランダム性を増やしてツリー分散化
+    "bagging_fraction": 0.7,    # 0.8→0.7: 同上
     "bagging_freq": 5,
-    "min_child_samples": 50,
-    "lambda_l1": 0.1,
-    "lambda_l2": 1.0,
-    "max_depth": 7,
+    "min_child_samples": 100,   # 50→100: 過学習抑制を強化
+    "lambda_l1": 1.0,           # 0.1→1.0: 正則化強化
+    "lambda_l2": 5.0,           # 1.0→5.0: 正則化強化
+    "max_depth": 4,             # 7→4: さらに浅い木
     "verbose": -1,
     "seed": 42,
-    "is_unbalance": True,
+    # is_unbalance削除: 陽性重み増幅が即過学習の原因
+    # Platt Scalingで事後較正するため不要
 }
 
 
@@ -220,12 +221,12 @@ def train_probability_models(valid_days: int = 30) -> dict:
 
         model = lgb.train(
             LGB_PARAMS, dtrain,
-            num_boost_round=3000,       # 1000→3000: lr低下分を補完
+            num_boost_round=5000,       # 3000→5000: lr低下分を補完
             valid_sets=[dtrain, dvalid],
             valid_names=["train", "valid"],
             callbacks=[
                 lgb.log_evaluation(period=200),
-                lgb.early_stopping(stopping_rounds=100),  # 50→100
+                lgb.early_stopping(stopping_rounds=200),  # 100→200: 早期停止を緩和
             ],
         )
 

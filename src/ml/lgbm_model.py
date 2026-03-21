@@ -193,6 +193,92 @@ FEATURE_COLUMNS = [
     "bms_cond_pr",                # 馬場状態別の産駒複勝率
     "bms_venue_pr",               # 当競馬場の産駒複勝率（非加重）
     "bms_dist_pr",                # SMILE区分複勝率（母父独自）
+    # ---- Phase 12: 条件別複勝率追加 ----
+    "horse_cond_pr",              # 馬の馬場状態別複勝率
+    "jockey_pace_pr",             # 騎手のペース別複勝率
+    "jockey_style_pr",            # 騎手の脚質別複勝率
+    "jockey_gate_pr",             # 騎手の枠番帯別複勝率
+    "jockey_horse_pr",            # 騎手の騎乗馬別複勝率
+    "trainer_pace_pr",            # 調教師のペース別複勝率
+    "trainer_style_pr",           # 調教師の脚質別複勝率
+    "trainer_gate_pr",            # 調教師の枠番帯別複勝率
+    "trainer_horse_pr",           # 調教師の騎乗馬別複勝率
+    "sire_pace_pr",               # 父のペース別産駒複勝率
+    "sire_style_pr",              # 父の脚質別産駒複勝率
+    "sire_gate_pr",               # 父の枠番帯別産駒複勝率
+    "sire_jockey_pr",             # 父×騎手の産駒複勝率
+    "sire_trainer_pr",            # 父×調教師の産駒複勝率
+    "bms_pace_pr",                # 母父のペース別産駒複勝率
+    "bms_style_pr",               # 母父の脚質別産駒複勝率
+    "bms_gate_pr",                # 母父の枠番帯別産駒複勝率
+    "bms_jockey_pr",              # 母父×騎手の産駒複勝率
+    "bms_trainer_pr",             # 母父×調教師の産駒複勝率
+]
+
+# ばんえい専用: コーナー/ペース/上がり3F/SMILE/脚質/スピード指数など存在しない概念を除外
+# 全0特徴量(trend_deviation_slope, chakusa_index_avg3, margin_norm_*)と100%NaN(trainer_rest_wr)も除外
+# 高NaN血統特徴量はLightGBMがNaNをネイティブ処理するため残す
+FEATURE_COLUMNS_BANEI = [
+    # レース条件（surface/distance/venue_codeは帯広1場固定→除外）
+    "condition", "field_count", "month", "grade_code",
+    # 馬個体（weight_kg=斤量、horse_weight=馬体重 — ばんえい最重要）
+    "gate_no", "horse_no", "sex_code", "age",
+    "weight_kg", "horse_weight", "weight_change",
+    # 馬の成績
+    "horse_win_rate", "horse_place_rate", "horse_runs",
+    "horse_avg_finish", "horse_last_finish", "horse_days_since",
+    # 騎手の成績
+    "jockey_win_rate", "jockey_place_rate", "jockey_runs",
+    "jockey_win_rate_90d", "jockey_place_rate_90d",
+    "jockey_venue_wr",
+    # 調教師の成績
+    "trainer_win_rate", "trainer_place_rate", "trainer_runs",
+    "trainer_win_rate_90d", "trainer_place_rate_90d",
+    "trainer_venue_wr",
+    # 騎手×調教師コンボ
+    "jt_combo_wr", "jt_combo_runs",
+    "jt_combo_wr_30d", "jt_combo_place_rate_30d",
+    # 血統ローリング
+    "sire_win_rate", "sire_place_rate",
+    "bms_win_rate", "bms_place_rate",
+    "sire_bms_wr",
+    # フォーム・トレンド（全0の trend_deviation_slope, chakusa_index_avg3 は除外）
+    "trend_position_slope",
+    "dev_run1", "dev_run2",
+    "is_jockey_change", "is_long_break",
+    # クラス変化
+    "class_change", "prev_grade_code",
+    # レース内相対特徴量
+    "jockey_place_rank_in_race", "trainer_place_rank_in_race",
+    "horse_form_rank_in_race", "horse_place_rank_in_race",
+    "jockey_place_zscore_in_race", "horse_form_zscore_in_race",
+    "relative_weight_kg",
+    "jockey_wp_ratio", "trainer_wp_ratio",
+    # 斤量トレンド
+    "weight_kg_trend_3run",
+    # 血統信頼度・トレンド
+    "sire_credibility", "bms_credibility",
+    "sire_recent_trend",
+    # 調教師特徴量（trainer_rest_wr は100%NaN→除外）
+    "trainer_class_trend",
+    # 馬の条件別複勝率
+    "horse_pr_2y", "horse_venue_pr",
+    "horse_gate_pr", "horse_jockey_pr",
+    "horse_cond_pr",
+    # 騎手の条件別複勝率
+    "jockey_pr_2y", "jockey_venue_pr", "jockey_cond_pr",
+    # 調教師の条件別複勝率
+    "trainer_pr_2y", "trainer_venue_pr", "trainer_cond_pr",
+    # 血統×競馬場・条件
+    "sire_venue_pr", "sire_cond_pr",
+    "bms_venue_pr", "bms_cond_pr",
+    # 枠番帯別
+    "jockey_gate_pr", "trainer_gate_pr",
+    "sire_gate_pr", "bms_gate_pr",
+    # 個別馬×人コンボ
+    "jockey_horse_pr", "trainer_horse_pr",
+    "sire_jockey_pr", "sire_trainer_pr",
+    "bms_jockey_pr", "bms_trainer_pr",
 ]
 
 CATEGORICAL_FEATURES = ["venue_code", "venue_direction"]
@@ -221,7 +307,8 @@ FEATURE_CATEGORY_6: Dict[str, List[str]] = {
                "speed_index_avg_1y", "speed_index_best_1y",
                "speed_index_avg_6m", "speed_index_trend",
                "horse_pr_2y", "horse_venue_pr", "horse_dist_pr",
-               "horse_smile_pr", "horse_style_pr", "horse_gate_pr"],
+               "horse_smile_pr", "horse_style_pr", "horse_gate_pr",
+               "horse_cond_pr"],
     "展開":   ["ml_pos_est", "horse_running_style", "ml_l3f_est", "speed_sec_per_m_est",
                "speed_index_last", "speed_index_avg3", "speed_index_best3",
                "place_rate_fast_pace", "place_rate_slow_pace", "pace_pref_score",
@@ -251,7 +338,8 @@ FEATURE_CATEGORY_6: Dict[str, List[str]] = {
                # Phase 11: 騎手の条件別複勝率 + 2年ウィンドウ
                "jockey_pr_2y", "jockey_venue_pr", "jockey_dist_pr",
                "jockey_smile_pr", "jockey_cond_pr",
-               "horse_jockey_pr"],
+               "horse_jockey_pr",
+               "jockey_pace_pr", "jockey_style_pr", "jockey_gate_pr", "jockey_horse_pr"],
     "調教師": ["trainer_win_rate", "trainer_place_rate", "trainer_runs",
                "trainer_win_rate_90d", "trainer_place_rate_90d",
                "trainer_venue_wr", "trainer_surface_wr", "trainer_dist_wr",
@@ -265,7 +353,8 @@ FEATURE_CATEGORY_6: Dict[str, List[str]] = {
                "trainer_class_trend", "trainer_rest_wr",
                # Phase 11: 調教師の条件別複勝率 + 2年ウィンドウ
                "trainer_pr_2y", "trainer_venue_pr", "trainer_dist_pr",
-               "trainer_smile_pr", "trainer_cond_pr"],
+               "trainer_smile_pr", "trainer_cond_pr",
+               "trainer_pace_pr", "trainer_style_pr", "trainer_gate_pr", "trainer_horse_pr"],
     "血統":   ["sire_win_rate", "sire_place_rate",
                "bms_win_rate", "bms_place_rate",
                "sire_surf_wr", "sire_smile_wr", "bms_surf_wr",
@@ -282,7 +371,12 @@ FEATURE_CATEGORY_6: Dict[str, List[str]] = {
                "sire_dist_pref", "sire_recent_trend",
                # Phase 11: 父/母父の条件別複勝率
                "sire_smile_pr", "sire_cond_pr", "sire_venue_pr",
-               "bms_smile_pr", "bms_cond_pr", "bms_venue_pr", "bms_dist_pr"],
+               "bms_smile_pr", "bms_cond_pr", "bms_venue_pr", "bms_dist_pr",
+               # Phase 12: ペース/脚質/枠番/騎手/調教師別
+               "sire_pace_pr", "sire_style_pr", "sire_gate_pr",
+               "sire_jockey_pr", "sire_trainer_pr",
+               "bms_pace_pr", "bms_style_pr", "bms_gate_pr",
+               "bms_jockey_pr", "bms_trainer_pr"],
 }
 # 後方互換: 旧名称からの参照
 SHAP_FEATURE_GROUPS = FEATURE_CATEGORY_6
@@ -403,7 +497,8 @@ class _EntityStats:
 
     __slots__ = ("wins", "runs", "places", "recent", "venue", "surface", "dist_cat",
                  "surf_dist", "venue_surf", "venue_surf_dist",
-                 "smile", "cond")
+                 "smile", "cond",
+                 "pace", "style", "gate", "horse_combo")
 
     def __init__(self):
         self.wins = 0
@@ -420,10 +515,17 @@ class _EntityStats:
         # Phase 11 新ディメンション
         self.smile: Dict[str, list] = {}               # {smile_cat: [w, p, r]}  SMILE 6区分
         self.cond: Dict[str, list] = {}                # {condition: [w, p, r]}  馬場状態
+        # Phase 12: ペース/脚質/枠番/騎乗馬
+        self.pace: Dict[str, list] = {}                # {pace_grp(H/M/S): [w, p, r]}
+        self.style: Dict[str, list] = {}               # {style_grp(前/中/後): [w, p, r]}
+        self.gate: Dict[str, list] = {}                # {gate_grp(g12/g34/g56/g78): [w, p, r]}
+        self.horse_combo: Dict[str, list] = {}         # {horse_id: [w, p, r]}
 
     def update(self, date_str: str, is_win: bool, is_place: bool,
                venue: str = "", surface: str = "", dist_cat: str = "",
-               smile_cat: str = "", condition: str = ""):
+               smile_cat: str = "", condition: str = "",
+               pace_grp: str = "", style_grp: str = "",
+               gate_grp: str = "", horse_id: str = ""):
         self.wins += int(is_win)
         self.runs += 1
         self.places += int(is_place)
@@ -454,6 +556,31 @@ class _EntityStats:
         if condition:
             v = self.cond.setdefault(condition, [0, 0, 0])
             v[0] += _w; v[1] += _p; v[2] += 1
+        # Phase 12: ペース/脚質/枠番/騎乗馬
+        if pace_grp:
+            v = getattr(self, 'pace', None)
+            if v is None:
+                self.pace = v = {}
+            vv = v.setdefault(pace_grp, [0, 0, 0])
+            vv[0] += _w; vv[1] += _p; vv[2] += 1
+        if style_grp:
+            v = getattr(self, 'style', None)
+            if v is None:
+                self.style = v = {}
+            vv = v.setdefault(style_grp, [0, 0, 0])
+            vv[0] += _w; vv[1] += _p; vv[2] += 1
+        if gate_grp:
+            v = getattr(self, 'gate', None)
+            if v is None:
+                self.gate = v = {}
+            vv = v.setdefault(gate_grp, [0, 0, 0])
+            vv[0] += _w; vv[1] += _p; vv[2] += 1
+        if horse_id:
+            v = getattr(self, 'horse_combo', None)
+            if v is None:
+                self.horse_combo = v = {}
+            vv = v.setdefault(horse_id, [0, 0, 0])
+            vv[0] += _w; vv[1] += _p; vv[2] += 1
 
     def sim_venue_rate(self, target_venue: str, surface: str, dist_cat: str = None,
                        min_sim: float = 0.35, sim_power: float = 2.0,
@@ -543,6 +670,34 @@ class _EntityStats:
     def cond_pr(self, condition: str):
         """Phase 11: 馬場状態別複勝率"""
         v = getattr(self, 'cond', {}).get(condition)
+        if not v or len(v) < 3:
+            return None
+        return v[1] / v[2] if v[2] >= 3 else None
+
+    def pace_pr(self, pace_grp: str):
+        """Phase 12: ペース別複勝率"""
+        v = getattr(self, 'pace', {}).get(pace_grp)
+        if not v or len(v) < 3:
+            return None
+        return v[1] / v[2] if v[2] >= 3 else None
+
+    def style_pr(self, style_grp: str):
+        """Phase 12: 脚質別複勝率"""
+        v = getattr(self, 'style', {}).get(style_grp)
+        if not v or len(v) < 3:
+            return None
+        return v[1] / v[2] if v[2] >= 3 else None
+
+    def gate_pr(self, gate_grp: str):
+        """Phase 12: 枠番帯別複勝率"""
+        v = getattr(self, 'gate', {}).get(gate_grp)
+        if not v or len(v) < 3:
+            return None
+        return v[1] / v[2] if v[2] >= 3 else None
+
+    def horse_combo_pr(self, horse_id: str):
+        """Phase 12: 騎乗馬別複勝率"""
+        v = getattr(self, 'horse_combo', {}).get(horse_id)
         if not v or len(v) < 3:
             return None
         return v[1] / v[2] if v[2] >= 3 else None
@@ -641,13 +796,15 @@ class _HorseStats:
 
     def get_condition_pr_features(self, date_str: str, venue: str, surface: str,
                                    distance: int, smile_cat: str,
-                                   gate_no: Optional[int], jockey_id: str) -> dict:
-        """Phase 11: 馬の条件別複勝率を一括計算。run_details から date_str 前 & 2年以内で集計。"""
+                                   gate_no: Optional[int], jockey_id: str,
+                                   condition: str = "") -> dict:
+        """Phase 11+12: 馬の条件別複勝率を一括計算。run_details から date_str 前 & 2年以内で集計。"""
         result = {
             "horse_pr_2y": None, "horse_venue_pr": None,
             "horse_dist_pr": None, "horse_smile_pr": None,
             "horse_style_pr": None, "horse_gate_pr": None,
             "horse_jockey_pr": None,
+            "horse_cond_pr": None,
         }
         if not self.run_details:
             return result
@@ -705,6 +862,7 @@ class _HorseStats:
         n_st = p_st = 0       # 脚質帯
         n_g = p_g = 0         # 枠番帯
         n_j = p_j = 0         # 当騎手
+        n_cond = p_cond = 0   # 当馬場状態
 
         for d in self.run_details:
             d_date = d[0]
@@ -751,6 +909,11 @@ class _HorseStats:
             if d_jid and d_jid == jockey_id:
                 n_j += 1; p_j += is_p
 
+            # Phase 12: 馬場状態 (idx 5)
+            d_cond = d[5] if len(d) > 5 else None
+            if d_cond and condition and d_cond == condition:
+                n_cond += 1; p_cond += is_p
+
         # min_runs=2 で結果設定
         if n_2y >= 2: result["horse_pr_2y"] = p_2y / n_2y
         if n_v >= 2: result["horse_venue_pr"] = p_v / n_v
@@ -759,6 +922,7 @@ class _HorseStats:
         if n_st >= 2: result["horse_style_pr"] = p_st / n_st
         if n_g >= 2: result["horse_gate_pr"] = p_g / n_g
         if n_j >= 2: result["horse_jockey_pr"] = p_j / n_j
+        if n_cond >= 2: result["horse_cond_pr"] = p_cond / n_cond
         return result
 
     def get_speed_index_windows(self, date_str: str) -> dict:
@@ -919,12 +1083,17 @@ class RollingStatsTracker:
         _vtb_key = (venue, distance, surface, race.get("condition", "良"))
         _vtb = self.venue_time_baselines.get(_vtb_key)
         _baseline_time: Optional[float] = None
-        if _vtb and _vtb[1] >= 20:
+        # ばんえい（帯広200m）はサンプル数が少ないため閾値を緩和
+        from data.masters.venue_master import is_banei as _is_banei_vtb
+        _is_banei_race = _is_banei_vtb(str(race.get("venue_code", "")))
+        _vtb_min = 3 if _is_banei_race else 20
+        _vtb_broad_min = 1 if _is_banei_race else 10
+        if _vtb and _vtb[1] >= _vtb_min:
             _baseline_time = _vtb[0] / _vtb[1]
         else:
-            # サンプル不足: 馬場状態を無視した広いキーで補完 (最低10件)
+            # サンプル不足: 馬場状態を無視した広いキーで補完
             _vtb_broad = self.venue_time_baselines.get((venue, distance, surface, "良"))
-            if _vtb_broad and _vtb_broad[1] >= 10:
+            if _vtb_broad and _vtb_broad[1] >= _vtb_broad_min:
                 _baseline_time = _vtb_broad[0] / _vtb_broad[1]
         # 全馬のspeed_indexを事前計算（ベースライン固定で公平な比較）
         _horse_speed_idx: Dict[str, Optional[float]] = {}
@@ -984,17 +1153,46 @@ class RollingStatsTracker:
             tid = h.get("trainer_id", "")
             hid = h.get("horse_id", "")
 
+            # Phase 12: ペース/脚質/枠番グループを算出
+            _pace_grp = ""
+            if _race_pace_norm is not None:
+                if _race_pace_norm >= 0.5:
+                    _pace_grp = "H"
+                elif _race_pace_norm <= -0.5:
+                    _pace_grp = "S"
+                else:
+                    _pace_grp = "M"
+            _pc_h = h.get("positions_corners") or []
+            _fc_h = h.get("field_count") or len(race.get("horses", []))
+            _style_grp = ""
+            if isinstance(_pc_h, list) and _pc_h and _fc_h and _fc_h > 1:
+                _p4_h = _pc_h[-1] if _pc_h else None
+                if isinstance(_p4_h, (int, float)):
+                    _rel_h = _p4_h / _fc_h
+                    _style_grp = "front" if _rel_h <= 0.30 else ("middle" if _rel_h <= 0.60 else "rear")
+            _gate_no_h = h.get("gate_no")
+            _gate_grp = ""
+            if _gate_no_h:
+                if _gate_no_h <= 2: _gate_grp = "g12"
+                elif _gate_no_h <= 4: _gate_grp = "g34"
+                elif _gate_no_h <= 6: _gate_grp = "g56"
+                else: _gate_grp = "g78"
+
             if jid:
                 if jid not in self.jockeys:
                     self.jockeys[jid] = _EntityStats()
                 self.jockeys[jid].update(date_str, is_win, is_place, venue, surface, dc,
-                                         smile_cat=_smile_cat, condition=_condition)
+                                         smile_cat=_smile_cat, condition=_condition,
+                                         pace_grp=_pace_grp, style_grp=_style_grp,
+                                         gate_grp=_gate_grp, horse_id=hid)
 
             if tid:
                 if tid not in self.trainers:
                     self.trainers[tid] = _EntityStats()
                 self.trainers[tid].update(date_str, is_win, is_place, venue, surface, dc,
-                                          smile_cat=_smile_cat, condition=_condition)
+                                          smile_cat=_smile_cat, condition=_condition,
+                                          pace_grp=_pace_grp, style_grp=_style_grp,
+                                          gate_grp=_gate_grp, horse_id=hid)
 
                 # Phase 10B: 調教師のクラスレベル推移トラッキング
                 _tg = getattr(self, '_trainer_grades', None)
@@ -1182,10 +1380,15 @@ class RollingStatsTracker:
 
     def get_jockey_features(self, jid: str, venue: str,
                             surface: str, dist_cat: str, date_str: str,
-                            smile_cat: str = "", condition: str = "") -> dict:
+                            smile_cat: str = "", condition: str = "",
+                            pace_grp: str = "", style_grp: str = "",
+                            gate_grp: str = "", horse_id: str = "") -> dict:
         _phase11_keys = [
             "jockey_pr_2y", "jockey_venue_pr", "jockey_dist_pr",
             "jockey_smile_pr", "jockey_cond_pr",
+        ]
+        _phase12_keys = [
+            "jockey_pace_pr", "jockey_style_pr", "jockey_gate_pr", "jockey_horse_pr",
         ]
         s = self.jockeys.get(jid)
         if not s:
@@ -1196,7 +1399,7 @@ class RollingStatsTracker:
                 "jockey_surf_dist_wr", "jockey_surf_dist_pr",
                 "jockey_sim_venue_wr", "jockey_sim_venue_pr",
                 "jockey_sim_venue_dist_wr", "jockey_sim_venue_dist_pr",
-            ] + _phase11_keys)
+            ] + _phase11_keys + _phase12_keys)
         cutoff = self._cutoff_90d(date_str)
         sd = s.surf_dist.get((surface, dist_cat), [0, 0, 0]) if surface and dist_cat else [0, 0, 0]
         sim_wr, sim_pr = s.sim_venue_rate(venue, surface) if venue and surface else (None, None)
@@ -1223,15 +1426,25 @@ class RollingStatsTracker:
             "jockey_dist_pr": s.dist_cat_pr(dist_cat) if dist_cat else None,
             "jockey_smile_pr": s.smile_pr(smile_cat) if smile_cat else None,
             "jockey_cond_pr": s.cond_pr(condition) if condition else None,
+            # Phase 12: ペース/脚質/枠番/騎乗馬別複勝率
+            "jockey_pace_pr": s.pace_pr(pace_grp) if pace_grp else None,
+            "jockey_style_pr": s.style_pr(style_grp) if style_grp else None,
+            "jockey_gate_pr": s.gate_pr(gate_grp) if gate_grp else None,
+            "jockey_horse_pr": s.horse_combo_pr(horse_id) if horse_id else None,
         }
         return result
 
     def get_trainer_features(self, tid: str, venue: str, date_str: str,
                              surface: str = "", dist_cat: str = "",
-                             smile_cat: str = "", condition: str = "") -> dict:
+                             smile_cat: str = "", condition: str = "",
+                             pace_grp: str = "", style_grp: str = "",
+                             gate_grp: str = "", horse_id: str = "") -> dict:
         _phase11_keys = [
             "trainer_pr_2y", "trainer_venue_pr", "trainer_dist_pr",
             "trainer_smile_pr", "trainer_cond_pr",
+        ]
+        _phase12_keys = [
+            "trainer_pace_pr", "trainer_style_pr", "trainer_gate_pr", "trainer_horse_pr",
         ]
         s = self.trainers.get(tid)
         if not s:
@@ -1242,7 +1455,7 @@ class RollingStatsTracker:
                 "trainer_surf_dist_wr", "trainer_surf_dist_pr",
                 "trainer_sim_venue_wr", "trainer_sim_venue_pr",
                 "trainer_sim_venue_dist_wr", "trainer_sim_venue_dist_pr",
-            ] + _phase11_keys)
+            ] + _phase11_keys + _phase12_keys)
         cutoff = self._cutoff_90d(date_str)
         sd = s.surf_dist.get((surface, dist_cat), [0, 0, 0]) if surface and dist_cat else [0, 0, 0]
         sim_wr, sim_pr = s.sim_venue_rate(venue, surface) if venue and surface else (None, None)
@@ -1270,6 +1483,11 @@ class RollingStatsTracker:
             "trainer_dist_pr": s.dist_cat_pr(dist_cat) if dist_cat else None,
             "trainer_smile_pr": s.smile_pr(smile_cat) if smile_cat else None,
             "trainer_cond_pr": s.cond_pr(condition) if condition else None,
+            # Phase 12: ペース/脚質/枠番/管理馬別複勝率
+            "trainer_pace_pr": s.pace_pr(pace_grp) if pace_grp else None,
+            "trainer_style_pr": s.style_pr(style_grp) if style_grp else None,
+            "trainer_gate_pr": s.gate_pr(gate_grp) if gate_grp else None,
+            "trainer_horse_pr": s.horse_combo_pr(horse_id) if horse_id else None,
         }
 
     def get_trainer_phase10b_features(self, tid: str) -> dict:
@@ -1960,6 +2178,80 @@ class RollingSireTracker:
                 self._update_key(_sv, (sire_id, venue), is_win, is_place)
                 self._update_key(_bv, (bms_id, venue), is_win, is_place)
 
+            # Phase 12: ペース/脚質/枠番/騎手/調教師 別
+            # ペース: レース全体のペースから H/M/S に分類
+            _pace_norm = race.get("pace_norm")
+            if _pace_norm is not None:
+                if _pace_norm >= 0.5:
+                    _pg = "H"
+                elif _pace_norm <= -0.5:
+                    _pg = "S"
+                else:
+                    _pg = "M"
+                _sp = getattr(self, '_sire_pace', None)
+                if _sp is None:
+                    self._sire_pace = _sp = {}
+                _bp = getattr(self, '_bms_pace', None)
+                if _bp is None:
+                    self._bms_pace = _bp = {}
+                self._update_key(_sp, (sire_id, _pg), is_win, is_place)
+                self._update_key(_bp, (bms_id, _pg), is_win, is_place)
+
+            # 脚質: 馬の4角位置 / 頭数で前/中/後に分類
+            _p4c = h.get("positions_corners")
+            _fc = h.get("field_count") or race.get("field_count", 0)
+            if _p4c and len(_p4c) >= 4 and _fc and _fc > 1:
+                _rel = _p4c[3] / _fc
+                _sg = "front" if _rel <= 0.30 else ("middle" if _rel <= 0.60 else "rear")
+                _ss = getattr(self, '_sire_style', None)
+                if _ss is None:
+                    self._sire_style = _ss = {}
+                _bs = getattr(self, '_bms_style', None)
+                if _bs is None:
+                    self._bms_style = _bs = {}
+                self._update_key(_ss, (sire_id, _sg), is_win, is_place)
+                self._update_key(_bs, (bms_id, _sg), is_win, is_place)
+
+            # 枠番帯
+            _gno = h.get("gate_no")
+            if _gno:
+                if _gno <= 2: _gg = "g12"
+                elif _gno <= 4: _gg = "g34"
+                elif _gno <= 6: _gg = "g56"
+                else: _gg = "g78"
+                _sga = getattr(self, '_sire_gate', None)
+                if _sga is None:
+                    self._sire_gate = _sga = {}
+                _bga = getattr(self, '_bms_gate', None)
+                if _bga is None:
+                    self._bms_gate = _bga = {}
+                self._update_key(_sga, (sire_id, _gg), is_win, is_place)
+                self._update_key(_bga, (bms_id, _gg), is_win, is_place)
+
+            # 騎手別
+            _jid = h.get("jockey_id", "")
+            if _jid:
+                _sj = getattr(self, '_sire_jockey', None)
+                if _sj is None:
+                    self._sire_jockey = _sj = {}
+                _bj = getattr(self, '_bms_jockey', None)
+                if _bj is None:
+                    self._bms_jockey = _bj = {}
+                self._update_key(_sj, (sire_id, _jid), is_win, is_place)
+                self._update_key(_bj, (bms_id, _jid), is_win, is_place)
+
+            # 調教師別
+            _tid = h.get("trainer_id", "")
+            if _tid:
+                _st = getattr(self, '_sire_trainer', None)
+                if _st is None:
+                    self._sire_trainer = _st = {}
+                _bt = getattr(self, '_bms_trainer', None)
+                if _bt is None:
+                    self._bms_trainer = _bt = {}
+                self._update_key(_st, (sire_id, _tid), is_win, is_place)
+                self._update_key(_bt, (bms_id, _tid), is_win, is_place)
+
     def get_features(self, sire_id: str, bms_id: str) -> dict:
         return {
             "sire_win_rate": self._rate(self._sire, sire_id, 0),
@@ -2064,6 +2356,41 @@ class RollingSireTracker:
             "bms_cond_pr": _pr(_bc, (bms_id, condition)) if condition else None,
             "bms_venue_pr": _pr(_bv, (bms_id, venue)) if venue else None,
             "bms_dist_pr": self._rate(self._bms_smile, (bms_id, smile_cat), 1, min_runs=5) if smile_cat else None,
+        }
+
+    def get_phase12_features(self, sire_id: str, bms_id: str,
+                              pace_grp: str = "", style_grp: str = "",
+                              gate_grp: str = "", jockey_id: str = "",
+                              trainer_id: str = "") -> dict:
+        """Phase 12: 父/母父のペース/脚質/枠番/騎手/調教師別複勝率"""
+        def _pr(table, key, min_r=5):
+            s = table.get(key) if table else None
+            if not s or s[2] < min_r:
+                return None
+            return s[1] / s[2]
+
+        _sp = getattr(self, '_sire_pace', {})
+        _bp = getattr(self, '_bms_pace', {})
+        _ss = getattr(self, '_sire_style', {})
+        _bs = getattr(self, '_bms_style', {})
+        _sg = getattr(self, '_sire_gate', {})
+        _bg = getattr(self, '_bms_gate', {})
+        _sj = getattr(self, '_sire_jockey', {})
+        _bj = getattr(self, '_bms_jockey', {})
+        _st = getattr(self, '_sire_trainer', {})
+        _bt = getattr(self, '_bms_trainer', {})
+
+        return {
+            "sire_pace_pr": _pr(_sp, (sire_id, pace_grp)) if pace_grp else None,
+            "sire_style_pr": _pr(_ss, (sire_id, style_grp)) if style_grp else None,
+            "sire_gate_pr": _pr(_sg, (sire_id, gate_grp)) if gate_grp else None,
+            "sire_jockey_pr": _pr(_sj, (sire_id, jockey_id)) if jockey_id else None,
+            "sire_trainer_pr": _pr(_st, (sire_id, trainer_id)) if trainer_id else None,
+            "bms_pace_pr": _pr(_bp, (bms_id, pace_grp)) if pace_grp else None,
+            "bms_style_pr": _pr(_bs, (bms_id, style_grp)) if style_grp else None,
+            "bms_gate_pr": _pr(_bg, (bms_id, gate_grp)) if gate_grp else None,
+            "bms_jockey_pr": _pr(_bj, (bms_id, jockey_id)) if jockey_id else None,
+            "bms_trainer_pr": _pr(_bt, (bms_id, trainer_id)) if trainer_id else None,
         }
 
     def _sim_venue_rate_id(self, eid: str,
@@ -2323,20 +2650,30 @@ def _extract_features(
     # コース構造特徴量 (venue_straight_m 等)
     try:
         from src.ml.features import _get_venue_profile
+        from data.masters.venue_master import is_banei as _is_banei_check
         _SLOPE_SCORE = {"急坂": 1.0, "軽坂": 0.5, "坂なし": 0.0}
         _CORNER_SCORE = {"大回り": 1.0, "スパイラル": 0.5, "小回り": 0.0}
         _DIRECTION_SCORE = {"右": 0, "左": 1, "両": 2}
-        vp = _get_venue_profile(venue)
-        if vp:
-            feat["venue_straight_m"] = vp.avg_straight_m
-            feat["venue_slope"] = _SLOPE_SCORE.get(vp.slope_type, 0.0)
-            feat["venue_first_corner"] = vp.first_corner_score
-            feat["venue_corner_type"] = _CORNER_SCORE.get(vp.corner_type_dominant, 0.5)
-            feat["venue_direction"] = _DIRECTION_SCORE.get(vp.direction, 2)
+        vc_str = str(race.get("venue_code", ""))
+        if _is_banei_check(vc_str):
+            # ばんえい: 帯広200m直線・坂あり（固定値）
+            feat["venue_straight_m"] = 200.0
+            feat["venue_slope"] = 1.0
+            feat["venue_first_corner"] = 0.0
+            feat["venue_corner_type"] = 0.0
+            feat["venue_direction"] = 3  # 直線（ばんえい固有コード）
         else:
-            feat.update({"venue_straight_m": None, "venue_slope": None,
-                         "venue_first_corner": None, "venue_corner_type": None,
-                         "venue_direction": None})
+            vp = _get_venue_profile(venue)
+            if vp:
+                feat["venue_straight_m"] = vp.avg_straight_m
+                feat["venue_slope"] = _SLOPE_SCORE.get(vp.slope_type, 0.0)
+                feat["venue_first_corner"] = vp.first_corner_score
+                feat["venue_corner_type"] = _CORNER_SCORE.get(vp.corner_type_dominant, 0.5)
+                feat["venue_direction"] = _DIRECTION_SCORE.get(vp.direction, 2)
+            else:
+                feat.update({"venue_straight_m": None, "venue_slope": None,
+                             "venue_first_corner": None, "venue_corner_type": None,
+                             "venue_direction": None})
     except Exception:
         feat.update({"venue_straight_m": None, "venue_slope": None,
                      "venue_first_corner": None, "venue_corner_type": None,
@@ -2344,10 +2681,46 @@ def _extract_features(
 
     _condition = race.get("condition", "良")
     _smile_cat_ef = _smile_key_ml(distance) if distance else ""
+
+    # Phase 12: ペース/脚質/枠番グループを算出（騎手・調教師・血統で共通使用）
+    _race_pace_norm = race.get("pace_norm") or race.get("race_pace_norm")
+    if _race_pace_norm is not None:
+        _pace_grp = "H" if _race_pace_norm >= 0.5 else ("S" if _race_pace_norm <= -0.5 else "M")
+    else:
+        _pace_grp = ""
+    # 脚質: この馬の直近脚質を推定（horse_extra_features の前に必要なので馬統計から取得）
+    _hs_for_style = tracker.horses.get(hid)
+    _style_grp = ""
+    if _hs_for_style and _hs_for_style.run_details:
+        for _d in reversed(_hs_for_style.run_details):
+            if _d[0] < date_str:
+                _p4 = _d[3]
+                _fc_s = _d[2]
+                if _p4 is not None and _fc_s and _fc_s > 1:
+                    _rel = _p4 / _fc_s
+                    _style_grp = "front" if _rel <= 0.30 else ("middle" if _rel <= 0.60 else "rear")
+                break
+    # 枠番帯
+    _gate_no = horse.get("gate_no") or 0
+    if _gate_no <= 2:
+        _gate_grp = "g12"
+    elif _gate_no <= 4:
+        _gate_grp = "g34"
+    elif _gate_no <= 6:
+        _gate_grp = "g56"
+    elif _gate_no > 0:
+        _gate_grp = "g78"
+    else:
+        _gate_grp = ""
+
     feat.update(tracker.get_jockey_features(jid, venue, surface, dc, date_str,
-                                             smile_cat=_smile_cat_ef, condition=_condition))
+                                             smile_cat=_smile_cat_ef, condition=_condition,
+                                             pace_grp=_pace_grp, style_grp=_style_grp,
+                                             gate_grp=_gate_grp, horse_id=hid))
     feat.update(tracker.get_trainer_features(tid, venue, date_str, surface, dc,
-                                              smile_cat=_smile_cat_ef, condition=_condition))
+                                              smile_cat=_smile_cat_ef, condition=_condition,
+                                              pace_grp=_pace_grp, style_grp=_style_grp,
+                                              gate_grp=_gate_grp, horse_id=hid))
     # Layer 2: 日付フィルタ付き集計統計（_horse_history があれば厳密なリーク排除）
     horse_feats = tracker.get_horse_features_as_of(hid, date_str)
     feat.update(horse_feats)
@@ -2368,6 +2741,11 @@ def _extract_features(
         feat.update(sire_tracker.get_phase10b_features(sire_id, bms_id))
         # Phase 11: 条件別複勝率
         feat.update(sire_tracker.get_phase11_features(sire_id, bms_id, smile_cat, _condition, venue))
+        # Phase 12: ペース/脚質/枠番/騎手/調教師別複勝率
+        feat.update(sire_tracker.get_phase12_features(
+            sire_id, bms_id,
+            pace_grp=_pace_grp, style_grp=_style_grp, gate_grp=_gate_grp,
+            jockey_id=jid, trainer_id=tid))
     else:
         feat.update({"sire_win_rate": None, "sire_place_rate": None,
                      "bms_win_rate": None, "bms_place_rate": None,
@@ -2386,7 +2764,12 @@ def _extract_features(
                      # Phase 11
                      "sire_smile_pr": None, "sire_cond_pr": None, "sire_venue_pr": None,
                      "bms_smile_pr": None, "bms_cond_pr": None, "bms_venue_pr": None,
-                     "bms_dist_pr": None})
+                     "bms_dist_pr": None,
+                     # Phase 12
+                     "sire_pace_pr": None, "sire_style_pr": None, "sire_gate_pr": None,
+                     "sire_jockey_pr": None, "sire_trainer_pr": None,
+                     "bms_pace_pr": None, "bms_style_pr": None, "bms_gate_pr": None,
+                     "bms_jockey_pr": None, "bms_trainer_pr": None})
 
     # Tier1追加特徴量 (Step 1) + ② 前走オッズ・クラス変化
     extra = tracker.get_horse_extra_features(
@@ -2448,13 +2831,14 @@ def _extract_features(
     if _hs:
         feat.update(_hs.get_condition_pr_features(
             date_str, venue, surface, distance,
-            _smile_cat_ef, horse.get("gate_no"), jid))
+            _smile_cat_ef, horse.get("gate_no"), jid,
+            condition=_condition))
         feat.update(_hs.get_speed_index_windows(date_str))
     else:
         feat.update({"horse_pr_2y": None, "horse_venue_pr": None,
                      "horse_dist_pr": None, "horse_smile_pr": None,
                      "horse_style_pr": None, "horse_gate_pr": None,
-                     "horse_jockey_pr": None,
+                     "horse_jockey_pr": None, "horse_cond_pr": None,
                      "speed_index_avg_1y": None, "speed_index_best_1y": None,
                      "speed_index_avg_6m": None, "speed_index_trend": None})
 
@@ -2808,12 +3192,17 @@ def train_model(
     logger.info("Sires: %d / BMS: %d",
                 len(sire_tracker._sire), len(sire_tracker._bms))
 
+    # ばんえい（venue_65）は専用特徴量リストを使用
+    _is_banei_model = (venue_filter == "65")
+    _feat_cols = FEATURE_COLUMNS_BANEI if _is_banei_model else FEATURE_COLUMNS
+    _cat_feats = [c for c in CATEGORICAL_FEATURES if c in _feat_cols]
+
     def _to_np(rows):
         import numpy as np
         mat = []
         for f in rows:
             mat.append([float(f[c]) if f[c] is not None else float("nan")
-                        for c in FEATURE_COLUMNS])
+                        for c in _feat_cols])
         return np.array(mat, dtype=np.float32)
 
     X_train, y_train = _to_np(train_X_rows), np.array(train_y, dtype=np.int32)
@@ -2821,8 +3210,8 @@ def train_model(
 
     dtrain = lgb.Dataset(
         X_train, label=y_train,
-        feature_name=FEATURE_COLUMNS,
-        categorical_feature=CATEGORICAL_FEATURES,
+        feature_name=_feat_cols,
+        categorical_feature=_cat_feats,
         free_raw_data=False,
     )
 
@@ -2839,23 +3228,56 @@ def train_model(
         except Exception:
             _optuna_params = {}
 
-    params = {
-        "objective": "binary",
-        "metric": ["binary_logloss", "auc"],
-        "boosting_type": "gbdt",
-        "num_leaves": _optuna_params.get("num_leaves", 63),
-        "learning_rate": _optuna_params.get("learning_rate", 0.02),
-        "feature_fraction": _optuna_params.get("feature_fraction", 0.8),
-        "bagging_fraction": _optuna_params.get("bagging_fraction", 0.8),
-        "bagging_freq": _optuna_params.get("bagging_freq", 5),
-        "min_child_samples": _optuna_params.get("min_child_samples", 50),
-        "lambda_l1": _optuna_params.get("lambda_l1", 0.1),
-        "lambda_l2": _optuna_params.get("lambda_l2", 1.0),
-        "max_depth": _optuna_params.get("max_depth", 7),
-        "verbose": -1,
-        "seed": 42,
-        "is_unbalance": True,
-    }
+    if _is_banei_model:
+        # ばんえい専用パラメータ (data/models/best_banei_params.json があれば使用)
+        _banei_params_path = os.path.join(MODEL_DIR, "best_banei_params.json")
+        _banei_params = {}
+        if os.path.exists(_banei_params_path):
+            try:
+                import json as _bjson
+                with open(_banei_params_path, encoding="utf-8") as _bf:
+                    _banei_params = _bjson.load(_bf).get("best_params", {})
+                if _banei_params:
+                    logger.info("ばんえい専用Optunaパラメータを適用: %s", _banei_params)
+            except Exception:
+                _banei_params = {}
+        params = {
+            "objective": "binary",
+            "metric": ["binary_logloss", "auc"],
+            "boosting_type": "gbdt",
+            "num_leaves": _banei_params.get("num_leaves", 31),
+            "learning_rate": _banei_params.get("learning_rate", 0.02),
+            "feature_fraction": _banei_params.get("feature_fraction", 0.8),
+            "bagging_fraction": _banei_params.get("bagging_fraction", 0.7),
+            "bagging_freq": _banei_params.get("bagging_freq", 5),
+            "min_child_samples": _banei_params.get("min_child_samples", 50),
+            "lambda_l1": _banei_params.get("lambda_l1", 1.0),
+            "lambda_l2": _banei_params.get("lambda_l2", 2.0),
+            "max_depth": _banei_params.get("max_depth", 5),
+            "verbose": -1,
+            "seed": 42,
+            "is_unbalance": True,
+        }
+        if not _banei_params:
+            logger.info("ばんえいデフォルトパラメータを適用")
+    else:
+        params = {
+            "objective": "binary",
+            "metric": ["binary_logloss", "auc"],
+            "boosting_type": "gbdt",
+            "num_leaves": _optuna_params.get("num_leaves", 63),
+            "learning_rate": _optuna_params.get("learning_rate", 0.02),
+            "feature_fraction": _optuna_params.get("feature_fraction", 0.8),
+            "bagging_fraction": _optuna_params.get("bagging_fraction", 0.8),
+            "bagging_freq": _optuna_params.get("bagging_freq", 5),
+            "min_child_samples": _optuna_params.get("min_child_samples", 50),
+            "lambda_l1": _optuna_params.get("lambda_l1", 0.1),
+            "lambda_l2": _optuna_params.get("lambda_l2", 1.0),
+            "max_depth": _optuna_params.get("max_depth", 7),
+            "verbose": -1,
+            "seed": 42,
+            "is_unbalance": True,
+        }
 
     if len(valid_y) == 0:
         # 検証データなし → 固定ラウンドで学習（early stopping なし）
@@ -2869,8 +3291,8 @@ def train_model(
     else:
         dvalid = lgb.Dataset(
             X_valid, label=y_valid,
-            feature_name=FEATURE_COLUMNS,
-            categorical_feature=CATEGORICAL_FEATURES,
+            feature_name=_feat_cols,
+            categorical_feature=_cat_feats,
             reference=dtrain,
             free_raw_data=False,
         )
@@ -2889,7 +3311,7 @@ def train_model(
     # ---- 評価 ----
     # 特徴量重要度（検証データなしでも計算可能）
     imp = model.feature_importance(importance_type="gain")
-    imp_pairs = sorted(zip(FEATURE_COLUMNS, imp), key=lambda x: -x[1])
+    imp_pairs = sorted(zip(_feat_cols, imp), key=lambda x: -x[1])
 
     if len(valid_y) == 0:
         # 検証データなし → 評価指標はN/A
@@ -3106,7 +3528,7 @@ def train_split_models(valid_days: int = 30) -> dict:
     # 学習するモデル定義: (model_key, kwargs)
     # 競馬場コード: JRA=01~10, NAR上位
     jra_venues = ["01","02","03","04","05","06","07","08","09","10"]
-    nar_venues = ["30","35","36","42","43","44","45","46","47","48","50","51","54","55"]
+    nar_venues = ["30","35","36","42","43","44","45","46","47","48","50","51","54","55","65"]
     smile_cats = ["ss","s","m","i","l","e"]
 
     tasks = [
@@ -3190,11 +3612,13 @@ class LGBMPredictor:
         m = self._models
         surf = {0: "turf", 1: "dirt"}.get(surface_val, "")
 
-        # Level 4: 競馬場別
+        # Level 4: 競馬場別（品質フィルター付き）
         if venue_code:
-            mdl = m.get(f"venue_{venue_code}")
-            if mdl:
-                return mdl, 4
+            from config.settings import PIPELINE_V2_ENABLED, VENUE_MODEL_SKIP
+            if not (PIPELINE_V2_ENABLED and venue_code in VENUE_MODEL_SKIP):
+                mdl = m.get(f"venue_{venue_code}")
+                if mdl:
+                    return mdl, 4
 
         # Level 3: JRA × 馬場 × SMILE
         if is_jra and surf and smile_cat:
@@ -3272,6 +3696,16 @@ class LGBMPredictor:
             logger.warning("LightGBM load failed: %s", e, exc_info=True)
             return False
 
+    @property
+    def tracker(self) -> Optional[RollingStatsTracker]:
+        """ローリング統計 tracker を返す（表示偏差値算出用）"""
+        return self._tracker
+
+    @property
+    def sire_tracker(self) -> Optional["RollingSireTracker"]:
+        """血統ローリング統計を返す（表示偏差値算出用）"""
+        return self._sire_tracker
+
     def _build_X(self, race_dict, horse_dicts, model):
         import numpy as np
         features, ids = [], []
@@ -3281,7 +3715,9 @@ class LGBMPredictor:
             ids.append(h.get("horse_id", ""))
         if not features:
             return None, []
-        feat_cols = FEATURE_COLUMNS
+        from data.masters.venue_master import is_banei as _is_banei_bx
+        _vc = str(race_dict.get("venue_code", "") or "").zfill(2)
+        feat_cols = FEATURE_COLUMNS_BANEI if _is_banei_bx(_vc) else FEATURE_COLUMNS
         if hasattr(model, "num_feature"):
             n = model.num_feature()
             if n < len(feat_cols):
@@ -3336,7 +3772,10 @@ class LGBMPredictor:
         # ① 相対特徴量を一括設定 (2パス)
         _add_race_relative_features(features)
 
-        feat_cols = FEATURE_COLUMNS
+        # ばんえい（venue_65）は専用特徴量リストを使用
+        from data.masters.venue_master import is_banei as _is_banei_pred
+        _is_banei_vc = _is_banei_pred(venue_code)
+        feat_cols = FEATURE_COLUMNS_BANEI if _is_banei_vc else FEATURE_COLUMNS
         if hasattr(model, "num_feature"):
             n = model.num_feature()
             if n < len(feat_cols):
@@ -3390,6 +3829,8 @@ class LGBMPredictor:
             "is_jra": race_info.is_jra,
             "grade": race_info.grade,
             "venue_code": race_info.course.venue_code,
+            # ばんえい水分量（moisture_dirtに格納済み）
+            "water_content": race_info.moisture_dirt,
         }
 
         # Step2: evaluations から horse_id → (estimated_pos4c, estimated_l3f) マップ
@@ -3472,6 +3913,8 @@ class LGBMPredictor:
             "is_jra": race_info.is_jra,
             "grade": race_info.grade,
             "venue_code": race_info.course.venue_code,
+            # ばんえい水分量（moisture_dirtに格納済み）
+            "water_content": race_info.moisture_dirt,
         }
 
         ev_map: Dict[str, tuple] = {}
@@ -3520,8 +3963,9 @@ class LGBMPredictor:
         if model is None:
             return {}
 
-        # 特徴量行列構築
-        feat_cols = FEATURE_COLUMNS
+        # 特徴量行列構築（ばんえいは専用リスト）
+        from data.masters.venue_master import is_banei as _is_banei_shap
+        feat_cols = FEATURE_COLUMNS_BANEI if _is_banei_shap(venue_code) else FEATURE_COLUMNS
         if hasattr(model, "num_feature"):
             n = model.num_feature()
             if n < len(feat_cols):

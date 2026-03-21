@@ -37,8 +37,6 @@ logger = get_logger(__name__)
 # ============================================================
 
 JRA_CODES_SET = {"01", "02", "03", "04", "05", "06", "07", "08", "09", "10"}
-BANEI_CODE = "65"
-
 _RE_JPN_GRADE = re.compile(r"Jpn\s*([123])", re.IGNORECASE)
 _GEN_KW = re.compile(r"2歳|新馬|デビュー|初出走|(?<![3-9])3歳(?!以上|上)")
 
@@ -282,7 +280,7 @@ def parse_result_page(
         horse_a = row.select_one('a[href*="/horse/"]')
         if not horse_a:
             continue
-        hm = re.search(r"/horse/(\d+)", horse_a.get("href", ""))
+        hm = re.search(r"/horse/([A-Za-z]?\d+)", horse_a.get("href", ""))
         if not hm:
             continue
         horse_id = hm.group(1)
@@ -513,11 +511,6 @@ def build_horse_db_from_cache(
         if not m:
             continue
         race_id = m.group(1)
-
-        # 帯広競馬(ばんえい)はスキップ
-        if race_id[4:6] == BANEI_CODE:
-            skipped += 1
-            continue
 
         # 増分モード: 既知レースはスキップ
         if incremental and race_id in seen_race_ids:

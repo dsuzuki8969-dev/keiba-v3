@@ -739,8 +739,388 @@ def generate_pace_comment(
 
 
 # ============================================================
+# 4a-2. ばんえい競馬専用コメント生成
+# ============================================================
+
+
+def generate_banei_comment(race, evaluations) -> str:
+    """
+    ばんえい競馬専用の展開コメントを生成する。
+    通常競馬のペース・脚質・3F概念を排除し、
+    斤量・馬場水分量・馬体重に基づくコメントを返す。
+    """
+    # 水分量
+    moisture = getattr(race, "moisture_dirt", None)
+    if moisture is not None:
+        if moisture <= 1.5:
+            water_desc = f"馬場水分 {moisture:.1f}%（乾燥）。砂が重く、軽量馬・持久力型に有利。タイムはかかる傾向"
+        elif moisture <= 2.5:
+            water_desc = f"馬場水分 {moisture:.1f}%（標準）。障害力とスタミナのバランスが問われる馬場"
+        elif moisture <= 3.5:
+            water_desc = f"馬場水分 {moisture:.1f}%（重め）。ソリの滑りが良くパワー型に有利。タイムは速め"
+        else:
+            water_desc = f"馬場水分 {moisture:.1f}%（泥深め）。大型馬でもスタミナ切れの危険あり。高水分適性が鍵"
+    else:
+        water_desc = "馬場水分データなし"
+
+    # 斤量レンジ
+    weights = [getattr(ev.horse, "weight_kg", None) for ev in evaluations]
+    weights = [w for w in weights if w is not None and w > 0]
+    if weights:
+        w_min, w_max = min(weights), max(weights)
+        w_med = sorted(weights)[len(weights) // 2]
+        weight_desc = f"斤量 {w_min:.0f}〜{w_max:.0f}kg（中央値 {w_med:.0f}kg）"
+        w_diff = w_max - w_min
+        if w_diff >= 30:
+            weight_desc += f"。{w_diff:.0f}kgの斤量差は大きく、軽量馬が有利な展開になりやすい"
+        elif w_diff <= 5:
+            weight_desc += "。斤量差がほぼなく、実力勝負"
+    else:
+        weight_desc = "斤量データなし"
+
+    # 馬体重レンジ
+    h_weights = [getattr(ev.horse, "horse_weight", None) for ev in evaluations]
+    h_weights = [w for w in h_weights if w is not None and w > 0]
+    if h_weights:
+        hw_min, hw_max = min(h_weights), max(h_weights)
+        hw_desc = f"馬体重 {hw_min:.0f}〜{hw_max:.0f}kg"
+    else:
+        hw_desc = "馬体重データなし"
+
+    # 斤量/馬体重比（負担割合）
+    ratio_info = []
+    for ev in evaluations:
+        w = getattr(ev.horse, "weight_kg", None)
+        hw = getattr(ev.horse, "horse_weight", None)
+        if w and hw and hw > 0:
+            ratio = w / hw
+            ratio_info.append((ev.horse.horse_name, ev.horse.horse_no, ratio, w, hw))
+    burden_desc = ""
+    if ratio_info:
+        ratio_info.sort(key=lambda x: x[2])
+        lightest = ratio_info[0]
+        heaviest = ratio_info[-1]
+        burden_desc = (
+            f"負担率は**{lightest[0]}**({lightest[3]:.0f}kg/{lightest[4]:.0f}kg={lightest[2]:.1%})が最も軽く、"
+            f"**{heaviest[0]}**({heaviest[3]:.0f}kg/{heaviest[4]:.0f}kg={heaviest[2]:.1%})が最も重い"
+        )
+
+    # 上位馬の近走タイム
+    sorted_by_comp = sorted(evaluations, key=lambda e: e.composite, reverse=True)
+    top3 = sorted_by_comp[:3]
+    top3_info = []
+    for ev in top3:
+        runs = ev.horse.past_runs[:3] if ev.horse.past_runs else []
+        times = [r.finish_time_sec for r in runs if r.finish_time_sec and r.finish_time_sec > 0]
+        if times:
+            avg_time = sum(times) / len(times)
+            m = int(avg_time) // 60
+            s = avg_time - m * 60
+            top3_info.append(f"**{ev.horse.horse_name}**（近走平均{m}:{s:04.1f}）")
+        else:
+            top3_info.append(f"**{ev.horse.horse_name}**")
+    top3_desc = "上位評価: " + "、".join(top3_info) if top3_info else ""
+
+    # コメント組立
+    parts = [water_desc, weight_desc, hw_desc]
+    if burden_desc:
+        parts.append(burden_desc)
+    if top3_desc:
+        parts.append(top3_desc)
+    return "。\n".join(parts) + "。"
+
+
+def generate_banei_comment_dict(race_data: dict) -> str:
+    """
+    ばんえい専用コメント生成（dict版）。
+    オッズ取得後の再生成用。race_data は pred.json のレース dict。
+    """
+    # 水分量
+    moisture = race_data.get("water_content")
+    if moisture is not None:
+        if moisture <= 1.5:
+            water_desc = f"馬場水分 {moisture:.1f}%（乾燥）。砂が重く、軽量馬・持久力型に有利。タイムはかかる傾向"
+        elif moisture <= 2.5:
+            water_desc = f"馬場水分 {moisture:.1f}%（標準）。障害力とスタミナのバランスが問われる馬場"
+        elif moisture <= 3.5:
+            water_desc = f"馬場水分 {moisture:.1f}%（重め）。ソリの滑りが良くパワー型に有利。タイムは速め"
+        else:
+            water_desc = f"馬場水分 {moisture:.1f}%（泥深め）。大型馬でもスタミナ切れの危険あり。高水分適性が鍵"
+    else:
+        water_desc = "馬場水分データなし"
+
+    horses = race_data.get("horses", [])
+
+    # 斤量レンジ
+    weights = [h.get("weight_kg") for h in horses]
+    weights = [w for w in weights if w is not None and w > 0]
+    if weights:
+        w_min, w_max = min(weights), max(weights)
+        w_med = sorted(weights)[len(weights) // 2]
+        weight_desc = f"斤量 {w_min:.0f}〜{w_max:.0f}kg（中央値 {w_med:.0f}kg）"
+        w_diff = w_max - w_min
+        if w_diff >= 30:
+            weight_desc += f"。{w_diff:.0f}kgの斤量差は大きく、軽量馬が有利な展開になりやすい"
+        elif w_diff <= 5:
+            weight_desc += "。斤量差がほぼなく、実力勝負"
+    else:
+        weight_desc = "斤量データなし"
+
+    # 馬体重レンジ
+    h_weights = [h.get("horse_weight") for h in horses]
+    h_weights = [w for w in h_weights if w is not None and w > 0]
+    if h_weights:
+        hw_min, hw_max = min(h_weights), max(h_weights)
+        hw_desc = f"馬体重 {hw_min:.0f}〜{hw_max:.0f}kg"
+    else:
+        hw_desc = "馬体重データなし"
+
+    # 斤量/馬体重比
+    ratio_info = []
+    for h in horses:
+        w = h.get("weight_kg")
+        hw = h.get("horse_weight")
+        if w and hw and hw > 0:
+            ratio = w / hw
+            ratio_info.append((h.get("horse_name", "?"), h.get("horse_no", 0), ratio, w, hw))
+    burden_desc = ""
+    if ratio_info:
+        ratio_info.sort(key=lambda x: x[2])
+        lightest = ratio_info[0]
+        heaviest = ratio_info[-1]
+        burden_desc = (
+            f"負担率は**{lightest[0]}**({lightest[3]:.0f}kg/{lightest[4]:.0f}kg={lightest[2]:.1%})が最も軽く、"
+            f"**{heaviest[0]}**({heaviest[3]:.0f}kg/{heaviest[4]:.0f}kg={heaviest[2]:.1%})が最も重い"
+        )
+
+    # 上位馬の近走タイム
+    sorted_by_comp = sorted(horses, key=lambda h: h.get("composite", 0), reverse=True)
+    top3 = sorted_by_comp[:3]
+    top3_info = []
+    for h in top3:
+        past = h.get("past_3_runs") or []
+        times = [r.get("finish_time_sec") for r in past if r.get("finish_time_sec") and r["finish_time_sec"] > 0]
+        if times:
+            avg_time = sum(times) / len(times)
+            m = int(avg_time) // 60
+            s = avg_time - m * 60
+            top3_info.append(f"**{h.get('horse_name', '?')}**（近走平均{m}:{s:04.1f}）")
+        else:
+            top3_info.append(f"**{h.get('horse_name', '?')}**")
+    top3_desc = "上位評価: " + "、".join(top3_info) if top3_info else ""
+
+    parts = [water_desc, weight_desc, hw_desc]
+    if burden_desc:
+        parts.append(burden_desc)
+    if top3_desc:
+        parts.append(top3_desc)
+    return "。\n".join(parts) + "。"
+
+
+# ============================================================
 # 4b. 馬個別見解の自動生成
 # ============================================================
+
+
+def _generate_banei_horse_comment(
+    horse: dict,
+    race_context: dict,
+    detail_level: str = "normal",
+) -> str:
+    """ばんえい競馬用の馬個別見解テキストを生成する。"""
+    all_points = []
+    composite = horse.get("composite", 0) or 0
+    ability = horse.get("ability_total", 0) or 0
+    trend = horse.get("ability_trend", "")
+    jockey = horse.get("jockey", "")
+    jockey_grade = horse.get("jockey_grade", "")
+    divergence = horse.get("odds_divergence")
+    div_signal = horse.get("divergence_signal", "")
+    odds = horse.get("odds")
+    popularity = horse.get("popularity")
+    kiken_type = horse.get("kiken_type", "")
+    ana_type = horse.get("ana_type", "")
+    mark = horse.get("mark", "")
+    change = horse.get("jockey_change")
+    weight_kg = horse.get("weight_kg")  # 斤量（ソリ重量）
+    horse_weight = horse.get("horse_weight")  # 馬体重
+
+    all_composites = race_context.get("all_composites", [])
+    field_count = race_context.get("field_count", 0)
+    water_content = race_context.get("water_content")
+
+    # ---- ① 能力の位置づけ ----
+    sorted_comps = sorted(all_composites, reverse=True) if all_composites else []
+    rank = 0
+    for i, c in enumerate(sorted_comps):
+        if abs(c - composite) < 0.01:
+            rank = i + 1
+            break
+    if rank == 0:
+        rank = len(sorted_comps)
+
+    if rank == 1:
+        gap_to_2nd = sorted_comps[0] - sorted_comps[1] if len(sorted_comps) >= 2 else 0
+        if gap_to_2nd >= 5:
+            ability_pos = f"総合偏差値{composite:.1f}はメンバー断トツ"
+        elif gap_to_2nd >= 2:
+            ability_pos = f"総合偏差値{composite:.1f}はメンバートップ"
+        else:
+            ability_pos = f"総合偏差値{composite:.1f}でメンバー上位"
+    elif rank <= 3:
+        ability_pos = f"総合偏差値{composite:.1f}でメンバー{rank}位"
+    elif rank <= field_count * 0.6:
+        ability_pos = f"総合偏差値{composite:.1f}で{field_count}頭中{rank}位"
+    else:
+        ability_pos = f"総合偏差値{composite:.1f}で{field_count}頭中{rank}位と下位"
+
+    # ---- ② 近走トレンド ----
+    trend_text = ""
+    trend_positive = True
+    if "急上昇" in trend:
+        trend_text = "近走パフォーマンス急上昇中"
+    elif "上昇" in trend:
+        trend_text = "近走は上昇傾向"
+    elif "急下降" in trend:
+        trend_text = "近走は下降傾向で不安あり"
+        trend_positive = False
+    elif "下降" in trend:
+        trend_text = "近走はやや下降傾向"
+        trend_positive = False
+
+    # ---- ③ 斤量・馬体重・負担率 ----
+    burden_text = ""
+    if weight_kg and horse_weight and horse_weight > 0:
+        ratio = weight_kg / horse_weight
+        # 全馬の斤量を集計して相対位置を判断
+        all_weights = [h.get("weight_kg") for h in race_context.get("all_horses", [])]
+        all_weights = [w for w in all_weights if w is not None and w > 0]
+        if all_weights:
+            w_min, w_max = min(all_weights), max(all_weights)
+            if weight_kg <= w_min:
+                burden_text = f"斤量{weight_kg:.0f}kgはメンバー最軽量で有利"
+            elif weight_kg >= w_max:
+                burden_text = f"斤量{weight_kg:.0f}kgはメンバー最重量でハンデ大"
+            elif weight_kg <= w_min + (w_max - w_min) * 0.3:
+                burden_text = f"斤量{weight_kg:.0f}kgは軽め"
+            elif weight_kg >= w_min + (w_max - w_min) * 0.7:
+                burden_text = f"斤量{weight_kg:.0f}kgは重め"
+        if horse_weight:
+            if burden_text:
+                burden_text += f"（馬体重{horse_weight:.0f}kg、負担率{ratio:.1%}）"
+            else:
+                burden_text = f"斤量{weight_kg:.0f}kg/馬体重{horse_weight:.0f}kg（負担率{ratio:.1%}）"
+    elif weight_kg:
+        burden_text = f"斤量{weight_kg:.0f}kg"
+
+    # ---- ④ 馬場水分との相性 ----
+    water_text = ""
+    if water_content is not None and horse_weight:
+        if water_content <= 1.5:
+            # 乾燥 → 軽量馬・持久力型有利
+            if weight_kg and weight_kg <= (min(all_weights) + 5 if all_weights else 600):
+                water_text = "乾燥馬場で軽量は有利材料"
+        elif water_content >= 3.5:
+            # 泥深め → 大型馬はスタミナ切れリスク
+            if horse_weight >= 1050:
+                water_text = "高水分馬場で大型馬はスタミナ切れに注意"
+
+    # ---- ⑤ オッズ乖離 ----
+    odds_text = ""
+    if div_signal and div_signal not in ("×", "なし", "-", "—"):
+        if divergence and divergence >= 3.0:
+            odds_text = f"オッズ乖離{divergence:.1f}倍と大きな妙味"
+        elif divergence and divergence >= 1.5:
+            odds_text = f"オッズ乖離{divergence:.1f}倍で妙味あり"
+    elif divergence and divergence < 0.5 and popularity and popularity <= 3:
+        odds_text = "人気を背負いすぎで妙味なし"
+    if mark == "☆" and odds and odds >= 10.0 and not odds_text:
+        odds_text = f"単勝{odds:.1f}倍と配当妙味あり"
+
+    # ---- ⑥ 騎手評価 ----
+    jockey_text = ""
+    if jockey_grade in ("SS",):
+        jockey_text = f"騎手{jockey_grade}評価の{jockey}を配し追い技術に期待"
+    elif jockey_grade == "S":
+        jockey_text = f"騎手S評価の{jockey}が騎乗"
+    elif jockey_grade == "D" and detail_level in ("full", "normal"):
+        jockey_text = "騎手Dグレードが不安材料"
+
+    # ---- ⑦ 危険/穴フラグ ----
+    has_mark = mark in ("◉", "◎", "○", "▲", "△", "☆")
+    flag_text = ""
+    if not has_mark:
+        if kiken_type and "危" in kiken_type:
+            kiken_score = horse.get("kiken_score", 0)
+            if kiken_score >= 4:
+                flag_text = "人気ほどの信頼はなく消し候補"
+            else:
+                flag_text = "過大評価の恐れあり"
+        elif ana_type and "穴" in ana_type:
+            flag_text = "穴馬候補として一考"
+
+    # ---- ⑧ 乗り替わり ----
+    change_text = ""
+    if change and change <= -2:
+        change_text = "乗り替わりで大幅マイナス"
+    elif change and change == -1:
+        change_text = "乗り替わりでやや不安"
+
+    # ============================================================
+    # 文章組み立て
+    # ============================================================
+    if detail_level == "full":
+        s1 = ability_pos
+        if trend_text:
+            if rank <= 3 and not trend_positive:
+                s1 += f"。ただし{trend_text}"
+            else:
+                s1 += f"で、{trend_text}"
+        all_points.append(s1)
+
+        if burden_text:
+            all_points.append(burden_text)
+        if water_text:
+            all_points.append(water_text)
+        if jockey_text:
+            all_points.append(jockey_text)
+        if odds_text:
+            all_points.append(odds_text)
+        if flag_text:
+            all_points.append(flag_text)
+        if change_text:
+            all_points.append(change_text)
+
+    elif detail_level == "normal":
+        s1 = ability_pos
+        if trend_text:
+            if rank <= 3 and not trend_positive:
+                s1 += f"。ただし{trend_text}"
+            else:
+                s1 += f"で、{trend_text}"
+        all_points.append(s1)
+
+        # 2番目: フラグ > 斤量 > 乖離 > 騎手
+        if flag_text:
+            all_points.append(flag_text)
+        elif burden_text:
+            all_points.append(burden_text)
+        elif odds_text:
+            all_points.append(odds_text)
+        elif jockey_text:
+            all_points.append(jockey_text)
+
+    else:  # short
+        if flag_text:
+            all_points.append(flag_text)
+        elif burden_text:
+            all_points.append(f"{ability_pos}。{burden_text}")
+        elif trend_text and "急" in trend_text:
+            all_points.append(f"{ability_pos}。{trend_text}")
+        else:
+            all_points.append(ability_pos)
+
+    return "。".join(all_points) + "。" if all_points else ""
 
 
 def generate_horse_comment(
@@ -763,6 +1143,11 @@ def generate_horse_comment(
     Returns:
         見解テキスト
     """
+    # ばんえい判定
+    is_banei_race = race_context.get("is_banei", False)
+    if is_banei_race:
+        return _generate_banei_horse_comment(horse, race_context, detail_level)
+
     parts = []
     name = horse.get("horse_name", "?")
     no = horse.get("horse_no", 0)
@@ -1012,22 +1397,204 @@ def generate_horse_comment(
     return "。".join(all_points) + "。" if all_points else ""
 
 
+def _generate_banei_horse_diagnosis(
+    horse: dict,
+    race_context: dict,
+) -> str:
+    """ばんえい競馬用の短評テキストを生成する。"""
+    composite = horse.get("composite", 0) or 0
+    ability = horse.get("ability_total", 0) or 0
+    trend = horse.get("ability_trend", "")
+    jockey = horse.get("jockey", "")
+    jockey_grade = horse.get("jockey_grade", "")
+    divergence = horse.get("odds_divergence")
+    popularity = horse.get("popularity")
+    no = horse.get("horse_no", 0)
+    ana_type = horse.get("ana_type", "")
+    kiken_type = horse.get("kiken_type", "")
+    mark = horse.get("mark", "")
+    change = horse.get("jockey_change")
+    odds = horse.get("odds")
+    weight_kg = horse.get("weight_kg")  # 斤量
+    horse_weight = horse.get("horse_weight")  # 馬体重
+
+    all_composites = race_context.get("all_composites", [])
+    field_count = race_context.get("field_count", 0)
+    water_content = race_context.get("water_content")
+
+    # 順位計算
+    sorted_comps = sorted(all_composites, reverse=True) if all_composites else []
+    rank = 0
+    for i, c in enumerate(sorted_comps):
+        if abs(c - composite) < 0.01:
+            rank = i + 1
+            break
+    if rank == 0:
+        rank = len(sorted_comps)
+
+    # 全馬の斤量
+    all_weights = [h.get("weight_kg") for h in race_context.get("all_horses", [])]
+    all_weights = [w for w in all_weights if w is not None and w > 0]
+    w_min = min(all_weights) if all_weights else 0
+    w_max = max(all_weights) if all_weights else 0
+
+    # 負担率
+    ratio = weight_kg / horse_weight if weight_kg and horse_weight and horse_weight > 0 else None
+
+    # ── 1位: 信頼感 ──
+    if rank == 1:
+        gap = sorted_comps[0] - sorted_comps[1] if len(sorted_comps) >= 2 else 0
+        parts = []
+        if gap >= 5:
+            parts.append("指数面では他馬を大きく引き離しており、ここでは力が違う")
+        elif gap >= 2:
+            parts.append("総合力でメンバーを一歩リードしており、能力的には最上位の存在")
+        else:
+            parts.append("僅差の混戦模様だが、その中でも総合力は一枚上")
+
+        # 斤量面
+        if weight_kg and all_weights:
+            if weight_kg <= w_min:
+                parts.append("斤量も最軽量で障害への負担が軽く、安定した走りが期待できる")
+            elif weight_kg >= w_max and w_max - w_min >= 10:
+                parts.append("ただし斤量は最重量で、第2障害での消耗が懸念される")
+            else:
+                parts.append("斤量面にも大きな不安はなく、実力通りの走りが見込める")
+
+        if "急上昇" in trend:
+            parts.append("近走の成績は右肩上がりで、今がまさに充実期")
+        if jockey_grade in ("SS", "S"):
+            parts.append(f"鞍上{jockey}の追い技術も心強く、軸として信頼できる一頭")
+        elif not parts[-1].endswith("一頭"):
+            parts.append("ここは素直に信頼したい")
+
+        result = "。".join(parts) + "。"
+
+    # ── 2-3位: 上位争い ──
+    elif rank <= 3:
+        parts = []
+        if ability >= 55:
+            parts.append("地力の高さは折り紙付きで、勝ち負けに加わる力は十分にある")
+        elif ability >= 50:
+            parts.append("能力的には上位グループで、十分勝ち負けの圏内")
+        else:
+            parts.append("総合力は上位に位置しており、馬券の中心に据えられる存在")
+
+        # 斤量面
+        if weight_kg and all_weights:
+            if weight_kg <= w_min + (w_max - w_min) * 0.3:
+                parts.append("斤量が軽く障害でのロスが少ない分、逆転の可能性を秘めている")
+            elif weight_kg >= w_max - (w_max - w_min) * 0.2:
+                parts.append("斤量が重めで第2障害に苦戦すると厳しくなる")
+            else:
+                parts.append("斤量面は標準的で、地力勝負に持ち込みたいところ")
+
+        if horse_weight and horse_weight >= 1050 and water_content and water_content >= 3.5:
+            parts.append("大型馬で高水分馬場はスタミナ面に不安が残る")
+        elif "急上昇" in trend:
+            parts.append("近走の勢いは本物で、ここでも上位争いは必至")
+        elif "下降" in trend:
+            parts.append("ただ近走はやや精彩を欠いており、全幅の信頼は置きにくい")
+        elif divergence and divergence >= 2.0:
+            parts.append("人気以上に走る可能性を秘めており、配当妙味も見込める")
+        elif jockey_grade in ("SS", "S"):
+            parts.append(f"鞍上{jockey}の追い技術次第で逆転の目は十分")
+
+        result = "。".join(parts) + "。"
+
+    # ── 4位〜中位: 条件付き浮上 ──
+    elif rank <= max(field_count * 0.6, 4):
+        parts = []
+        if "上昇" in trend or "急上昇" in trend:
+            parts.append("近走は内容が充実しており、ここにきて力をつけてきた印象")
+        else:
+            parts.append("力量的には上位とやや差があるが、条件ひとつで浮上の余地はある")
+
+        # 斤量面の利点
+        if weight_kg and all_weights and weight_kg <= w_min + 5:
+            parts.append("斤量の軽さは大きな武器で、障害をスムーズにこなせれば前走以上が望める")
+        elif horse_weight and horse_weight >= 1050 and water_content and water_content <= 1.5:
+            parts.append("乾燥馬場は大型馬にとってタフな条件で、スタミナ勝負になると有利")
+
+        if divergence and divergence >= 3.0:
+            parts.append("人気薄なら馬券妙味は大きく、押さえておきたい一頭")
+        elif ana_type and "穴" in ana_type:
+            parts.append("穴を開ける資格は持っており、ヒモに加えてみたい")
+        elif jockey_grade in ("SS", "S"):
+            parts.append(f"鞍上{jockey}の追い技術次第で上位食い込みの可能性も")
+        else:
+            parts.append("障害力と馬場適性がハマれば、相手候補には入れたい")
+
+        result = "。".join(parts) + "。"
+
+    # ── 下位 ──
+    else:
+        parts = []
+        if kiken_type and "危" in kiken_type and popularity and popularity <= 3:
+            parts.append(f"{popularity}番人気に支持されているが、データ的には過大評価の疑いが濃い")
+            if "下降" in trend:
+                parts.append("近走の成績も下降線で、額面通りには信頼しにくい")
+            elif weight_kg and all_weights and weight_kg >= w_max:
+                parts.append("斤量も最重量でハンデが大きく、嫌ってみる手も一考")
+            else:
+                parts.append("人気を考えると馬券妙味は薄く、過信は禁物")
+        elif "急上昇" in trend:
+            parts.append("ここにきて急上昇カーブを描いており、勢いだけなら侮れない")
+            parts.append("格上挑戦の形だが、近走の充実ぶりで一発に期待")
+        elif divergence and divergence >= 3.0:
+            parts.append("実力的には苦しいが、人気薄なら配当妙味は十分ある")
+            if weight_kg and all_weights and weight_kg <= w_min + 5:
+                parts.append("斤量の軽さで障害をこなせれば、波乱の一角を担う可能性も")
+            else:
+                parts.append("展開のアヤを拾って穴を開ける可能性はゼロではない")
+        else:
+            if weight_kg and all_weights and weight_kg <= w_min + 5:
+                parts.append("力関係的に見劣りするが、斤量の軽さだけは武器になり得る")
+            else:
+                parts.append("現状の力量ではこのメンバーに入ると厳しい")
+
+            if "下降" in trend:
+                parts.append("近走の内容も精彩を欠き、巻き返しには時間がかかりそう")
+            elif change and change <= -2:
+                parts.append("乗り替わりもマイナス材料で、今回は見送りが妥当")
+            else:
+                parts.append("条件が好転するまで静観が賢明か")
+
+        result = "。".join(parts) + "。"
+
+    # 300字で切る（安全弁）
+    if len(result) > 300:
+        result = result[:280]
+        last_period = result.rfind("。")
+        if last_period > 150:
+            result = result[:last_period + 1]
+
+    return result
+
+
 def generate_horse_diagnosis(
     horse: dict,
     race_context: dict,
 ) -> str:
     """
-    馬1頭ぶんの短評テキスト（200-250字）を自動生成する。
-    総合評価・展開・結論の3軸で簡潔に。
+    馬1頭ぶんの短評テキストを自動生成する（競馬ブック風）。
+    データの羅列ではなく、読者に「この馬はどうなのか」が伝わる文章を目指す。
 
     Args:
         horse: 馬データ dict
         race_context: レース全体の文脈 dict
 
     Returns:
-        200-250字の短評テキスト
+        競馬ブック風の短評テキスト（150-250字）
     """
+    # ばんえい判定
+    if race_context.get("is_banei", False):
+        return _generate_banei_horse_diagnosis(horse, race_context)
+
     composite = horse.get("composite", 0) or 0
+    ability = horse.get("ability_total", 0) or 0
+    course_total = horse.get("course_total", 0) or 0
+    pace_total = horse.get("pace_total", 0) or 0
     trend = horse.get("ability_trend", "")
     style = horse.get("running_style", "")
     jockey = horse.get("jockey", "")
@@ -1039,6 +1606,9 @@ def generate_horse_diagnosis(
     no = horse.get("horse_no", 0)
     ana_type = horse.get("ana_type", "")
     kiken_type = horse.get("kiken_type", "")
+    mark = horse.get("mark", "")
+    change = horse.get("jockey_change")
+    odds = horse.get("odds")
 
     # レースコンテキスト
     field_count = race_context.get("field_count", 0)
@@ -1060,92 +1630,189 @@ def generate_horse_diagnosis(
     if rank == 0:
         rank = len(sorted_comps)
 
-    sections = []
+    pace_labels = {"HH": "ハイペース", "HM": "やや速い流れ", "MM": "平均的な流れ",
+                   "MS": "落ち着いた流れ", "SS": "スローペース"}
+    pace_ja = pace_labels.get(pace_v, "")
 
-    # ── 1. 総合評価（一文）──
+    # 上がり評価
+    last3f_good = est_last3f_rank and est_last3f_rank <= 3
+    last3f_top = est_last3f_rank and est_last3f_rank == 1
+    last3f_bad = est_last3f_rank and field_count > 0 and est_last3f_rank >= field_count * 0.8
+
+    # ============================================================
+    # 順位帯別に文章を組み立て
+    # ============================================================
+
+    # ── 1位: 信頼感・軸としての安心感 ──
     if rank == 1:
         gap = sorted_comps[0] - sorted_comps[1] if len(sorted_comps) >= 2 else 0
+        parts = []
+
         if gap >= 5:
-            sections.append(f"{field_count}頭中断トツの指数で抜けた存在")
+            parts.append("指数面では他馬を大きく引き離しており、ここでは力が違う")
         elif gap >= 2:
-            sections.append(f"{field_count}頭中1位、頭一つ抜けている")
+            parts.append("総合力でメンバーを一歩リードしており、能力的には最上位の存在")
         else:
-            sections.append(f"{field_count}頭中1位だが僅差の混戦")
+            parts.append("僅差の混戦模様だが、その中でも総合力は一枚上")
+
+        # 展開面
+        if no in leading and len(leading) == 1:
+            parts.append("単騎でマイペースの逃げに持ち込めるのも大きなアドバンテージ")
+        elif no in front:
+            if pace_v in ("SS", "MS"):
+                parts.append(f"{pace_ja}なら好位でじっくり溜めて、直線で楽に抜け出せる")
+            else:
+                parts.append("好位から流れに乗って直線で力を発揮する形が理想")
+        elif no in mid:
+            if last3f_top:
+                parts.append("中団待機からメンバー最速の末脚で一気に突き抜ける")
+            else:
+                parts.append("中団から早めに動いて押し切るイメージ")
+        elif no in rear:
+            parts.append("後方からの末脚勝負になるが、この馬の切れ味なら十分届く")
+
+        # 補強
+        if "急上昇" in trend:
+            parts.append("近走の成績は右肩上がりで、今がまさに充実期")
+        if jockey_grade in ("SS", "S"):
+            parts.append(f"鞍上{jockey}の手腕も心強く、軸として信頼できる一頭")
+        elif not parts[-1].endswith("一頭"):
+            parts.append("ここは素直に信頼したい")
+
+        result = "。".join(parts) + "。"
+
+    # ── 2-3位: 上位争い・逆転の可能性 ──
     elif rank <= 3:
-        sections.append(f"{field_count}頭中{rank}位で上位グループ")
-    elif rank <= field_count * 0.5:
-        sections.append(f"{field_count}頭中{rank}位、展開次第で浮上余地あり")
-    else:
-        sections.append(f"{field_count}頭中{rank}位、力関係的に厳しい")
+        parts = []
 
-    # トレンド補足
-    if "急上昇" in trend:
-        sections[-1] += "。近走急上昇中で勢いあり"
-    elif "上昇" in trend:
-        sections[-1] += "。近走上昇傾向"
-    elif "急下降" in trend:
-        sections[-1] += "。近走急下降で不安"
-    elif "下降" in trend:
-        sections[-1] += "。近走下降傾向"
-
-    # ── 2. 展開シナリオ（一文）──
-    pace_labels = {"HH": "ハイ", "HM": "やや速い", "MM": "ミドル", "MS": "やや遅い", "SS": "スロー"}
-    pace_ja = pace_labels.get(pace_v, pace_v)
-
-    if no in leading:
-        if len(leading) == 1:
-            pace_txt = f"{style}で単騎逃げ濃厚、{pace_ja}ペースで自分の形"
+        if ability >= 55:
+            parts.append("地力の高さは折り紙付きで、勝ち負けに加わる力は十分にある")
+        elif ability >= 50:
+            parts.append("能力的には上位グループで、十分勝ち負けの圏内")
         else:
-            pace_txt = f"{style}だが逃げ馬複数でハナ争いリスク"
-    elif no in front:
-        pace_txt = f"{style}で好位追走、{pace_ja}ペースなら流れに乗れる"
-    elif no in mid:
-        pace_txt = f"{style}で中団から直線{straight_m}mの末脚勝負"
-    elif no in rear:
-        pace_txt = f"{style}で追い込み一手、直線{straight_m}mでどこまで"
+            parts.append("総合力は上位に位置しており、馬券の中心に据えられる存在")
+
+        # 展開面
+        if no in leading:
+            if len(leading) == 1:
+                parts.append("すんなりハナを切れれば自分のペースに持ち込める")
+            else:
+                parts.append("逃げ争いのリスクはあるものの、先手を奪えれば簡単には止まらない")
+        elif no in front:
+            parts.append("好位からそつなく立ち回れる堅実さが武器")
+        elif no in mid:
+            if straight_m >= 400:
+                parts.append(f"中団からじっくり構えて、長い直線を味方につけたい")
+            else:
+                parts.append("中団から早めの仕掛けで勝負を賭ける形")
+        elif no in rear:
+            if last3f_good:
+                parts.append("後方一気の脚力は侮れず、展開がハマれば一気突き抜ける")
+            else:
+                parts.append("追い込み一手で展開の助けが欲しいところ")
+
+        # トレンド・結論
+        if "急上昇" in trend:
+            parts.append("近走の勢いは本物で、ここでも上位争いは必至")
+        elif "下降" in trend:
+            parts.append("ただ近走はやや精彩を欠いており、全幅の信頼は置きにくい")
+        elif divergence and divergence >= 2.0:
+            parts.append("人気以上に走る可能性を秘めており、配当妙味も見込める")
+        elif jockey_grade in ("SS", "S"):
+            parts.append(f"鞍上{jockey}の腕も加味すれば、逆転の目は十分")
+
+        result = "。".join(parts) + "。"
+
+    # ── 4位〜中位: 条件付きで浮上の余地 ──
+    elif rank <= max(field_count * 0.6, 4):
+        parts = []
+
+        # 力関係の位置づけ（数値を出さない）
+        if course_total >= 53:
+            parts.append("コース適性の高さが光り、条件さえ噛み合えば上位に食い込める器")
+        elif "上昇" in trend or "急上昇" in trend:
+            parts.append("近走は内容が充実しており、ここにきて力をつけてきた印象")
+        else:
+            parts.append("力量的には上位とやや差があるが、展開ひとつで浮上の余地はある")
+
+        # 展開面
+        if no in leading and len(leading) == 1:
+            parts.append("単騎逃げが叶えば粘り込みのシーンも")
+        elif no in front:
+            if pace_v in ("SS", "MS"):
+                parts.append(f"{pace_ja}になれば好位で楽に運べ、残り目が出てくる")
+            else:
+                parts.append("好位から堅実に立ち回れるのが強み")
+        elif no in mid or no in rear:
+            if last3f_good:
+                parts.append("末脚の切れ味には定評があり、展開が向けば台頭のシーンも描ける")
+            elif straight_m >= 400:
+                parts.append(f"直線が長いコースは味方で、差し込む余地はある")
+            elif straight_m <= 300:
+                parts.append(f"ただ直線{straight_m}mは追い込みには厳しい条件")
+            else:
+                parts.append("脚質的に展開の助けが欲しいところ")
+
+        # 結論
+        if divergence and divergence >= 3.0:
+            parts.append("人気薄なら馬券妙味は大きく、押さえておきたい一頭")
+        elif ana_type and "穴" in ana_type:
+            parts.append("穴を開ける資格は持っており、ヒモに加えてみたい")
+        elif jockey_grade in ("SS", "S"):
+            parts.append(f"鞍上{jockey}の手腕次第で上位食い込みの可能性も")
+        else:
+            parts.append("好走には展開の後押しが必要だが、相手候補には入れたい")
+
+        result = "。".join(parts) + "。"
+
+    # ── 下位: 厳しいが光る部分があれば ──
     else:
-        pace_txt = f"{style}、{pace_ja}ペース想定"
+        parts = []
 
-    if est_last3f and est_last3f_rank:
-        pace_txt += f"。推定上がり{est_last3f:.1f}秒({est_last3f_rank}位)"
+        if kiken_type and "危" in kiken_type and popularity and popularity <= 3:
+            parts.append(f"{popularity}番人気に支持されているが、データ的には過大評価の疑いが濃い")
+            if "下降" in trend:
+                parts.append("近走の成績も下降線で、額面通りには信頼しにくい")
+            elif jockey_grade in ("D",):
+                parts.append(f"鞍上{jockey}も心許なく、嫌ってみる手も一考")
+            else:
+                parts.append("人気を考えると馬券妙味は薄く、過信は禁物")
+        elif course_total >= 53:
+            parts.append("力関係的に厳しいメンバー構成だが、コース適性の高さは見逃せない")
+            parts.append("展開と枠順が噛み合えば、一変があっても驚けない")
+        elif "急上昇" in trend:
+            parts.append("ここにきて急上昇カーブを描いており、勢いだけなら侮れない")
+            parts.append("格上挑戦の形だが、近走の充実ぶりで一発に期待")
+        elif divergence and divergence >= 3.0:
+            parts.append("実力的には苦しいが、人気薄なら配当妙味は十分ある")
+            if no in leading and len(leading) == 1:
+                parts.append("逃げ残りのワンチャンスに賭ける手はあり")
+            else:
+                parts.append("展開のアヤを拾って穴を開ける可能性はゼロではない")
+        else:
+            # 脚質に応じた最低限のコメント
+            if no in leading and len(leading) == 1:
+                parts.append("力関係的に見劣りするが、単騎逃げからの粘り込みだけは警戒が必要")
+            elif no in rear:
+                if straight_m >= 400:
+                    parts.append("力不足は否めないが、追い込み脚質で展開のアヤを拾えれば")
+                else:
+                    parts.append(f"力量差に加えて直線{straight_m}mも追い込みには厳しく、好走は難しい")
+            else:
+                parts.append("現状の力量ではこのメンバーに入ると厳しい")
 
-    sections.append(pace_txt)
+            if "下降" in trend:
+                parts.append("近走の内容も精彩を欠き、巻き返しには時間がかかりそう")
+            elif change and change <= -2:
+                parts.append("乗り替わりもマイナス材料で、今回は見送りが妥当")
+            else:
+                parts.append("条件が好転するまで静観が賢明か")
 
-    # ── 3. 結論（一文）──
-    conc_parts = []
-    if divergence and divergence >= 3.0:
-        conc_parts.append(f"乖離{divergence:.1f}倍で妙味大")
-    elif divergence and divergence >= 1.5:
-        conc_parts.append("配当妙味あり")
-    elif divergence and divergence is not None and divergence < 0.5 and popularity and popularity <= 3:
-        conc_parts.append("人気先行で過信禁物")
+        result = "。".join(parts) + "。"
 
-    if kiken_type and "危" in kiken_type:
-        conc_parts.append("危険フラグ点灯")
-    elif ana_type and "穴" in ana_type:
-        conc_parts.append("穴馬候補")
-
-    # 騎手が特に良い/悪い場合のみ補足
-    if jockey_grade in ("SS",):
-        conc_parts.append(f"鞍上{jockey}は大きなプラス")
-    elif jockey_grade in ("D",):
-        conc_parts.append(f"鞍上{jockey}は割引")
-
-    if rank == 1 and not conc_parts:
-        conc_parts.append("軸として信頼できる")
-    elif rank <= 3 and not conc_parts:
-        conc_parts.append("上位争いに加わる力は十分")
-    elif rank > field_count * 0.7 and not conc_parts:
-        conc_parts.append("条件好転待ち")
-
-    if conc_parts:
-        sections.append("。".join(conc_parts))
-
-    result = "。".join(sections) + "。"
-
-    # 280字で切る（安全弁）
-    if len(result) > 280:
-        result = result[:260]
+    # 300字で切る（安全弁）
+    if len(result) > 300:
+        result = result[:280]
         last_period = result.rfind("。")
         if last_period > 150:
             result = result[:last_period + 1]
@@ -1205,7 +1872,7 @@ def generate_mark_comment_rich(
         return len(sorted_comps)
 
     def _horse_narrative(h, mark):
-        """馬1頭ぶんの見解を簡潔に生成（展開シナリオ重視、数値は最小限）"""
+        """馬1頭ぶんの見解を競馬ブック風に生成（読者を惹きつける文体）"""
         no = h.get("horse_no", 0)
         name = h.get("horse_name", "?")
         jockey = h.get("jockey", "")
@@ -1216,88 +1883,157 @@ def generate_mark_comment_rich(
         est_last3f = h.get("pace_estimated_last3f")
         est_last3f_rank = h.get("estimated_last3f_rank")
         rank = _rank(composite)
+        course_total = h.get("course_total", 0) or 0
+        ability_total = h.get("ability_total", 0) or 0
+        pace_total = h.get("pace_total", 0) or 0
+        popularity = h.get("popularity")
+        odds = h.get("odds")
 
-        parts = []
-
-        # ◉◎: 勝ちパターンを1-2文で
+        # ◉◎: 勝ちパターンを熱く語る（3-4文）
         if mark in ("◉", "◎"):
-            # 脚質・展開シナリオ（メイン）
+            parts = []
+            # 軸となる強み
+            if ability_total >= 55:
+                parts.append(f"能力値{ability_total:.1f}はメンバー中でも図抜けている")
+            elif ability_total >= 52:
+                parts.append("地力の高さは折り紙付き")
+
+            # 脚質・展開シナリオ（具体的に）
             if no in leading and len(leading) == 1:
-                parts.append("単騎逃げで自分のペースに持ち込める")
+                parts.append("単騎でマイペースの逃げに持ち込めるのは大きなアドバンテージ")
             elif no in leading:
-                parts.append("ハナ争いもあるが先手を取れれば粘れる")
+                parts.append("ハナ争いの懸念はあるが、行き脚の速さで主導権を握れるはず")
             elif no in front:
                 pace_label = pace_labels.get(pace_v, "")
                 if pace_v in ("SS", "MS"):
-                    parts.append(f"{pace_label}想定で好位から楽に運べる")
+                    parts.append(f"{pace_label}想定なら好位でじっくり脚を溜めて直線一気に弾ける")
                 else:
-                    parts.append("好位で流れに乗り、直線で抜け出す形")
+                    parts.append("好位でレースの流れに乗り、直線で力強く抜け出す形が理想")
             elif no in mid:
                 if straight_m >= 400:
-                    parts.append(f"中団から直線{straight_m}mを活かして差す")
+                    parts.append(f"中団でじっくり待機し、直線{straight_m}mの長い直線を味方につけて差し切る")
                 else:
-                    parts.append("中団から直線勝負")
+                    parts.append("中団から早めに仕掛けて押し切るイメージ")
             elif no in rear:
-                parts.append("後方からの末脚に賭ける")
+                parts.append("後方一気の末脚勝負に徹する形。展開がハマれば一気突き抜ける破壊力がある")
 
-            # 補足（1つだけ選択）
+            # 補強材料
             if "急上昇" in trend:
-                parts.append("近走急上昇中で勢いあり")
-            elif est_last3f and est_last3f_rank and est_last3f_rank <= 2:
-                parts.append(f"推定上がり{est_last3f:.1f}秒はメンバー屈指")
-            elif jockey_grade in ("SS", "S"):
-                parts.append(f"鞍上{jockey}も心強い")
+                parts.append("近走の成績は急上昇カーブを描いており、今がまさに旬")
+            elif "上昇" in trend:
+                parts.append("近走の内容も充実しており勢いは十分")
+            if est_last3f and est_last3f_rank and est_last3f_rank <= 2:
+                parts.append(f"推定上がり{est_last3f:.1f}秒はメンバー屈指の切れ味")
+            if jockey_grade in ("SS", "S"):
+                parts.append(f"鞍上**{jockey}**の手腕も心強く、大崩れは考えにくい")
+            elif jockey:
+                parts.append(f"**{jockey}**騎手とのコンビで堅実な競馬を期待")
 
-        # ○▲: 強みと不安要素
+            if course_total >= 55:
+                parts.append("コース適性の高さも見逃せない")
+
+            narr = "。".join(parts[:4])
+            return f"**{name}**が筆頭。{narr}。"
+
+        # ○▲: 対抗・単穴として逆転の可能性を語る（2-3文）
         elif mark in ("○", "▲"):
+            parts = []
+            mark_label = "相手筆頭に指名" if mark == "○" else "一発があるのがこの馬"
+
             if no in leading:
                 if len(leading) >= 2:
-                    parts.append("逃げ争いのリスクはあるが先手なら粘り込む")
+                    parts.append("逃げ争いのリスクを孕むが、先手を奪えば簡単には止まらない")
                 else:
-                    parts.append("逃げの形で自分の競馬ができる")
+                    parts.append("すんなりハナを切れる公算が高く、自分の形なら粘り腰を発揮")
             elif no in front:
-                parts.append("好位追走から抜け出し狙い")
+                parts.append("好位からそつなく立ち回れる堅実派")
+                if pace_v in ("HH", "HM"):
+                    parts.append("ペースが上がれば前残りの展開で浮上の目も")
             elif no in mid:
-                parts.append("中団からの差し脚に期待")
+                parts.append("中団からの差し脚に期待がかかる")
+                if straight_m >= 400:
+                    parts.append(f"直線{straight_m}mならギリギリ届く計算")
             elif no in rear:
                 if straight_m >= 400:
-                    parts.append(f"後方からだが直線{straight_m}mなら届く条件")
+                    parts.append("追い込み一手だが、長い直線なら末脚が活きる舞台")
                 else:
-                    parts.append("追い込み脚質で展開の助けが必要")
+                    parts.append("直線の短さがネックだが、展開次第で台頭の余地あり")
 
             if divergence and divergence >= 2.0:
-                parts.append("配当妙味もある")
-            elif "上昇" in trend:
-                parts.append("近走上向きの気配")
+                parts.append("人気以上に走る可能性を秘めており配当妙味も十分")
+            elif "上昇" in trend or "急上昇" in trend:
+                parts.append("近走上向きの気配で侮れない")
 
-        # △★☆: 一言で
-        else:
+            if ability_total >= 52:
+                parts.append("地力は確かなものがある")
+
+            narr = "。".join(parts[:3])
+            return f"**{name}**を{mark_label}。{narr}。"
+
+        # △★: 押さえ馬としての魅力を一言で（1-2文）
+        elif mark in ("△", "★"):
+            parts = []
             if no in leading and len(leading) == 1:
-                parts.append("逃げ残りに一考")
+                parts.append("逃げ残りに警戒が必要")
             elif no in front:
-                parts.append("好位から堅実")
+                parts.append("好位から堅実に走れるタイプで、相手には押さえておきたい")
             elif no in rear and straight_m >= 400:
-                parts.append("追い込み一発を秘める")
+                parts.append("追い込みが決まる展開になれば馬券圏内に突っ込んでくるシーンも")
             else:
                 style = h.get("running_style", "")
-                if style:
-                    parts.append(f"{style}脚質")
+                if style == "逃げ" or style == "先行":
+                    parts.append("前々の競馬で堅実にまとめてくるタイプ")
+                elif style == "差し" or style == "追込":
+                    parts.append("末脚勝負の一発に警戒")
+                else:
+                    parts.append("素質は確かで侮れない存在")
 
+            if divergence and divergence >= 2.5:
+                parts.append("人気薄なら配当妙味は大きい")
+
+            narr = "。".join(parts[:2])
+            return f"**{name}**は{narr}。"
+
+        # ☆: 穴馬としてのロマンを語る（1-2文）
+        else:
+            parts = []
             if divergence and divergence >= 3.0:
-                parts.append("配当妙味は十分")
+                parts.append("人気は薄いが、秘めたポテンシャルは侮れない")
+            elif course_total >= 52:
+                parts.append("コース巧者の面があり、展開一つで台頭するシーンも")
+            else:
+                parts.append("穴を開ける資格は十分に持っている")
 
-        narr = "、".join(parts) if parts else "注目の一頭"
-        return f"{mark}**{name}**（{jockey}）{narr}。"
+            if no in leading and len(leading) == 1:
+                parts.append("逃げ残りの一発に要注意")
+            elif no in rear and straight_m >= 400:
+                parts.append("長い直線で一気に差し込む展開に期待")
+
+            narr = "。".join(parts[:2])
+            return f"**{name}**は伏兵。{narr}。"
 
     # ============================================================
-    # 印付き馬の見解を段落分けして結合
+    # 競馬ブック風の流れる文章を構築
     # ============================================================
     sections = []
 
-    # 全印馬を段落分けで出力
-    for h in marked:
-        mark = h.get("mark", "")
-        sections.append(_horse_narrative(h, mark))
+    # 本命馬（◉/◎）を先頭に
+    honmei = [h for h in marked if h.get("mark") in ("◉", "◎")]
+    taikou = [h for h in marked if h.get("mark") == "○"]
+    tannuke = [h for h in marked if h.get("mark") == "▲"]
+    renka = [h for h in marked if h.get("mark") in ("△", "★")]
+    ana = [h for h in marked if h.get("mark") == "☆"]
+
+    for h in honmei:
+        sections.append(_horse_narrative(h, h.get("mark", "")))
+    for h in taikou:
+        sections.append(_horse_narrative(h, h.get("mark", "")))
+    for h in tannuke:
+        sections.append(_horse_narrative(h, h.get("mark", "")))
+    for h in renka:
+        sections.append(_horse_narrative(h, h.get("mark", "")))
+    for h in ana:
+        sections.append(_horse_narrative(h, h.get("mark", "")))
 
     # 危険馬（印なし）
     kiken_horses = [
@@ -1306,10 +2042,9 @@ def generate_mark_comment_rich(
     ]
     for h in kiken_horses[:1]:
         name = h.get("horse_name", "?")
-        no = h.get("horse_no", 0)
         pop = h.get("popularity")
         if pop and pop <= 3:
-            sections.append(f"**{name}**（{no}番）は{pop}番人気だが過大評価の恐れあり。")
+            sections.append(f"**{name}**は{pop}番人気だが、データ的には過大評価の匂い。嫌ってみる手も面白い。")
 
     # 各馬を改行で分離（フロントエンドで段落表示される）
     return "\n\n".join(sections) if sections else ""
@@ -1343,7 +2078,7 @@ def diagnose_deviations(evaluations: List) -> dict:
         )
     if std_dev < 0.5:
         issues.append(f"[!] 偏差値のσ={std_dev:.2f}。基準タイムDBのサンプルが不足している可能性")
-    if not (40 < top_mean < 65):
+    if not (35 < top_mean < 65):
         issues.append(f"[!] 偏差値の平均が{top_mean:.1f}と標準から外れています")
 
     status = "WARNING" if issues else "OK"

@@ -38,6 +38,8 @@ NO_HTML = "--no-html" in sys.argv
 NO_PURGE = "--no-purge" in sys.argv
 IGNORE_TTL = "--ignore-ttl" in sys.argv
 RACE_IDS_FROM_DB = "--race-ids-from-db" in sys.argv
+RACE_IDS_FROM_PRED = "--race-ids-from-pred" in sys.argv
+FORCE_RERUN = "--force" in sys.argv
 # --workers N: 並列プリフェッチのワーカー数（デフォルト3）
 _workers_idx = next((i for i, a in enumerate(sys.argv) if a == "--workers"), -1)
 WORKERS = int(sys.argv[_workers_idx + 1]) if _workers_idx >= 0 and _workers_idx + 1 < len(sys.argv) else 5
@@ -92,6 +94,23 @@ P("[bold cyan]\\[2/N][/] 基準タイムDB読み込み...")
 P(f"  ローリングウィンドウ基準日: {DATE}")
 std_db = StandardTimeDBBuilder()
 course_db_base = std_db.get_course_db()
+
+# SQLite course_dbテーブルからも読み込み（ローリングウィンドウ適用）
+from src.database import get_course_db as _get_sqlite_course_db
+from src.scraper.course_db_collector import _dict_to_past_run
+from datetime import datetime as _dt, timedelta as _td
+_window_start = (_dt.strptime(DATE, "%Y-%m-%d") - _td(days=365)).strftime("%Y-%m-%d")
+_window_end = (_dt.strptime(DATE, "%Y-%m-%d") - _td(days=1)).strftime("%Y-%m-%d")
+_sqlite_db = _get_sqlite_course_db()
+_sqlite_count = 0
+for _cid, _recs in _sqlite_db.items():
+    for _r in _recs:
+        _rd = _r.get("race_date", "")
+        if _rd and _window_start <= _rd <= _window_end:
+            course_db_base.setdefault(_cid, []).append(_dict_to_past_run(_r))
+            _sqlite_count += 1
+P(f"  SQLite course_db: {_sqlite_count:,}走追加")
+
 preload = load_preload_course_db(COURSE_DB_PRELOAD_PATH, target_date=DATE)
 for cid, runs in preload.items():
     course_db_base.setdefault(cid, []).extend(runs)
@@ -106,7 +125,25 @@ P(f"  経過: {time.time()-t0:.1f}s")
 
 # ─── 3. 当日レースID取得 ──────────────────────────────────────────
 P(f"[bold cyan]\\[3/N][/] {DATE} のレースID取得...")
-if RACE_IDS_FROM_DB:
+if RACE_IDS_FROM_PRED:
+    # 既存の予想JSONからrace_idを抽出（バッチ再分析用）
+    import json as _json
+    from config.settings import PREDICTIONS_DIR
+    _pred_path = os.path.join(PREDICTIONS_DIR, f"{DATE_KEY}_pred.json")
+    try:
+        with open(_pred_path, "r", encoding="utf-8") as _f:
+            _pred = _json.load(_f)
+        race_ids = [r["race_id"] for r in _pred.get("races", [])]
+        P(f"  [yellow]pred.jsonから取得: {len(race_ids)}レース[/]")
+    except Exception as _e:
+        P(f"  [red]pred.json読込失敗: {_e}[/]")
+        race_ids = []
+    # 常に通常フェッチ結果と比較し、多い方を採用（キャッシュあるので低コスト）
+    _fetched = scraper.fetch_date(DATE)
+    if len(_fetched) > len(race_ids):
+        P(f"  [yellow]pred.json({len(race_ids)}R) < フェッチ({len(_fetched)}R) → フェッチ採用[/]")
+        race_ids = _fetched
+elif RACE_IDS_FROM_DB:
     import sqlite3 as _sql3
     _conn = _sql3.connect("data/keiba.db")
     race_ids = [r[0] for r in _conn.execute(
@@ -117,6 +154,7 @@ if RACE_IDS_FROM_DB:
     P(f"  [yellow]race_logから取得: {len(race_ids)}レース[/]")
 else:
     race_ids = scraper.fetch_date(DATE)
+# ばんえい（帯広 vc=65）: venue_65 LightGBMモデル構築済み（Phase 3）
 if not race_ids:
     P(f"[bold red]{DATE} のレースが見つかりません[/]")
     sys.exit(1)
@@ -131,10 +169,13 @@ else:
 results = []   # (race_id, html_path, race_name, ok, race_meta_dict)
 failed  = []
 
-# 中断再開: 完了済みレースをスキップ
+# 中断再開: 完了済みレースをスキップ（--force 時は無視）
 _done_marker = f"output/.done_{DATE_KEY}.txt"
 _done_ids: set = set()
-if os.path.exists(_done_marker):
+if FORCE_RERUN and os.path.exists(_done_marker):
+    os.remove(_done_marker)
+    P(f"  [yellow]--force: 中断マーカー削除[/]")
+elif os.path.exists(_done_marker):
     with open(_done_marker, "r") as _f:
         _done_ids = {line.strip() for line in _f if line.strip()}
     if _done_ids:
@@ -161,7 +202,7 @@ if _ids_to_fetch and effective_workers > 1:
         w = worker_pool[idx % len(worker_pool)]
         for attempt in range(2):
             try:
-                ri, hs = w.fetch_race(race_id, fetch_history=True, fetch_odds=True, fetch_training=True, target_date=DATE, prefer_cache=RACE_IDS_FROM_DB)
+                ri, hs = w.fetch_race(race_id, fetch_history=True, fetch_odds=True, fetch_training=True, target_date=DATE, prefer_cache=(RACE_IDS_FROM_DB or RACE_IDS_FROM_PRED))
                 return race_id, ri, hs
             except Exception as e:
                 if attempt == 0:
@@ -186,7 +227,7 @@ elif _ids_to_fetch:
     P(f"[bold cyan]\\[4a/N][/] 逐次取得中... ({len(_ids_to_fetch)}R)")
     for race_id in _ids_to_fetch:
         try:
-            ri, hs = scraper.fetch_race(race_id, fetch_history=True, fetch_odds=True, fetch_training=True, target_date=DATE, prefer_cache=RACE_IDS_FROM_DB)
+            ri, hs = scraper.fetch_race(race_id, fetch_history=True, fetch_odds=True, fetch_training=True, target_date=DATE, prefer_cache=(RACE_IDS_FROM_DB or RACE_IDS_FROM_PRED))
             prefetched[race_id] = (ri, hs)
         except Exception as e:
             logger.warning("fetch failed %s: %s", race_id, e)
@@ -270,7 +311,10 @@ def _analyze_one_race(race_id):
 
         race_name = race_info.race_name or f"{race_info.venue}{race_info.race_no}R"
 
-        course_db = build_course_db_from_past_runs(horses, dict(course_db_base), target_date=DATE)
+        # 深いコピー: list値を共有すると並列スレッドでデータ汚染が起こる
+        course_db = build_course_db_from_past_runs(
+            horses, {k: list(v) for k, v in course_db_base.items()}, target_date=DATE
+        )
         l3f_db    = Last3FDBBuilder().build(course_db)
         # personnel: 事前構築済みDBからレース出走馬分をフィルタ
         _race_jids = {h.jockey_id for h in horses if h.jockey_id}

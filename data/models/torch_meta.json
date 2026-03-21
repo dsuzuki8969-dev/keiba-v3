@@ -1,0 +1,35 @@
+{
+  "created_at": "20260310_220809",
+  "device": "privateuseone:0",
+  "epochs": 40,
+  "hidden": 256,
+  "dropout": 0.3,
+  "in_dim": 140,
+  "use_layer_norm": true,
+  "has_attention": true,
+  "loss_weights": {
+    "win": 0.25,
+    "top2": 0.25,
+    "top3": 0.5
+  },
+  "train_samples": 411347,
+  "valid_samples": 15328,
+  "valid_races": 1346,
+  "metrics": {
+    "win": {
+      "auc": 0.8508,
+      "logloss": 0.2239
+    },
+    "top2": {
+      "auc": 0.8388,
+      "logloss": 0.3458
+    },
+    "top3": {
+      "auc": 0.826,
+      "logloss": 0.4337
+    }
+  },
+  "top1_win_hit": 0.4123,
+  "top1_place_hit": 0.7288,
+  "split_date": "2026-01-30"
+}

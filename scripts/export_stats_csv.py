@@ -311,7 +311,7 @@ def main():
     n = write_stat_csv(
         os.path.join(STATS_DIR, f"confidence_stats{suf}.csv"),
         data["by_conf"],
-        sort_key=lambda r: ["SS","S","A","B","C","D"].index(r[0]) if r[0] in ["SS","S","A","B","C","D"] else 99,
+        sort_key=lambda r: ["SS","S","A","B","C","D","E"].index(r[0]) if r[0] in ["SS","S","A","B","C","D","E"] else 99,
     )
     print(f"[OK] confidence_stats: {n}行")
 

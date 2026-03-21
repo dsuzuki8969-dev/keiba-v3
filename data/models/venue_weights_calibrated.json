@@ -1,0 +1,218 @@
+{
+  "01": {
+    "ability": 0.296,
+    "pace": 0.285,
+    "course": 0.069,
+    "jockey": 0.155,
+    "trainer": 0.171,
+    "bloodline": 0.024,
+    "n_samples": 4180
+  },
+  "02": {
+    "ability": 0.265,
+    "pace": 0.315,
+    "course": 0.057,
+    "jockey": 0.125,
+    "trainer": 0.176,
+    "bloodline": 0.062,
+    "n_samples": 3541
+  },
+  "03": {
+    "ability": 0.273,
+    "pace": 0.368,
+    "course": 0.052,
+    "jockey": 0.124,
+    "trainer": 0.143,
+    "bloodline": 0.04,
+    "n_samples": 6804
+  },
+  "04": {
+    "ability": 0.324,
+    "pace": 0.288,
+    "course": 0.084,
+    "jockey": 0.13,
+    "trainer": 0.139,
+    "bloodline": 0.035,
+    "n_samples": 8655
+  },
+  "05": {
+    "ability": 0.383,
+    "pace": 0.249,
+    "course": 0.051,
+    "jockey": 0.122,
+    "trainer": 0.142,
+    "bloodline": 0.053,
+    "n_samples": 16270
+  },
+  "06": {
+    "ability": 0.34,
+    "pace": 0.33,
+    "course": 0.06,
+    "jockey": 0.105,
+    "trainer": 0.115,
+    "bloodline": 0.05,
+    "n_samples": 16500
+  },
+  "07": {
+    "ability": 0.335,
+    "pace": 0.277,
+    "course": 0.061,
+    "jockey": 0.128,
+    "trainer": 0.158,
+    "bloodline": 0.041,
+    "n_samples": 10140
+  },
+  "08": {
+    "ability": 0.35,
+    "pace": 0.292,
+    "course": 0.05,
+    "jockey": 0.133,
+    "trainer": 0.117,
+    "bloodline": 0.058,
+    "n_samples": 18078
+  },
+  "09": {
+    "ability": 0.346,
+    "pace": 0.277,
+    "course": 0.058,
+    "jockey": 0.138,
+    "trainer": 0.138,
+    "bloodline": 0.043,
+    "n_samples": 9457
+  },
+  "10": {
+    "ability": 0.282,
+    "pace": 0.346,
+    "course": 0.079,
+    "jockey": 0.135,
+    "trainer": 0.11,
+    "bloodline": 0.048,
+    "n_samples": 9233
+  },
+  "30": {
+    "ability": 0.32,
+    "pace": 0.444,
+    "course": 0.056,
+    "jockey": 0.077,
+    "trainer": 0.042,
+    "bloodline": 0.061,
+    "n_samples": 19779
+  },
+  "35": {
+    "ability": 0.276,
+    "pace": 0.464,
+    "course": 0.07,
+    "jockey": 0.08,
+    "trainer": 0.064,
+    "bloodline": 0.046,
+    "n_samples": 14630
+  },
+  "36": {
+    "ability": 0.236,
+    "pace": 0.547,
+    "course": 0.07,
+    "jockey": 0.061,
+    "trainer": 0.047,
+    "bloodline": 0.039,
+    "n_samples": 15927
+  },
+  "42": {
+    "ability": 0.216,
+    "pace": 0.569,
+    "course": 0.065,
+    "jockey": 0.073,
+    "trainer": 0.054,
+    "bloodline": 0.023,
+    "n_samples": 15271
+  },
+  "43": {
+    "ability": 0.301,
+    "pace": 0.354,
+    "course": 0.073,
+    "jockey": 0.114,
+    "trainer": 0.104,
+    "bloodline": 0.054,
+    "n_samples": 17231
+  },
+  "44": {
+    "ability": 0.353,
+    "pace": 0.387,
+    "course": 0.052,
+    "jockey": 0.113,
+    "trainer": 0.058,
+    "bloodline": 0.037,
+    "n_samples": 29767
+  },
+  "45": {
+    "ability": 0.275,
+    "pace": 0.429,
+    "course": 0.095,
+    "jockey": 0.085,
+    "trainer": 0.077,
+    "bloodline": 0.039,
+    "n_samples": 18021
+  },
+  "46": {
+    "ability": 0.23,
+    "pace": 0.599,
+    "course": 0.054,
+    "jockey": 0.042,
+    "trainer": 0.038,
+    "bloodline": 0.037,
+    "n_samples": 17796
+  },
+  "47": {
+    "ability": 0.243,
+    "pace": 0.521,
+    "course": 0.064,
+    "jockey": 0.082,
+    "trainer": 0.048,
+    "bloodline": 0.042,
+    "n_samples": 19089
+  },
+  "48": {
+    "ability": 0.243,
+    "pace": 0.535,
+    "course": 0.056,
+    "jockey": 0.08,
+    "trainer": 0.031,
+    "bloodline": 0.055,
+    "n_samples": 34077
+  },
+  "50": {
+    "ability": 0.284,
+    "pace": 0.517,
+    "course": 0.059,
+    "jockey": 0.056,
+    "trainer": 0.033,
+    "bloodline": 0.051,
+    "n_samples": 33779
+  },
+  "51": {
+    "ability": 0.288,
+    "pace": 0.472,
+    "course": 0.051,
+    "jockey": 0.077,
+    "trainer": 0.084,
+    "bloodline": 0.028,
+    "n_samples": 8294
+  },
+  "54": {
+    "ability": 0.289,
+    "pace": 0.496,
+    "course": 0.055,
+    "jockey": 0.076,
+    "trainer": 0.031,
+    "bloodline": 0.053,
+    "n_samples": 25804
+  },
+  "55": {
+    "ability": 0.228,
+    "pace": 0.578,
+    "course": 0.052,
+    "jockey": 0.067,
+    "trainer": 0.029,
+    "bloodline": 0.046,
+    "n_samples": 28351
+  }
+}

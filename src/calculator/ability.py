@@ -7,8 +7,6 @@ D章: 総合偏差値枠組み・各補正
 E章: トレンド・着差プロファイル
 """
 
-import json
-import os
 import statistics
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
@@ -38,6 +36,45 @@ from src.models import (
 )
 
 logger = get_logger(__name__)
+
+
+# ============================================================
+# ばんえい専用: 斤量帯別基準タイム + クラス補正
+# ============================================================
+
+_BANEI_BASELINES_CACHE = None
+
+def _load_banei_time_baselines() -> dict:
+    """ばんえい基準タイムテーブルをロード（キャッシュ付き）"""
+    global _BANEI_BASELINES_CACHE
+    if _BANEI_BASELINES_CACHE is not None:
+        return _BANEI_BASELINES_CACHE
+    import json, os
+    path = os.path.join(os.path.dirname(__file__), "..", "..", "data", "models", "banei_time_baselines.json")
+    try:
+        with open(path, encoding="utf-8") as f:
+            _BANEI_BASELINES_CACHE = json.load(f)
+    except Exception:
+        _BANEI_BASELINES_CACHE = {"weight_bands": {}, "default_baseline": 128.0}
+    return _BANEI_BASELINES_CACHE
+
+
+def _get_banei_baseline(weight_kg: float, baselines: dict) -> float:
+    """斤量から基準タイムを取得"""
+    default = baselines.get("default_baseline", 128.0)
+    if not weight_kg or weight_kg <= 0:
+        return default
+    bands = baselines.get("weight_bands", {})
+    for band_key, info in bands.items():
+        parts = band_key.split("-")
+        if len(parts) == 2:
+            lo, hi = float(parts[0]), float(parts[1])
+            if lo <= weight_kg < hi:
+                return info.get("baseline", default)
+    return default
+
+
+
 
 # ============================================================
 # A-1: 基準タイム算出
@@ -77,10 +114,13 @@ class StandardTimeCalculator:
         "C1": 0,
         "C2": -0.5,
         "C3": -1,
+        "C4": -1.5,
+        "D": -1.5,
         "重賞": 3,
         "交流重賞": 4,
         "特別": 1,
         "未格付": -1,
+        "その他": -1,
     }
 
     # 性別補正スコア
@@ -189,14 +229,72 @@ class StandardTimeCalculator:
             return 1.0
         return DISTANCE_BASE / distance
 
+    @staticmethod
+    def _infer_grade_from_class_name(class_name: str) -> str:
+        """class_name（レース名）からグレードを再推定する。
+        「その他」やCLASS_SCOREにないグレードの場合に使用。
+        """
+        import re
+        cn = class_name.strip()
+        if not cn:
+            return ""
+        # C系 (C1 > C2 > C3 > C4)
+        # C13, C15等の組番号に注意: "C1" substring matchで誤判定しないよう先にC4チェック
+        if re.search(r"C[4-9]|Ｃ[４-９]|C\d{2}", cn):
+            return "C3"  # C4以下はC3相当スコアで十分
+        if "C1" in cn or "Ｃ１" in cn:
+            return "C1"
+        if "C2" in cn or "Ｃ２" in cn:
+            return "C2"
+        if re.search(r"C[3ーー\-]|Ｃ[３]|C級|Cクラス", cn) or cn == "C":
+            return "C3"
+        # B系
+        if "B1" in cn or "Ｂ１" in cn:
+            return "B1"
+        if "B2" in cn or "Ｂ２" in cn:
+            return "B2"
+        if re.search(r"B[3-9ーー\-]|Ｂ[３-９]|B\d|B級|Bクラス", cn) or cn == "B":
+            return "B3"
+        # A系
+        if "A1" in cn or "Ａ１" in cn:
+            return "A1"
+        if re.search(r"A[2-9ーー\-]|Ａ[２-９]|Aクラス", cn) or cn == "A":
+            return "A2"
+        # 重賞系
+        if re.search(r"Jpn\s*[123]|JPN|交流", cn, re.IGNORECASE):
+            return "交流重賞"
+        if re.search(r"記念|賞|杯|盃|カップ|トロフィー|チャンピオン|重賞|大賞典|ダービー|オークス", cn):
+            return "重賞"
+        # OP
+        if re.search(r"\bOP\b|オープン", cn):
+            return "OP"
+        if "特別" in cn:
+            return "OP"
+        # 新馬・未勝利
+        if "新馬" in cn or "デビュー" in cn:
+            return "新馬"
+        if "未勝利" in cn or "未格付" in cn:
+            return "未格付"
+        # 世代戦はC3相当
+        if re.search(r"[23]歳", cn):
+            return "C3"
+        return ""
+
     def calc_score_total(self, run: PastRun) -> float:
         """スコア合計 (A-1 6カテゴリ)"""
         # ❶馬場 (略称 '稍'/'不' も正規化して対応)
         cond_score = {"良": 0.0, "稍重": -0.5, "重": -1.0, "不良": -1.5}.get(
             _norm_cond(run.condition), 0.0
         )
-        # ❷クラス
-        class_score = self.CLASS_SCORE.get(run.grade, 0)
+        # ❷クラス — 「その他」や未登録グレードはclass_nameから再推定
+        grade = run.grade
+        if grade not in self.CLASS_SCORE or grade == "その他":
+            inferred = self._infer_grade_from_class_name(
+                getattr(run, "class_name", "") or ""
+            )
+            if inferred and inferred in self.CLASS_SCORE:
+                grade = inferred
+        class_score = self.CLASS_SCORE.get(grade, -1)
         # ❸種別 (芝/ダート)
         surface_score = {"芝": 0.0, "ダート": -0.5}.get(run.surface, 0.0)
         # ❹条件 (頭数)
@@ -217,6 +315,8 @@ class StandardTimeCalculator:
     ) -> Tuple[Optional[float], Reliability]:
         """
         基準タイムを算出。
+        クラス分布が均質な場合（NAR等）はスコア外挿を抑制し、
+        avg_time を直接使用して過大偏差値を防止する。
         Returns: (基準タイム秒, 信頼度)
         """
         runs = self.course_db.get(course_id, [])
@@ -234,27 +334,68 @@ class StandardTimeCalculator:
 
         dist_coeff = self.calc_distance_coefficient(distance)
         avg_time = statistics.mean([r.finish_time_sec for r in top3_runs])
-        avg_score = statistics.mean([self.calc_score_total(r) for r in top3_runs])
-        standard_time = avg_time - (avg_score * dist_coeff)
+
+        # JRA/NAR別の基準タイム算出方式
+        # JRA: スコア外挿（クラス多様性があり、k値・補正テーブルが最適化済み）
+        # NAR: avg_time直接使用（クラス分布偏りが大きく、スコア外挿で過大偏差値が発生）
+        _JRA_CODES = {"01", "02", "03", "04", "05", "06", "07", "08", "09", "10"}
+        vc = course_id.split("_")[0] if course_id else ""
+
+        if vc in _JRA_CODES:
+            # JRA: 従来のスコア外挿
+            avg_score = statistics.mean([self.calc_score_total(r) for r in top3_runs])
+            standard_time = avg_time - (avg_score * dist_coeff)
+        else:
+            # NAR: avg_timeを基準タイムとして使用
+            # スコア外挿はNARのクラス構造・馬場補正データ不足で不正確
+            standard_time = avg_time
 
         return standard_time, reliability
 
+    def _resolve_grade(self, run: PastRun) -> str:
+        """PastRunのグレードを解決（「その他」の場合はclass_nameから再推定）"""
+        grade = run.grade
+        if grade not in self.CLASS_SCORE or grade == "その他":
+            inferred = self._infer_grade_from_class_name(
+                getattr(run, "class_name", "") or ""
+            )
+            if inferred and inferred in self.CLASS_SCORE:
+                return inferred
+        return grade
+
     def _fallback_standard_time(self, course_id: str, distance: int) -> Optional[float]:
-        """A-2: データ不足代替。同系統コースのデータで代替"""
-        # 同コースの全距離データを使って回帰的に推定
+        """A-2: データ不足代替。同系統コースの近距離帯データで距離加重補間"""
         venue = course_id.split("_")[0]
         surface = course_id.split("_")[1] if len(course_id.split("_")) > 1 else ""
+        # 近距離帯(±400m)のデータのみ使用
+        dist_lo = max(distance - 400, 0)
+        dist_hi = distance + 400
         similar_runs = [
             r
             for cid, runs in self.course_db.items()
             for r in runs
             if cid.startswith(venue) and surface in cid and r.finish_pos <= 3
+            and r.distance and dist_lo <= r.distance <= dist_hi
         ]
         if not similar_runs:
             return None
-        # 距離に比例してスケーリング
-        avg_per_meter = statistics.mean([r.finish_time_sec / r.distance for r in similar_runs])
-        return avg_per_meter * distance
+        valid_runs = [r for r in similar_runs if r.distance > 0]
+        # サンプル3件未満は信頼性不足 → None（dev=50.0固定の方が異常値より安全）
+        if len(valid_runs) < 3:
+            return None
+        # 距離加重: 対象距離に近いデータほど高い重みを付与
+        # weight = 1 / (1 + |dist_diff| / 100) で距離差100mごとに重み半減
+        total_weighted_spm = 0.0
+        total_weight = 0.0
+        for r in valid_runs:
+            dist_diff = abs(r.distance - distance)
+            w = 1.0 / (1.0 + dist_diff / 100.0)
+            total_weighted_spm += (r.finish_time_sec / r.distance) * w
+            total_weight += w
+        if total_weight <= 0:
+            return None
+        weighted_avg_spm = total_weighted_spm / total_weight
+        return weighted_avg_spm * distance
 
 
 # ============================================================
@@ -454,35 +595,12 @@ def detect_long_break(runs: List[PastRun], race_date: str, threshold_days: int =
 # C-2: 加重平均偏差値 (WA)
 # ============================================================
 
-_BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-
-
-def _get_wa_weights() -> list:
-    """最適化済み重みがあればそれを使用、なければ settings.py のデフォルト値にフォールバック"""
-    best_path = os.path.join(_BASE_DIR, "data", "models", "best_wa_weights.json")
-    if os.path.exists(best_path):
-        try:
-            with open(best_path, "r") as f:
-                data = json.load(f)
-            weights = data.get("best_weights") or data.get("best_params", {}).get("weights")
-            if isinstance(weights, list) and len(weights) >= 2:
-                return weights
-        except Exception:
-            pass
-    return WA_WEIGHTS  # settings.py のデフォルト値にフォールバック
 
 
 def _get_wa_weights_by_distance(distance: int) -> list:
-    """距離帯別に最適化された加重平均重み。
-    短距離は直近走をより重視、長距離は複数走を均等寄りに。
-    中距離はOptuna最適値（settings.py / best_wa_weights.json）を使用。
-    """
-    if distance <= 1200:
-        return [0.40, 0.30, 0.15, 0.10, 0.05]  # 短距離: 直近重視
-    elif distance >= 2000:
-        return [0.30, 0.25, 0.25, 0.12, 0.08]  # 長距離: 均等寄り
-    else:
-        return _get_wa_weights()  # 中距離: Optuna最適値
+    """距離帯別のWA重みを返す（Phase 4-1）。"""
+    from config.settings import get_wa_weights
+    return get_wa_weights(distance)
 
 
 def _get_effective_weights(n_runs: int, base_weights: list) -> list:
@@ -906,7 +1024,35 @@ def calc_ability_deviation(
     # 3. 各走の走破偏差値算出
     run_deviations: List[float] = []
     run_records_list: list = []  # (PastRun, deviation, std_time) を格納
-    for run in filtered_runs:
+
+    # ---- ばんえい専用: JRA同等のタイムベース偏差値計算 ----
+    # 計算式: dev = 50 + (斤量帯別基準タイム - 走破タイム) × 係数
+    # クラス差はタイム差として自然に反映される（40,630走の実データで検証済み）
+    # 係数0.50: 全体std=24.3s → 1σ=12.2pt → 30-70範囲に収まる
+    from data.masters.venue_master import is_banei as _is_banei_ability
+    _banei_mode = _is_banei_ability(course_id[:2] if course_id else "")
+    _BANEI_TIME_COEFF = 0.50  # 1秒差 = 0.5偏差値ポイント
+    if _banei_mode:
+        _banei_baselines = _load_banei_time_baselines()
+        for run in filtered_runs:
+            if run.finish_pos >= 99:
+                run_deviations.append(30.0)
+                run_records_list.append((run, 30.0, None))
+                continue
+            if not run.finish_time_sec or run.finish_time_sec <= 0:
+                # タイムなし → 平均以下の保守的評価
+                run_deviations.append(45.0)
+                run_records_list.append((run, 45.0, None))
+                continue
+            _banei_base = _get_banei_baseline(run.weight_kg, _banei_baselines)
+            dev = 50.0 + (_banei_base - run.finish_time_sec) * _BANEI_TIME_COEFF
+            dev = max(30.0, min(70.0, dev))
+            run_deviations.append(dev)
+            run_records_list.append((run, dev, _banei_base))
+        # ばんえいはStep 3のfor loopをスキップ（以下のelseブロックが通常馬用）
+
+    if not _banei_mode:
+      for run in filtered_runs:
         # 非完走（取消・除外・中止・競走中止 = 着順99等）はスキップ
         if run.finish_pos >= 99:
             run_deviations.append(30.0)  # 非完走は低評価
@@ -922,8 +1068,16 @@ def calc_ability_deviation(
             run_records_list.append((run, 50.0, None))
             continue
 
+        # course_idが空の場合（NAR公式経由等）はvenue/surface/distanceから復元
+        _cid = run.course_id
+        if not _cid and run.venue and run.surface and run.distance:
+            from data.masters.venue_master import VENUE_NAME_TO_CODE
+            _venue = run.venue.lstrip("Ｊ").lstrip("J").strip()
+            _vc = VENUE_NAME_TO_CODE.get(_venue, "")
+            if _vc:
+                _cid = f"{_vc}_{run.surface}_{run.distance}"
         std_time, st_rel = std_calc.calc_standard_time(
-            run.course_id, run.grade, run.condition, run.distance
+            _cid, run.grade, run.condition, run.distance
         )
         if std_time is None:
             run_deviations.append(50.0)
@@ -991,6 +1145,17 @@ def calc_ability_deviation(
                 # 現在=地方, 過去走=中央 → わずかに割引
                 dev = 50.0 + (dev - 50.0) * 0.90
 
+        # B-6: 着順ガード — 大敗した走で異常に高い偏差値が出るのを防止
+        # 基準タイム誤差（フォールバック/NAR/データ不足）による過大評価を安全キャップ
+        if run.field_count and run.field_count >= 4:
+            finish_ratio = run.finish_pos / run.field_count
+            if finish_ratio > 0.75 and dev > 55:
+                # 下位25%: dev上限55（B-相当）
+                dev = 55.0
+            elif finish_ratio > 0.5 and dev > 60:
+                # 下位50%: dev上限60（A-相当）
+                dev = 60.0
+
         run_deviations.append(dev)
         run_records_list.append((run, dev, std_time))
 
@@ -1014,7 +1179,12 @@ def calc_ability_deviation(
     alpha = calc_alpha(max_dev, wa_dev, is_declining)
 
     # 8. 信頼度（enum + スコア）
-    _, st_rel = std_calc.calc_standard_time(course_id, "", current_condition, 2000)  # ダミー
+    if _banei_mode:
+        # ばんえい: 基準タイム信頼度は不要、過去走数のみで判定
+        from src.models import Reliability as _BaneiRel
+        st_rel = _BaneiRel.A if len(filtered_runs) >= 3 else _BaneiRel.B
+    else:
+        _, st_rel = std_calc.calc_standard_time(course_id, "", current_condition, 2000)  # ダミー
     reliability, reliability_score = aggregate_reliability(len(filtered_runs), is_long_break, st_rel)
 
     # 9. クラス落差補正
@@ -1056,6 +1226,50 @@ def calc_ability_deviation(
 
         pace_adjustment = calc_pace_adjustment(horse, pace_type, pace_db)
     total_adjustment = class_adjustment + bloodline_adjustment + pace_adjustment
+
+    # 表示用: 異表面の走にも偏差値を計算して run_records に含める
+    # （能力値計算には影響しない。前走テーブル表示で "—基準なし" を減らすため）
+    recorded_dates = {entry[0].race_date for entry in run_records_list}
+    try:
+        ref_date = datetime.strptime(race_date, "%Y-%m-%d")
+    except Exception:
+        ref_date = datetime.now()
+    days_limit = RACE_HISTORY_DAYS_休養明け if is_long_break else RACE_HISTORY_DAYS_DEFAULT
+    for run in sorted(horse.past_runs, key=lambda x: x.race_date, reverse=True):
+        if run.race_date in recorded_dates:
+            continue
+        try:
+            run_date = datetime.strptime(run.race_date, "%Y-%m-%d")
+        except Exception:
+            continue
+        days_ago = (ref_date - run_date).days
+        if days_ago < 0 or days_ago > days_limit:
+            continue
+        # 異表面の走の偏差値を計算
+        if run.finish_pos >= 99 or not run.finish_time_sec or run.finish_time_sec <= 0:
+            run_records_list.append((run, None, None))
+            continue
+        if not run.distance or run.distance <= 0:
+            run_records_list.append((run, None, None))
+            continue
+        _cross_cid = run.course_id
+        if not _cross_cid and run.venue and run.surface and run.distance:
+            from data.masters.venue_master import VENUE_NAME_TO_CODE
+            _cross_venue = run.venue.lstrip("Ｊ").lstrip("J").strip()
+            _cross_vc = VENUE_NAME_TO_CODE.get(_cross_venue, "")
+            if _cross_vc:
+                _cross_cid = f"{_cross_vc}_{run.surface}_{run.distance}"
+        _st, _ = std_calc.calc_standard_time(
+            _cross_cid, run.grade, run.condition, run.distance
+        )
+        if _st is None:
+            run_records_list.append((run, None, None))
+            continue
+        _dev = calc_run_deviation(run.finish_time_sec, _st, run.distance)
+        run_records_list.append((run, _dev, _st))
+
+    # 日付降順でソートし直して最大5走
+    run_records_list.sort(key=lambda x: x[0].race_date, reverse=True)
 
     return AbilityDeviation(
         max_dev=max_dev,

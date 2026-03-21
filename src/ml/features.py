@@ -34,6 +34,8 @@ SEX_MAP = {"牡": 0, "牝": 1, "セ": 2}
 # ペース → 数値
 PACE_MAP = {"S": -2, "MS": -1, "M": 0, "MH": 1, "H": 2, "SS": -2, "HH": 2, "MM": 0}
 
+from data.masters.venue_master import is_banei
+
 # 類似度特徴量のチューニング用パラメータ
 VENUE_SIM_THRESHOLD = 0.35
 DIRECTION_DISCOUNT = 0.75
@@ -88,6 +90,7 @@ def build_dataset(
     start_date: str = None,
     end_date: str = None,
     min_past_runs: int = 1,
+    banei_only: bool = False,
 ) -> pd.DataFrame:
     """
     全レースデータから特徴量行列を構築する。
@@ -97,6 +100,7 @@ def build_dataset(
         start_date: 学習対象の開始日
         end_date: 学習対象の終了日
         min_past_runs: 最低過去走数（これ未満の馬はスキップ）
+        banei_only: Trueならばんえい(帯広)レースのみ抽出
 
     Returns:
         DataFrame（1行=1出走、特徴量 + ラベル列を含む）
@@ -106,6 +110,13 @@ def build_dataset(
 
     if not all_races:
         return pd.DataFrame()
+
+    # ばんえい専用モード: venue_code="65" のみ抽出
+    if banei_only:
+        all_races = [r for r in all_races if is_banei(r.get("venue_code", ""))]
+        if not all_races:
+            print("  ばんえいレースが見つかりません")
+            return pd.DataFrame()
 
     print(f"  レース数: {len(all_races)}")
 
@@ -182,7 +193,18 @@ def _extract_race_features(race: dict) -> dict:
         "race_first_3f": race.get("first_3f"),
     }
 
-    if profile:
+    _is_banei = is_banei(race.get("venue_code", ""))
+
+    if _is_banei:
+        # ばんえい: コース構造は固定値（帯広200m直線・坂あり）
+        base["venue_straight_m"] = 200.0
+        base["venue_slope"] = 1.0  # 坂あり
+        base["venue_first_corner"] = 0.0
+        base["venue_corner_type"] = 0.0
+        base["venue_direction"] = 3  # 直線（ばんえい固有コード）
+        # ばんえい固有: 水分量
+        base["water_content"] = race.get("water_content")
+    elif profile:
         base["venue_straight_m"] = profile.avg_straight_m
         base["venue_slope"] = _SLOPE_SCORE.get(profile.slope_type, 0.0)
         base["venue_first_corner"] = profile.first_corner_score
@@ -209,7 +231,7 @@ def _extract_horse_features(h: dict, race: dict) -> dict:
     weight_change = h.get("weight_change")
     field_count = race.get("field_count", 12)
 
-    return {
+    result = {
         "sex": sex,
         "age": age,
         "gate_no": gate_no,
@@ -219,6 +241,12 @@ def _extract_horse_features(h: dict, race: dict) -> dict:
         "weight_change": weight_change,
         "gate_relative": gate_no / max(field_count, 1),
     }
+    # ばんえい固有: 負担重量/馬体重比（重いほど不利）
+    if horse_weight and horse_weight > 0:
+        result["weight_kg_ratio"] = weight_kg / horse_weight
+    else:
+        result["weight_kg_ratio"] = None
+    return result
 
 
 def _get_past_runs_before(history: list, current_date: str) -> list:
@@ -324,7 +352,7 @@ def _extract_past_run_features(past: list, current_race: dict) -> dict:
     # ── 競馬場類似度重み付き実績 ──
     venue_sim_feats = _extract_venue_similarity_features(past, current_race)
 
-    return {**{
+    result = {
         "past_runs": n_runs,
         "past_win_rate": win_rate,
         "past_place_rate": place_rate,
@@ -344,7 +372,80 @@ def _extract_past_run_features(past: list, current_race: dict) -> dict:
         "current_condition": current_cond,
         "avg_popularity_gap": avg_popularity_gap,
         "last_popularity_gap": last_pop_gap,
-    }, **venue_sim_feats}
+        **venue_sim_feats,
+    }
+
+    # ── ばんえい固有特徴量 ──
+    _is_banei_race = is_banei(current_race.get("venue_code", ""))
+    if _is_banei_race:
+        # 走破タイム系（ばんえいは200m直線のためタイムが重要指標）
+        finish_times = [h.get("finish_time_sec") for _, _, h in recent if h.get("finish_time_sec")]
+        result["past_avg_finish_time"] = np.mean(finish_times) if finish_times else None
+        result["past_best_finish_time"] = min(finish_times) if finish_times else None
+        if len(finish_times) >= 2 and np.mean(finish_times) > 0:
+            result["time_consistency"] = np.std(finish_times) / np.mean(finish_times)
+        else:
+            result["time_consistency"] = None
+
+        # 斤量トレンド（直近3走の斤量変化）
+        weight_kgs = [h.get("weight_kg") for _, _, h in recent[-3:] if h.get("weight_kg")]
+        if len(weight_kgs) >= 2:
+            result["weight_trend"] = weight_kgs[-1] - weight_kgs[0]
+        else:
+            result["weight_trend"] = None
+
+        # 高水分(2.0%超)時の複勝率
+        heavy_water = [(d, r, h) for d, r, h in past if (r.get("water_content") or 0) >= 2.0]
+        hw_pos = [h.get("finish_pos") for _, _, h in heavy_water if h.get("finish_pos")]
+        result["heavy_water_rate"] = (sum(1 for p in hw_pos if p <= 3) / len(hw_pos)) if hw_pos else None
+
+        # ---- Phase 5 追加: ばんえい固有特徴量強化 ----
+
+        # 斤量×水分量の交互作用項（非線形関係の捕捉）
+        cur_wt = current_race.get("weight_kg") or horse_data.get("weight_kg")
+        cur_wc = current_race.get("water_content")
+        if cur_wt and cur_wc is not None:
+            result["weight_kg_x_water"] = cur_wt * cur_wc
+        else:
+            result["weight_kg_x_water"] = None
+
+        # 斤量帯カテゴリ（5段階: 0=~580, 1=580-620, 2=620-660, 3=660-700, 4=700+）
+        wk = cur_wt or horse_data.get("weight_kg")
+        if wk:
+            if wk < 580: result["weight_kg_band"] = 0
+            elif wk < 620: result["weight_kg_band"] = 1
+            elif wk < 660: result["weight_kg_band"] = 2
+            elif wk < 700: result["weight_kg_band"] = 3
+            else: result["weight_kg_band"] = 4
+        else:
+            result["weight_kg_band"] = None
+
+        # 直近3走の出走間隔平均（ばんえいは連闘が多い）
+        race_dates = [d for d, _, _ in recent[:3]]
+        if len(race_dates) >= 2:
+            from datetime import datetime
+            intervals = []
+            for i in range(len(race_dates) - 1):
+                try:
+                    d1 = datetime.strptime(race_dates[i], "%Y-%m-%d")
+                    d2 = datetime.strptime(race_dates[i + 1], "%Y-%m-%d")
+                    intervals.append(abs((d1 - d2).days))
+                except (ValueError, TypeError):
+                    pass
+            result["recent_interval_avg"] = np.mean(intervals) if intervals else None
+        else:
+            result["recent_interval_avg"] = None
+
+        # 直近走の着順/頭数比（ばんえいの形勢判断）
+        if recent:
+            _, _, last_h = recent[0]
+            lp = last_h.get("finish_pos")
+            lfc = last_h.get("field_count") or current_race.get("field_count")
+            result["last_pos_ratio"] = lp / lfc if lp and lfc and lfc > 0 else None
+        else:
+            result["last_pos_ratio"] = None
+
+    return result
 
 
 def _extract_venue_similarity_features(past: list, current_race: dict) -> dict:
@@ -469,6 +570,12 @@ def _empty_past_features() -> dict:
         "venue_sim_n_venues": 0,
         "same_dir_place_rate": None,
         "same_dir_runs": 0,
+        # ばんえい固有（存在しない場合もNone）
+        "past_avg_finish_time": None,
+        "past_best_finish_time": None,
+        "time_consistency": None,
+        "weight_trend": None,
+        "heavy_water_rate": None,
     }
 
 
@@ -507,6 +614,34 @@ FEATURE_COLS = [
     "venue_sim_place_rate", "venue_sim_win_rate", "venue_sim_avg_finish",
     "venue_sim_runs", "venue_sim_n_venues",
     "same_dir_place_rate", "same_dir_runs",
+]
+
+# ばんえい専用特徴量カラム（使えない特徴量を除外 + 固有特徴量を追加）
+FEATURE_COLS_BANEI = [
+    # レース条件（コース構造・venue_sim は不要: 帯広1場のみ）
+    "condition", "field_count",
+    # ばんえい固有: 馬場水分量
+    "water_content",
+    # 馬個体
+    "sex", "age", "gate_no", "weight_kg", "horse_weight", "weight_change",
+    "gate_relative",
+    # ばんえい固有: 負担重量/馬体重比
+    "weight_kg_ratio",
+    # 過去走集計（last3f/corners/venue_sim 除外）
+    "past_runs", "past_win_rate", "past_place_rate",
+    "past_avg_finish", "past_best_finish",
+    "days_since_last",
+    "same_surface_place_rate", "same_surface_runs",
+    "near_dist_place_rate", "near_dist_runs",
+    "past_avg_time_per_200",
+    "past_trend",
+    "heavy_track_place_rate", "current_condition",
+    "avg_popularity_gap", "last_popularity_gap",
+    # ばんえい固有: 走破タイム系
+    "past_avg_finish_time", "past_best_finish_time",
+    "time_consistency",
+    # ばんえい固有: 斤量トレンド・高水分適性
+    "weight_trend", "heavy_water_rate",
 ]
 
 LABEL_COL = "is_top3"

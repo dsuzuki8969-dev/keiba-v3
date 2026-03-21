@@ -970,7 +970,14 @@ class OfficialNARScraper:
                 texts = [c.get_text(strip=True) for c in cells]
 
                 venue = texts[1] if n > 1 else ""
-                class_name = texts[4] if n > 4 else ""
+                # NAR公式はJRA会場に「Ｊ」プレフィックスを付ける → 除去
+                venue = venue.lstrip("Ｊ").lstrip("J").strip()
+                # ci 3: 競走名（ユングフラウ賞、C3三組 等）
+                race_name = texts[3] if n > 3 else ""
+                # ci 4: 格組（３歳、２歳 等）
+                kakugumi = texts[4] if n > 4 else ""
+                # 表示用class_nameは競走名を優先
+                class_name = race_name or kakugumi
 
                 # 距離: 数字のみ ("1300") または "ダ1300" 等
                 raw_dist = texts[5] if n > 5 else ""
@@ -1073,15 +1080,30 @@ class OfficialNARScraper:
                     else finish_pos
                 )
 
+                # course_idを生成（venue名→コード変換）
+                from data.masters.venue_master import VENUE_NAME_TO_CODE
+                _vc = VENUE_NAME_TO_CODE.get(venue, "")
+                _course_id = f"{_vc}_{surface_val}_{distance}" if _vc and distance else ""
+
+                # gradeを競走名→格組の順で推定
+                _grade = ""
+                try:
+                    from src.calculator.ability import StandardTimeCalculator as _STC
+                    _grade = _STC._infer_grade_from_class_name(race_name)
+                    if not _grade and kakugumi:
+                        _grade = _STC._infer_grade_from_class_name(kakugumi)
+                except Exception:
+                    pass
+
                 pr = PastRun(
                     race_date=date_str,
                     venue=venue,
-                    course_id="",
+                    course_id=_course_id,
                     distance=distance,
                     surface=surface_val,
                     condition=condition,
                     class_name=class_name,
-                    grade="",
+                    grade=_grade,
                     field_count=field_count,
                     gate_no=gate_no,
                     horse_no=horse_no,
@@ -1187,3 +1209,550 @@ class OfficialNARScraper:
             if re.match(r"^\d{1,2}R$", text):
                 count += 1
         return max(count, 12)  # デフォルト12レース
+
+    # ================================================================
+    # NAR公式 成績（結果）取得
+    # ================================================================
+
+    def get_result(self, race_id: str, race_date: str) -> Optional[dict]:
+        """NAR公式 RaceMarkTable からレース結果を取得
+
+        Args:
+            race_id: netkeiba形式 race_id (例: "202644030806")
+            race_date: 日付 "YYYY-MM-DD" 形式
+
+        Returns:
+            {
+                "order": [{"horse_no": int, "finish": int, "last_3f": float,
+                           "time_sec": float, "weight_kg": float,
+                           "horse_weight": int, "corners": [int, ...]}, ...],
+                "payouts": {"tansho": [...], "fukusho": [...], ...}
+            }
+            または None（取得/パース失敗時）
+        """
+        # race_id からパラメータを抽出
+        venue_code = race_id[4:6]
+        baba_code = _NETKEIBA_TO_NAR_BABA.get(venue_code)
+        if not baba_code:
+            logger.debug("NAR get_result: 不明な venue_code %s", venue_code)
+            return None
+
+        race_no = int(race_id[10:12]) if len(race_id) >= 12 else 0
+        if not race_no:
+            logger.debug("NAR get_result: race_no 取得失敗 race_id=%s", race_id)
+            return None
+
+        # 日付を YYYY/MM/DD 形式に変換
+        date_slash = race_date.replace("-", "/")
+
+        url = f"{_BASE}/TodayRaceInfo/RaceMarkTable"
+        params = {
+            "k_raceDate": date_slash,
+            "k_raceNo": str(race_no),
+            "k_babaCode": baba_code,
+        }
+
+        try:
+            self._wait()
+            resp = self._session.get(url, params=params, headers=_HEADERS,
+                                     timeout=15)
+            if resp.status_code != 200:
+                logger.debug("NAR RaceMarkTable %d: %s R%d",
+                             resp.status_code, baba_code, race_no)
+                return None
+        except Exception as e:
+            logger.debug("NAR RaceMarkTable 取得失敗: %s", e)
+            return None
+
+        try:
+            soup = BeautifulSoup(resp.text, "html.parser")
+
+            # 着順テーブルをパース
+            order = self._parse_race_mark_table(soup)
+            if not order:
+                logger.debug("NAR RaceMarkTable: 着順データなし %s R%d",
+                             baba_code, race_no)
+                return None
+
+            # コーナー通過順をパース
+            corners_map = self._parse_nar_corners(soup)
+
+            # 払戻をパース
+            payouts = self._parse_nar_payouts(soup)
+
+            # 着順リストにコーナー通過順をマージ
+            for entry in order:
+                hno = entry["horse_no"]
+                entry["corners"] = corners_map.get(hno, [])
+
+            logger.info("NAR result: %s R%d %d頭 払戻%d券種",
+                        _NAR_VENUE_NAMES.get(baba_code, baba_code),
+                        race_no, len(order), len(payouts))
+
+            return {"order": order, "payouts": payouts}
+
+        except Exception as e:
+            logger.warning("NAR RaceMarkTable パース失敗: %s", e)
+            return None
+
+    def _parse_race_mark_table(self, soup: BeautifulSoup) -> list:
+        """成績テーブルをパースして着順リストを返す
+
+        列順: 着順, 枠番, 馬番, 馬名, 所属, 性齢, 負担重量, 騎手, 調教師,
+              馬体重, 差, タイム, 着差, 上り3F, 人気
+
+        Returns:
+            [{"horse_no": int, "finish": int, "last_3f": float,
+              "time_sec": float, "weight_kg": float, "horse_weight": int}, ...]
+        """
+        results = []
+        tables = soup.select("table")
+        if not tables:
+            return results
+
+        # 成績テーブルを特定: 「着順」ヘッダを持つテーブル
+        result_table = None
+        for tbl in tables:
+            header_text = tbl.get_text()
+            if "着順" in header_text and "馬番" in header_text:
+                result_table = tbl
+                break
+
+        if not result_table:
+            return results
+
+        for row in result_table.select("tr"):
+            cells = row.select("td")
+            if len(cells) < 12:
+                continue
+
+            texts = [c.get_text(strip=True) for c in cells]
+
+            # 着順列（先頭）が数字でなければスキップ（取消・除外・ヘッダ行）
+            if not texts[0].isdigit():
+                continue
+
+            finish = int(texts[0])
+
+            # 馬番 (3列目, index=2)
+            horse_no = int(texts[2]) if texts[2].isdigit() else 0
+            if not horse_no:
+                continue
+
+            # 負担重量 (7列目, index=6)
+            weight_kg = 55.0
+            try:
+                wk = float(texts[6])
+                if 40 <= wk <= 70:
+                    weight_kg = wk
+            except (ValueError, IndexError):
+                pass
+
+            # 馬体重 (10列目, index=9): "480" or "480(+4)"
+            horse_weight = None
+            if len(texts) > 9:
+                m_hw = re.match(r"(\d{3,4})", texts[9])
+                if m_hw:
+                    hw = int(m_hw.group(1))
+                    if 200 <= hw <= 800:
+                        horse_weight = hw
+
+            # タイム (12列目, index=11): "M:SS.S" or "SS.S"
+            time_sec = 0.0
+            if len(texts) > 11:
+                m_t = re.match(r"(\d+):(\d{2}\.\d)", texts[11])
+                if m_t:
+                    time_sec = int(m_t.group(1)) * 60 + float(m_t.group(2))
+                else:
+                    m_t2 = re.match(r"(\d{2,3}\.\d)", texts[11])
+                    if m_t2:
+                        time_sec = float(m_t2.group(1))
+
+            # 上り3F (14列目, index=13)
+            last_3f = 0.0
+            if len(texts) > 13:
+                try:
+                    val = float(texts[13])
+                    if 30 <= val <= 50:
+                        last_3f = val
+                except ValueError:
+                    pass
+
+            results.append({
+                "horse_no": horse_no,
+                "finish": finish,
+                "last_3f": last_3f,
+                "time_sec": time_sec,
+                "weight_kg": weight_kg,
+                "horse_weight": horse_weight,
+            })
+
+        return results
+
+    def _parse_nar_corners(self, soup: BeautifulSoup) -> dict:
+        """コーナー通過順テーブルをパース
+
+        形式: "1角: 3,5,1,2,7,..." のような馬番の列挙
+
+        Returns:
+            {馬番: [各コーナーの通過順位], ...}
+            例: {6: [1, 1, 1, 1], 3: [3, 3, 2, 2]}
+        """
+        corners_map: Dict[int, List[int]] = {}
+
+        # ページ全体のテキストからコーナー通過順を探す
+        # "1角: 3,5,1,2,7" or "1角　3-5-1-2-7" 等の形式
+        full_text = soup.get_text()
+        corner_pattern = re.compile(
+            r"(\d)角[：:\s]+([0-9,\-\s]+)"
+        )
+
+        corner_data = []  # [(コーナー番号, [馬番順序リスト]), ...]
+        for m in corner_pattern.finditer(full_text):
+            corner_num = int(m.group(1))
+            # 馬番リスト: カンマ・ハイフン・スペース区切りに対応
+            raw = m.group(2).strip()
+            horse_nos = []
+            for token in re.split(r"[,\-\s]+", raw):
+                token = token.strip()
+                if token.isdigit():
+                    horse_nos.append(int(token))
+            if horse_nos:
+                corner_data.append((corner_num, horse_nos))
+
+        if not corner_data:
+            return corners_map
+
+        # コーナー番号順にソート
+        corner_data.sort(key=lambda x: x[0])
+
+        # 各馬番について、各コーナーでの通過順位を算出
+        # 通過順位 = リスト内での位置 + 1
+        for corner_num, horse_nos in corner_data:
+            for position, hno in enumerate(horse_nos, 1):
+                if hno not in corners_map:
+                    corners_map[hno] = []
+                corners_map[hno].append(position)
+
+        return corners_map
+
+    def _parse_nar_payouts(self, soup: BeautifulSoup) -> dict:
+        """払戻テーブルをパースしてnetkeiba互換形式で返す
+
+        券種: 単勝, 複勝, 枠連複, 馬連複, 馬連単, ワイド, 三連複, 三連単
+
+        Returns:
+            {
+                "tansho": [{"combo": str, "payout": int, "popularity": int}],
+                "fukusho": [...],
+                "wakuren": [...],
+                "umaren": [...],
+                "umatan": [...],
+                "wide": [...],
+                "sanrenpuku": [...],
+                "sanrentan": [...],
+            }
+        """
+        # 券種名 → キーのマッピング
+        bet_type_map = {
+            "単勝": "tansho",
+            "複勝": "fukusho",
+            "枠連複": "wakuren",
+            "馬連複": "umaren",
+            "馬連単": "umatan",
+            "ワイド": "wide",
+            "三連複": "sanrenpuku",
+            "三連単": "sanrentan",
+        }
+
+        payouts: dict = {}
+
+        # 払戻テーブルを特定: 「払戻」や券種名を含むテーブル
+        tables = soup.select("table")
+        payout_table = None
+        for tbl in tables:
+            tbl_text = tbl.get_text()
+            # 「単勝」と「払戻」両方を含むテーブルを探す
+            if "単勝" in tbl_text and ("払戻" in tbl_text or "複勝" in tbl_text):
+                payout_table = tbl
+                break
+
+        if not payout_table:
+            return payouts
+
+        for row in payout_table.select("tr"):
+            cells = row.select("td, th")
+            if len(cells) < 2:
+                continue
+
+            # 最初のセルから券種名を取得
+            bet_name = cells[0].get_text(strip=True)
+
+            # 券種マッピングに一致するか確認
+            bet_key = None
+            for name, key in bet_type_map.items():
+                if name in bet_name:
+                    bet_key = key
+                    break
+
+            if not bet_key:
+                continue
+
+            # 複勝・ワイドは1セル内に改行区切りで複数値の場合がある
+            # 各行: (組番, 払戻金, 人気)
+            # cells[1]=組番, cells[2]=払戻金, cells[3]=人気（の場合もある）
+
+            entries = []
+
+            if len(cells) >= 4:
+                # 標準形式: 組番 | 払戻金 | 人気
+                combos_raw = cells[1].get_text("\n", strip=True).split("\n")
+                payouts_raw = cells[2].get_text("\n", strip=True).split("\n")
+                pops_raw = cells[3].get_text("\n", strip=True).split("\n") \
+                    if len(cells) > 3 else []
+
+                for i in range(len(combos_raw)):
+                    combo = combos_raw[i].strip()
+                    if not combo:
+                        continue
+
+                    # 払戻金: 円記号・カンマ除去
+                    payout_val = 0
+                    if i < len(payouts_raw):
+                        raw_p = payouts_raw[i].strip()
+                        raw_p = raw_p.replace("円", "").replace(",", "") \
+                                     .replace("￥", "").replace("¥", "") \
+                                     .replace("、", "").strip()
+                        try:
+                            payout_val = int(raw_p)
+                        except ValueError:
+                            pass
+
+                    # 人気: "1番人気" → 1 or 数字のみ
+                    pop_val = 0
+                    if i < len(pops_raw):
+                        raw_pop = pops_raw[i].strip()
+                        m_pop = re.search(r"(\d+)", raw_pop)
+                        if m_pop:
+                            pop_val = int(m_pop.group(1))
+
+                    if payout_val > 0:
+                        entries.append({
+                            "combo": combo,
+                            "payout": payout_val,
+                            "popularity": pop_val,
+                        })
+
+            elif len(cells) >= 3:
+                # 2セル形式: 組番+払戻金 | 人気
+                combo_payout = cells[1].get_text("\n", strip=True).split("\n")
+                pops_raw = cells[2].get_text("\n", strip=True).split("\n")
+
+                for i, cp in enumerate(combo_payout):
+                    parts = re.split(r"\s+", cp.strip())
+                    if len(parts) >= 2:
+                        combo = parts[0]
+                        raw_p = parts[-1].replace("円", "").replace(",", "") \
+                                         .replace("￥", "").replace("¥", "") \
+                                         .replace("、", "").strip()
+                        try:
+                            payout_val = int(raw_p)
+                        except ValueError:
+                            continue
+
+                        pop_val = 0
+                        if i < len(pops_raw):
+                            m_pop = re.search(r"(\d+)", pops_raw[i].strip())
+                            if m_pop:
+                                pop_val = int(m_pop.group(1))
+
+                        entries.append({
+                            "combo": combo,
+                            "payout": payout_val,
+                            "popularity": pop_val,
+                        })
+
+            if entries:
+                payouts[bet_key] = entries
+
+        return payouts
+
+    # ================================================================
+    # 騎手・調教師 公式成績取得
+    # ================================================================
+
+    def fetch_rider_stats(self, license_no: str) -> Optional[Dict]:
+        """
+        keiba.go.jp RiderMark ページから騎手成績を取得する。
+
+        Args:
+            license_no: NAR公式ライセンスNo（例: "31266"）
+
+        Returns:
+            {
+                "name": "赤津和希",
+                "affiliation": "浦和",
+                "lifetime": {"nar": {"runs": 1400, "wins": 46, ...}},
+                "yearly": {"2026": {...}, "2025": {...}},
+            }
+            取得失敗時は None
+        """
+        url = f"{_BASE}/DataRoom/RiderMark?k_riderLicenseNo={license_no}"
+        self._wait()
+        try:
+            resp = self._session.get(url, timeout=15)
+            resp.encoding = "utf-8"
+            if resp.status_code != 200:
+                logger.warning("RiderMark %s: HTTP %d", license_no, resp.status_code)
+                return None
+        except Exception as e:
+            logger.warning("RiderMark %s: %s", license_no, e)
+            return None
+
+        return self._parse_rider_or_trainer_mark(resp.text, license_no, "rider")
+
+    def fetch_trainer_stats(self, license_no: str) -> Optional[Dict]:
+        """
+        keiba.go.jp TrainerMark ページから調教師成績を取得する。
+
+        Args:
+            license_no: NAR公式ライセンスNo
+
+        Returns:
+            fetch_rider_stats と同形式。取得失敗時は None
+        """
+        url = f"{_BASE}/DataRoom/TrainerMark?k_trainerLicenseNo={license_no}"
+        self._wait()
+        try:
+            resp = self._session.get(url, timeout=15)
+            resp.encoding = "utf-8"
+            if resp.status_code != 200:
+                logger.warning("TrainerMark %s: HTTP %d", license_no, resp.status_code)
+                return None
+        except Exception as e:
+            logger.warning("TrainerMark %s: %s", license_no, e)
+            return None
+
+        return self._parse_rider_or_trainer_mark(resp.text, license_no, "trainer")
+
+    def _parse_rider_or_trainer_mark(
+        self, html: str, license_no: str, role: str
+    ) -> Optional[Dict]:
+        """RiderMark/TrainerMark ページの共通パーサー
+
+        テーブル構造:
+          Table 0 (class='trainerinfo'): 所属、生年月日等
+          Table 1: 成績テーブル
+            - ヘッダー: 着別回数, 1着, 2着, 3着, 4着, 5着, 着外, 合計, 勝率, 連対率
+            - 生涯成績行: [地方競馬, 46, 69, 74, ..., 1400, 3.3%, 8.2%]
+            - 年度別セクション: [cs=10]2026年 地方競馬成績 → 人気別行 → 合計行
+        """
+        soup = BeautifulSoup(html, "html.parser")
+
+        result: Dict = {
+            "license_no": license_no,
+            "role": role,
+            "name": "",
+            "affiliation": "",
+            "lifetime": {},
+            "yearly": {},
+        }
+
+        # 名前: h4タグから取得（全角スペース入りなので除去）
+        h4_tags = soup.find_all("h4")
+        if h4_tags:
+            raw_name = h4_tags[0].get_text(strip=True)
+            result["name"] = raw_name.replace("\u3000", "").replace(" ", "")
+
+        # 所属: trainerinfo テーブルの「所属」行
+        info_table = soup.find("table", class_="trainerinfo")
+        if info_table:
+            for tr in info_table.find_all("tr"):
+                tds = tr.find_all("td")
+                if len(tds) >= 2:
+                    label = tds[0].get_text(strip=True)
+                    value = tds[1].get_text(strip=True).replace("\u3000", "").replace(" ", "")
+                    if label == "所属":
+                        result["affiliation"] = value
+
+        # 成績テーブル: 2番目のtable
+        tables = soup.find_all("table")
+        if len(tables) < 2:
+            logger.warning("%sMark %s: 成績テーブルが見つかりません", role, license_no)
+            return result
+
+        stats_table = tables[1]
+        rows = stats_table.find_all("tr")
+
+        def _safe_int(s):
+            try:
+                return int(s)
+            except (ValueError, TypeError):
+                return 0
+
+        def _safe_pct(s):
+            try:
+                return float(s.replace("%", "")) / 100.0
+            except (ValueError, TypeError):
+                return 0.0
+
+        current_year = None
+        for tr in rows:
+            tds = tr.find_all(["th", "td"])
+            if not tds:
+                continue
+
+            # セクションヘッダー（colspan=10）: "生涯成績" or "2026年 地方競馬成績"
+            if tds[0].get("colspan"):
+                section_text = tds[0].get_text(strip=True)
+                if "生涯" in section_text:
+                    current_year = "lifetime"
+                else:
+                    m = re.search(r"(\d{4})年", section_text)
+                    current_year = m.group(1) if m else None
+                continue
+
+            # ヘッダー行（th）はスキップ
+            if tds[0].name == "th":
+                continue
+
+            # データ行: [ラベル, 1着, 2着, 3着, 4着, 5着, 着外, 合計, 勝率, 連対率]
+            if len(tds) < 10:
+                continue
+
+            label = tds[0].get_text(strip=True)
+            values = [td.get_text(strip=True) for td in tds[1:]]
+
+            row_data = {
+                "label": label,
+                "win": _safe_int(values[0]),
+                "place2": _safe_int(values[1]),
+                "place3": _safe_int(values[2]),
+                "p4": _safe_int(values[3]),
+                "p5": _safe_int(values[4]),
+                "unplaced": _safe_int(values[5]),
+                "runs": _safe_int(values[6]),
+                "win_rate": _safe_pct(values[7]),
+                "rentai_rate": _safe_pct(values[8]),
+            }
+
+            if current_year == "lifetime":
+                if "地方" in label:
+                    result["lifetime"]["nar"] = row_data
+                elif "JRA" in label:
+                    result["lifetime"]["jra"] = row_data
+            elif current_year:
+                if current_year not in result["yearly"]:
+                    result["yearly"][current_year] = {"by_popularity": [], "total": None}
+                if label == "合計":
+                    result["yearly"][current_year]["total"] = row_data
+                else:
+                    result["yearly"][current_year]["by_popularity"].append(row_data)
+
+        # 複勝率を計算（公式ページにはないが、1着+2着+3着から算出）
+        nar = result["lifetime"].get("nar", {})
+        if nar and nar.get("runs", 0) > 0:
+            top3 = nar.get("win", 0) + nar.get("place2", 0) + nar.get("place3", 0)
+            nar["place3_rate"] = round(top3 / nar["runs"], 4)
+
+        return result

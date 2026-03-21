@@ -10,6 +10,7 @@ SQLite データベース ラッパー
 """
 
 import json
+import os as _os
 import sqlite3
 import threading
 from contextlib import contextmanager
@@ -1289,6 +1290,19 @@ def populate_race_log_from_predictions() -> int:
     # 既に race_log に存在する race_id を取得
     existing = {r[0] for r in conn.execute("SELECT DISTINCT race_id FROM race_log").fetchall()}
 
+    # JOIN対象のrace_id数をカウント（重いJOINクエリを回避する早期チェック）
+    joinable_count = conn.execute(
+        """SELECT COUNT(DISTINCT p.race_id)
+           FROM predictions p
+           INNER JOIN race_results r ON p.race_id = r.race_id
+           WHERE r.order_json IS NOT NULL AND r.order_json != '[]' AND r.order_json != 'null'"""
+    ).fetchone()[0]
+
+    # 全race_idが既に投入済みならJOINクエリとバックフィルをスキップ
+    if joinable_count <= len(existing):
+        print(f"[race_log投入] 新規なし (既存={len(existing):,}, 対象={joinable_count:,}) → スキップ", flush=True)
+        return 0
+
     # predictions × race_results を SQL JOIN で一括取得（Python での dict 結合を排除）
     total_pred = conn.execute("SELECT COUNT(*) FROM predictions").fetchone()[0]
     print(f"[race_log投入] 開始... 予測数={total_pred:,}件, 既投入race_id={len(existing):,}件", flush=True)
@@ -1420,7 +1434,11 @@ def populate_race_log_from_predictions() -> int:
         print(f"[race_log投入] win_odds バックフィル完了: {_updated:,}件更新", flush=True)
 
     # ── sire_name / bms_name のバックフィル（既存行を predictions.horses_json から補完）──
-    sire_null = conn.execute("SELECT COUNT(*) FROM race_log WHERE (sire_name IS NULL OR sire_name='')").fetchone()[0]
+    # 前回バックフィルで0件更新だった場合はスキップ（新規挿入があれば再実行）
+    _backfill_flag_dir = _os.path.join(_os.path.dirname(DATABASE_PATH), "cache")
+    _sire_backfill_flag = _os.path.join(_backfill_flag_dir, "_sire_backfill_done.flag")
+    _skip_sire_backfill = inserted == 0 and _os.path.exists(_sire_backfill_flag)
+    sire_null = 0 if _skip_sire_backfill else conn.execute("SELECT COUNT(*) FROM race_log WHERE (sire_name IS NULL OR sire_name='')").fetchone()[0]
     if sire_null > 0:
         print(f"[race_log投入] sire/bms 空行 {sire_null:,}件 → バックフィル開始...", flush=True)
         _sire_rids = [r[0] for r in conn.execute(
@@ -1452,9 +1470,19 @@ def populate_race_log_from_predictions() -> int:
                     continue
             conn.commit()
         print(f"[race_log投入] sire/bms バックフィル完了: {_s_updated:,}件更新", flush=True)
+        # 更新0件なら次回スキップ用フラグを作成
+        if _s_updated == 0:
+            try:
+                _os.makedirs(_backfill_flag_dir, exist_ok=True)
+                with open(_sire_backfill_flag, "w") as _f:
+                    _f.write("done")
+            except Exception:
+                pass
 
     # ── condition バックフィル（predictions JSONファイルから馬場状態を補完）──
-    cond_null = conn.execute(
+    _cond_backfill_flag = _os.path.join(_backfill_flag_dir, "_cond_backfill_done.flag")
+    _skip_cond_backfill = inserted == 0 and _os.path.exists(_cond_backfill_flag)
+    cond_null = 0 if _skip_cond_backfill else conn.execute(
         "SELECT COUNT(*) FROM race_log WHERE condition IS NULL OR condition=''"
     ).fetchone()[0]
     if cond_null > 0:
@@ -1489,6 +1517,13 @@ def populate_race_log_from_predictions() -> int:
                     _c_updated += r.rowcount
                 conn.commit()
             print(f"[race_log投入] condition バックフィル完了: {_c_updated:,}件更新", flush=True)
+            if _c_updated == 0:
+                try:
+                    _os.makedirs(_backfill_flag_dir, exist_ok=True)
+                    with open(_cond_backfill_flag, "w") as _f:
+                        _f.write("done")
+                except Exception:
+                    pass
 
     elapsed = _time.time() - t0
     print(f"[race_log投入] 完了 ({elapsed:.1f}秒) 新規={inserted:,}件挿入, スキップ={skipped:,}件", flush=True)
@@ -1553,6 +1588,65 @@ def _load_ml_name_map(cache_hours: int = 24) -> dict:
     return result
 
 
+_PERSONNEL_CACHE_DIR = _os.path.join(_os.path.dirname(DATABASE_PATH), "cache", "personnel_stats")
+
+
+def _personnel_cache_path(year_filter: str = None) -> str:
+    key = year_filter or "all"
+    return _os.path.join(_PERSONNEL_CACHE_DIR, f"personnel_stats_{key}.json")
+
+
+def _personnel_cache_valid(year_filter: str = None) -> bool:
+    """race_log 行数が変わっていなければキャッシュ有効"""
+    fpath = _personnel_cache_path(year_filter)
+    if not _os.path.exists(fpath):
+        return False
+    try:
+        with open(fpath, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        cached_count = data.get("_meta", {}).get("race_log_count", -1)
+        conn = get_db()
+        current_count = conn.execute("SELECT COUNT(*) FROM race_log").fetchone()[0]
+        return cached_count == current_count
+    except Exception:
+        return False
+
+
+def _load_personnel_cache(year_filter: str = None):
+    """ディスクキャッシュからロード。無効なら None を返す"""
+    fpath = _personnel_cache_path(year_filter)
+    if not _os.path.exists(fpath):
+        return None
+    try:
+        with open(fpath, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        cached_count = data.get("_meta", {}).get("race_log_count", -1)
+        conn = get_db()
+        current_count = conn.execute("SELECT COUNT(*) FROM race_log").fetchone()[0]
+        if cached_count != current_count:
+            return None
+        # _meta を除去して返す
+        data.pop("_meta", None)
+        return data
+    except Exception:
+        return None
+
+
+def _save_personnel_cache(result: dict, year_filter: str = None):
+    """集計結果をディスクキャッシュに保存"""
+    try:
+        _os.makedirs(_PERSONNEL_CACHE_DIR, exist_ok=True)
+        conn = get_db()
+        current_count = conn.execute("SELECT COUNT(*) FROM race_log").fetchone()[0]
+        to_save = dict(result)
+        to_save["_meta"] = {"race_log_count": current_count}
+        fpath = _personnel_cache_path(year_filter)
+        with open(fpath, "w", encoding="utf-8") as f:
+            json.dump(to_save, f, ensure_ascii=False)
+    except Exception:
+        pass
+
+
 def compute_personnel_stats_from_race_log(year_filter: str = None) -> dict:
     """
     race_log テーブル（全馬・着外含む）から騎手/調教師別成績を集計する。
@@ -1565,9 +1659,17 @@ def compute_personnel_stats_from_race_log(year_filter: str = None) -> dict:
     import time as _time
 
     t0 = _time.time()
+
+    # ── ディスクキャッシュチェック ─────────────────────────────
+    cached = _load_personnel_cache(year_filter)
+    if cached is not None:
+        year_label = f" ({year_filter}年)" if year_filter else ""
+        print(f"[DB集計] ディスクキャッシュヒット{year_label} ({_time.time()-t0:.2f}秒)", flush=True)
+        return cached
+
     conn = get_db()
 
-    # race_log に新規データがあれば差分投入する（毎回）
+    # race_log に新規データがあれば差分投入する
     cnt = conn.execute("SELECT COUNT(*) FROM race_log").fetchone()[0]
     new_rows = populate_race_log_from_predictions()
     if new_rows > 0:
@@ -2014,4 +2116,8 @@ def compute_personnel_stats_from_race_log(year_filter: str = None) -> dict:
         f"種牡馬={len(result['sire']):,}頭, 母父={len(result['bms']):,}頭",
         flush=True,
     )
+
+    # ディスクキャッシュに保存（次回起動時は即座にロード）
+    _save_personnel_cache(result, year_filter)
+
     return result

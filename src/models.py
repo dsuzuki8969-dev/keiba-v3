@@ -60,10 +60,12 @@ class PaceType(Enum):
 
 
 class RunningStyle(Enum):
-    """脚質 (F-2)"""
+    """脚質 (F-2) — 7分類"""
 
     NIGASHI = "逃げ"
     SENKOU = "先行"
+    KOUI = "好位"        # 先行と差しの間
+    CHUUDAN = "中団"     # 差しの前半
     SASHIKOMI = "差し"
     OIKOMI = "追込"
     MACURI = "マクリ"
@@ -125,6 +127,7 @@ class ConfidenceLevel(Enum):
     B = "B"
     C = "C"
     D = "D"
+    E = "E"
 
 
 class Mark(Enum):
@@ -244,6 +247,9 @@ class PastRun:
     )
     tansho_odds: Optional[float] = None   # その走の確定単勝オッズ（LGBMオッズ予測用）
     popularity_at_race: Optional[int] = None  # その走の人気順位
+    race_id: str = ""  # netkeibaのレースID（結果ページリンク用）
+    result_cname: str = ""  # JRA公式結果ページCNAME（JRA公式リンク用）
+    source: str = ""  # データ取得元 ("netkeiba"/"official"/"keibabook"/"rakuten")
 
     @property
     def relative_position(self) -> float:
@@ -252,6 +258,8 @@ class PastRun:
             pos = self.positions_corners[-1]  # 最後角＝4角相当
         else:
             pos = self.position_4c
+        if pos is None:
+            return 0.5  # ばんえい等で通過順なし → 中団デフォルト
         return pos / self.field_count if self.field_count > 0 else 0.5
 
     @property
@@ -306,6 +314,9 @@ class Horse:
 
     # 調教師の所属（美浦・栗東・大井・船橋 etc. 出馬表から取得）
     trainer_affiliation: str = ""
+
+    # データ取得元 ("netkeiba"/"official"/"keibabook"/"rakuten")
+    source: str = ""
 
     @property
     def weight_diff(self) -> float:
@@ -434,6 +445,9 @@ class TrainingRecord:
     # {"5F": xx.x, "4F": xx.x, "3F": xx.x, "2F": xx.x, "1F": xx.x}
     partner: str = ""  # 一緒に調教した馬
     position: str = ""  # 先行/後追い
+    rider: str = ""  # 調教の乗り手（助手/騎手名）
+    track_condition: str = ""  # 馬場状態（良/稍/重/不）
+    lap_count: str = ""  # 周回数（[7]等）
 
     # 強度判定(計算層が算出)
     intensity_label: str = "通常"  # 猛時計/やや速い/通常/やや軽め/軽め
@@ -594,6 +608,8 @@ class HorseEvaluation:
     ana_type: AnaType = AnaType.NONE
     tokusen_score: float = 0.0
     is_tokusen: bool = False
+    tokusen_kiken_score: float = 0.0
+    is_tokusen_kiken: bool = False
     kiken_score: float = 0.0
     kiken_type: KikenType = KikenType.NONE
 
@@ -607,6 +623,8 @@ class HorseEvaluation:
     mark: Mark = Mark.NONE
 
     odds_consistency_adj: float = 0.0  # オッズ整合性スコア (-4〜+4 pt)
+    ml_composite_adj: float = 0.0     # ML偏差値補正 (-6〜+6 pt)
+    market_anchor_adj: float = 0.0    # 市場アンカー補正 (-3〜+3 pt)
 
     venue_name: str = ""  # 競馬場名 (場別重み適用用)
 
@@ -648,6 +666,8 @@ class HorseEvaluation:
             self.horse.horse_weight,
         )
         v += self.odds_consistency_adj
+        v += self.ml_composite_adj
+        v += self.market_anchor_adj
 
         return max(DEVIATION["composite"]["min"], min(DEVIATION["composite"]["max"], v))
 

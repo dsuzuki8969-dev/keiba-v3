@@ -232,15 +232,27 @@ def parse_result_page(soup: BeautifulSoup, race_id: str) -> Optional[dict]:
 
     data1 = soup.select_one(".RaceData01")
     surface, distance, direction, condition, weather = "芝", 1600, "右", "良", ""
+    water_content = None  # ばんえい: 馬場水分量(%)
+    _is_banei = is_banei(venue_code)
     if data1:
         txt = data1.get_text()
-        sm = re.search(r"(芝|ダ|障)", txt)
+        sm = re.search(r"(芝|ダ|障|直)", txt)
         dm = re.search(r"(\d{3,4})m", txt)
         dr = re.search(r"\((右|左|直線)\)", txt)
         bm = re.search(r"馬場[：:]\s*([良稍重不]+)", txt)
         wm = re.search(r"天候[：:]\s*(\S+)", txt)
+        # ばんえい: 水分量を取得
+        water_m = re.search(r"水分量[：:]\s*([\d.]+)", txt)
+        if water_m:
+            water_content = float(water_m.group(1))
         if sm:
-            surface = "芝" if sm.group(1) == "芝" else ("障害" if sm.group(1) == "障" else "ダート")
+            s = sm.group(1)
+            if s == "芝":
+                surface = "芝"
+            elif s == "障":
+                surface = "障害"
+            else:
+                surface = "ダート"  # 「ダ」「直」→ダート
         if dm:
             distance = int(dm.group(1))
         if dr:
@@ -249,6 +261,19 @@ def parse_result_page(soup: BeautifulSoup, race_id: str) -> Optional[dict]:
             condition = bm.group(1)
         if wm:
             weather = wm.group(1)
+        # ばんえい固有: direction/conditionの補正
+        if _is_banei:
+            direction = "直"
+            # 水分量からconditionを推定（馬場:良/稍重等がないため）
+            if water_content is not None and not bm:
+                if water_content <= 1.5:
+                    condition = "良"
+                elif water_content <= 2.5:
+                    condition = "稍重"
+                elif water_content <= 3.5:
+                    condition = "重"
+                else:
+                    condition = "不良"
 
     data2 = soup.select_one(".RaceData02")
     field_count = 0
@@ -507,7 +532,7 @@ def parse_result_page(soup: BeautifulSoup, race_id: str) -> Optional[dict]:
     # --- 払戻 ---
     payouts = _parse_payouts(soup)
 
-    return {
+    result = {
         "race_id": race_id,
         "race_name": race_name,
         "date": race_date,
@@ -526,6 +551,10 @@ def parse_result_page(soup: BeautifulSoup, race_id: str) -> Optional[dict]:
         "horses": horses,
         "payouts": payouts,
     }
+    # ばんえい: 水分量を追加
+    if water_content is not None:
+        result["water_content"] = water_content
+    return result
 
 
 def _parse_payouts(soup: BeautifulSoup) -> dict:
@@ -668,7 +697,6 @@ def collect_ml_data(
                 continue
 
             # フィルタ
-            race_ids = [r for r in race_ids if not is_banei(get_venue_code_from_race_id(r))]
             if jra_only:
                 race_ids = [r for r in race_ids if get_venue_code_from_race_id(r) in JRA_CODES]
             elif nar_only:

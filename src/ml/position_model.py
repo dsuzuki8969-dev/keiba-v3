@@ -525,8 +525,14 @@ class PositionPredictor:
         if not runs:
             return None
 
-        pos_runs = [r for r in runs if r.relative_position is not None]
-        pos_vals = [r.relative_position for r in pos_runs]
+        # cornerデータがある走のみ使用（学習データと同じ条件: _relative_positionはcornerなしをNaN除外）
+        # position_4c=finish_posフォールバックは学習データに含まれないため、推論時も除外
+        pos_runs = [r for r in runs if r.positions_corners]
+        pos_vals = [r.relative_position for r in pos_runs if r.relative_position is not None]
+        # cornerデータが全くない場合のフォールバック: 全走の相対位置を使用（精度は低い）
+        if not pos_vals:
+            pos_runs = [r for r in runs if r.relative_position is not None]
+            pos_vals = [r.relative_position for r in pos_runs]
 
         f = {}
         f["venue_code"] = course.venue_code

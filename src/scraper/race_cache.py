@@ -96,6 +96,8 @@ def _serialize_past_run(r: PastRun) -> dict:
         "race_level_dev": r.race_level_dev,
         "tansho_odds": r.tansho_odds,
         "popularity_at_race": r.popularity_at_race,
+        "race_id": r.race_id,
+        "result_cname": r.result_cname,
     }
 
 
@@ -221,6 +223,8 @@ def _deserialize_past_run(d: dict) -> PastRun:
         race_level_dev=d.get("race_level_dev"),
         tansho_odds=d.get("tansho_odds"),
         popularity_at_race=d.get("popularity_at_race"),
+        race_id=d.get("race_id", ""),
+        result_cname=d.get("result_cname", ""),
     )
 
 

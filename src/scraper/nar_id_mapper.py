@@ -12,6 +12,7 @@ data/nar_id_map.json にマッピングを保存する。
 
 import json
 import os
+import sqlite3
 import sys
 from collections import defaultdict
 from datetime import date
@@ -35,14 +36,26 @@ NAR_VENUE_CODES: Set[str] = {
 NAR_ID_MAP_PATH = os.path.join(DATA_DIR, "nar_id_map.json")
 
 
-def _is_nar_id(id_str: str) -> bool:
+def _is_nar_official_id(id_str: str) -> bool:
     """
     NAR公式IDかどうかを判定する。
 
-    NAR公式ID: 数値のみで4桁以下（"450", "1234" など）
-    netkeiba ID: 5桁数値（"05203"）、a+4桁英数（"a025d"）、B+4桁（"B0063"）等
+    NAR公式ID:
+      - 騎手: k_riderLicenseNo (5桁数値, 30xxx-31xxx系, 例: 31266)
+      - 調教師: k_trainerLicenseNo (5桁数値, 11xxx系, 例: 11409)
+      - いずれも先頭が0でない純粋な数値
+
+    netkeiba ID:
+      - 騎手: "05xxx"（先頭0）, "a025d"（英数混合）
+      - 調教師: "01xxx"（先頭0）, "B0063"（英字始まり）
     """
-    return id_str.isdigit() and len(id_str) <= 4
+    if not id_str or not id_str.isdigit():
+        return False
+    # netkeiba IDは先頭0 (00xxx, 01xxx, 05xxx) — NAR公式IDは先頭0なし
+    if id_str.startswith("0"):
+        return False
+    # 3-5桁の数値 = NAR公式ID
+    return 3 <= len(id_str) <= 5
 
 
 def _is_nar_race(race_id: str) -> bool:
@@ -87,16 +100,17 @@ def _load_personnel_db() -> Tuple[Dict[str, str], Dict[str, str]]:
     jockey_nk: Dict[str, str] = {}
     for jid, info in db.get("jockeys", {}).items():
         name = info.get("jockey_name", "")
-        if name:
+        # NAR公式IDは除外（netkeiba IDのみ収集）
+        if name and not _is_nar_official_id(jid):
             jockey_nk[jid] = name
 
     trainer_nk: Dict[str, str] = {}
     for tid, info in db.get("trainers", {}).items():
         name = info.get("trainer_name", "")
-        if name:
+        if name and not _is_nar_official_id(tid):
             trainer_nk[tid] = name
 
-    logger.info(f"personnel_db 読み込み完了: 騎手 {len(jockey_nk)}件, 調教師 {len(trainer_nk)}件")
+    logger.info(f"personnel_db 読み込み完了 (netkeiba IDのみ): 騎手 {len(jockey_nk)}件, 調教師 {len(trainer_nk)}件")
     return jockey_nk, trainer_nk
 
 
@@ -174,13 +188,13 @@ def _scan_predictions() -> Tuple[
                 # 騎手
                 jid = horse.get("jockey_id", "")
                 jname = horse.get("jockey", "")
-                if jid and jname and _is_nar_id(jid):
+                if jid and jname and _is_nar_official_id(jid):
                     nar_jockeys[jid] = jname
 
                 # 調教師
                 tid = horse.get("trainer_id", "")
                 tname = horse.get("trainer", "")
-                if tid and tname and _is_nar_id(tid):
+                if tid and tname and _is_nar_official_id(tid):
                     nar_trainers[tid] = tname
 
     if error_count > 0:
@@ -192,6 +206,67 @@ def _scan_predictions() -> Tuple[
     return nar_jockeys, nar_trainers, file_count
 
 
+def _scan_race_log() -> Tuple[Dict[str, str], Dict[str, str]]:
+    """
+    race_log DBから NAR公式ID → 名前 を収集する。
+
+    NAR venue限定で、jockey_id/trainer_idが数値5桁以上（NAR公式ライセンスNo）
+    のエントリを抽出する。
+
+    Returns:
+        (nar_jockeys: {nar_id: name}, nar_trainers: {nar_id: name})
+    """
+    db_path = os.path.join(DATA_DIR, "keiba.db")
+    if not os.path.exists(db_path):
+        logger.warning(f"keiba.db が見つかりません: {db_path}")
+        return {}, {}
+
+    venue_codes = ",".join(f"'{v}'" for v in sorted(NAR_VENUE_CODES))
+    nar_jockeys: Dict[str, str] = {}
+    nar_trainers: Dict[str, str] = {}
+
+    try:
+        conn = sqlite3.connect(db_path)
+        # 騎手: NAR venue限定でNAR公式IDを収集
+        # NAR公式ID = 数値のみで5桁以上（k_riderLicenseNo 形式）
+        # netkeiba ID = "05xxx" 等のプレフィックス付き or 英数混合
+        jrows = conn.execute(
+            f"SELECT jockey_id, jockey_name, COUNT(*) as cnt "
+            f"FROM race_log "
+            f"WHERE venue_code IN ({venue_codes}) "
+            f"AND jockey_id != '' AND jockey_name != '' "
+            f"GROUP BY jockey_id, jockey_name "
+            f"ORDER BY cnt DESC"
+        ).fetchall()
+        for jid, jname, cnt in jrows:
+            if _is_nar_official_id(jid) and jid not in nar_jockeys:
+                nar_jockeys[jid] = jname
+
+        # 調教師: 同様
+        trows = conn.execute(
+            f"SELECT trainer_id, trainer_name, COUNT(*) as cnt "
+            f"FROM race_log "
+            f"WHERE venue_code IN ({venue_codes}) "
+            f"AND trainer_id != '' AND trainer_name != '' "
+            f"GROUP BY trainer_id, trainer_name "
+            f"ORDER BY cnt DESC"
+        ).fetchall()
+        for tid, tname, cnt in trows:
+            if _is_nar_official_id(tid) and tid not in nar_trainers:
+                nar_trainers[tid] = tname
+
+        conn.close()
+    except Exception as e:
+        logger.warning(f"race_log スキャン失敗: {e}")
+        return {}, {}
+
+    logger.info(
+        f"race_log走査完了: NAR騎手ID {len(nar_jockeys)}件, "
+        f"NAR調教師ID {len(nar_trainers)}件"
+    )
+    return nar_jockeys, nar_trainers
+
+
 def _match_nar_to_nk(
     nar_map: Dict[str, str],
     name_to_nkid: Dict[str, str],
@@ -200,6 +275,7 @@ def _match_nar_to_nk(
 ) -> Dict[str, dict]:
     """
     NAR ID → 名前 と 正規化名前 → netkeiba ID を突合してマッピングを構築する。
+    完全一致を優先し、失敗時は startswith 部分一致にフォールバック。
 
     Args:
         nar_map: {nar_id: 名前}
@@ -208,11 +284,12 @@ def _match_nar_to_nk(
         role: "騎手" or "調教師"（ログ用）
 
     Returns:
-        {nar_id: {"nk_id": "...", "name": "..."}}
+        {nar_id: {"nk_id": "...", "name": "...", "match_type": "exact"|"partial"}}
     """
     result: Dict[str, dict] = {}
     unmatched = 0
     collision_hits = 0
+    partial_hits = 0
 
     for nar_id, name in nar_map.items():
         norm = _normalize_name(name)
@@ -225,15 +302,47 @@ def _match_nar_to_nk(
             )
             continue
 
+        # 完全一致を優先
         nk_id = name_to_nkid.get(norm)
+        match_type = "exact"
+
+        # 部分一致フォールバック（startswith）: 短縮名 ↔ フルネーム
+        if not nk_id and len(norm) >= 2:
+            candidates = []
+            for nk_name, nk_cand in name_to_nkid.items():
+                # 同じ長さなら完全一致（既にチェック済み）なのでスキップ
+                if len(norm) == len(nk_name):
+                    continue
+                if len(norm) < len(nk_name):
+                    # NAR名が短い → netkeiba名がNAR名で始まるか
+                    if nk_name.startswith(norm):
+                        candidates.append((nk_name, nk_cand, len(norm)))
+                else:
+                    # netkeiba名が短い → NAR名がnetkeiba名で始まるか
+                    if norm.startswith(nk_name) and len(nk_name) >= 2:
+                        candidates.append((nk_name, nk_cand, len(nk_name)))
+            # 最も長い一致を採用（精度優先）
+            if candidates:
+                candidates.sort(key=lambda x: x[2], reverse=True)
+                # 複数候補がある場合はスキップ（曖昧）
+                if len(candidates) == 1 or candidates[0][2] > candidates[1][2]:
+                    nk_id = candidates[0][1]
+                    match_type = "partial"
+                    partial_hits += 1
+                    logger.debug(
+                        f"{role}部分一致: NAR_ID={nar_id} '{name}' → "
+                        f"nk_id={nk_id} ('{candidates[0][0]}')"
+                    )
+
         if nk_id:
-            result[nar_id] = {"nk_id": nk_id, "name": name}
+            result[nar_id] = {"nk_id": nk_id, "name": name, "match_type": match_type}
         else:
             unmatched += 1
             logger.debug(f"{role}マッチング失敗: NAR_ID={nar_id}, 名前='{name}'")
 
     logger.info(
-        f"{role}マッチング結果: 成功 {len(result)}件, "
+        f"{role}マッチング結果: 成功 {len(result)}件 "
+        f"(完全一致 {len(result) - partial_hits}, 部分一致 {partial_hits}), "
         f"未マッチ {unmatched}件, 同姓同名衝突 {collision_hits}件"
     )
     return result
@@ -278,8 +387,21 @@ def build_nar_id_map() -> dict:
             f"({', '.join(sorted(t_collisions)[:5])}...)"
         )
 
-    # 4. prediction JSONからNAR IDを収集
+    # 4. prediction JSON + race_log DB からNAR IDを収集
     nar_jockeys, nar_trainers, file_count = _scan_predictions()
+
+    # race_log DBからも収集（prediction未収録のNAR公式IDを補完）
+    rl_jockeys, rl_trainers = _scan_race_log()
+    for rid, rname in rl_jockeys.items():
+        if rid not in nar_jockeys:
+            nar_jockeys[rid] = rname
+    for rid, rname in rl_trainers.items():
+        if rid not in nar_trainers:
+            nar_trainers[rid] = rname
+
+    logger.info(
+        f"NAR ID収集合計: 騎手 {len(nar_jockeys)}件, 調教師 {len(nar_trainers)}件"
+    )
 
     # 5. 名前マッチングでNAR ID → netkeiba IDを構築
     new_j_map = _match_nar_to_nk(nar_jockeys, j_name_to_nkid, j_collisions, "騎手")

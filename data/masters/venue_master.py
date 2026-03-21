@@ -19,7 +19,7 @@ VENUE_NAME_TO_CODE: dict[str, str] = {
     "阪神": "09",
     "小倉": "10",
     # 地方競馬 14場
-    "帯広": "52",
+    "帯広": "65",  # netkeiba race_id上は65（SPAT4では52）
     "門別": "30",
     "盛岡": "35",
     "水沢": "36",
@@ -40,7 +40,7 @@ VENUE_NAME_TO_CODE: dict[str, str] = {
 VENUE_CODE_TO_NAME: dict[str, str] = {v: k for k, v in VENUE_NAME_TO_CODE.items()}
 # netkeiba race_id では別コードが使われるケースがある
 VENUE_CODE_TO_NAME["50"] = "園田"   # race_id上は50、SPAT4等では49
-VENUE_CODE_TO_NAME["65"] = "帯広"   # race_id上は65、SPAT4等では52
+VENUE_CODE_TO_NAME["52"] = "帯広"   # SPAT4互換（netkeiba race_idは65）
 
 # 中央競馬の場コード集合
 JRA_VENUE_CODES: frozenset[str] = frozenset(

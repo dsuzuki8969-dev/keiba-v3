@@ -1,20 +1,21 @@
 """
 カルテット・マルチソースオーケストレーター
 
-4つのデータソースを統合してフォールバックチェーンを構築する:
+5つのデータソースを統合してフォールバックチェーンを構築する:
   1. netkeiba        — 出馬表・過去走（メイン）
-  2. JRA公式         — オッズ・馬体重・公式ID
-  3. NAR公式         — オッズ・馬体重
-  4. 競馬ブック       — 調教データ・（将来: 結果・ラップ）
-  [5. 楽天競馬        — NAR サブ候補（将来）]
+  2. JRA公式         — オッズ・馬体重・公式ID・結果・ラップタイム
+  3. NAR公式         — オッズ・馬体重・結果・通過順
+  4. 競馬ブック       — 調教データ・結果・過去走
+  5. 楽天競馬        — NAR結果・通過順（最詳細）
 
 フォールバック優先度:
   出馬表:   netkeiba → JRA/NAR公式 → ブック
   ID取得:   netkeiba → JRA公式直接変換 → 馬番突合
   オッズ:   JRA/NAR公式 → ブック → netkeiba
   馬体重:   JRA/NAR公式 → ブック → netkeiba
-  結果取得: ブック → JRA/NAR公式 → netkeiba
-  ラップ:   ブック → netkeiba
+  結果取得: 公式 → netkeiba → ブック → 楽天競馬(NAR)
+  ラップ:   JRA公式(ハロンタイム) → netkeiba
+  通過順:   公式 → netkeiba → ブック → 楽天競馬(NAR)
   過去走:   netkeiba → ブック
   調教:     ブック (専有)
 """
@@ -219,26 +220,25 @@ DATASOURCE_INFO = {
     "jra_official": {
         "name": "JRA公式",
         "url": "https://www.jra.go.jp",
-        "capabilities": ["odds", "weights", "ids", "entry"],
+        "capabilities": ["odds", "weights", "ids", "entry", "results", "lap_times", "corners"],
         "coverage": ["JRA"],
     },
     "nar_official": {
         "name": "NAR公式",
         "url": "https://www.keiba.go.jp",
-        "capabilities": ["odds", "weights", "entry"],
+        "capabilities": ["odds", "weights", "entry", "results", "corners"],
         "coverage": ["NAR"],
     },
     "keibabook": {
         "name": "競馬ブック",
         "url": "https://s.keibabook.co.jp",
-        "capabilities": ["training", "entry", "results", "laps"],
+        "capabilities": ["training", "entry", "results", "past_runs"],
         "coverage": ["JRA", "NAR"],
     },
     "rakuten_keiba": {
         "name": "楽天競馬",
         "url": "https://keiba.rakuten.co.jp",
-        "capabilities": ["results", "laps", "corners"],
+        "capabilities": ["results", "corners"],
         "coverage": ["NAR"],
-        "status": "planned",
     },
 }

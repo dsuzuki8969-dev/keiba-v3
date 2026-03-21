@@ -22,10 +22,12 @@ from sklearn.metrics import (
 
 from src.ml.features import (
     FEATURE_COLS,
+    FEATURE_COLS_BANEI,
     LABEL_COL,
     build_dataset,
     load_all_races,
 )
+from data.masters.venue_master import is_banei
 
 MODEL_DIR = os.path.join(
     os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")),
@@ -310,9 +312,16 @@ def train_by_venue(
             print(f"  {vn}: データ不足 (学習={len(train_df)}, 検証={len(val_df)})  skip")
             continue
 
-        X_train = train_df[FEATURE_COLS]
+        # ばんえい（帯広）は専用特徴量セットを使用
+        vc = vdf["venue_code"].iloc[0] if "venue_code" in vdf.columns and len(vdf) > 0 else ""
+        if is_banei(str(vc)):
+            feat_cols = [c for c in FEATURE_COLS_BANEI if c in train_df.columns]
+        else:
+            feat_cols = FEATURE_COLS
+
+        X_train = train_df[feat_cols]
         y_train = train_df[LABEL_COL]
-        X_val = val_df[FEATURE_COLS]
+        X_val = val_df[feat_cols]
         y_val = val_df[LABEL_COL]
 
         train_data = lgb.Dataset(X_train, label=y_train)
@@ -346,7 +355,7 @@ def train_by_venue(
             race_hit.append(int(group.loc[top_idx, LABEL_COL] == 1))
         top1_rate = np.mean(race_hit) if race_hit else 0
 
-        importance = _calc_importance(model, FEATURE_COLS)
+        importance = _calc_importance(model, feat_cols)
         importance["venue"] = vn
 
         is_jra = vdf["is_jra"].iloc[0] if len(vdf) > 0 else 1

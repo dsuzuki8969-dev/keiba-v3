@@ -35,8 +35,8 @@ SHRINKAGE_THRESHOLD_JRA = 3000
 SHRINKAGE_THRESHOLD_NAR = 5000
 
 # 動的alpha の範囲
-ALPHA_MODEL_MIN = 0.33   # 拮抗レース時のモデル重み
-ALPHA_MODEL_MAX = 0.50   # 一強レース時のモデル重み
+ALPHA_MODEL_MIN = 0.60   # 拮抗レース時のモデル重み（H6: 0.50→0.60 グリッドサーチ最適化）
+ALPHA_MODEL_MAX = 0.80   # 一強レース時のモデル重み（H6: 0.70→0.80 グリッドサーチ最適化）
 CONFIDENCE_GAP = 0.15    # この勝率差でモデル最大信頼
 
 # 頭数区分
@@ -207,23 +207,57 @@ def blend_probabilities(
     is_jra: bool,
     field_count: int,
     stats: dict,
+    model_level: int = 2,
 ) -> None:
     """全馬の確率を統計テーブルとブレンドする（in-place 更新）
 
     動的alpha:
-    - モデル確信度(1位-2位の勝率gap)に応じてブレンド比率を調整
+    - モデル確信度(1位-2位の勝率gap + 上位3馬エントロピー)に応じてブレンド比率を調整
     - gap大(一強) → モデル重視
     - gap小(拮抗) → 統計重視
+    - Phase 2-2: model_level >= 3 のとき ALPHA_MODEL_MAX を引き上げ
     """
+    from config.settings import (
+        PIPELINE_V2_ENABLED,
+        ALPHA_MODEL_MAX_HIGH,
+        ALPHA_MODEL_HIGH_THRESHOLD,
+        CONFIDENCE_GAP_V2,
+    )
     org = "JRA" if is_jra else "NAR"
 
-    # モデル確信度の計算（1位-2位の勝率差）
+    # モデル確信度の計算（1位-2位の勝率差 + 上位3馬のエントロピー）
     all_wp = sorted([ev.win_prob for ev in evaluations], reverse=True)
     gap = (all_wp[0] - all_wp[1]) if len(all_wp) >= 2 else 0
 
-    # 動的alpha: gap が大きいほどモデル信頼度を上げる
-    confidence = min(1.0, gap / CONFIDENCE_GAP)
-    alpha_model = ALPHA_MODEL_MIN + confidence * (ALPHA_MODEL_MAX - ALPHA_MODEL_MIN)
+    if PIPELINE_V2_ENABLED:
+        # Phase 2-2: 上位3馬の確率分布エントロピーを考慮
+        # エントロピーが低い（集中）→ 確信度UP、エントロピーが高い（分散）→ 確信度DOWN
+        import math
+        top3 = all_wp[:min(3, len(all_wp))]
+        top3_sum = sum(top3) or 1.0
+        top3_norm = [p / top3_sum for p in top3]
+        entropy = -sum(p * math.log(p + 1e-10) for p in top3_norm)
+        max_entropy = math.log(len(top3))  # 均等分布時の最大エントロピー
+        # エントロピー比: 0(集中)〜1(均等) → 確信度補正: 集中時にブースト
+        entropy_ratio = entropy / max_entropy if max_entropy > 0 else 1.0
+        concentration_boost = max(0, 1.0 - entropy_ratio)  # 0〜1
+
+        # gap + エントロピーの複合確信度（gap 70% + concentration 30%）
+        gap_confidence = min(1.0, gap / CONFIDENCE_GAP_V2)
+        confidence = 0.7 * gap_confidence + 0.3 * concentration_boost
+
+        # model_level依存のALPHA_MODEL_MAX
+        if model_level >= ALPHA_MODEL_HIGH_THRESHOLD:
+            alpha_max = ALPHA_MODEL_MAX_HIGH
+        else:
+            alpha_max = ALPHA_MODEL_MAX
+    else:
+        # 旧パイプライン互換
+        confidence = min(1.0, gap / CONFIDENCE_GAP)
+        alpha_max = ALPHA_MODEL_MAX
+
+    # 動的alpha: confidence が大きいほどモデル信頼度を上げる
+    alpha_model = ALPHA_MODEL_MIN + confidence * (alpha_max - ALPHA_MODEL_MIN)
     alpha_stats = 1.0 - alpha_model
     # 統計内の分配: 競馬場60%、全体40%
     alpha_org = alpha_stats * 0.4
@@ -342,23 +376,54 @@ def _normalize_dict_probs(horses: List[dict], field_count: int) -> None:
             h["place3_prob"] = h.get("place3_prob", 0) / total_p3 * target_p3
 
 
+def _apply_ml_composite_adj(horses: List[dict]) -> None:
+    """win_probから偏差値スケールのML補正を計算し、compositeに反映する"""
+    win_probs = [h.get("win_prob", 0) for h in horses]
+    n = len(win_probs)
+    if n < 3:
+        return
+    avg_wp = sum(win_probs) / n
+    std_wp = (sum((p - avg_wp) ** 2 for p in win_probs) / n) ** 0.5
+    if std_wp < 0.001:
+        return
+    for h in horses:
+        z = (h.get("win_prob", 0) - avg_wp) / std_wp
+        ml_adj = max(-6.0, min(6.0, z * 2.5))  # チューニング結果: 元の値が最適
+        # compositeを更新（元値 + ML補正）
+        # pred.jsonのcompositeは既にml_composite_adjを含むため、差し引いて素のbaseを算出
+        if "_composite_base" not in h:
+            existing_adj = h.get("ml_composite_adj", 0)
+            h["_composite_base"] = h.get("composite", 50.0) - existing_adj
+        h["ml_composite_adj"] = ml_adj
+        h["composite"] = max(30.0, min(70.0, h["_composite_base"] + ml_adj))
+
+
 def reassign_marks_dict(horses: List[dict]) -> None:
     """dict版の印再割り当て（リアルタイムオッズ更新用）
 
     composite 降順で ◉/◎/○/▲/△/★ を付与。
     ☆(穴馬)・×(危険馬)は維持。
+    注: compositeはpred.jsonの値をそのまま使用（エンジンで正しく計算済み）。
+    _apply_ml_composite_adjは呼ばない（dashboardではwin_probが人気統計ブレンド後のため
+    エンジンのStep 5.6時点と異なる値になり、二重適用や不整合の原因になる）。
     """
-    MARK_SEQUENCE = ["◎", "○", "▲", "△", "★"]
-    TEKIPAN_GAP = 3.0  # 1位-2位のcomposite差がこれ以上なら◉
+    MARK_SEQUENCE = ["○", "▲", "△", "★"]
+    TEKIPAN_GAP = 4.0  # 1位-2位のcomposite差がこれ以上なら◉（H3: 3.0→4.0に厳格化）
 
-    # 既存の☆/×をメモ
+    # 既存の☆/×をメモ（×は現在のオッズ条件を再検証）
     special_marks = {}
     for h in horses:
         m = h.get("mark", "")
-        if m in ("☆", "×"):
+        if m == "☆":
             special_marks[h.get("horse_no")] = m
+        elif m == "×":
+            # ×印はオッズ10倍未満 & 3人気以内の場合のみ維持
+            _odds = h.get("odds") or h.get("predicted_tansho_odds") or 999
+            _pop = h.get("popularity") or 99
+            if _odds < 10.0 and _pop <= 3:
+                special_marks[h.get("horse_no")] = m
 
-    # composite 降順ソート（総合指数順で印付け）
+    # composite 降順ソート
     sorted_h = sorted(horses, key=lambda h: h.get("composite", 0), reverse=True)
 
     # 全印クリア
@@ -377,10 +442,12 @@ def reassign_marks_dict(horses: List[dict]) -> None:
         if h.get("mark"):
             continue
         if mark_idx == 0:
-            # 1位: ◉ or ◎
+            # 1位: ◉ or ◎ — ◉はgap≥4.0 AND win_prob≥30%
             c1 = h.get("composite", 0)
             c2 = sorted_h[1].get("composite", 0) if len(sorted_h) > 1 else 0
-            h["mark"] = "◉" if (c1 - c2) >= TEKIPAN_GAP else "◎"
+            wp = h.get("win_prob", 0)
+            is_tekipan = (c1 - c2) >= TEKIPAN_GAP and wp >= 0.30
+            h["mark"] = "◉" if is_tekipan else "◎"
             mark_idx += 1
         elif mark_idx <= len(MARK_SEQUENCE):
             h["mark"] = MARK_SEQUENCE[mark_idx - 1]

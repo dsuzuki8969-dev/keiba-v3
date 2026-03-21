@@ -6,6 +6,8 @@ import math
 from typing import Dict, List, Optional, Tuple
 
 from config.settings import (
+    MAX_FORMATION_TICKETS,
+    MIN_FORMATION_EV,
     ODDS_DEDUCTION,
     PAYOUT_RATES,
     STAKE_DEFAULT,
@@ -302,7 +304,7 @@ def generate_tickets(
             )
         )
         odds3  = estimate_sanrenpuku_odds(eff_a, eff_b, eff_c, n, is_jra)  # K-2
-        raw_prob3 = calc_sanrenpuku_prob(honmei.place3_prob, ev_b.place3_prob, ev_c.place3_prob, n)
+        raw_prob3 = calc_sanrenpuku_prob(honmei.win_prob, ev_b.win_prob, ev_c.win_prob, n)
         prob3 = raw_prob3 / s_norm  # 正規化: 全組み合わせΣ=1.0
         ev_val3 = calc_expected_value(prob3, odds3)
         tickets.append({
@@ -458,34 +460,118 @@ def allocate_stakes(
 # ============================================================
 
 
-def _calc_confidence_score(evaluations: List[HorseEvaluation]) -> float:
+def _calc_confidence_score(evaluations: List[HorseEvaluation], is_jra: bool = True, is_banei: bool = False) -> float:
     """
-    自信度スコアを算出（0.0 ~ 1.0）。
-    23,666レースの過去予想 vs 実結果から設計。
-    スコアが高い ↔ 的中率が高い（ワイド・3連複で完全単調）。
+    自信度スコアを算出（0.0 ~ 1.0）— 多信号一致方式。
 
-    主要因子:
-    - field_count（頭数）: 最強の予測因子。少頭数ほど的中しやすい
-    - gap（1位-2位のcomposite差）: 本命の優位度
-    - gap23（2位-3位のcomposite差）: 上位3頭の分離度
+    旧方式: 頭数45% + gap35% + gap23_20% → 頭数依存でSS<S<A序列破綻
+    新方式: 複数の独立した予測信号が同じ馬を指しているかで自信度を判定。
+    頭数因子を除去し、「予測の確からしさ」を直接測定する。
+
+    7つの信号（Phase 3-2: ML確信度追加）:
+    1. composite_gap (15%): 1位-2位のcomposite差 — 本命の優位度
+    2. ml_agreement (20%): ML予測1位とcomposite1位の一致 — モデル間合意
+    3. gap23 (10%): 2位-3位のcomposite差 — 上位3頭の分離度
+    4. value_ratio (15%): ML勝率/オッズ示唆確率 — 過小評価度（バリュー）
+    5. multi_factor (15%): ability/pace/courseの1位が同一馬 — 因子間合意
+    6. reliability (10%): 上位馬のデータ信頼度 — 予測の確実性
+    7. ml_confidence (15%): ML生値の1位-2位gap — ブレンド前の確信度
     """
     sorted_ev = sorted(evaluations, key=lambda e: e.composite, reverse=True)
     if len(sorted_ev) < 3:
-        # 2頭以下は最高自信度（ほぼ当たる）
         return 1.0 if len(sorted_ev) >= 1 else 0.0
 
-    fc = len(sorted_ev)
-    gap = sorted_ev[0].composite - sorted_ev[1].composite
-    gap23 = sorted_ev[1].composite - sorted_ev[2].composite
+    top = sorted_ev[0]
+    top_id = top.horse.horse_id
 
-    # 各因子を 0-1 に正規化
-    gap_norm = min(gap / 8.0, 1.0)
-    fc_norm = max(0.0, (16.0 - fc) / 12.0)
+    # 1. composite差 (20%) — JRA:4pt/NAR:8pt以上で満点
+    from config.settings import CONFIDENCE_GAP_DIVISOR_JRA, CONFIDENCE_GAP_DIVISOR_NAR
+    gap = sorted_ev[0].composite - sorted_ev[1].composite
+    gap_divisor = CONFIDENCE_GAP_DIVISOR_JRA if is_jra else CONFIDENCE_GAP_DIVISOR_NAR
+    gap_norm = min(gap / gap_divisor, 1.0)
+
+    # 2. ML一致度 (25%) — win_prob 1位がcomposite 1位と同じか
+    sorted_wp = sorted(evaluations, key=lambda e: e.win_prob, reverse=True)
+    wp_top_id = sorted_wp[0].horse.horse_id
+    if wp_top_id == top_id:
+        ml_agreement = 1.0
+    elif len(sorted_wp) >= 2 and sorted_wp[1].horse.horse_id == top_id:
+        ml_agreement = 0.5  # ML2位=composite1位 → 部分一致
+    else:
+        ml_agreement = 0.0
+
+    # 3. 2-3位差 (10%) — 4pt以上で満点
+    gap23 = sorted_ev[1].composite - sorted_ev[2].composite
     gap23_norm = min(gap23 / 4.0, 1.0)
 
-    # 重み: 頭数 45%, 1-2位差 35%, 2-3位差 20%
-    # （23,666R検証: ワイド完全単調、3連複 Q10/Q1 = 5.6倍）
-    return gap_norm * 0.35 + fc_norm * 0.45 + gap23_norm * 0.20
+    # 4. バリュー指標 (20%) — ML勝率がオッズ示唆確率より高い=過小評価
+    eff_odds = top.effective_odds
+    if eff_odds and eff_odds > 1.0 and top.win_prob > 0:
+        odds_implied_prob = 1.0 / eff_odds
+        value_ratio = top.win_prob / odds_implied_prob
+        # value_ratio 1.0=フェアバリュー、1.5以上=大幅過小評価
+        value_score = min(max((value_ratio - 1.0) / 0.5, 0.0), 1.0)
+    else:
+        value_score = 0.5  # オッズ不明時は中立
+
+    # 5. 因子間合意 (15%) — ability/pace/courseの各1位が同一馬か
+    top_ability_id = max(evaluations, key=lambda e: e.ability.total).horse.horse_id
+    top_course_id = max(evaluations, key=lambda e: e.course.total).horse.horse_id
+    if is_banei:
+        # ばんえい: pace_total=50固定で全馬同値 → pace因子を除外し2因子で判定
+        factor_match = sum(1 for fid in [top_ability_id, top_course_id] if fid == top_id)
+        multi_factor = 1.0 if factor_match == 2 else (0.6 if factor_match == 1 else 0.0)
+    else:
+        top_pace_id = max(evaluations, key=lambda e: e.pace.total).horse.horse_id
+        factor_match = sum(1 for fid in [top_ability_id, top_pace_id, top_course_id] if fid == top_id)
+        if factor_match == 3:
+            multi_factor = 1.0
+        elif factor_match == 2:
+            multi_factor = 0.6
+        else:
+            multi_factor = 0.0
+
+    # 6. 信頼度 (10%) — 上位3馬の信頼度A率
+    from src.models import Reliability
+    top3_reliable = sum(
+        1 for ev in sorted_ev[:3]
+        if ev.ability.reliability == Reliability.A
+    )
+    reliability_norm = top3_reliable / 3.0
+
+    # 7. ML確信度 (15%) — ML生値の1位-2位gap（Phase 3-2）
+    from config.settings import PIPELINE_V2_ENABLED
+    if PIPELINE_V2_ENABLED:
+        raw_ml_top = getattr(sorted_ev[0], '_raw_lgbm_prob', None)
+        raw_ml_2nd = getattr(sorted_ev[1], '_raw_lgbm_prob', None) if len(sorted_ev) >= 2 else None
+        if raw_ml_top is not None and raw_ml_2nd is not None:
+            ml_raw_gap = raw_ml_top - raw_ml_2nd
+            # NAR: gap 0.10以上で満点（ML生値は正規化前なので差が小さい）
+            ml_confidence = min(ml_raw_gap / 0.10, 1.0) if ml_raw_gap > 0 else 0.0
+        else:
+            ml_confidence = 0.5  # ML生値不明時は中立
+
+        # Phase 3-2: 7信号加重合成（重み再配分）
+        score = (
+            gap_norm * 0.15
+            + ml_agreement * 0.20
+            + gap23_norm * 0.10
+            + value_score * 0.15
+            + multi_factor * 0.15
+            + reliability_norm * 0.10
+            + ml_confidence * 0.15
+        )
+    else:
+        # 旧パイプライン: 6信号
+        score = (
+            gap_norm * 0.20
+            + ml_agreement * 0.25
+            + gap23_norm * 0.10
+            + value_score * 0.20
+            + multi_factor * 0.15
+            + reliability_norm * 0.10
+        )
+    return score
 
 
 def judge_confidence(
@@ -493,38 +579,79 @@ def judge_confidence(
     pace_reliability: ConfidenceLevel,
     predicted_umaren: Optional[List] = None,
     predicted_sanrenpuku: Optional[List] = None,
+    is_jra: bool = True,
+    is_banei: bool = False,
 ) -> ConfidenceLevel:
     """
-    5-3 自信度判定（データドリブン版）。
+    5-3 自信度判定（多信号一致方式・JRA/NAR分離）。
 
-    23,666レースの過去予想実績から較正。
-    スコア = f(頭数, 1-2位差, 2-3位差) → 6段階。
+    旧方式: 頭数依存(45%)でSS<S序列破綻 → オッズ一致(20%)で人気馬偏重
+    新方式: ML・ルール・バリューの多信号一致度でレースの予測確信度を判定。
+    JRA/NARで閾値を分離し、JRA大頭数環境でも適切に自信度が分布するよう較正。
 
-    較正結果（案B: SS厳選型）:
-      SS (score≥0.70):  5.8%  ◎1着22.2%  ワイド25.0%  3連複7.9%
-      S  (0.55-0.70) : 19.0%  ◎1着19.4%  ワイド18.6%  3連複5.8%
-      A  (0.42-0.55) : 25.8%  ◎1着16.2%  ワイド16.4%  3連複4.8%
-      B  (0.30-0.42) : 24.9%  ◎1着13.5%  ワイド12.6%  3連複3.2%
-      C  (0.20-0.30) : 14.6%  ◎1着12.9%  ワイド10.6%  3連複2.6%
-      D  (score<0.20):  9.9%  ◎1着11.6%  ワイド 8.7%  3連複1.4%
+    SS: score≥0.70 かつ硬性条件（ML/バリュー/gap）クリア
+    S～E: JRA/NAR別閾値で判定
     """
     if not evaluations:
-        return ConfidenceLevel.D
+        return ConfidenceLevel.E
 
-    score = _calc_confidence_score(evaluations)
+    from config.settings import (
+        CONFIDENCE_SS_GAP_JRA, CONFIDENCE_SS_GAP_NAR,
+        CONFIDENCE_SS_VALUE_JRA, CONFIDENCE_SS_VALUE_NAR,
+        CONFIDENCE_THRESHOLDS_JRA, CONFIDENCE_THRESHOLDS_NAR,
+        CONFIDENCE_ODDS_GATE_ENABLED,
+        CONFIDENCE_MIN_ODDS_SS, CONFIDENCE_MIN_ODDS_S,
+    )
 
-    if score >= 0.70:
-        return ConfidenceLevel.SS
-    elif score >= 0.55:
+    # ---- Phase 12: JRA/NAR統一 7信号スコア方式 ----
+    score = _calc_confidence_score(evaluations, is_jra=is_jra, is_banei=is_banei)
+    thresholds = CONFIDENCE_THRESHOLDS_JRA if is_jra else CONFIDENCE_THRESHOLDS_NAR
+    ss_gap_threshold = CONFIDENCE_SS_GAP_JRA if is_jra else CONFIDENCE_SS_GAP_NAR
+    ss_value_threshold = CONFIDENCE_SS_VALUE_JRA if is_jra else CONFIDENCE_SS_VALUE_NAR
+
+    # SS判定: スコア≥0.65 + 硬性条件(2/3) + オッズゲート
+    if score >= 0.65:
+        sorted_comp = sorted(evaluations, key=lambda e: e.composite, reverse=True)
+        sorted_wp = sorted(evaluations, key=lambda e: e.win_prob, reverse=True)
+        top_ev = sorted_comp[0]
+
+        ml_match = sorted_comp[0].horse.horse_id == sorted_wp[0].horse.horse_id
+        eff_odds = top_ev.effective_odds
+        if eff_odds and eff_odds > 1.0 and top_ev.win_prob > 0:
+            value_ratio = top_ev.win_prob / (1.0 / eff_odds)
+            value_ok = value_ratio >= ss_value_threshold
+        else:
+            value_ok = True
+        gap_check = (sorted_comp[0].composite - sorted_comp[1].composite) >= ss_gap_threshold if len(sorted_comp) >= 2 else True
+
+        conditions_met = sum([ml_match, value_ok, gap_check])
+        if conditions_met >= 2:
+            # オッズゲート — 低オッズはS降格（ROI保護）
+            if CONFIDENCE_ODDS_GATE_ENABLED:
+                _eff = top_ev.effective_odds
+                if _eff is not None and _eff < CONFIDENCE_MIN_ODDS_SS:
+                    return ConfidenceLevel.S
+            return ConfidenceLevel.SS
+        else:
+            return ConfidenceLevel.S
+    elif score >= thresholds["S"]:
+        # Phase 12: オッズゲート — 超低オッズはAに降格
+        if CONFIDENCE_ODDS_GATE_ENABLED:
+            sorted_comp = sorted(evaluations, key=lambda e: e.composite, reverse=True)
+            _eff = sorted_comp[0].effective_odds if sorted_comp else None
+            if _eff is not None and _eff < CONFIDENCE_MIN_ODDS_S:
+                return ConfidenceLevel.A
         return ConfidenceLevel.S
-    elif score >= 0.42:
+    elif score >= thresholds["A"]:
         return ConfidenceLevel.A
-    elif score >= 0.30:
+    elif score >= thresholds["B"]:
         return ConfidenceLevel.B
-    elif score >= 0.20:
+    elif score >= thresholds["C"]:
         return ConfidenceLevel.C
-    else:
+    elif score >= thresholds["D"]:
         return ConfidenceLevel.D
+    else:
+        return ConfidenceLevel.E
 
 
 # ============================================================
@@ -536,14 +663,28 @@ def should_buy_race(
     tickets: List[Dict],
     confidence: ConfidenceLevel,
     evaluations: List[HorseEvaluation],
+    is_banei: bool = False,
 ) -> Tuple[bool, str]:
     """5-4: 見送り条件チェック"""
 
     if not tickets:
         return False, "期待値100%超えの買い目なし"
 
-    if confidence == ConfidenceLevel.D:
-        return False, "自信度D"
+    # ばんえい: 予測精度に応じて自信度フィルタ
+    if is_banei:
+        from config.settings import BANEI_MIN_CONFIDENCE
+        _banei_allowed = {
+            "SS": (ConfidenceLevel.SS,),
+            "S": (ConfidenceLevel.SS, ConfidenceLevel.S),
+            "A": (ConfidenceLevel.SS, ConfidenceLevel.S, ConfidenceLevel.A),
+            "B": (ConfidenceLevel.SS, ConfidenceLevel.S, ConfidenceLevel.A, ConfidenceLevel.B),
+        }
+        allowed = _banei_allowed.get(BANEI_MIN_CONFIDENCE, (ConfidenceLevel.SS, ConfidenceLevel.S))
+        if confidence not in allowed:
+            return False, f"ばんえい: 自信度{confidence.value}（{BANEI_MIN_CONFIDENCE}以上のみ）"
+
+    if confidence in (ConfidenceLevel.D, ConfidenceLevel.E):
+        return False, f"自信度{confidence.value}"
 
     sorted_ev = sorted(evaluations, key=lambda e: e.composite, reverse=True)
 
@@ -595,32 +736,97 @@ def classify_buy_pattern(evaluations: List[HorseEvaluation]) -> str:
 # フォーメーション買い目生成
 # ============================================================
 
+# Stern補正係数: 人気馬の三連複確率を抑制し穴馬の確率を引き上げる。
+# γ < 1.0 で人気-穴バイアスを補正。文献値 0.81-0.90、三連複市場は 0.87 が実績良好。
+_TRIO_GAMMA = 0.87
+
+
+def _harville_trio_prob(pa: float, pb: float, pc: float) -> float:
+    """Harvilleモデルによる三連複確率（3頭がトップ3に入る確率、順不同）。
+
+    P(A,B,C top3) = Σ(6 permutations) P(X 1st) × P(Y 2nd|X) × P(Z 3rd|X,Y)
+    """
+    prob = 0.0
+    for x, y, z in [(pa, pb, pc), (pa, pc, pb), (pb, pa, pc),
+                     (pb, pc, pa), (pc, pa, pb), (pc, pb, pa)]:
+        d1 = max(1.0 - x, 1e-6)
+        d2 = max(d1 - y, 1e-6)
+        prob += x * (y / d1) * (z / d2)
+    return prob
+
 
 def estimate_sanrenpuku_odds(
-    odds_a: float, odds_b: float, odds_c: float, field_count: int, is_jra: bool = True
+    odds_a: float, odds_b: float, odds_c: float, field_count: int, is_jra: bool = True,
+    *, _all_odds: Optional[List[float]] = None, _recip_sum: float = 0.0,
 ) -> float:
-    """三連複オッズ推定: 単勝A×B×C ÷ 頭数依存係数 × 払戻率補正 (K-2: JRA/NAR別)"""
-    if field_count <= 8:
-        factor = 12.0
-    elif field_count <= 10:
-        factor = 16.0
-    elif field_count <= 12:
-        factor = 20.0
-    elif field_count <= 14:
-        factor = 24.0
-    else:
-        factor = 28.0
-    payout_win        = PAYOUT_RATES["jra_win"        if is_jra else "nar_win"]
-    payout_sanrenpuku = PAYOUT_RATES["jra_sanrenpuku" if is_jra else "nar_sanrenpuku"]
-    deduction = payout_sanrenpuku / payout_win
-    return round(max(2.0, odds_a * odds_b * odds_c / factor * deduction), 1)
+    """三連複オッズ推定（Harvilleモデル + Stern補正）。
+
+    _all_odds が指定された場合、全馬の単勝オッズから Harville モデルで
+    高精度に三連複確率を計算し、そこからオッズを導出する。
+    Stern補正（γ=0.87）で人気-穴バイアスを調整。
+
+    _all_odds: 全出走馬の単勝オッズリスト（推奨。netkeiba予想オッズ等）
+    _recip_sum: 後方互換用（Dutch Book正規化、_all_odds優先）
+    """
+    payout = PAYOUT_RATES["jra_sanrenpuku" if is_jra else "nar_sanrenpuku"]
+    oa = max(odds_a, 1.1)
+    ob = max(odds_b, 1.1)
+    oc = max(odds_c, 1.1)
+
+    if _all_odds and len(_all_odds) >= 3:
+        # ── Harvilleモデル + Stern補正 ──
+        gamma = _TRIO_GAMMA
+        # Step 1: 全馬の逆オッズにγ乗 → 再正規化して勝利確率を得る
+        adj = [(1.0 / max(o, 1.1)) ** gamma for o in _all_odds]
+        total_adj = sum(adj) or 1.0
+        # Step 2: 対象3頭の補正後確率
+        pa = ((1.0 / oa) ** gamma) / total_adj
+        pb = ((1.0 / ob) ** gamma) / total_adj
+        pc = ((1.0 / oc) ** gamma) / total_adj
+        # Step 3: 6順列のHarville確率を合算
+        trio_prob = _harville_trio_prob(pa, pb, pc)
+        return round(max(2.0, payout / max(trio_prob, 1e-12)), 1)
+
+    if _recip_sum > 0:
+        # ── Dutch Book正規化（後方互換フォールバック）──
+        prod = oa * ob * oc
+        market_prob = (1.0 / prod) / _recip_sum
+        return round(max(2.0, payout / market_prob), 1)
+
+    # ── 最終フォールバック: 頭数ベースHarville概算 ──
+    # _all_odds がない場合、残り馬を平均オッズで補完してHarville
+    inv_a, inv_b, inv_c = 1.0 / oa, 1.0 / ob, 1.0 / oc
+    known_sum = inv_a + inv_b + inv_c
+    # 単勝市場の総overround ≈ 1/payout_rate（JRA: ~1.25, NAR: ~1.33）
+    payout_win = PAYOUT_RATES["jra_win" if is_jra else "nar_win"]
+    total_overround = 1.0 / payout_win
+    remaining = max(total_overround - known_sum, 0.01)
+    n_rest = max(field_count - 3, 1)
+    inv_rest = remaining / n_rest  # 残り馬1頭あたりの平均逆オッズ
+    gamma = _TRIO_GAMMA
+    adj_all = [inv_a ** gamma, inv_b ** gamma, inv_c ** gamma]
+    adj_all += [inv_rest ** gamma] * n_rest
+    total_adj = sum(adj_all) or 1.0
+    pa = (inv_a ** gamma) / total_adj
+    pb = (inv_b ** gamma) / total_adj
+    pc = (inv_c ** gamma) / total_adj
+    trio_prob = _harville_trio_prob(pa, pb, pc)
+    return round(max(2.0, payout / max(trio_prob, 1e-12)), 1)
 
 
-def calc_sanrenpuku_prob(prob_a: float, prob_b: float, prob_c: float, field_count: int) -> float:
-    """三連複出目確率の近似計算"""
-    n = field_count
-    correction = n * (n - 1) / max(1.0, (n - 2) * (n - 3) * 0.5)
-    return min(prob_a * prob_b * prob_c * correction, 0.99)
+def calc_sanrenpuku_prob(wp_a: float, wp_b: float, wp_c: float, field_count: int) -> float:
+    """三連複出現確率の計算（Harvilleモデル・win_prob版）
+
+    wp_a,b,c は win_prob（勝率、全馬合計≈1.0）を渡すこと。
+    place3_prob（複勝率、全馬合計≈3.0）を渡すと分布が平坦化し、
+    全組み合わせが同率（≈1/C(n,3)）になるバグの原因となる。
+
+    P(trio) = Σ(6perm) P(X 1st) × P(Y 2nd|X) × P(Z 3rd|X,Y)
+    """
+    pa = min(max(wp_a, 0.001), 0.95)
+    pb = min(max(wp_b, 0.001), 0.95)
+    pc = min(max(wp_c, 0.001), 0.95)
+    return min(_harville_trio_prob(pa, pb, pc), 0.99)
 
 
 _MARK_ORDER = {"◉": 0, "◎": 1, "○": 2, "▲": 3, "△": 4, "★": 5, "☆": 6, "×": 7}
@@ -635,72 +841,101 @@ def _dedup_sort(ev_list: List[HorseEvaluation]) -> List[HorseEvaluation]:
     return sorted(result, key=lambda e: (_MARK_ORDER.get(e.mark.value, 9), e.horse.horse_no))
 
 
+def _detect_clusters(comps: List[float], threshold: float) -> List[List[float]]:
+    """composite値リストを断層(threshold超)で分割してクラスタリング"""
+    if not comps:
+        return []
+    clusters: List[List[float]] = [[comps[0]]]
+    for i in range(1, len(comps)):
+        if comps[i - 1] - comps[i] > threshold:
+            clusters.append([])
+        clusters[-1].append(comps[i])
+    return clusters
+
+
 def build_formation_columns(
     evaluations: List[HorseEvaluation],
-    coverage_grade: str,
+    confidence: str,
 ) -> Tuple[List[HorseEvaluation], List[HorseEvaluation], List[HorseEvaluation]]:
-    """フォーメーションの1・2・3列目を決定する（出現率グレードベース）。
+    """P5統合法: 断層+印+自信度でフォーメーション1・2・3列目を決定する。
 
-    coverage_grade（三連複+馬連 上位5点 出現率合計）に応じて各列の最大頭数を制御。
-    馬の選択は composite 順 + marks（断層を内包）を使用。
-
-    Grade → (col1_max, col2_max, col3_max):
-      SS(69%+): 2, 4, 6   S(57%+): 2, 4, 8
-      A(44%+) : 2, 5, 9   B(34%+): 2, 6, 12
-      C(<34%) : 1, 3, 6
+    confidence（自信度 SS〜E 7段階）に応じて指数差閾値と各列の最大頭数を制御。
+    col1: クラスター断層の最上位グループ + ◉/◎
+    col2: col1 + 断層2段目 + ○/▲（指数差g2以内）
+    col3: col2 + 複勝率10%+かつEV 0.8+（指数差g3以内）
     """
-    GRADE_CAPS = {
-        "SS": (2, 4, 6),
-        "S":  (2, 4, 8),
-        "A":  (2, 5, 9),
-        "B":  (2, 6, 12),
-        "C":  (1, 3, 6),
+    import statistics as _stats
+
+    # 自信度別パラメータ: (g2, g3, cap1, cap2, cap3)
+    #   g2: col2の指数差閾値  g3: col3の指数差閾値
+    #   cap1/cap2/cap3: 各列の最大頭数
+    CONF_PARAMS = {
+        "SS": (10, 18, 2, 5, 8),
+        "S":  (9, 16, 2, 5, 8),
+        "A":  (8, 14, 2, 5, 9),
+        "B":  (10, 16, 2, 6, 10),
+        "C":  (12, 18, 2, 6, 10),
+        "D":  (6, 8, 2, 4, 6),
+        "E":  (6, 8, 2, 4, 6),
     }
-    cap1, cap2, cap3 = GRADE_CAPS.get(coverage_grade, (2, 5, 9))
+    g2, g3, cap1, cap2, cap3 = CONF_PARAMS.get(confidence, (8, 14, 2, 5, 9))
 
     safe_evs = sorted(
-        [ev for ev in evaluations if ev.kiken_type == KikenType.NONE],
+        [ev for ev in evaluations if not getattr(ev, "is_tokusen_kiken", False)],
         key=lambda e: -e.composite,
     )
-    if not safe_evs:
+    if len(safe_evs) < 3:
         return [], [], []
 
-    # col1（軸）: ◉/◎ のみ、cap1 まで
-    col1 = [e for e in safe_evs if e.mark in (Mark.TEKIPAN, Mark.HONMEI)][:cap1]
-    if not col1:
-        return [], [], []
+    comps = [e.composite for e in safe_evs]
+    sigma = _stats.stdev(comps) if len(comps) > 1 else 5.0
+    threshold = max(2.0, sigma * 0.5)
+    cls = _detect_clusters(comps, threshold)
+    tc = comps[0]
 
-    col1_ids = {id(e) for e in col1}
+    # ── col1: クラスター最上位 + ◉/◎ ──
+    n1 = len(cls[0]) if cls else 2
+    c1_idx = set(range(min(n1, cap1)))
+    for i, e in enumerate(safe_evs):
+        if e.mark in (Mark.TEKIPAN, Mark.HONMEI):
+            c1_idx.add(i)
+    col1 = [safe_evs[i] for i in sorted(c1_idx) if i < len(safe_evs)][:cap1]
 
-    # col2（相手）: col1 + ○/▲ を優先追加、不足時は composite 順で補充、cap2 まで
-    col2 = list(col1)
-    for e in safe_evs:
-        if len(col2) >= cap2:
-            break
-        if id(e) not in col1_ids and e.mark in (Mark.TAIKOU, Mark.TANNUKE):
-            col2.append(e)
-    # 不足時: composite 順で残りを補充（col1 除く）
-    for e in safe_evs:
-        if len(col2) >= cap2:
-            break
-        if id(e) not in {id(x) for x in col2}:
-            col2.append(e)
+    # ── col2: col1 + 断層2段目 + ○/▲（指数差g2以内）──
+    c2_ids = {id(e) for e in col1}
+    n2 = n1 + (len(cls[1]) if len(cls) > 1 else 0)
+    for i, e in enumerate(safe_evs):
+        if i < n2 or e.mark in (Mark.TAIKOU, Mark.TANNUKE):
+            if (tc - e.composite) <= g2:
+                c2_ids.add(id(e))
+    col2 = [e for e in safe_evs if id(e) in c2_ids][:cap2]
 
-    col2_ids = {id(e) for e in col2}
+    # ── col3: col2 + 複勝率+EV条件（指数差g3以内）──
+    c3_ids = {id(e) for e in col2}
+    high_conf = confidence in ("SS", "S")
+    for e in safe_evs:
+        if id(e) in c3_ids:
+            continue
+        if (tc - e.composite) > g3:
+            continue
+        if e.place3_prob < 0.08:
+            continue
+        # SS/S はEVフィルター緩和（place3_probのみ）
+        if not high_conf:
+            odds = e.effective_odds or 10.0
+            wp = getattr(e, "win_prob", 0) or 0
+            if wp * odds < 0.8:
+                continue
+        c3_ids.add(id(e))
+    col3 = [e for e in safe_evs if id(e) in c3_ids][:cap3]
 
-    # col3（ヒモ）: col2 + △/★/☆ を優先追加、不足時は composite 順で補充、cap3 まで
-    col3 = list(col2)
-    for e in safe_evs:
-        if len(col3) >= cap3:
-            break
-        if id(e) not in col2_ids and e.mark in (Mark.RENDASHI, Mark.RENDASHI2, Mark.ANA):
-            col3.append(e)
-    # 不足時: composite 順で残り全員を補充
-    for e in safe_evs:
-        if len(col3) >= cap3:
-            break
-        if id(e) not in {id(x) for x in col3}:
-            col3.append(e)
+    # 最低頭数フォールバック（三連複に3頭必須）
+    if len(col1) < 1:
+        col1 = safe_evs[:1]
+    if len(col2) < 2:
+        col2 = safe_evs[:2]
+    if len(col3) < 3:
+        col3 = safe_evs[:3]
 
     return _dedup_sort(col1), _dedup_sort(col2), _dedup_sort(col3)
 
@@ -743,7 +978,8 @@ def _allocate_formation(tickets: List[Dict], budget: int) -> None:
                 # Kelly比率 × 総予算で賭け金を決定（複数票があるため4倍スケール）
                 raw = k * budget * 4
             else:
-                raw = 100  # Kelly=0 なら最低額
+                # Kelly=0 = 負の期待値 → 配分しない
+                continue
         else:
             # 従来式: このチケットが当たれば budget × 3 が返ってくる掛け金
             raw = 3.0 * budget / odds
@@ -788,7 +1024,7 @@ def _combo_norm_factors(
     s_norm = 0.0
     for ev_a, ev_b, ev_c in _comb(evaluations, 3):
         s_norm += calc_sanrenpuku_prob(
-            ev_a.place3_prob, ev_b.place3_prob, ev_c.place3_prob, field_count
+            ev_a.win_prob, ev_b.win_prob, ev_c.win_prob, field_count
         )
     return max(u_norm, 1e-9), max(s_norm, 1e-9)
 
@@ -796,87 +1032,53 @@ def _combo_norm_factors(
 def generate_formation_tickets(
     evaluations: List[HorseEvaluation],
     race_info: RaceInfo,
-    coverage_grade: str,
+    confidence: str,
 ) -> Dict:
-    """フォーメーション買い目（三連複・馬連）を生成する。
+    """三連複フォーメーション買い目を生成する（P5統合法）。
+
+    EV上位 MAX_FORMATION_TICKETS 点に絞り、資金配分を行う。
 
     戻り値: {
-        "col1": [...],
-        "col2": [...],
-        "col3": [...],
-        "umaren":      [ticket_dict, ...],   # 馬連 col1×col2
-        "sanrenpuku":  [ticket_dict, ...],   # 三連複 col1×col2×col3
-        "u_norm":      float,               # 馬連全組み合わせ確率合計
-        "s_norm":      float,               # 三連複全組み合わせ確率合計
-        "coverage_grade": str,             # 出現率グレード
+        "col1": [...], "col2": [...], "col3": [...],
+        "sanrenpuku": [ticket_dict, ...],
+        "s_norm": float,
+        "confidence": str,
     }
     """
-    col1, col2, col3 = build_formation_columns(evaluations, coverage_grade)
-    empty = {"col1": [], "col2": [], "col3": [], "umaren": [], "sanrenpuku": [],
-             "u_norm": 1.0, "s_norm": 1.0}
-    if not col1 or not col2:
+    col1_raw, col2_raw, col3_raw = build_formation_columns(evaluations, confidence)
+    empty = {"col1": [], "col2": [], "col3": [], "sanrenpuku": [],
+             "s_norm": 1.0, "confidence": confidence}
+    if not col1_raw or not col2_raw or not col3_raw:
         return empty
 
-    # 全頭ベースの正規化係数（馬連Σ=1.0 / 三連複Σ=1.0 にするための除数）
-    u_norm, s_norm = _combo_norm_factors(evaluations, race_info.field_count)
+    # 列を排他化（col2からcol1を除外、col3からcol1+col2を除外）
+    c1_nos = {e.horse.horse_no for e in col1_raw}
+    col2_excl = [e for e in col2_raw if e.horse.horse_no not in c1_nos]
+    c2_nos = c1_nos | {e.horse.horse_no for e in col2_excl}
+    col3_excl = [e for e in col3_raw if e.horse.horse_no not in c2_nos]
+
+    col1, col2, col3 = col1_raw, col2_excl, col3_excl
+    if not col2 or not col3:
+        return empty
+
+    # 全頭ベースの正規化係数（三連複Σ=1.0 にするための除数）
+    _, s_norm = _combo_norm_factors(evaluations, race_info.field_count)
 
     n = race_info.field_count
-    # K-2: is_jra フラグを race_info から取得
     is_jra = getattr(race_info, "is_jra", True)
     mark_map = {ev.horse.horse_no: ev.mark.value for ev in evaluations}
-    # 印の優先順位（小さいほど重要 → 表示で左に来る）
     MARK_PRIO = {"◉": 0, "◎": 1, "○": 2, "▲": 3, "△": 4, "☆": 5}
 
     def _sort_by_mark(horse_nos: List[int]) -> List[int]:
-        """印の重要度順（◎が先頭になるよう）に並べ替え"""
         return sorted(horse_nos, key=lambda no: (MARK_PRIO.get(mark_map.get(no, "—"), 9), no))
 
-    # ─── 馬連: col1 × col2 ───
-    umaren_tickets: List[Dict] = []
-    seen_u: set = set()
-    for ev_a in col1:
-        for ev_b in col2:
-            if ev_a.horse.horse_no == ev_b.horse.horse_no:
-                continue
-            seen_key = tuple(sorted([ev_a.horse.horse_no, ev_b.horse.horse_no]))
-            if seen_key in seen_u:
-                continue
-            seen_u.add(seen_key)
-            ordered = _sort_by_mark([ev_a.horse.horse_no, ev_b.horse.horse_no])
-            oa = ev_a.effective_odds or 10.0
-            ob = ev_b.effective_odds or 10.0
-            odds = estimate_umaren_odds(oa, ob, n, is_jra)  # K-2
-            raw_prob = calc_hit_probability(ev_a.place2_prob, ev_b.place2_prob, "馬連", n)
-            prob = raw_prob / u_norm        # 正規化: 全組み合わせΣ=1.0
-            ev_val = calc_expected_value(prob, odds)
-            umaren_tickets.append(
-                {
-                    "type": "馬連",
-                    "a": ordered[0],
-                    "b": ordered[1],
-                    "mark_a": mark_map.get(ordered[0], "—"),
-                    "mark_b": mark_map.get(ordered[1], "—"),
-                    "odds": odds,
-                    "prob": prob,
-                    "ev": ev_val,
-                    "appearance": prob * 100,
-                    "stake": 0,
-                }
-            )
-    # 優先順（マーク順）でソート。同じマーク組み合わせ内は EV 降順
-    MARK_P = {"◉": 0, "◎": 1, "○": 2, "▲": 3, "△": 4, "☆": 5, "穴": 6}
-    umaren_tickets.sort(
-        key=lambda t: (
-            MARK_P.get(t.get("mark_a", ""), 9),
-            MARK_P.get(t.get("mark_b", ""), 9),
-            -t.get("ev", 0),
-        )
-    )
+    # ─── 全馬の単勝オッズリスト（Harvilleモデル用）───
+    ev_map = {e.horse.horse_no: e for e in evaluations}
+    all_odds = [max(e.effective_odds or 10.0, 1.1) for e in evaluations]
 
-    # ─── 三連複: col1 × col2 × col3 ───
+    # ─── 三連複: col1 × col2 × col3 の全組み合わせ生成（排他列）───
     sanrenpuku_tickets: List[Dict] = []
     seen_3: set = set()
-    ev_map = {e.horse.horse_no: e for e in evaluations}
     for ev_a in col1:
         for ev_b in col2:
             for ev_c in col3:
@@ -891,14 +1093,14 @@ def generate_formation_tickets(
                 oa = ev_map[ordered[0]].effective_odds or 10.0
                 ob = ev_map[ordered[1]].effective_odds or 10.0
                 oc = ev_map[ordered[2]].effective_odds or 10.0
-                odds = estimate_sanrenpuku_odds(oa, ob, oc, n, is_jra)  # K-2
+                odds = estimate_sanrenpuku_odds(oa, ob, oc, n, is_jra, _all_odds=all_odds)
                 raw_prob = calc_sanrenpuku_prob(
-                    ev_map[ordered[0]].place3_prob,
-                    ev_map[ordered[1]].place3_prob,
-                    ev_map[ordered[2]].place3_prob,
+                    ev_map[ordered[0]].win_prob,
+                    ev_map[ordered[1]].win_prob,
+                    ev_map[ordered[2]].win_prob,
                     n,
                 )
-                prob = raw_prob / s_norm    # 正規化: 全組み合わせΣ=1.0
+                prob = raw_prob / s_norm
                 ev_val = calc_expected_value(prob, odds)
                 sanrenpuku_tickets.append(
                     {
@@ -916,38 +1118,21 @@ def generate_formation_tickets(
                         "stake": 0,
                     }
                 )
-    sanrenpuku_tickets.sort(
-        key=lambda t: (
-            MARK_P.get(t.get("mark_a", ""), 9),
-            MARK_P.get(t.get("mark_b", ""), 9),
-            MARK_P.get(t.get("mark_c", ""), 9),
-            -t.get("ev", 0),
-        )
-    )
 
-    # ─── 資金配分（軸の連対率/複勝率比で馬連・三連複の割合を決定）───
-    # 軸馬の place2_prob / place3_prob = 「複勝圏のうち連対になる割合」
-    #   連対率高め → 馬連厚め   複勝率高め・連対率低め → 三連複厚め
-    # 割合は [0.3, 0.7] にクランプして極端な偏りを防ぐ
-    pivot = col1[0] if col1 else None
-    if pivot and (pivot.place3_prob or 0) > 0:
-        u_ratio = max(0.3, min(0.7, (pivot.place2_prob or 0) / pivot.place3_prob))
-    else:
-        u_ratio = 0.5  # データ不足時は均等
+    # ─── EV閾値フィルタ → EV降順ソート → 上位 MAX_FORMATION_TICKETS 点に制限 ───
+    sanrenpuku_tickets = [t for t in sanrenpuku_tickets if t.get("ev", 0) >= MIN_FORMATION_EV]
+    sanrenpuku_tickets.sort(key=lambda t: -t.get("ev", 0))
+    sanrenpuku_tickets = sanrenpuku_tickets[:MAX_FORMATION_TICKETS]
 
-    total_stake = STAKE_DEFAULT.get(coverage_grade, 2000)
+    # ─── 資金配分（全額を三連複に投入）───
+    total_stake = STAKE_DEFAULT.get(confidence, 0)
     if total_stake > 0:
-        u_budget = round(total_stake * u_ratio / 100) * 100   # 100円単位
-        s_budget = total_stake - u_budget
-        _allocate_formation(umaren_tickets, u_budget)
-        _allocate_formation(sanrenpuku_tickets, s_budget)
+        _allocate_formation(sanrenpuku_tickets, total_stake)
 
     # ─── 回収率・シグナルを付与 ───
-    all_t = umaren_tickets + sanrenpuku_tickets
-    total_inv = sum(t.get("stake", 0) for t in all_t)
-    for t in all_t:
+    total_inv = sum(t.get("stake", 0) for t in sanrenpuku_tickets)
+    for t in sanrenpuku_tickets:
         sk = t.get("stake", 0)
-        # 回収率 = このチケットが当たったとき、投資総額に対して何%回収できるか
         t["recovery"] = (t["odds"] * sk) / max(total_inv, 1) * 100 if sk > 0 else 0
         t["signal"] = classify_ev(t.get("ev", 0))
 
@@ -955,10 +1140,7 @@ def generate_formation_tickets(
         "col1": col1,
         "col2": col2,
         "col3": col3,
-        "umaren": umaren_tickets,
         "sanrenpuku": sanrenpuku_tickets,
-        "u_norm": u_norm,           # 馬連: 全C(n,2)確率合計（参考値）
-        "s_norm": s_norm,           # 三連複: 全C(n,3)確率合計（参考値）
-        "coverage_grade": coverage_grade,
-        "u_ratio": round(u_ratio, 2),   # 馬連予算割合（参考）
+        "s_norm": s_norm,
+        "confidence": confidence,
     }

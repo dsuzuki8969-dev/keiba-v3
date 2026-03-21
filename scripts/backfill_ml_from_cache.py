@@ -168,14 +168,6 @@ def main():
         day_errors = 0
 
         for rid, fpath in sorted(items):
-            # ばんえい除外
-            try:
-                vc = get_venue_code_from_race_id(rid)
-                if is_banei(vc):
-                    continue
-            except Exception:
-                pass
-
             try:
                 html = _read_cache_file(fpath)
             except Exception as e:

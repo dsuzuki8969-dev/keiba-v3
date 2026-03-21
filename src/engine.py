@@ -40,7 +40,6 @@ from src.calculator.betting import (
     allocate_stakes,
     calc_predicted_odds,
     generate_formation_tickets,
-    generate_tickets,
     _calc_confidence_score,
     judge_confidence,
     should_buy_race,
@@ -61,8 +60,8 @@ from src.calculator.jockey_trainer import (
     JockeyChangeEvaluator,
     TrainingEvaluator,
     calc_ana_score,
-    calc_kiken_score,
     calc_shobu_score,
+    calc_tokusen_kiken_score,
     calc_tokusen_score,
     estimate_three_win_rates,
 )
@@ -78,6 +77,8 @@ from src.calculator.pace_course import (
     StyleClassifier,
     calc_gate_bias,
     calc_style_bias_for_course,
+    classify_field_styles,
+    normalize_field_positions,
 )
 from src.models import (
     ConfidenceLevel,
@@ -101,6 +102,7 @@ from src.scraper.improvement_dbs import (
     calc_odds_consistency_score,
     get_days_since_last_run,
 )
+from data.masters.venue_master import is_banei
 
 
 # ── target_date 単位のDBキャッシュ（バッチ高速化） ──
@@ -108,6 +110,195 @@ _DB_CACHE_DATE = None
 _DB_CACHE_PACE = None
 _DB_CACHE_L3F_SIGMA = None
 _DB_CACHE_GATE_BIAS = None
+
+# ── NAR公式ID → netkeiba ID マッピング（プロセス内キャッシュ） ──
+_CACHE_NAR_ID_MAP: Optional[dict] = None
+_CACHE_NAR_ID_MAP_LOADED: bool = False
+
+
+def _calc_banei_aptitude(horse, race) -> dict:
+    """
+    ばんえい適性スコアを計算する。
+    PaceDeviationの各フィールド範囲に合わせたスコアを返す。
+    - burden: 斤量負担率スコア (-8〜+8)
+    - moisture: 馬場水分適性スコア (-8〜+8)
+    - time_cv: タイム安定性スコア (-5〜+5)
+    - weight_trend: 斤量トレンドスコア (-4〜+4)
+    """
+    import numpy as np
+    from data.masters.venue_master import is_banei as _is_banei_check
+
+    result = {"burden": 0.0, "moisture": 0.0, "time_cv": 0.0, "weight_trend": 0.0}
+    past_runs = horse.past_runs or []
+    # ばんえいの過去走のみ抽出（帯広のみ）
+    banei_runs = [r for r in past_runs if _is_banei_check(r.course_id[:2] if r.course_id else "")]
+    if not banei_runs:
+        return result
+
+    # ---- ① 斤量負担率スコア (-8〜+8) ----
+    # weight_kg / horse_weight が低いほど有利
+    wk = horse.weight_kg
+    hw = horse.horse_weight
+    if wk and hw and hw > 0:
+        ratio = wk / hw
+        # ばんえい典型: 0.55〜0.95。0.70が中央値。低い=有利
+        # 偏差: 0.60 → +6, 0.70 → 0, 0.80 → -6, 0.90 → -12 → clamp
+        result["burden"] = max(-8.0, min(8.0, (0.70 - ratio) * 60.0))
+
+    # ---- ② 馬場水分適性スコア (-8〜+8) ----
+    # 当日の水分量と過去走の水分量帯別成績の相性
+    moisture = race.moisture_dirt
+    if moisture is not None and len(banei_runs) >= 2:
+        # 過去走を水分量帯で分類し、近い帯での成績を評価
+        # 帯分類: 乾燥(≤1.5), 標準(1.5-2.5), 重め(2.5-3.5), 泥深め(>3.5)
+        def _water_band(cond: str) -> int:
+            # ばんえいでは condition が水分量情報を持たないため、
+            # 良=乾燥寄り、稍重=標準、重=重め、不良=泥深めとマッピング
+            return {"良": 0, "稍重": 1, "重": 2, "不良": 3}.get(cond, 1)
+
+        if moisture <= 1.5:
+            today_band = 0
+        elif moisture <= 2.5:
+            today_band = 1
+        elif moisture <= 3.5:
+            today_band = 2
+        else:
+            today_band = 3
+
+        # 同じ帯での好走率
+        same_band = [r for r in banei_runs if _water_band(r.condition) == today_band]
+        diff_band = [r for r in banei_runs if _water_band(r.condition) != today_band]
+        if same_band:
+            same_rate = sum(1 for r in same_band if r.finish_pos <= 3) / len(same_band)
+            diff_rate = sum(1 for r in diff_band if r.finish_pos <= 3) / len(diff_band) if diff_band else 0.3
+            # 同帯の好走率が全体より高ければプラス
+            result["moisture"] = max(-8.0, min(8.0, (same_rate - diff_rate) * 20.0))
+
+    # ---- ③ タイム安定性スコア (-5〜+5) ----
+    # 走破タイムのCV（変動係数）が低い = 安定 = プラス
+    times = [r.finish_time_sec for r in banei_runs if r.finish_time_sec and r.finish_time_sec > 0]
+    if len(times) >= 3:
+        mean_t = np.mean(times)
+        std_t = np.std(times)
+        cv = std_t / mean_t if mean_t > 0 else 0
+        # CV典型: 0.05(安定) 〜 0.15(不安定)。0.10が基準
+        result["time_cv"] = max(-5.0, min(5.0, (0.10 - cv) * 50.0))
+
+    # ---- ④ 斤量トレンドスコア (-4〜+4) ----
+    # 直近3走の斤量変化。上がっている=クラスアップ=厳しい=マイナス
+    recent_weights = [r.weight_kg for r in banei_runs[:3] if r.weight_kg]
+    if len(recent_weights) >= 2:
+        # recent_weights[0]が最新走
+        trend = recent_weights[0] - recent_weights[-1]
+        # +20kg → -4（大幅増量=厳しい）、-20kg → +4（大幅減量=有利）
+        result["weight_trend"] = max(-4.0, min(4.0, -trend * 0.2))
+
+    return result
+
+
+def _load_nar_id_map() -> dict:
+    """NAR公式ID→netkeiba IDマッピングをロード（初回のみ）"""
+    global _CACHE_NAR_ID_MAP, _CACHE_NAR_ID_MAP_LOADED
+    if _CACHE_NAR_ID_MAP_LOADED:
+        return _CACHE_NAR_ID_MAP or {}
+    _CACHE_NAR_ID_MAP_LOADED = True
+    try:
+        import json as _json
+        _map_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "nar_id_map.json")
+        if os.path.exists(_map_path):
+            with open(_map_path, "r", encoding="utf-8") as f:
+                _CACHE_NAR_ID_MAP = _json.load(f)
+            _j = len(_CACHE_NAR_ID_MAP.get("jockey", {}))
+            _t = len(_CACHE_NAR_ID_MAP.get("trainer", {}))
+            logger.info("NAR IDマッピングロード: 騎手 %d件, 調教師 %d件", _j, _t)
+        else:
+            _CACHE_NAR_ID_MAP = {}
+            logger.debug("nar_id_map.json 未作成 → マッピングなし")
+    except Exception as e:
+        logger.warning("NAR IDマッピングロード失敗: %s", e)
+        _CACHE_NAR_ID_MAP = {}
+    return _CACHE_NAR_ID_MAP
+
+
+# ── NAR騎手race_logベース偏差値キャッシュ ──
+_CACHE_RL_JOCKEY_DEV: Dict[str, Optional[float]] = {}
+
+
+def _race_log_jockey_dev(jockey_id: str, jockey_name: str) -> Optional[float]:
+    """race_logから騎手の勝率ベース偏差値を計算（NAR騎手フォールバック用）
+
+    NAR全体の平均勝率/σとの比較で偏差値化する。
+    最低出走数: 10走。キャッシュ済み。
+    """
+    _cache_key = f"{jockey_id}_{jockey_name}"
+    if _cache_key in _CACHE_RL_JOCKEY_DEV:
+        return _CACHE_RL_JOCKEY_DEV[_cache_key]
+
+    result = None
+    try:
+        import sqlite3 as _sql3
+        _conn = _sql3.connect("data/keiba.db")
+        # 騎手名でrace_logを検索（IDが異なる場合もあるため名前ベース）
+        _rows = _conn.execute(
+            "SELECT finish_pos, field_count FROM race_log "
+            "WHERE jockey_name = ? AND venue_code IN "
+            "('30','35','36','42','43','44','45','46','47','48','50','51','54','55')",
+            (jockey_name,)
+        ).fetchall()
+        _conn.close()
+
+        if len(_rows) >= 10:
+            _wins = sum(1 for pos, _ in _rows if pos == 1)
+            _places = sum(1 for pos, fc in _rows if pos <= max(3, fc // 3 + 1))
+            _wr = _wins / len(_rows)
+            _pr = _places / len(_rows)
+            # NAR全体の平均値で偏差値化
+            _mean = 0.27  # JOCKEY_BASE_PARAMS_NAR["mean"] = 複勝率平均
+            _sigma = 0.16
+            result = round(50.0 + (_pr - _mean) / _sigma * 10.0, 1)
+            result = max(30.0, min(70.0, result))
+    except Exception:
+        pass
+
+    _CACHE_RL_JOCKEY_DEV[_cache_key] = result
+    return result
+
+
+# ── NAR調教師race_logベース偏差値キャッシュ ──
+_CACHE_RL_TRAINER_DEV: Dict[str, Optional[float]] = {}
+
+
+def _race_log_trainer_dev(trainer_id: str, trainer_name: str) -> Optional[float]:
+    """race_logから調教師の勝率ベース偏差値を計算（NAR調教師フォールバック用）"""
+    _cache_key = f"{trainer_id}_{trainer_name}"
+    if _cache_key in _CACHE_RL_TRAINER_DEV:
+        return _CACHE_RL_TRAINER_DEV[_cache_key]
+
+    result = None
+    try:
+        import sqlite3 as _sql3
+        _conn = _sql3.connect("data/keiba.db")
+        _rows = _conn.execute(
+            "SELECT finish_pos, field_count FROM race_log "
+            "WHERE trainer_name = ? AND venue_code IN "
+            "('30','35','36','42','43','44','45','46','47','48','50','51','54','55')",
+            (trainer_name,)
+        ).fetchall()
+        _conn.close()
+
+        if len(_rows) >= 10:
+            _places = sum(1 for pos, fc in _rows if pos <= max(3, fc // 3 + 1))
+            _pr = _places / len(_rows)
+            # TRAINER_BASE_PARAMS_NAR と同じ基準
+            _mean = 0.27
+            _sigma = 0.16
+            result = round(50.0 + (_pr - _mean) / _sigma * 10.0, 1)
+            result = max(30.0, min(70.0, result))
+    except Exception:
+        pass
+
+    _CACHE_RL_TRAINER_DEV[_cache_key] = result
+    return result
 
 
 class RaceAnalysisEngine:
@@ -366,11 +557,11 @@ class RaceAnalysisEngine:
             (rule_weight, ml_weight) — 合計 1.0
         """
         _BLEND_BY_LEVEL = {
-            4: (0.45, 0.55),   # 競馬場専用 (高精度) → ML 55%
-            3: (0.55, 0.45),   # JRA馬場×SMILE → ML 45%
-            2: (0.60, 0.40),   # JRA全体/NAR (現行維持) → ML 40%
-            1: (0.65, 0.35),   # 馬場全体 → ML 35%
-            0: (0.70, 0.30),   # globalモデル (最低精度) → ML 30%
+            4: (0.35, 0.65),   # 競馬場専用 (高精度) → ML 65%（H8: 55→65）
+            3: (0.42, 0.58),   # JRA馬場×SMILE → ML 58%（H8: 45→58）
+            2: (0.55, 0.45),   # JRA全体/NAR → ML 45%（H8: 40→45）
+            1: (0.65, 0.35),   # 馬場全体 → ML 35%（据え置き）
+            0: (0.75, 0.25),   # globalモデル (最低精度) → ML 25%（H8: 30→25 控えめに）
         }
         return _BLEND_BY_LEVEL.get(level, (0.60, 0.40))
 
@@ -436,13 +627,16 @@ class RaceAnalysisEngine:
                 favorable_style_reason="",
             )
         is_small_field = len(horses) <= 5
+        _is_banei = is_banei(race.course.venue_code if race.course else "")
 
         course_db_ref = self.std_calc.course_db
 
         # ---- 性齢定量: base_weight_kg を補完 ----
-        for horse in horses:
-            if not horse.base_weight_kg or horse.base_weight_kg == 55.0:
-                horse.base_weight_kg = get_base_weight(horse.sex, horse.age, race.race_date)
+        if not _is_banei:
+            # ばんえいの斤量は600-1000kgで通常競馬の55kg基準と無関係
+            for horse in horses:
+                if not horse.base_weight_kg or horse.base_weight_kg == 55.0:
+                    horse.base_weight_kg = get_base_weight(horse.sex, horse.age, race.race_date)
 
         # ---- 改修後コースのみ使うようにcourse_dbをフィルタ ----
         for cid in list(course_db_ref.keys()):
@@ -465,18 +659,40 @@ class RaceAnalysisEngine:
 
         past_runs_map = {h.horse_id: h.past_runs for h in horses}
 
+        # ---- Step 0: フィールド脚質分布を制約付きで一括分類 ----
+        if _is_banei:
+            # ばんえい: 全馬先行扱い（200m直線・脚質概念なし）
+            field_styles = {h.horse_no: (RunningStyle.SENKOU, 0.0) for h in horses}
+        else:
+            _jockey_pos_cache = None
+            _pos_pred = getattr(self.pace_dev_calc, 'position_predictor', None)
+            if _pos_pred:
+                _jockey_pos_cache = getattr(_pos_pred, '_jockey_cache', None)
+            field_styles = classify_field_styles(
+                horses, past_runs_map, race.course,
+                jockey_cache=_jockey_pos_cache,
+            )
+
         # ---- Step 1: ペース予測 ----
-        pace_type, pace_score, leaders, front_rate, max_escape_strength = self.pace_predictor.predict_pace(
-            horses, past_runs_map, race.course,
-            course_pace_tendency=self.course_pace_tendency,
-        )
+        if _is_banei:
+            # ばんえい: ペース予測スキップ（一定ペース）
+            pace_type = PaceType.MM
+            pace_score = 50.0
+            leaders = []
+            front_rate = 0.5
+            max_escape_strength = 0.0
+        else:
+            pace_type, pace_score, leaders, front_rate, max_escape_strength = self.pace_predictor.predict_pace(
+                horses, past_runs_map, race.course,
+                course_pace_tendency=self.course_pace_tendency,
+                field_styles=field_styles,
+            )
         pace_reliability = self._judge_pace_reliability(pace_score, len(leaders), len(horses))
 
         # ---- ペース文脈 (ML推定用) ----
-        n_front = len(leaders) + sum(
-            1 for h in horses
-            if self.pace_predictor._classify_style(h.past_runs).value == "先行"
-        )
+        # field_styles から逃げ・先行の数を取得（_classify_styleの重複呼び出しを解消）
+        n_front = sum(1 for _, (s, _) in field_styles.items()
+                      if s.value in ("逃げ", "先行"))
         # 内枠の逃げ馬候補数（案C）
         n_escape_inner = sum(
             1 for h in horses
@@ -491,25 +707,51 @@ class RaceAnalysisEngine:
         }
 
         # ---- Step 2-7: 各馬の評価 ----
-        # 2パス方式: baselineがDBにない場合、フィールド全馬のest_last3f平均を使う
-        _baseline_from_db = self.last3f_evaluator.get_baseline(
-            race.course.course_id, pace_type
-        )
-        _field_baseline = None
-        if _baseline_from_db is None:
-            # Pass 1: 全馬のest_last3fを事前計算してフィールド平均を求める
-            import statistics as _stat_bl
-            _est_l3fs = []
+        if _is_banei:
+            # ばんえい: 上がり3F/コーナー分析スキップ
+            _baseline_from_db = 50.0  # 基準偏差値
+            _field_baseline = 50.0
+            # 位置取りは馬番順の均等配置
+            _normalized_positions = {
+                h.horse_no: (i + 1) / (len(horses) + 1)
+                for i, h in enumerate(horses)
+            }
+        else:
+            # 2パス方式: baselineがDBにない場合、フィールド全馬のest_last3f平均を使う
+            _baseline_from_db = self.last3f_evaluator.get_baseline(
+                race.course.course_id, pace_type
+            )
+            _field_baseline = None
+            if _baseline_from_db is None:
+                # Pass 1: 全馬のest_last3fを事前計算してフィールド平均を求める
+                import statistics as _stat_bl
+                _est_l3fs = []
+                for horse in horses:
+                    _si = self.style_classifier.classify(horse.past_runs, surface=race.course.surface)
+                    _l3f_type = _si.get("last3f_type", "安定中位末脚")
+                    _el = self.last3f_evaluator.estimate_last3f(
+                        horse.past_runs, pace_type, race.course.course_id,
+                        _l3f_type, horse=horse, race_info=race, pace_context=pace_context,
+                    )
+                    _est_l3fs.append(_el)
+                if _est_l3fs:
+                    _field_baseline = _stat_bl.mean(_est_l3fs)
+
+            # ---- 2パス位置取り正規化: 全馬のest_positionを事前計算 ----
+            _pos_predictor = getattr(self.pace_dev_calc, 'position_predictor', None)
+            _raw_positions: Dict[int, float] = {}
             for horse in horses:
-                _si = self.style_classifier.classify(horse.past_runs, surface=race.course.surface)
-                _l3f_type = _si.get("last3f_type", "安定中位末脚")
-                _el = self.last3f_evaluator.estimate_last3f(
-                    horse.past_runs, pace_type, race.course.course_id,
-                    _l3f_type, horse=horse, race_info=race, pace_context=pace_context,
-                )
-                _est_l3fs.append(_el)
-            if _est_l3fs:
-                _field_baseline = _stat_bl.mean(_est_l3fs)
+                _est = None
+                if _pos_predictor and _pos_predictor.is_available:
+                    _est = _pos_predictor.predict(horse, race, pace_context)
+                if _est is None:
+                    # field_stylesから脚質を取得してルールベース推定
+                    _fs = field_styles.get(horse.horse_no)
+                    _style = _fs[0] if _fs else RunningStyle.SENKOU
+                    _est = self.pace_dev_calc._estimate_position(_style, pace_type)
+                _raw_positions[horse.horse_no] = _est
+            # フィールド内正規化
+            _normalized_positions = normalize_field_positions(_raw_positions, len(horses))
 
         evaluations: List[HorseEvaluation] = []
         for horse in horses:
@@ -522,6 +764,7 @@ class RaceAnalysisEngine:
                 pace_db,
                 pace_context=pace_context,
                 field_baseline_override=_field_baseline,
+                override_position=_normalized_positions.get(horse.horse_no),
             )
             ev.venue_name = race.venue
             evaluations.append(ev)
@@ -561,6 +804,8 @@ class RaceAnalysisEngine:
                 course_score=ev.course.total,
                 all_pace_scores=all_pace_scores,
                 all_course_scores=all_course_scores,
+                field_count=len(evaluations),
+                is_jra=self.is_jra,
             )
             ev.win_prob = w
             ev.place2_prob = t2
@@ -592,70 +837,95 @@ class RaceAnalysisEngine:
             if ev.horse.odds is None:
                 ev.predicted_odds = predicted.get(ev.horse.horse_id)
 
-        # 脚質別グループ分け (レベル1表示用)
-        # 各馬の脚質を一度だけ判定してキャッシュ
-        _style_map = {}
-        for h in horses:
-            _style_map[h.horse_no] = self.pace_predictor._classify_style(h.past_runs)
-        leading = [no for no, s in _style_map.items() if s.value == "逃げ"]
-        front_h = [no for no, s in _style_map.items() if s.value == "先行"]
-        mid_h = [no for no, s in _style_map.items() if s.value == "差し"]
-        rear_h = [no for no, s in _style_map.items() if s.value == "追込"]
+        # 脚質別グループ分け (レベル1表示用) — 正規化後の位置から導出
 
-        # フォールバック: 逃げ馬が0頭は現実的にありえない → 最も前に位置する馬を逃げに再分類
-        if not leading and horses:
-            import statistics as _st
-            best_no, best_avg = None, 1.0
-            for h in horses:
-                rels = [r.relative_position for r in h.past_runs[:5] if r.relative_position is not None]
-                avg = _st.mean(rels) if rels else 0.5
-                if avg < best_avg:
-                    best_avg = avg
-                    best_no = h.horse_no
-            if best_no is not None:
-                leading.append(best_no)
-                front_h = [n for n in front_h if n != best_no]
-                mid_h = [n for n in mid_h if n != best_no]
-                rear_h = [n for n in rear_h if n != best_no]
-                _style_map[best_no] = RunningStyle.NIGASHI
-                # per-horse running_style も更新
-                for ev in evaluations:
-                    if ev.horse.horse_no == best_no and ev.pace:
-                        ev.pace.running_style = RunningStyle.NIGASHI
-                        break
+        if _is_banei:
+            # ばんえい: 脚質グループ・ペースコメント・3F推定を全面スキップ
+            leading = []
+            front_h = []
+            mid_h = []
+            rear_h = []
+            _style_map: Dict[int, RunningStyle] = {}
+            for ev in evaluations:
+                ev._normalized_position = 0.5
+                if ev.pace:
+                    ev.pace.running_style = None  # 脚質なし
+            front_3f_est = None
+            last_3f_est = None
+            from src.calculator.calibration import generate_banei_comment
+            pace_comment = generate_banei_comment(race, evaluations)
+            favorable_gate = ""
+            favorable_style = ""
+            favorable_style_reason = ""
+        else:
+            # 正規化後の位置から脚質を再導出（順位ベース: ML予測と整合させる）
+            _sorted_by_pos = sorted(_normalized_positions.items(), key=lambda x: x[1])
+            _n = len(_sorted_by_pos)
+            _final_style_map: Dict[int, RunningStyle] = {}
+            for rank, (hno, _) in enumerate(_sorted_by_pos):
+                r = rank / _n if _n > 1 else 0.0  # 0.0=先頭
+                if rank == 0:
+                    _final_style_map[hno] = RunningStyle.NIGASHI
+                elif r <= 0.25:
+                    _final_style_map[hno] = RunningStyle.SENKOU
+                elif r <= 0.42:
+                    _final_style_map[hno] = RunningStyle.KOUI
+                elif r <= 0.58:
+                    _final_style_map[hno] = RunningStyle.CHUUDAN
+                elif r <= 0.78:
+                    _final_style_map[hno] = RunningStyle.SASHIKOMI
+                else:
+                    _final_style_map[hno] = RunningStyle.OIKOMI
+            _style_map = _final_style_map
+            leading = [no for no, s in _style_map.items() if s == RunningStyle.NIGASHI]
+            front_h = [no for no, s in _style_map.items() if s in (RunningStyle.SENKOU, RunningStyle.KOUI)]
+            mid_h = [no for no, s in _style_map.items() if s in (RunningStyle.CHUUDAN, RunningStyle.SASHIKOMI)]
+            rear_h = [no for no, s in _style_map.items() if s == RunningStyle.OIKOMI]
 
-        # ---- 展開コメント・有利枠・有利脚質（並び・前半/後半3F推定を利用） ----
-        lineup = calc_lineup(horses)
-        all_runs = [r for h in horses for r in h.past_runs]
-        front_3f_est, last_3f_est = estimate_pace_times_from_runs(
-            race.course.course_id, pace_type, all_runs,
-            surface=race.course.surface, distance=race.course.distance,
-        )
-        # ---- ML前半3F補正（PacePredictorML が利用可能な場合）----
-        if self._pace_ml_predictor and self._pace_ml_predictor.is_available:
-            try:
-                ml_f3f = self._pace_ml_predictor.predict_first3f(race, pace_context)
-                if ml_f3f is not None:
-                    # ルールベースと ML の加重平均（ML 60% + ルール 40%）
-                    front_3f_est = ml_f3f * 0.6 + (front_3f_est or ml_f3f) * 0.4
-            except Exception:
-                logger.debug("ML前半3F予測スキップ", exc_info=True)
+            for ev in evaluations:
+                # 初角位置スコアを保存（展開ビジュアル表示用）
+                ev._normalized_position = _normalized_positions.get(ev.horse.horse_no)
+                if ev.horse.horse_no in _style_map and ev.pace:
+                    _rs = _style_map[ev.horse.horse_no]
+                    # 表示用は4分類に正規化（好位→先行、中団→差し）
+                    if _rs == RunningStyle.KOUI:
+                        _rs = RunningStyle.SENKOU
+                    elif _rs == RunningStyle.CHUUDAN:
+                        _rs = RunningStyle.SASHIKOMI
+                    ev.pace.running_style = _rs
 
-        pace_comment, favorable_gate, favorable_style, favorable_style_reason = (
-            generate_pace_comment(
-                pace_type,
-                leading,
-                front_h,
-                rear_h,
-                race.course,
-                evaluations,
-                pace_reliability,
-                lineup=lineup,
-                mid_horses=mid_h,
-                front_3f_est=front_3f_est,
-                last_3f_est=last_3f_est,
+            # ---- 展開コメント・有利枠・有利脚質（並び・前半/後半3F推定を利用） ----
+            lineup = calc_lineup(horses)
+            all_runs = [r for h in horses for r in h.past_runs]
+            front_3f_est, last_3f_est = estimate_pace_times_from_runs(
+                race.course.course_id, pace_type, all_runs,
+                surface=race.course.surface, distance=race.course.distance,
             )
-        )
+            # ---- ML前半3F補正（PacePredictorML が利用可能な場合）----
+            if self._pace_ml_predictor and self._pace_ml_predictor.is_available:
+                try:
+                    ml_f3f = self._pace_ml_predictor.predict_first3f(race, pace_context)
+                    if ml_f3f is not None:
+                        # ルールベースと ML の加重平均（ML 60% + ルール 40%）
+                        front_3f_est = ml_f3f * 0.6 + (front_3f_est or ml_f3f) * 0.4
+                except Exception:
+                    logger.debug("ML前半3F予測スキップ", exc_info=True)
+
+            pace_comment, favorable_gate, favorable_style, favorable_style_reason = (
+                generate_pace_comment(
+                    pace_type,
+                    leading,
+                    front_h,
+                    rear_h,
+                    race.course,
+                    evaluations,
+                    pace_reliability,
+                    lineup=lineup,
+                    mid_horses=mid_h,
+                    front_3f_est=front_3f_est,
+                    last_3f_est=last_3f_est,
+                )
+            )
 
         # ---- 偏差値診断 ----
         diag = diagnose_deviations(evaluations)
@@ -666,9 +936,15 @@ class RaceAnalysisEngine:
         # ★ 必ず正規化の後に印付け・買い目を生成すること（composite が変わるため）
         _normalize_field_deviations(evaluations)
 
-        # ---- 騎手/調教師の偏差値を先行算出 [A4] ----
-        # composite プロパティが参照される前に _jockey_dev / _trainer_dev をセットする
-        _compute_personnel_devs(evaluations)
+        # ---- 騎手/調教師/血統の偏差値を先行算出 [A4 + Phase 12 ハイブリッド] ----
+        # composite プロパティが参照される前に _jockey_dev / _trainer_dev / _bloodline_dev をセットする
+        # rolling tracker が利用可能ならファクター加重平均で算出（ハイブリッド方式）
+        _rolling_tracker = None
+        _sire_rolling_tracker = None
+        if self._lgbm_predictor:
+            _rolling_tracker = self._lgbm_predictor.tracker
+            _sire_rolling_tracker = self._lgbm_predictor.sire_tracker
+        _compute_personnel_devs(evaluations, race, _rolling_tracker, _sire_rolling_tracker)
 
         # ---- 同一レース内の上3F ランクを run_records に付与 ----
         _enrich_l3f_rank(evaluations, course_db_ref, self.std_calc)
@@ -694,6 +970,10 @@ class RaceAnalysisEngine:
                         ev.ml_place_prob = probs.get("top3", ev.ml_place_prob)
             except Exception as e:
                 logger.debug("Probability model prediction skipped: %s", e)
+
+        # ---- 診断用: LightGBM生値を退避 ----
+        for ev in evaluations:
+            ev._raw_lgbm_prob = ev.ml_win_prob
 
         # ---- ML推論: PyTorch アンサンブル (改善A/B) LightGBM 60% + PyTorch 40% ----
         # ブレンド比率を動的決定: LGBMサブモデルのレベルに応じてルール寄り/ML寄りを切替
@@ -777,6 +1057,10 @@ class RaceAnalysisEngine:
             except Exception:
                 logger.debug("LambdaRank アンサンブルをスキップ", exc_info=True)
 
+        # ---- 診断用: アンサンブル後のML値を退避 ----
+        for ev in evaluations:
+            ev._ensemble_prob = ev.ml_win_prob
+
         # ---- 案B: ML + ルールベース ブレンド → win/place2/place3 を最終値に統合 ----
         # ML値がある馬が1頭でも存在すればブレンドを適用
         # ブレンド比率は LGBMサブモデルのレベルに応じて動的決定済み (_lgbm_rule_w / _lgbm_ml_w)
@@ -801,30 +1085,42 @@ class RaceAnalysisEngine:
                 ev.ml_top2_prob  = None
                 ev.ml_place_prob = None
 
+        # ---- 診断用: ML+Ruleブレンド後の値を退避 ----
+        for ev in evaluations:
+            ev._ml_rule_prob = ev.win_prob
+
         # ---- 確率の正規化（ML有無に関わらず常に実施）----
         # 勝率: Σwin_prob = 1.0 (100%)
         # 連対率: Σplace2_prob = 2.0 (200%)
         # 複勝率: Σplace3_prob = 3.0 (300%)
         _normalize_probs(evaluations)
 
-        # ---- Step 5.5: LGBM place3_prob → 能力偏差値への軽量フィードバック（案5） ----
-        # LGBMが高確率と判断しているが能力偏差値が低い馬を軽くプッシュ
-        # 逆に LGBMが低確率で能力偏差値が高い馬は若干下方修正
-        # 補正幅は最大 ±3pt（過剰修正を防ぐために小さめ）
+        # ---- Step 5.5: 削除済み（能力偏差値は絶対評価、LGBMフィードバック不要） ----
+
+        # ---- Step 5.6: ML予測確率 → composite 直接反映 ----
+        # win_prob（MLブレンド済み）を偏差値スケールに変換し、composite に加算
+        # これにより印（composite順）がML予測を反映するようになる
         try:
-            _place3_probs = [ev.place3_prob for ev in evaluations]
-            _n = len(_place3_probs)
-            if _n >= 3:
-                _avg_p3 = sum(_place3_probs) / _n
-                for ev in evaluations:
-                    _lgbm_signal = ev.place3_prob - _avg_p3  # レース内での相対乖離
-                    # 偏差値スケールに変換（±0.10 prob ≈ ±2pt 程度）
-                    _correction = max(-3.0, min(3.0, _lgbm_signal * 20.0))
-                    # AbilityDeviation は dataclass (mutable) なので直接更新
-                    # norm_adjustment に書き込む（class_adjustment は元のクラス落差補正を保持）
-                    ev.ability.norm_adjustment += _correction * 0.5
+            _win_probs = [ev.win_prob for ev in evaluations]
+            _n_wp = len(_win_probs)
+            if _n_wp >= 3:
+                _avg_wp = sum(_win_probs) / _n_wp
+                _std_wp = (sum((p - _avg_wp) ** 2 for p in _win_probs) / _n_wp) ** 0.5
+                if _std_wp > 0.001:
+                    for ev in evaluations:
+                        # Z変換: (win_prob - 平均) / 標準偏差 → 偏差値スケール
+                        _z = (ev.win_prob - _avg_wp) / _std_wp
+                        # ±2.5pt にクランプ（穴馬寄り傾向を抑制: 旧±6pt→±3.5pt→±2.5pt）
+                        _raw_adj = max(-2.5, min(2.5, _z * 1.0))
+                        # 高オッズ馬のML補正をダンピング（穴馬のcomposite逆転を抑制）
+                        _odds = getattr(ev.horse, "odds", None) or getattr(ev.horse, "tansho_odds", None)
+                        if _odds is not None and _odds >= 30.0 and _raw_adj > 0:
+                            _raw_adj *= 0.3  # 30倍超は70%減
+                        elif _odds is not None and _odds >= 15.0 and _raw_adj > 0:
+                            _raw_adj *= 0.5  # 15倍超は50%減
+                        ev.ml_composite_adj = _raw_adj
         except Exception:
-            pass  # フォールバック: 何もしない
+            pass
 
         # ---- Step3: SHAP寄与度グループ計算 ----
         if self._lgbm_predictor:
@@ -871,7 +1167,27 @@ class RaceAnalysisEngine:
         for ev, bp in zip(evaluations, all_base_post):
             # 2回目は1回目との加重平均でダンピング（振動抑制）
             new_adj = calc_odds_consistency_score(bp, all_base_post, ev.horse.odds)
+            # 高オッズ馬のodds_consistency正補正を抑制（穴馬のcomposite逆転防止）
+            _ev_odds = ev.horse.odds
+            if _ev_odds is not None and _ev_odds >= 30.0 and new_adj > 0:
+                new_adj *= 0.3
+            elif _ev_odds is not None and _ev_odds >= 15.0 and new_adj > 0:
+                new_adj *= 0.5
             ev.odds_consistency_adj = 0.3 * new_adj + 0.7 * ev.odds_consistency_adj
+
+        # ---- 市場アンカー: オッズから市場偏差値を推定し、compositeを微補正 ----
+        # 穴馬がcomposite上位に躍り出るのを抑制しつつ、モデルの独自評価を尊重
+        import math as _math_anchor
+        _fc = race.field_count or len(evaluations) or 1
+        _fair_prob = 1.0 / _fc  # 均等確率
+        for ev in evaluations:
+            _o = ev.horse.odds
+            if _o is not None and _o > 1.0:
+                _mp = 1.0 / _o  # 市場確率
+                # 市場確率 vs 均等確率のlog比を偏差値スケールに変換
+                _log_ratio = _math_anchor.log(max(_mp, 0.005) / _fair_prob)
+                # ±3pt にクランプ（人気馬: +, 穴馬: -）
+                ev.market_anchor_adj = max(-3.0, min(3.0, _log_ratio * 1.5))
 
         # ---- 正規化後の三連率再推定 [A2] ----
         # MLブレンド済み確率を退避し、再推定結果との加重平均で最終値を決定
@@ -879,6 +1195,15 @@ class RaceAnalysisEngine:
         all_composites_post = [ev.composite for ev in evaluations]
         all_pace_post = [ev.pace.total for ev in evaluations]
         all_course_post = [ev.course.total for ev in evaluations]
+
+        # Phase 2-1: model_level依存の再推定比率（高精度モデルほどML情報を保持）
+        from config.settings import PIPELINE_V2_ENABLED, REEST_RATIO_BY_LEVEL, REEST_RATIO_DEFAULT
+        if PIPELINE_V2_ENABLED:
+            _reest_ratio = REEST_RATIO_BY_LEVEL.get(_lgbm_level, REEST_RATIO_DEFAULT)
+        else:
+            _reest_ratio = REEST_RATIO_DEFAULT
+        _ml_keep = 1.0 - _reest_ratio
+
         for ev in evaluations:
             _ml_blended_win = ev.win_prob
             _ml_blended_p2  = ev.place2_prob
@@ -890,14 +1215,22 @@ class RaceAnalysisEngine:
                 course_score=ev.course.total,
                 all_pace_scores=all_pace_post,
                 all_course_scores=all_course_post,
+                field_count=len(evaluations),
+                is_jra=self.is_jra,
             )
-            # MLブレンド結果60% + compositeベース再推定40% の加重平均
-            ev.win_prob    = 0.6 * _ml_blended_win + 0.4 * _w
-            ev.place2_prob = 0.6 * _ml_blended_p2  + 0.4 * _t2
-            ev.place3_prob = 0.6 * _ml_blended_p3  + 0.4 * _t3
+            # Phase 2-1: model_level依存の再推定比率
+            ev.win_prob    = _ml_keep * _ml_blended_win + _reest_ratio * _w
+            ev.place2_prob = _ml_keep * _ml_blended_p2  + _reest_ratio * _t2
+            ev.place3_prob = _ml_keep * _ml_blended_p3  + _reest_ratio * _t3
 
-        # 確率正規化
-        _normalize_probs(evaluations)
+        # 確率正規化（Phase 2-3: 再推定比率が小さい場合はスキップして情報損失を削減）
+        if not PIPELINE_V2_ENABLED or _reest_ratio >= 0.10:
+            _normalize_probs(evaluations)
+
+        # ---- 診断用: 人気統計ブレンド前の値を退避 + モデルレベル保存 ----
+        for ev in evaluations:
+            ev._pre_pop_prob = ev.win_prob
+            ev._model_level = _lgbm_level
 
         # ---- Step 5b: 人気別実績統計ブレンド ----
         if self._pop_stats and any(
@@ -906,35 +1239,47 @@ class RaceAnalysisEngine:
             blend_probabilities(
                 evaluations, race.venue, self.is_jra,
                 len(evaluations), self._pop_stats,
+                model_level=_lgbm_level,
             )
             _normalize_probs(evaluations)
 
-        # ---- Step 6: 穴馬・危険馬スコア（正規化後の composite 使用）[A3] ----
+        # ---- Step 6: 穴馬スコア（正規化後の composite 使用）[A3] ----
         for ev in evaluations:
             ev.ana_score, ev.ana_type = calc_ana_score(ev, evaluations)
-            ev.kiken_score, ev.kiken_type = calc_kiken_score(ev, evaluations)
 
-        # ---- Step 6b: 特選穴馬スコア（印体系とは独立）----
+        # ---- Step 6b: 特選穴馬スコア（composite上位5頭を除外 → ☆候補のみ）----
         from config.settings import TOKUSEN_SCORE_THRESHOLD, TOKUSEN_MAX_PER_RACE
         for ev in evaluations:
             ev.tokusen_score = calc_tokusen_score(ev, evaluations)
-        # スコア上位N頭のみ is_tokusen=True
+        # composite上位5頭を除外（既に◉◎○▲△★が付くため☆不要）
+        top5_ids = {ev.horse.horse_id for ev in sorted(
+            evaluations, key=lambda e: e.composite, reverse=True
+        )[:5]}
         tokusen_candidates = sorted(
-            [ev for ev in evaluations if ev.tokusen_score >= TOKUSEN_SCORE_THRESHOLD],
+            [ev for ev in evaluations
+             if ev.tokusen_score >= TOKUSEN_SCORE_THRESHOLD
+             and ev.horse.horse_id not in top5_ids],
             key=lambda e: e.tokusen_score, reverse=True,
         )
         for ev in tokusen_candidates[:TOKUSEN_MAX_PER_RACE]:
             ev.is_tokusen = True
 
+        # ---- Step 6c: 特選危険馬スコア（印体系とは独立）----
+        from config.settings import TOKUSEN_KIKEN_SCORE_THRESHOLD, TOKUSEN_KIKEN_MAX_PER_RACE
+        for ev in evaluations:
+            ev.tokusen_kiken_score = calc_tokusen_kiken_score(ev, evaluations, is_jra=self.is_jra)
+        tokusen_kiken_candidates = sorted(
+            [ev for ev in evaluations if ev.tokusen_kiken_score >= TOKUSEN_KIKEN_SCORE_THRESHOLD],
+            key=lambda e: e.tokusen_kiken_score, reverse=True,
+        )
+        for ev in tokusen_kiken_candidates[:TOKUSEN_KIKEN_MAX_PER_RACE]:
+            ev.is_tokusen_kiken = True
+
         # ---- Step 8: 印付け（composite 降順で ◉◎○▲△★ + 穴馬☆/危険馬×）----
-        evaluations = assign_marks(evaluations)
+        evaluations = assign_marks(evaluations, is_jra=self.is_jra)
 
-        # ---- Step 9: 買い目生成（◎/◉軸 馬連4点+三連複6点 固定10点×100円=1000円）----
-        tickets = generate_tickets(evaluations, race)
-
-        # ---- Step 10: 資金配分集計 ----
-        # 固定10点の場合は生成されたticketをそのまま使用（allocate_stakesは不要）
-        total_budget = sum(t.get("stake", 0) for t in tickets)  # 最大1000円
+        # ---- Step 9: 買い目（Step 10bでフォーメーション生成後にallocate）----
+        tickets = []
 
         # ---- Step 11: 予想オッズ算出（フォーメーション前に実施）----
         assign_divergence_to_evaluations(evaluations, self.is_jra)
@@ -946,23 +1291,18 @@ class RaceAnalysisEngine:
             evaluations, pace_reliability,
             predicted_umaren=predicted_umaren,
             predicted_sanrenpuku=predicted_sanrenpuku,
+            is_jra=self.is_jra,
+            is_banei=_is_banei,
         )
 
-        # ---- Step 10b: フォーメーション買い目生成（出現率グレード使用）----
-        u_pct = sum(r["prob"] for r in predicted_umaren[:5]) * 100
-        s_pct = sum(r["prob"] for r in predicted_sanrenpuku[:5]) * 100
-        coverage_total = round(u_pct + s_pct, 2)
-        if coverage_total >= 69:
-            coverage_grade = "SS"
-        elif coverage_total >= 57:
-            coverage_grade = "S"
-        elif coverage_total >= 44:
-            coverage_grade = "A"
-        elif coverage_total >= 34:
-            coverage_grade = "B"
-        else:
-            coverage_grade = "C"
-        formation = generate_formation_tickets(evaluations, race, coverage_grade)
+        # ---- Step 10b: フォーメーション買い目生成 ----
+        formation = generate_formation_tickets(evaluations, race, confidence.value)
+        # フォーメーションから買い目を取り出し、資金配分
+        if formation.get("sanrenpuku"):
+            buy, reason = should_buy_race(formation["sanrenpuku"], confidence, evaluations, is_banei=_is_banei)
+            if buy:
+                tickets = allocate_stakes(formation["sanrenpuku"], confidence)
+        total_budget = sum(getattr(t, "stake", 0) for t in tickets)
 
         has_any_odds = any(ev.horse.odds is not None for ev in evaluations)
         is_pre_day = not has_any_odds
@@ -974,14 +1314,25 @@ class RaceAnalysisEngine:
             )
 
         # ---- 走破タイム推定 ----
-        predicted_race_time = self._estimate_race_time(
-            race, pace_type, front_3f_est, last_3f_est
-        )
+        if _is_banei:
+            predicted_race_time = None  # ばんえいは走破タイム推定不可
+        else:
+            predicted_race_time = self._estimate_race_time(
+                race, pace_type, front_3f_est, last_3f_est
+            )
+
+            # 1200m: 前半3F(600m) + 後半3F(600m) = 全走破タイム の整合性保証
+            if (front_3f_est and last_3f_est and race.course
+                    and race.course.distance == 1200):
+                predicted_race_time = round(front_3f_est + last_3f_est, 1)
 
         # ---- 最終隊列予測 ----
-        final_formation = self._predict_final_formation(
-            evaluations, _style_map, pace_type, leading, front_h, mid_h, rear_h
-        )
+        if _is_banei:
+            final_formation = None
+        else:
+            final_formation = self._predict_final_formation(
+                evaluations, _style_map, pace_type, leading, front_h, mid_h, rear_h
+            )
 
         analysis = RaceAnalysis(
             race=race,
@@ -993,7 +1344,7 @@ class RaceAnalysisEngine:
             mid_horses=mid_h,
             rear_horses=rear_h,
             overall_confidence=confidence,
-            confidence_score=_calc_confidence_score(evaluations),
+            confidence_score=_calc_confidence_score(evaluations, is_jra=self.is_jra, is_banei=_is_banei),
             tickets=tickets,
             total_budget=total_budget,
             pace_comment=pace_comment,
@@ -1193,6 +1544,7 @@ class RaceAnalysisEngine:
         pace_db: Optional[Dict] = None,
         pace_context: Optional[Dict] = None,
         field_baseline_override: Optional[float] = None,
+        override_position: Optional[float] = None,
     ) -> HorseEvaluation:
         ev = HorseEvaluation(horse=horse)
 
@@ -1247,20 +1599,37 @@ class RaceAnalysisEngine:
         )
 
         # F章: 展開偏差値
-        style_info = self.style_classifier.classify(horse.past_runs, surface=race.course.surface)
-        ev.pace = self.pace_dev_calc.calc(
-            horse=horse,
-            style_info=style_info,
-            pace_type=pace_type,
-            last3f_evaluator=self.last3f_evaluator,
-            course=race.course,
-            gate_bias=gate_bias,
-            jockey_pace_score=jockey_pace_score,
-            field_count=race.field_count,
-            race_info=race,
-            pace_context=pace_context,
-            field_baseline_override=field_baseline_override,
-        )
+        _is_banei_race = is_banei(race.course.venue_code if race.course else "")
+        if _is_banei_race:
+            # ばんえい: 通常のペース分析をスキップし、ばんえい固有の適性スコアで代替
+            from src.models import PaceDeviation
+            style_info = {"running_style": RunningStyle.SENKOU, "last3f_type": "安定中位末脚"}
+            banei_scores = _calc_banei_aptitude(horse, race)
+            ev.pace = PaceDeviation(
+                base_score=50.0,
+                last3f_eval=banei_scores["burden"],        # 斤量負担率スコア
+                position_balance=banei_scores["moisture"],  # 馬場水分適性スコア
+                course_style_bias=banei_scores["time_cv"],  # タイム安定性スコア
+                jockey_pace=banei_scores["weight_trend"],   # 斤量トレンドスコア
+                running_style=RunningStyle.SENKOU,
+                gate_bias=gate_bias,
+            )
+        else:
+            style_info = self.style_classifier.classify(horse.past_runs, surface=race.course.surface)
+            ev.pace = self.pace_dev_calc.calc(
+                horse=horse,
+                style_info=style_info,
+                pace_type=pace_type,
+                last3f_evaluator=self.last3f_evaluator,
+                course=race.course,
+                gate_bias=gate_bias,
+                jockey_pace_score=jockey_pace_score,
+                field_count=race.field_count,
+                race_info=race,
+                pace_context=pace_context,
+                field_baseline_override=field_baseline_override,
+                override_position=override_position,
+            )
 
         # G章: コース適性偏差値
         ev.course = self.course_apt_calc.calc(
@@ -1368,18 +1737,8 @@ def _normalize_field_deviations(evaluations: List[HorseEvaluation]) -> None:
             normalized = 50.0 + (raw - mu) * expansion
             ev.pace.norm_adjustment = normalized - raw
 
-    # ─── 能力偏差値の正規化 ───
-    ability_totals = [ev.ability.total for ev in evaluations]
-    if len(ability_totals) >= 2:
-        mu = _stat.mean(ability_totals)
-        sigma = _stat.pstdev(ability_totals) or 1.0
-        # σ下限4.0、上限8.0、拡大倍率は最大1.5倍
-        target_sigma = max(4.0, min(8.0, sigma))
-        expansion = min(1.5, target_sigma / sigma)
-        for ev in evaluations:
-            raw = ev.ability.total
-            normalized = 50.0 + (raw - mu) * expansion
-            ev.ability.norm_adjustment = normalized - raw
+    # ─── 能力偏差値は絶対評価（正規化しない） ───
+    # 走破偏差値ベースの実力値をそのまま表示する
 
     # ─── コース適性偏差値の正規化 ───
     course_totals = [ev.course.total for ev in evaluations]
@@ -1399,15 +1758,102 @@ def _normalize_field_deviations(evaluations: List[HorseEvaluation]) -> None:
 # ============================================================
 
 
-def _compute_personnel_devs(evaluations: List[HorseEvaluation]) -> None:
+def _compute_personnel_devs(
+    evaluations: List[HorseEvaluation],
+    race: Optional["RaceInfo"] = None,
+    rolling_tracker=None,
+    sire_rolling_tracker=None,
+) -> None:
     """
-    騎手・調教師の偏差値を先行算出して各 HorseEvaluation にセットする [A4]。
+    騎手・調教師・血統の偏差値を先行算出して各 HorseEvaluation にセットする [A4 + Phase 12]。
     composite プロパティが参照される前に呼ぶ必要がある。
-    _compute_detail_grades() で詳細グレードは後から算出するが、
-    dev 値だけは先にセットして composite の補正項に使えるようにする。
+
+    rolling_tracker が利用可能な場合は全ファクターの加重平均で偏差値を算出（ハイブリッド方式）。
+    利用不可の場合は personnel_db のフォールバック値を使用。
     """
+    from src.calculator.grades import compute_category_deviation
+    from config.settings import (
+        JOCKEY_FACTOR_WEIGHTS, TRAINER_FACTOR_WEIGHTS,
+        SIRE_FACTOR_WEIGHTS, BMS_FACTOR_WEIGHTS,
+        JOCKEY_BASE_PARAMS_JRA, JOCKEY_BASE_PARAMS_NAR,
+        TRAINER_BASE_PARAMS_JRA, TRAINER_BASE_PARAMS_NAR,
+        SIRE_BASE_PARAMS, BMS_BASE_PARAMS,
+    )
+
+    # レース情報からコンテキスト取得
+    venue = ""
+    surface = ""
+    distance = 0
+    condition = "良"
+    is_jra = True
+    if race:
+        venue = race.venue or ""
+        surface = race.course.surface if race.course else ""
+        distance = race.course.distance if race.course else 0
+        if surface == "芝" and race.track_condition_turf:
+            condition = race.track_condition_turf
+        elif race.track_condition_dirt:
+            condition = race.track_condition_dirt
+        is_jra = race.is_jra
+
+    # SMILE区分
+    def _smile_cat(dist):
+        if dist <= 1000: return "ss"
+        if dist <= 1400: return "s"
+        if dist <= 1800: return "m"
+        if dist <= 2200: return "i"
+        if dist <= 2600: return "l"
+        return "e"
+    smile = _smile_cat(distance) if distance else ""
+
+    # 距離帯（_EntityStats の dist_cat dict キーと一致させる）
+    def _dist_cat(dist):
+        if dist <= 1400: return "sprint"
+        if dist <= 1800: return "mile"
+        if dist <= 2200: return "middle"
+        return "long"
+    dc = _dist_cat(distance) if distance else ""
+
+    # JRA/NAR 判定ヘルパー（騎手・調教師の所属ベース: 00xxx/01xxx=JRA, それ以外=NAR）
+    def _is_jra_person(pid: str) -> bool:
+        return pid.startswith("00") or pid.startswith("01")
+
+    # NAR公式ID → tracker(netkeiba)ID 変換マップを構築
+    # NAR公式スクレイパーのIDとMLトレーニングデータ(netkeiba)のIDが異なるため
+    _jockey_name_to_tracker_id: Dict[str, str] = {}
+    _trainer_name_to_tracker_id: Dict[str, str] = {}
+    if rolling_tracker:
+        try:
+            import sqlite3 as _sql3
+            _conn = _sql3.connect("data/keiba.db")
+            # 騎手: jockey_name → netkeiba ID（最多出走のIDを採用）
+            _jrows = _conn.execute(
+                "SELECT jockey_name, jockey_id, COUNT(*) as cnt "
+                "FROM race_log WHERE jockey_id != '' AND jockey_name != '' "
+                "GROUP BY jockey_name, jockey_id ORDER BY cnt DESC"
+            ).fetchall()
+            for _jn, _jid, _ in _jrows:
+                import re as _re
+                _jn_clean = _re.sub(r"[（(].+?[）)]", "", _jn).replace("\u3000", "").strip()
+                if _jn_clean not in _jockey_name_to_tracker_id:
+                    _jockey_name_to_tracker_id[_jn_clean] = _jid
+            # 調教師: 同様
+            _trows = _conn.execute(
+                "SELECT trainer_name, trainer_id, COUNT(*) as cnt "
+                "FROM race_log WHERE trainer_id != '' AND trainer_name != '' "
+                "GROUP BY trainer_name, trainer_id ORDER BY cnt DESC"
+            ).fetchall()
+            for _tn, _tid, _ in _trows:
+                import re as _re
+                _tn_clean = _re.sub(r"[（(].+?[）)]", "", _tn).replace("\u3000", "").strip()
+                if _tn_clean not in _trainer_name_to_tracker_id:
+                    _trainer_name_to_tracker_id[_tn_clean] = _tid
+            _conn.close()
+        except Exception:
+            pass
+
     for ev in evaluations:
-        # デフォルト値を先にセット（jockey_stats/trainer_stats が無い場合に備える）
+        # デフォルト値を先にセット
         if not hasattr(ev, "_jockey_dev"):
             ev._jockey_dev = None
         if not hasattr(ev, "_trainer_dev"):
@@ -1415,28 +1861,240 @@ def _compute_personnel_devs(evaluations: List[HorseEvaluation]) -> None:
         if not hasattr(ev, "_bloodline_dev"):
             ev._bloodline_dev = None
 
-        # 騎手偏差値
-        if ev.jockey_stats and ev._jockey_dev is None:
-            pop = getattr(ev.horse, "popularity", None)
-            is_upper = pop is not None and pop <= 3
-            jdev = ev.jockey_stats.get_deviation(is_upper)
-            # 4象限すべて50.0はデフォルト（データ未取得） → None
-            _all_default = (
-                ev.jockey_stats.upper_long_dev == 50.0
-                and ev.jockey_stats.upper_short_dev == 50.0
-                and ev.jockey_stats.lower_long_dev == 50.0
-                and ev.jockey_stats.lower_short_dev == 50.0
-            )
-            ev._jockey_dev = None if _all_default else round(max(30.0, min(70.0, jdev)), 1)
+        h = ev.horse
+        jid = getattr(h, "jockey_id", "") or ""
+        tid = getattr(h, "trainer_id", "") or ""
+        hid = getattr(h, "horse_id", "") or ""
+        _date_str = race.race_date if race else ""
 
-        # 調教師偏差値
-        if ev.trainer_stats and ev._trainer_dev is None:
-            dev = getattr(ev.trainer_stats, "deviation", None)
-            if dev is not None:
-                ev._trainer_dev = None if dev == 50.0 else round(max(30.0, min(70.0, dev)), 1)
+        # NAR公式ID → netkeiba ID 変換（rolling tracker はnetkeiba IDでキー管理）
+        _nar_map = _load_nar_id_map()
+        if _nar_map and jid:
+            _j_entry = _nar_map.get("jockey", {}).get(jid)
+            if _j_entry:
+                jid = _j_entry.get("nk_id", jid)
+        if _nar_map and tid:
+            _t_entry = _nar_map.get("trainer", {}).get(tid)
+            if _t_entry:
+                tid = _t_entry.get("nk_id", tid)
 
-        # bloodline_dev は _compute_detail_grades() で算出
-        # （bloodline_db のロードが必要なため、ここでは省略）
+        # ヘルパー: _EntityStats の dict から runs 数を取得
+        def _dict_runs(entity, attr_name, key):
+            d = getattr(entity, attr_name, None) or {}
+            v = d.get(key)
+            return v[2] if v and len(v) >= 3 else 0
+
+        # === 騎手偏差値 ===
+        if ev._jockey_dev is None:
+            j_entity = rolling_tracker.jockeys.get(jid) if rolling_tracker else None
+            # NAR公式IDでヒットしない場合、名前ベースでnetkeiba IDを逆引き
+            _resolved_jid = jid
+            if not j_entity and rolling_tracker and _jockey_name_to_tracker_id:
+                import re as _re
+                _jname = getattr(h, "jockey", "") or ""
+                _jname_clean = _re.sub(r"[（(].+?[）)]", "", _jname).replace("\u3000", "").strip()
+                _alt_jid = _jockey_name_to_tracker_id.get(_jname_clean)
+                if _alt_jid and _alt_jid != jid:
+                    j_entity = rolling_tracker.jockeys.get(_alt_jid)
+                    if j_entity:
+                        _resolved_jid = _alt_jid
+            if j_entity and j_entity.runs >= 5:
+                # ローリング統計からファクター値を取得
+                factor_rates = {
+                    "overall": j_entity.place_rate,
+                    "pr_2y": j_entity.rate_recent_2y(_date_str) if _date_str else None,
+                    "venue": j_entity.venue_pr(venue) if venue else None,
+                    "sim_venue": j_entity.sim_venue_rate(venue, surface)[1] if venue and surface else None,
+                    "distance": j_entity.dist_cat_pr(dc) if dc else None,
+                    "smile": j_entity.smile_pr(smile) if smile else None,
+                    "condition": j_entity.cond_pr(condition) if condition else None,
+                    "pace": None,  # 推論前はペース情報なし
+                    "style": None,
+                    "gate": None,
+                    "horse": j_entity.horse_combo_pr(hid) if hid else None,
+                }
+                factor_runs = {
+                    "overall": j_entity.runs,
+                    "pr_2y": j_entity.runs,
+                    "venue": _dict_runs(j_entity, 'venue', venue),
+                    "sim_venue": j_entity.runs,
+                    "distance": _dict_runs(j_entity, 'dist_cat', dc),
+                    "smile": _dict_runs(j_entity, 'smile', smile),
+                    "condition": _dict_runs(j_entity, 'cond', condition),
+                    "pace": 0,
+                    "style": 0,
+                    "gate": 0,
+                    "horse": _dict_runs(j_entity, 'horse_combo', hid),
+                }
+                _jp = JOCKEY_BASE_PARAMS_JRA if _is_jra_person(_resolved_jid) else JOCKEY_BASE_PARAMS_NAR
+                jdev = compute_category_deviation(
+                    factor_rates, factor_runs, JOCKEY_FACTOR_WEIGHTS,
+                    base_mean=_jp["mean"], base_sigma=_jp["sigma"],
+                )
+                if jdev is not None:
+                    ev._jockey_dev = round(jdev, 1)
+            elif ev.jockey_stats:
+                # フォールバック: NAR騎手はrace_logから直接計算（personnel_dbは不正確な場合がある）
+                _fb_dev = None
+                if not _is_jra_person(jid):
+                    _fb_dev = _race_log_jockey_dev(jid, getattr(h, "jockey", ""))
+                if _fb_dev is not None:
+                    ev._jockey_dev = round(max(30.0, min(70.0, _fb_dev)), 1)
+                else:
+                    # JRA騎手 or race_log取得失敗: 従来通りpersonnel_db使用
+                    jdev = ev.jockey_stats.lower_long_dev
+                    _all_default = (
+                        ev.jockey_stats.upper_long_dev == 50.0
+                        and ev.jockey_stats.upper_short_dev == 50.0
+                        and ev.jockey_stats.lower_long_dev == 50.0
+                        and ev.jockey_stats.lower_short_dev == 50.0
+                    )
+                    ev._jockey_dev = None if _all_default else round(max(30.0, min(70.0, jdev)), 1)
+
+        # === 調教師偏差値 ===
+        if ev._trainer_dev is None:
+            t_entity = rolling_tracker.trainers.get(tid) if rolling_tracker else None
+            _resolved_tid = tid
+            # NAR公式ID → tracker(netkeiba)ID 名前ベースフォールバック
+            if not t_entity and rolling_tracker and _trainer_name_to_tracker_id:
+                import re as _re
+                _tname = getattr(h, "trainer", "") or ""
+                _tname_clean = _re.sub(r"[（(].+?[）)]", "", _tname).replace("\u3000", "").strip()
+                _alt_tid = _trainer_name_to_tracker_id.get(_tname_clean)
+                if _alt_tid and _alt_tid != tid:
+                    t_entity = rolling_tracker.trainers.get(_alt_tid)
+                    if t_entity:
+                        _resolved_tid = _alt_tid
+            if t_entity and t_entity.runs >= 5:
+                factor_rates = {
+                    "overall": t_entity.place_rate,
+                    "pr_2y": t_entity.rate_recent_2y(_date_str) if _date_str else None,
+                    "venue": t_entity.venue_pr(venue) if venue else None,
+                    "sim_venue": t_entity.sim_venue_rate(venue, surface)[1] if venue and surface else None,
+                    "distance": t_entity.dist_cat_pr(dc) if dc else None,
+                    "smile": t_entity.smile_pr(smile) if smile else None,
+                    "condition": t_entity.cond_pr(condition) if condition else None,
+                    "pace": None,
+                    "style": None,
+                    "gate": None,
+                    "horse": t_entity.horse_combo_pr(hid) if hid else None,
+                }
+                factor_runs = {
+                    "overall": t_entity.runs,
+                    "pr_2y": t_entity.runs,
+                    "venue": _dict_runs(t_entity, 'venue', venue),
+                    "sim_venue": t_entity.runs,
+                    "distance": _dict_runs(t_entity, 'dist_cat', dc),
+                    "smile": _dict_runs(t_entity, 'smile', smile),
+                    "condition": _dict_runs(t_entity, 'cond', condition),
+                    "pace": 0,
+                    "style": 0,
+                    "gate": 0,
+                    "horse": _dict_runs(t_entity, 'horse_combo', hid),
+                }
+                _tp = TRAINER_BASE_PARAMS_JRA if _is_jra_person(_resolved_tid) else TRAINER_BASE_PARAMS_NAR
+                tdev = compute_category_deviation(
+                    factor_rates, factor_runs, TRAINER_FACTOR_WEIGHTS,
+                    base_mean=_tp["mean"], base_sigma=_tp["sigma"],
+                )
+                if tdev is not None:
+                    ev._trainer_dev = round(tdev, 1)
+            elif ev.trainer_stats:
+                # フォールバック: NAR調教師はrace_logから直接計算
+                _fb_tdev = None
+                if not _is_jra_person(tid):
+                    _fb_tdev = _race_log_trainer_dev(tid, getattr(h, "trainer", ""))
+                if _fb_tdev is not None:
+                    ev._trainer_dev = round(max(30.0, min(70.0, _fb_tdev)), 1)
+                else:
+                    # JRA調教師 or race_log取得失敗: 従来通りpersonnel_db使用
+                    dev = getattr(ev.trainer_stats, "deviation", None)
+                    if dev is not None:
+                        ev._trainer_dev = None if dev == 50.0 else round(max(30.0, min(70.0, dev)), 1)
+
+        # === 血統偏差値 (Phase 12 ハイブリッド) ===
+        if ev._bloodline_dev is None and sire_rolling_tracker:
+            sire_id = getattr(h, "sire_id", "") or ""
+            bms_id = getattr(h, "maternal_grandsire_id", "") or ""
+            if sire_id or bms_id:
+                # 父偏差値
+                sire_dev = None
+                if sire_id:
+                    s_rates = {
+                        "overall": None, "smile": None,
+                        "condition": None, "venue": None,
+                        "pace": None, "style": None, "gate": None,
+                        "jockey": None, "trainer": None,
+                    }
+                    s_runs = {k: 0 for k in s_rates}
+                    # ヘルパー: getattr で安全にアクセス
+                    def _sire_rate(attr, key, min_r=5):
+                        v = getattr(sire_rolling_tracker, attr, {}).get(key)
+                        if v and len(v) >= 3 and v[2] >= min_r:
+                            return v[1] / v[2], v[2]
+                        return None, 0
+                    # 全体
+                    _s = getattr(sire_rolling_tracker, '_sire', {}).get(sire_id)
+                    if _s and len(_s) >= 3 and _s[2] >= 5:
+                        s_rates["overall"] = _s[1] / _s[2]
+                        s_runs["overall"] = _s[2]
+                    # SMILE別（面×距離帯のプロキシ）
+                    r, n = _sire_rate('_sire_smile', (sire_id, smile))
+                    if r is not None:
+                        s_rates["smile"] = r; s_runs["smile"] = n
+                    # 馬場状態別
+                    r, n = _sire_rate('_sire_cond', (sire_id, condition))
+                    if r is not None:
+                        s_rates["condition"] = r; s_runs["condition"] = n
+                    # 競馬場別
+                    r, n = _sire_rate('_sire_venue', (sire_id, venue))
+                    if r is not None:
+                        s_rates["venue"] = r; s_runs["venue"] = n
+                    sire_dev = compute_category_deviation(
+                        s_rates, s_runs, SIRE_FACTOR_WEIGHTS,
+                        base_mean=SIRE_BASE_PARAMS["mean"], base_sigma=SIRE_BASE_PARAMS["sigma"],
+                    )
+
+                # 母父偏差値
+                bms_dev = None
+                if bms_id:
+                    b_rates = {
+                        "overall": None, "smile": None,
+                        "condition": None, "venue": None,
+                        "pace": None, "style": None, "gate": None,
+                        "jockey": None, "trainer": None,
+                    }
+                    b_runs = {k: 0 for k in b_rates}
+                    def _bms_rate(attr, key, min_r=5):
+                        v = getattr(sire_rolling_tracker, attr, {}).get(key)
+                        if v and len(v) >= 3 and v[2] >= min_r:
+                            return v[1] / v[2], v[2]
+                        return None, 0
+                    _b = getattr(sire_rolling_tracker, '_bms', {}).get(bms_id)
+                    if _b and len(_b) >= 3 and _b[2] >= 5:
+                        b_rates["overall"] = _b[1] / _b[2]
+                        b_runs["overall"] = _b[2]
+                    r, n = _bms_rate('_bms_smile', (bms_id, smile))
+                    if r is not None:
+                        b_rates["smile"] = r; b_runs["smile"] = n
+                    r, n = _bms_rate('_bms_cond', (bms_id, condition))
+                    if r is not None:
+                        b_rates["condition"] = r; b_runs["condition"] = n
+                    r, n = _bms_rate('_bms_venue', (bms_id, venue))
+                    if r is not None:
+                        b_rates["venue"] = r; b_runs["venue"] = n
+                    bms_dev = compute_category_deviation(
+                        b_rates, b_runs, BMS_FACTOR_WEIGHTS,
+                        base_mean=BMS_BASE_PARAMS["mean"], base_sigma=BMS_BASE_PARAMS["sigma"],
+                    )
+
+                # 父・母父の平均
+                if sire_dev is not None and bms_dev is not None:
+                    ev._bloodline_dev = round((sire_dev * 0.6 + bms_dev * 0.4), 1)
+                elif sire_dev is not None:
+                    ev._bloodline_dev = round(sire_dev, 1)
+                elif bms_dev is not None:
+                    ev._bloodline_dev = round(bms_dev, 1)
 
 
 # ============================================================
@@ -1630,7 +2288,7 @@ def enrich_course_aptitude_with_style_bias(
     # _compute_detail_grades が _jockey_dev/_trainer_dev/_bloodline_dev を
     # 更新するため composite が変わる → 印を再割当て（印と composite の整合性を保証）
     from src.output.formatter import assign_marks as _assign_marks
-    analysis.evaluations[:] = _assign_marks(analysis.evaluations)
+    analysis.evaluations[:] = _assign_marks(analysis.evaluations, is_jra=engine.is_jra)
 
     return analysis
 
@@ -1729,18 +2387,23 @@ def _compute_detail_grades(engine: RaceAnalysisEngine, analysis: RaceAnalysis):
             sire_name=_h_sire_name or None,
             mgs_name=_h_mgs_name or None,
         )
-        ev._jockey_grade = profile["jockey_grade"]
-        ev._trainer_grade = profile["trainer_grade"]
-        ev._sire_grade = profile["sire_grade"]
-        ev._mgs_grade = profile["mgs_grade"]
         # 数値（偏差値） — 30-70クランプ
+        # _compute_personnel_devs() で rolling tracker から既に算出済みの場合は上書きしない
         def _clamp_dev(v):
             return round(max(30.0, min(70.0, v)), 1) if v is not None else None
-        ev._jockey_dev = _clamp_dev(profile.get("jockey_dev"))
-        ev._trainer_dev = _clamp_dev(profile.get("trainer_dev"))
+        if getattr(ev, "_jockey_dev", None) is None:
+            ev._jockey_dev = _clamp_dev(profile.get("jockey_dev"))
+        if getattr(ev, "_trainer_dev", None) is None:
+            ev._trainer_dev = _clamp_dev(profile.get("trainer_dev"))
         ev._sire_dev = _clamp_dev(profile.get("sire_dev"))
         ev._mgs_dev = _clamp_dev(profile.get("mgs_dev"))
-        ev._bloodline_dev = _clamp_dev(profile.get("bloodline_dev"))
+        if getattr(ev, "_bloodline_dev", None) is None:
+            ev._bloodline_dev = _clamp_dev(profile.get("bloodline_dev"))
+        # グレードは偏差値から導出（rolling tracker で算出済みの場合、profile の旧グレードを上書き）
+        ev._jockey_grade = dev_to_grade(ev._jockey_dev) if ev._jockey_dev is not None else profile["jockey_grade"]
+        ev._trainer_grade = dev_to_grade(ev._trainer_dev) if ev._trainer_dev is not None else profile["trainer_grade"]
+        ev._sire_grade = profile["sire_grade"]
+        ev._mgs_grade = profile["mgs_grade"]
 
         # 実力人気順
         ev._predicted_rank = pred_rank_map.get(h.horse_no)

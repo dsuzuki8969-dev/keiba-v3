@@ -109,8 +109,13 @@ VENUE_COMPOSITE_WEIGHTS: dict[str, dict[str, float]] = {
     "姫路": {"ability": 0.288, "pace": 0.472, "course": 0.051, "jockey": 0.077, "trainer": 0.084, "bloodline": 0.028},  # 自動較正 n=8,294
     "高知": {"ability": 0.289, "pace": 0.496, "course": 0.055, "jockey": 0.076, "trainer": 0.031, "bloodline": 0.053},  # 自動較正 n=25,804
     "佐賀": {"ability": 0.228, "pace": 0.578, "course": 0.052, "jockey": 0.067, "trainer": 0.029, "bloodline": 0.046},  # 自動較正 n=28,351
-    # 帯広（ばんえい）は対象外のため除外
+    # --- ばんえい ---
+    "帯広": {"ability": 0.28, "pace": 0.27, "course": 0.05, "jockey": 0.15, "trainer": 0.15, "bloodline": 0.10},  # Phase5: ばんえい適性スコア導入に伴い重み修正
 }
+
+# ばんえい馬券購入フィルタ: 許可する最低自信度
+# "S" → SS/Sのみ購入, "A" → SS/S/Aまで購入, "B" → 通常NARと同じ
+BANEI_MIN_CONFIDENCE = "A"
 
 # 後方互換: 旧COMPOSITE_PERSONNEL_WEIGHTS を参照するコード向け
 # Phase 10Aで6因子化したため、補正項としての使用は廃止
@@ -158,7 +163,7 @@ _CALIB_VC_TO_NAME: dict[str, str] = {
     "46": "金沢", "47": "笠松", "48": "名古屋",
     "49": "園田", "50": "園田",
     "51": "姫路",
-    # "52": 帯広（ばんえい）は対象外
+    "52": "帯広", "65": "帯広",
     "54": "高知", "55": "佐賀",
 }
 
@@ -240,7 +245,31 @@ def reload_calibrated_weights() -> int:
 # 加重平均偏差値の重み (C-2)
 # 5走分: 直近→古い順
 # ============================================================
-WA_WEIGHTS = [0.1524, 0.1125, 0.3481, 0.341, 0.046]  # Optuna最適値 (更新: 2026-03-04)
+WA_WEIGHTS = [0.35, 0.25, 0.20, 0.12, 0.08]  # 直近走重視（LightGBM特徴量設計と整合）
+
+# Phase 4-1: 距離帯別WA重み
+# 短距離: 直近走の好不調が予測力高い → 直近走重視
+# 長距離: 過去実績の安定性が重要 → 均等寄り
+WA_WEIGHTS_BY_DISTANCE = {
+    "sprint":  [0.40, 0.25, 0.20, 0.10, 0.05],  # 1000-1400m: 直近重視
+    "mile":    [0.35, 0.25, 0.20, 0.12, 0.08],  # 1500-1600m: 現行維持（最高的中率）
+    "middle":  [0.30, 0.25, 0.22, 0.14, 0.09],  # 1700-2200m: 安定重視
+    "long":    [0.28, 0.24, 0.22, 0.16, 0.10],  # 2300m+: 実績重視
+}
+
+
+def get_wa_weights(distance: int) -> list:
+    """距離に応じたWA重みを返す"""
+    if not PIPELINE_V2_ENABLED:
+        return WA_WEIGHTS
+    if distance <= 1400:
+        return WA_WEIGHTS_BY_DISTANCE["sprint"]
+    elif distance <= 1600:
+        return WA_WEIGHTS_BY_DISTANCE["mile"]
+    elif distance <= 2200:
+        return WA_WEIGHTS_BY_DISTANCE["middle"]
+    else:
+        return WA_WEIGHTS_BY_DISTANCE["long"]
 
 # ============================================================
 # 距離係数・換算定数 (B-2)
@@ -356,9 +385,59 @@ KIKEN_ML_ENDORSE_R3 = -1.5  # win_prob rank 3位の減点（ML endorsement）
 KIKEN_ML_ENDORSE_MID = -0.5  # win_prob rank 上位半分の減点
 
 # 特選穴馬
-TOKUSEN_SCORE_THRESHOLD = 7.0   # 特選判定閾値（16pt満点中）
+TOKUSEN_SCORE_THRESHOLD = 3.0   # 特選判定閾値（10pt満点中、wp主軸）
 TOKUSEN_ODDS_THRESHOLD = 15.0   # 対象: オッズ15倍以上
 TOKUSEN_MAX_PER_RACE = 2        # 1レース最大2頭
+
+# 特選危険馬
+TOKUSEN_KIKEN_SCORE_THRESHOLD = 3.0  # 特選判定閾値（ML×composite二重否定通過後の追加スコア）
+TOKUSEN_KIKEN_MAX_PER_RACE = 2      # 1レース最大2頭
+
+# 特選危険馬 必須条件（JRA/NAR分離）
+TOKUSEN_KIKEN_POP_LIMIT_JRA = 5       # JRA: 5番人気以内（大頭数で上位層が広い）
+TOKUSEN_KIKEN_POP_LIMIT_NAR = 3       # NAR: 3番人気以内（現行維持）
+TOKUSEN_KIKEN_ODDS_LIMIT_JRA = 15.0   # JRA: 15倍未満（5番人気まで含む）
+TOKUSEN_KIKEN_ODDS_LIMIT_NAR = 10.0   # NAR: 10倍未満（現行維持）
+TOKUSEN_KIKEN_ML_RANK_PCT_JRA = 0.45  # JRA: 45%以下（OR化に伴い微引き締め）
+TOKUSEN_KIKEN_ML_RANK_PCT_NAR = 0.60  # NAR: 60%以下（現行維持）
+TOKUSEN_KIKEN_COMP_RANK_PCT_JRA = 0.35  # JRA: 35%以下（OR化に伴い微引き締め）
+TOKUSEN_KIKEN_COMP_RANK_PCT_NAR = 0.50  # NAR: 50%以下（現行維持）
+
+# ============================================================
+# TEKIPAN(◉)パラメータ（JRA/NAR分離）
+# ============================================================
+TEKIPAN_GAP_JRA = 1.0              # JRA: gap最小限（分離確認のみ。win_prob主軸）
+TEKIPAN_GAP_NAR = 4.0              # NAR: 現行維持
+TEKIPAN_WIN_PROB_JRA = 0.30        # JRA: ML勝率30%以上（三連率最良閾値）
+TEKIPAN_WIN_PROB_NAR = 0.30        # NAR: 現行維持
+TEKIPAN_PLACE3_PROB_JRA = 0.60     # JRA: ML複勝率60%以上（品質フィルタ）
+TEKIPAN_PLACE3_PROB_NAR = 0.0      # NAR: 追加条件なし（現行維持）
+
+# ============================================================
+# 自信度パラメータ（JRA/NAR分離）
+# ============================================================
+# gap_norm 正規化除数（gap / N → 1.0上限）
+CONFIDENCE_GAP_DIVISOR_JRA = 6.0   # JRA: gap_normノイズ低減（4→6）
+CONFIDENCE_GAP_DIVISOR_NAR = 8.0   # NAR: gap平均2.82, 8ptで満点（現行維持）
+
+# SS硬性条件: composite差
+CONFIDENCE_SS_GAP_JRA = 1.0        # JRA: 最小限（gapはJRAで予測力なし）
+CONFIDENCE_SS_GAP_NAR = 5.0        # NAR: 現行維持
+
+# SS硬性条件: value_ratio
+CONFIDENCE_SS_VALUE_JRA = 1.10     # JRA: 微緩和
+CONFIDENCE_SS_VALUE_NAR = 1.20     # NAR: 現行維持
+
+# JRA: win_prob主軸の自信度閾値（6信号モデルはJRA大頭数で序列逆転するため）
+# 累積勝率: 0.30+=76%, 0.15+=32%, 0.10+=31%, 0.06+=28%, <0.06=7%
+# 広帯域で中間ノイズ（0.14-0.16/0.18-0.20スパイク）を平均化
+# Phase 7: win_prob分布再較正 — Phase 2後の圧縮分布に合わせて引き下げ
+CONFIDENCE_WP_THRESHOLDS_JRA = {"SS": 0.25, "S": 0.15, "A": 0.10, "B": 0.06, "C": 0.03, "D": 0.01}
+
+# 閾値（score → ConfidenceLevel） — Phase 12: JRA/NAR統一（7信号スコア方式）
+CONFIDENCE_THRESHOLDS_JRA = {"S": 0.45, "A": 0.35, "B": 0.25, "C": 0.15, "D": 0.08}
+# Phase 7: 7信号スコア分布に合わせて引き下げ（旧0.55/0.42/0.30/0.20/0.10）
+CONFIDENCE_THRESHOLDS_NAR = {"S": 0.45, "A": 0.35, "B": 0.25, "C": 0.15, "D": 0.08}
 
 # ============================================================
 # 買い目 期待値閾値 (5-2)
@@ -368,6 +447,12 @@ EV_BUY_NORMAL = 100  # ○買い
 BUY_MAX_TICKETS = 8  # 最大8点
 
 # ============================================================
+# 三連複フォーメーション設定 (5-4)
+# ============================================================
+MAX_FORMATION_TICKETS = 15  # EV上位N点に制限
+MIN_FORMATION_EV = 80  # 最低EV%（これ未満は買い目から除外）
+
+# ============================================================
 # 自信度別賭け金デフォルト (5-3)
 # ============================================================
 STAKE_DEFAULT = {
@@ -375,8 +460,9 @@ STAKE_DEFAULT = {
     "S": 6000,
     "A": 3000,
     "B": 1500,
-    "C": 500,  # 自信度Cでも最小限の賭け金で買い目を表示
+    "C": 500,
     "D": 0,
+    "E": 0,
 }
 
 # ============================================================
@@ -454,3 +540,118 @@ TRAINING_EMOJI = {
     "馬なり": "→",
     "極軽め": "⏸",
 }
+
+# ============================================================
+# Phase 12: 表示用偏差値ファクター重み
+# 各カテゴリの compute_category_deviation() で使用
+# 重みは「そのファクターがカテゴリ評価にどれだけ寄与するか」を示す
+# ============================================================
+JOCKEY_FACTOR_WEIGHTS = {
+    "overall": 1.0,      # 全体複勝率
+    "pr_2y": 0.9,        # 直近2年複勝率
+    "venue": 0.8,        # 当場複勝率
+    "sim_venue": 0.5,    # 類似場複勝率
+    "distance": 0.7,     # 距離帯複勝率
+    "smile": 0.6,        # SMILE区分複勝率
+    "condition": 0.6,    # 馬場状態別複勝率
+    "pace": 0.5,         # ペース別複勝率
+    "style": 0.5,        # 脚質別複勝率
+    "gate": 0.4,         # 枠番帯別複勝率
+    "horse": 0.7,        # 騎乗馬別複勝率
+}
+
+TRAINER_FACTOR_WEIGHTS = {
+    "overall": 1.0,
+    "pr_2y": 0.9,
+    "venue": 0.8,
+    "sim_venue": 0.5,
+    "distance": 0.7,
+    "smile": 0.6,
+    "condition": 0.6,
+    "pace": 0.4,
+    "style": 0.4,
+    "gate": 0.3,
+    "horse": 0.6,
+}
+
+SIRE_FACTOR_WEIGHTS = {
+    "overall": 1.0,
+    "smile": 0.8,      # SMILE区分（面×距離帯のプロキシ）
+    "condition": 0.6,
+    "venue": 0.5,
+    "pace": 0.5,
+    "style": 0.5,
+    "gate": 0.4,
+    "jockey": 0.4,
+    "trainer": 0.3,
+}
+
+BMS_FACTOR_WEIGHTS = {
+    "overall": 1.0,
+    "smile": 0.8,
+    "condition": 0.6,
+    "venue": 0.5,
+    "pace": 0.5,
+    "style": 0.5,
+    "gate": 0.4,
+    "jockey": 0.4,
+    "trainer": 0.3,
+}
+
+# 騎手/調教師の base_mean / base_sigma (rate_to_dev 用)
+# ファクターは全て「複勝率」（3着以内率）ベース
+# JRA: 平均複勝率 ≈ 19% (≈3/16頭), σ ≈ 6%
+# NAR: 平均複勝率 ≈ 15% (≈3/12-14頭 + 実力差大), σ ≈ 7%
+# 目標分布: SS=2.5%, S=7.5%, A=20%, B=40%, C=20%, D=7.5%, E=2.5% (mean≈52.5, σ_dev≈6.4)
+# 条件付きファクターの上方バイアス（場/距離等は成功条件のサブセット）を考慮し base_mean を高めに設定
+JOCKEY_BASE_PARAMS_JRA = {"mean": 0.19, "sigma": 0.15}   # 実測mean=0.189
+JOCKEY_BASE_PARAMS_NAR = {"mean": 0.27, "sigma": 0.16}   # 実測mean=0.264
+TRAINER_BASE_PARAMS_JRA = {"mean": 0.20, "sigma": 0.10}   # 実測mean=0.217
+TRAINER_BASE_PARAMS_NAR = {"mean": 0.26, "sigma": 0.14}   # 実測mean=0.280
+# 血統: σを縮小して分散拡大（個別σ→加重平均の0.72倍を考慮）
+SIRE_BASE_PARAMS = {"mean": 0.25, "sigma": 0.065}
+BMS_BASE_PARAMS = {"mean": 0.26, "sigma": 0.075}
+
+# ============================================================
+# Phase 2: ブレンドパイプライン情報損失削減パラメータ
+# ============================================================
+# ロールバックフラグ: Falseにすると旧パイプライン（固定85:15、固定alpha）に戻る
+PIPELINE_V2_ENABLED = True
+
+# 2-1: composite再推定比率（model_level依存）
+# 高精度モデルほど再推定の影響を小さくし、ML予測の情報を保持する
+REEST_RATIO_BY_LEVEL = {
+    4: 0.05,   # 競馬場専用モデル: 再推定5%のみ（ML情報95%保持）
+    3: 0.08,   # JRA馬場×SMILE: 再推定8%
+    2: 0.15,   # JRA全体/NAR: 現行と同等
+    1: 0.20,   # 馬場全体フォールバック: 再推定やや多め
+    0: 0.25,   # globalモデル: composite再推定を重視
+}
+REEST_RATIO_DEFAULT = 0.15  # 旧パイプライン互換
+
+# 2-2: 人気統計ブレンドの動的alpha拡張パラメータ
+# model_level >= 3 のとき ALPHA_MODEL_MAX を引き上げ
+ALPHA_MODEL_MAX_HIGH = 0.90    # 高精度モデル時のモデル最大信頼度
+ALPHA_MODEL_HIGH_THRESHOLD = 3  # この model_level 以上で ALPHA_MODEL_MAX_HIGH を使用
+CONFIDENCE_GAP_V2 = 0.20       # 飽和防止: 旧0.15→0.20に拡大
+
+# 5-0: Level 4モデル品質フィルター
+# Lift(本命勝率/ランダム) 1.3x以下 = 競馬場専用モデルがほぼ機能していない
+# → Level 2(NAR全体)にフォールバックさせる
+VENUE_MODEL_SKIP = {"36", "30"}  # 水沢(1.3x), 門別(1.2x)
+
+# ============================================================
+# Phase 11: 順位ベース確率テーブル
+# ============================================================
+RANK_PROBABILITY_TABLE_PATH = os.path.join(DATA_DIR, "rank_probability_table.json")
+USE_RANK_TABLE = True  # Falseで現行softmaxにフォールバック
+
+# gap補正パラメータ
+RANK_GAP_THRESHOLD_STRONG = 5.0   # これ以上で「一強」判定
+RANK_GAP_MULT_MAX = 0.6           # 一強時の最大倍率補正
+RANK_GAP_FLAT_FACTOR_MAX = 0.3    # 混戦時の均等化係数
+
+# Phase 12: オッズゲート（自信度別回収率改善）
+CONFIDENCE_ODDS_GATE_ENABLED = True  # Falseで無効化（現行ロジックに戻す）
+CONFIDENCE_MIN_ODDS_SS = 2.0        # SS: 本命オッズ最低2.0倍以上
+CONFIDENCE_MIN_ODDS_S  = 1.5        # S: 本命オッズ最低1.5倍以上

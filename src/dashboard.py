@@ -144,7 +144,14 @@ WMO_WEATHER = {
 
 
 def _get_todays_venues(date_str: str) -> list:
-    """指定日の開催競馬場を取得（netkeiba→予想データフォールバック）"""
+    """指定日の開催競馬場を取得（netkeiba + JRA/NAR公式補完）
+
+    PremiumNetkeibaScraper.fetch_date() と同等のフォールバック構成:
+    1. netkeiba (JRA + NAR)
+    2. JRA公式 (netkeibaが空の場合)
+    3. NAR公式 (常に補完 — ばんえい含む)
+    4. ばんえい安全策 (NAR公式が帯広を返さない場合のみ)
+    """
     try:
         from data.masters.venue_master import get_venue_code_from_race_id, get_venue_name, is_banei
         from src.scraper.netkeiba import NetkeibaClient, RaceListScraper
@@ -152,11 +159,80 @@ def _get_todays_venues(date_str: str) -> list:
         client = NetkeibaClient(no_cache=True)
         scraper = RaceListScraper(client)
         ids = scraper.get_race_ids(date_str)
+        existing = set(ids)
+
+        # JRA公式で補完（netkeibaが空の場合のみ）
+        if not ids:
+            try:
+                from src.scraper.official_odds import OfficialOddsScraper
+                jra_scraper = OfficialOddsScraper()
+                jra_ids = jra_scraper.get_jra_race_list(target_date=date_str)
+                for rid in jra_ids:
+                    if rid not in existing:
+                        ids.append(rid)
+                        existing.add(rid)
+            except Exception as e:
+                logger.debug("JRA公式補完失敗: %s", e)
+
+        # NAR公式で補完（常に実行 — netkeibaが制限中でもNAR/ばんえいを確保）
+        try:
+            from src.scraper.official_nar import OfficialNARScraper
+            nar = OfficialNARScraper()
+            nar_ids = nar.get_race_ids(date_str)
+            for rid in nar_ids:
+                if rid not in existing:
+                    ids.append(rid)
+                    existing.add(rid)
+        except Exception as e:
+            logger.debug("NAR公式補完失敗: %s", e)
+
+        # ばんえい安全策（NAR公式が帯広を返さなかった場合のみ発動）
+        if not any(rid[4:6] == "65" for rid in ids):
+            try:
+                import glob as _glob_banei
+                year = date_str[:4]
+                mmdd = date_str[5:7] + date_str[8:10]
+                # キャッシュにばんえいHTMLが存在すればID生成
+                banei_pattern = os.path.join(
+                    client.cache_dir, f"*race_id={year}65{mmdd}*"
+                )
+                cached = _glob_banei.glob(banei_pattern)
+                if cached:
+                    race_nos = set()
+                    for path in cached:
+                        m = re.search(rf"{year}65{mmdd}(\d{{2}})", os.path.basename(path))
+                        if m:
+                            race_nos.add(int(m.group(1)))
+                    max_race = max(race_nos) if race_nos else 12
+                    banei_ids = [f"{year}65{mmdd}{rno:02d}" for rno in range(1, max_race + 1)]
+                    for rid in banei_ids:
+                        if rid not in existing:
+                            ids.append(rid)
+                            existing.add(rid)
+                    logger.info("ばんえいキャッシュ補完: %dR", max_race)
+                else:
+                    # nar.netkeiba.comで1R目を試行
+                    from src.scraper.netkeiba import NAR_URL
+                    probe_id = f"{year}65{mmdd}01"
+                    probe_soup = client.get(
+                        f"{NAR_URL}/race/shutuba.html",
+                        params={"race_id": probe_id}
+                    )
+                    if probe_soup and probe_soup.select("table"):
+                        banei_ids = [f"{year}65{mmdd}{rno:02d}" for rno in range(1, 13)]
+                        for rid in banei_ids:
+                            if rid not in existing:
+                                ids.append(rid)
+                                existing.add(rid)
+                        logger.info("ばんえいプローブ補完: 12R")
+            except Exception as e:
+                logger.debug("ばんえい補完失敗: %s", e)
+
         seen = set()
         result = []
         for rid in ids:
             vc = get_venue_code_from_race_id(rid)
-            if not vc or vc in seen or is_banei(vc):
+            if not vc or vc in seen:
                 continue
             name = get_venue_name(vc)
             if not name:
@@ -166,7 +242,7 @@ def _get_todays_venues(date_str: str) -> list:
         if result:
             return result
     except Exception as e:
-        logger.warning("venue fetch from netkeiba failed: %s", e)
+        logger.warning("venue fetch failed: %s", e)
 
     # フォールバック: 予想データ(outputディレクトリ)から会場を抽出
     try:
@@ -313,14 +389,14 @@ def _parse_race_html_meta(path: str) -> dict:
     body = html[body_start:] if body_start >= 0 else html
 
     # ■買い目 欄の「自信度：X」を最優先で取得（ユーザー可視の馬券自信度）
-    conf_m = re.search(r"自信度[：:]\s*<[^>]*>(SS\+?|S\+?|A\+?|B\+?|C\+?|D\+?|F)", body)
+    conf_m = re.search(r"自信度[：:]\s*<[^>]*>(SS\+?|S\+?|A\+?|B\+?|C\+?|D\+?|E\+?|F)", body)
     if not conf_m:
-        conf_m = re.search(r"自信度[：:]\s*(SS\+?|S\+?|A\+?|B\+?|C\+?|D\+?|F)", body)
+        conf_m = re.search(r"自信度[：:]\s*(SS\+?|S\+?|A\+?|B\+?|C\+?|D\+?|E\+?|F)", body)
     if conf_m:
         meta["overall_confidence"] = conf_m.group(1)
     else:
-        # フォールバック：展開予測の信頼度
-        conf_m2 = re.search(r"信頼度\s+(SS|S|A|B|C|D)", body)
+        # フォールバック：展開予測の展開精度
+        conf_m2 = re.search(r"展開精度\s+(SS|S|A|B|C|D)", body)
         if conf_m2:
             meta["overall_confidence"] = conf_m2.group(1)
 
@@ -450,7 +526,7 @@ def _calc_betting_ev(horses: list) -> dict | None:
         mk = h.get("mark", "")
         if mk in ("◉", "◎"):
             honmei = h
-        elif mk in ("○", "▲", "△", "☆"):
+        elif mk in ("○", "▲", "△", "★", "☆"):
             others.append(h)
     if not honmei or not others:
         return None
@@ -493,15 +569,17 @@ def _calc_betting_ev(horses: list) -> dict | None:
             umaren_ev_total += p_mod * est_payout
     umaren_count = len(others)
 
-    # ── 三連複 (◎ + othersから2頭) ──
-    SANREN_PR = 0.725
+    # ── 三連複 (◎ + othersから2頭)  Harvilleモデル ──
     sanren_hit = 0.0
     sanren_ev_total = 0.0
     sanren_count = 0
+    # 全馬の単勝オッズリスト（Harville三連複オッズ推定用）
+    all_odds_list = [get_odds(h) or 0 for h in horses]
+    has_all_odds = all(o > 0 for o in all_odds_list)
     for i in range(len(others)):
         for j in range(i + 1, len(others)):
             pi, pj = model_p(others[i]), model_p(others[j])
-            # 6通りの順列
+            # 6通りの順列（Harville確率）
             p_mod = 0.0
             for a, b, c in [(p_hon, pi, pj), (p_hon, pj, pi),
                             (pi, p_hon, pj), (pi, pj, p_hon),
@@ -513,8 +591,12 @@ def _calc_betting_ev(horses: list) -> dict | None:
             oi = get_odds(others[i])
             oj = get_odds(others[j])
             if hon_odds > 0 and oi > 0 and oj > 0:
-                est_payout = (hon_odds * oi * oj) ** (1/3) * SANREN_PR
-                sanren_ev_total += p_mod * est_payout
+                from src.calculator.betting import estimate_sanrenpuku_odds as _est_san
+                est_odds = _est_san(
+                    hon_odds, oi, oj, len(horses),
+                    _all_odds=all_odds_list if has_all_odds else None,
+                )
+                sanren_ev_total += p_mod * est_odds
             sanren_count += 1
 
     # EV = 全点の期待リターン合計 / 点数
@@ -546,6 +628,14 @@ def _calc_betting_ev(horses: list) -> dict | None:
     }
 
 
+def _comp_gap(horses: list, honmei: dict) -> float:
+    """◎の総合指数と2位との差を返す"""
+    comps = sorted([h.get("composite", 0) for h in horses], reverse=True)
+    if len(comps) >= 2:
+        return round(comps[0] - comps[1], 1)
+    return 0
+
+
 def _scan_today_predictions(date_str: str) -> dict:
     """指定日の個別レースHTML (YYYYMMDD_場名XR.html) をスキャンして会場別に整理"""
     date_key = date_str.replace("-", "")
@@ -553,9 +643,10 @@ def _scan_today_predictions(date_str: str) -> dict:
     if not os.path.isdir(OUTPUT_DIR):
         return {"races": races, "order": []}
 
-    # pred JSONから馬券自信度 + 馬データを取得
+    # pred JSONから馬券自信度 + 馬データ + チケットデータを取得
     _pred_conf = {}  # {(venue, race_no): confidence}
     _pred_horses = {}  # {(venue, race_no): [horse_dict, ...]}
+    _pred_tickets = {}  # {(venue, race_no): [ticket_dict, ...]}
     pred_json_path = os.path.join(PROJECT_ROOT, "data", "predictions", f"{date_key}_pred.json")
     if os.path.isfile(pred_json_path):
         try:
@@ -572,6 +663,7 @@ def _scan_today_predictions(date_str: str) -> dict:
                 key = (venue, rno)
                 _pred_conf[key] = pr.get("confidence", "")
                 _pred_horses[key] = pr.get("horses", [])
+                _pred_tickets[key] = pr.get("tickets", [])
         except Exception:
             pass
 
@@ -581,7 +673,7 @@ def _scan_today_predictions(date_str: str) -> dict:
         if not m:
             continue
         venue = m.group(1)
-        if venue == "None" or venue.startswith("地方") or venue == "帯広":
+        if venue == "None" or venue.startswith("地方"):
             continue
         race_no = int(m.group(2))
         path = os.path.join(OUTPUT_DIR, name)
@@ -608,6 +700,7 @@ def _scan_today_predictions(date_str: str) -> dict:
                 "honmei_name": html_meta.get("honmei_name", ""),
                 "honmei_mark": html_meta.get("honmei_mark", ""),
                 "honmei_composite": html_meta.get("honmei_composite", 0),
+                "composite_gap": _comp_gap(_pred_horses.get((venue, race_no), []), {}) if (venue, race_no) in _pred_horses else 0,
                 "honmei_win_pct": html_meta.get("honmei_win_pct", 0),
                 "honmei_rentai_pct": html_meta.get("honmei_rentai_pct", 0),
                 "honmei_fukusho_pct": html_meta.get("honmei_fukusho_pct", 0),
@@ -615,12 +708,59 @@ def _scan_today_predictions(date_str: str) -> dict:
                 "honmei_popularity": html_meta.get("honmei_popularity"),
             }
         )
-        # pred.json の馬データから馬券EV計算
+        # pred.json の馬データから本命馬情報を上書き（オッズ更新後の最新印を反映）
         horses = _pred_horses.get((venue, race_no), [])
         if horses:
+            # 本命馬を特定（◉ > ◎ の優先度）
+            honmei = None
+            for mk in ("◉", "◎"):
+                for h in horses:
+                    if h.get("mark") == mk:
+                        honmei = h
+                        break
+                if honmei:
+                    break
+            if honmei:
+                # 2位との総合指数差を計算
+                honmei_comp = honmei.get("composite", 0)
+                sorted_comps = sorted([h.get("composite", 0) for h in horses], reverse=True)
+                comp_gap = round(sorted_comps[0] - sorted_comps[1], 1) if len(sorted_comps) >= 2 else 0
+                races[venue][-1].update({
+                    "honmei_no": honmei.get("horse_no", 0),
+                    "honmei_name": honmei.get("horse_name", ""),
+                    "honmei_mark": honmei.get("mark", ""),
+                    "honmei_composite": honmei_comp,
+                    "composite_gap": comp_gap,
+                    "honmei_win_pct": round(honmei.get("win_prob", 0) * 100, 1),
+                    "honmei_rentai_pct": round(honmei.get("place2_prob", 0) * 100, 1),
+                    "honmei_fukusho_pct": round(honmei.get("place3_prob", 0) * 100, 1),
+                })
+                if honmei.get("odds") and honmei["odds"] > 0:
+                    races[venue][-1]["honmei_odds"] = honmei["odds"]
+                if honmei.get("popularity"):
+                    races[venue][-1]["honmei_popularity"] = honmei["popularity"]
+            # 馬券EV計算
             ev_data = _calc_betting_ev(horses)
             if ev_data:
                 races[venue][-1].update(ev_data)
+            # 買い目表示用: 印付き馬番
+            _others = [{"no": h.get("horse_no", 0), "mark": h.get("mark", "")}
+                       for h in horses if h.get("mark") in ("○", "▲", "△", "☆", "★")]
+            races[venue][-1]["bet_others"] = _others
+        # 三連複フォーメーションチケットの実データ
+        tickets = _pred_tickets.get((venue, race_no), [])
+        san_tickets = [t for t in tickets if t.get("type") == "三連複"]
+        if san_tickets:
+            san_count = len(san_tickets)
+            san_probs = [t.get("prob", 0) for t in san_tickets]
+            san_hit_pct = round(sum(san_probs) * 100, 1)
+            san_evs = [t.get("ev", 0) for t in san_tickets if t.get("ev")]
+            san_avg_ev = round(sum(san_evs) / len(san_evs) / 100, 2) if san_evs else None
+            races[venue][-1].update({
+                "fm_sanren_count": san_count,
+                "fm_sanren_hit": san_hit_pct,
+                "fm_sanren_ev": san_avg_ev,
+            })
 
     for venue in races:
         races[venue].sort(key=lambda x: x["race_no"])
@@ -635,7 +775,7 @@ def _scan_today_predictions(date_str: str) -> dict:
                     pred_data = json.load(pf)
                 for pr in pred_data.get("races", []):
                     venue = pr.get("venue", "")
-                    if not venue or venue == "None" or venue.startswith("地方") or venue == "帯広":
+                    if not venue or venue == "None" or venue.startswith("地方"):
                         continue
                     race_no = pr.get("race_no", 0)
                     honmei = None
@@ -660,6 +800,7 @@ def _scan_today_predictions(date_str: str) -> dict:
                         "honmei_name": honmei.get("horse_name", "") if honmei else "",
                         "honmei_mark": honmei.get("mark", "") if honmei else "",
                         "honmei_composite": honmei.get("composite", 0) if honmei else 0,
+                        "composite_gap": _comp_gap(pr.get("horses", []), honmei) if honmei else 0,
                         "honmei_win_pct": round(honmei.get("win_prob", 0) * 100, 1) if honmei else 0,
                         "honmei_rentai_pct": round(honmei.get("place2_prob", 0) * 100, 1) if honmei else 0,
                         "honmei_fukusho_pct": round(honmei.get("place3_prob", 0) * 100, 1) if honmei else 0,
@@ -670,6 +811,21 @@ def _scan_today_predictions(date_str: str) -> dict:
                         ev_data = _calc_betting_ev(all_horses)
                         if ev_data:
                             races[venue][-1].update(ev_data)
+                        _others = [{"no": h.get("horse_no", 0), "mark": h.get("mark", "")}
+                                   for h in all_horses if h.get("mark") in ("○", "▲", "△", "☆", "★")]
+                        races[venue][-1]["bet_others"] = _others
+                    # 三連複フォーメーションチケットの実データ
+                    _fb_tickets = pr.get("tickets", [])
+                    _fb_san = [t for t in _fb_tickets if t.get("type") == "三連複"]
+                    if _fb_san:
+                        _sc = len(_fb_san)
+                        _sp = [t.get("prob", 0) for t in _fb_san]
+                        _se = [t.get("ev", 0) for t in _fb_san if t.get("ev")]
+                        races[venue][-1].update({
+                            "fm_sanren_count": _sc,
+                            "fm_sanren_hit": round(sum(_sp) * 100, 1),
+                            "fm_sanren_ev": round(sum(_se) / len(_se) / 100, 2) if _se else None,
+                        })
                 for venue in races:
                     races[venue].sort(key=lambda x: x["race_no"])
                 order = sorted(races.keys(), key=lambda v: (_VENUE_PRIO_MAP.get(v, 999), v))
@@ -2138,9 +2294,9 @@ BASE_HTML = """<!DOCTYPE html>
           const confRaw = r.overall_confidence || 'C';
           const conf = confRaw.replace(/\u207a/g, '+');  // ⁺ → +
           const confColor=
-            conf==='SS'?'#6a0dad':conf==='S'?'#0d2b5e':
-            conf==='A+'||conf==='A'?'#1e8c4a':
-            conf==='B+'||conf==='B'?'#d68910':'#888';
+            conf==='SS'?'#16a34a':conf==='S'?'#1a6fa8':
+            conf==='A'?'#c0392b':
+            conf==='B'||conf==='C'?'#333':'#aaa';
           const axisHtml=`<div class="h-rc-axis" style="margin-top:6px">
             <span style="font-size:11px;color:#6b7280">馬券自信度</span>
             <span style="font-size:16px;font-weight:900;color:${confColor};margin-left:6px">${confRaw}</span>
@@ -2543,21 +2699,49 @@ BASE_HTML = """<!DOCTYPE html>
         `<td style="padding:7px 8px;border:1px solid #e2e8f0;text-align:${right?'right':'center'}${bold?';font-weight:700':''}${color?';color:'+color:''}">${v}</td>`;
 
       // 印別テーブル
-      const markOrder = ['◉','◎','○','▲','△','☆'];
+      const markOrder = ['◉','◎','○','▲','△','★','☆','×'];
       const markData  = nd ? {} : (agg.by_mark || {});
       const markBody  = document.getElementById('results-mark-body');
       const markRows  = markOrder.filter(m => markData[m]);
+      // 各列の値を算出して順位・平均ベースで色分け
+      // 1位=緑, 2位=青, 3位=赤, 平均以上=黒, 平均以下=灰
+      const _markRateVals = {};
+      for (const m of markRows) {
+        const s = markData[m];
+        _markRateVals[m] = {
+          wr:  s.total > 0 ? s.win/s.total*100 : 0,
+          p2r: s.total > 0 && s.place2 != null ? s.place2/s.total*100 : 0,
+          pr:  s.total > 0 ? s.placed/s.total*100 : 0,
+        };
+      }
+      const _rankColor = (vals, key) => {
+        const sorted = [...vals].sort((a,b) => b[key] - a[key]);
+        const avg = sorted.reduce((s,v) => s + v[key], 0) / sorted.length;
+        const colors = {};
+        sorted.forEach((v, i) => {
+          const m = v._mark;
+          if (i === 0) colors[m] = '#16a34a';      // 1位: 緑
+          else if (i === 1) colors[m] = '#2563eb';  // 2位: 青
+          else if (i === 2) colors[m] = '#dc2626';  // 3位: 赤
+          else if (v[key] >= avg) colors[m] = '#1f2937'; // 平均以上: 黒
+          else colors[m] = '#9ca3af';               // 平均以下: 灰
+        });
+        return colors;
+      };
+      const _valsArr = markRows.map(m => ({_mark: m, ..._markRateVals[m]}));
+      const wrColors  = _rankColor(_valsArr, 'wr');
+      const p2rColors = _rankColor(_valsArr, 'p2r');
+      const prColors  = _rankColor(_valsArr, 'pr');
+
       markBody.innerHTML = markRows.length > 0 ? markRows.map(m => {
         const s = markData[m];
-        const wr   = s.total > 0 ? (s.win/s.total*100).toFixed(1) + '%' : '—';
-        const p2r  = s.total > 0 && s.place2 != null ? (s.place2/s.total*100).toFixed(1) + '%' : '—';
-        const pr   = s.total > 0 ? (s.placed/s.total*100).toFixed(1) + '%' : '—';
+        const v = _markRateVals[m];
+        const wr   = s.total > 0 ? v.wr.toFixed(1) + '%' : '—';
+        const p2r  = s.total > 0 ? v.p2r.toFixed(1) + '%' : '—';
+        const pr   = s.total > 0 ? v.pr.toFixed(1) + '%' : '—';
         const roi  = s.tansho_stake > 0 ? (s.tansho_ret/s.tansho_stake*100).toFixed(1) + '%' : '—';
-        const wrCol  = s.total > 0 && s.win/s.total >= 0.3 ? '#16a34a' : '';
-        const p2rCol = s.total > 0 && s.place2 != null && s.place2/s.total >= 0.5 ? '#16a34a' : '';
-        const prCol  = s.total > 0 && s.placed/s.total >= 0.5 ? '#16a34a' : '';
         const roiCol = s.tansho_stake > 0 && s.tansho_ret/s.tansho_stake >= 1.0 ? '#16a34a' : (s.tansho_stake > 0 ? '#dc2626' : '');
-        return `<tr>${td(m,false,true)}${td(s.total,true)}${td(wr,true,false,wrCol)}${td(p2r,true,false,p2rCol)}${td(pr,true,false,prCol)}${td(roi,true,false,roiCol)}</tr>`;
+        return `<tr>${td(m,false,true)}${td(s.total,true)}${td(wr,true,false,wrColors[m])}${td(p2r,true,false,p2rColors[m])}${td(pr,true,false,prColors[m])}${td(roi,true,false,roiCol)}</tr>`;
       }).join('') : '<tr><td colspan="6" style="text-align:center;padding:10px;color:#9ca3af">データなし</td></tr>';
 
       // 券種別テーブル
@@ -2573,7 +2757,7 @@ BASE_HTML = """<!DOCTYPE html>
       }).join('') : '<tr><td colspan="4" style="text-align:center;padding:10px;color:#9ca3af">データなし</td></tr>';
 
       // 自信度×券種別テーブル
-      const confOrder = ['SS','S','A','B','C'];
+      const confOrder = ['SS','S','A','B','C','D','E'];
       const ticketOrder = ['馬連','三連複'];
       const ctData = nd ? {} : (agg.by_conf_ticket || {});
       const confBody = document.getElementById('results-conf-body');
@@ -3183,8 +3367,8 @@ BASE_HTML = """<!DOCTYPE html>
           cardsHtml+=`<div id="past-venue-panel-${i}" style="display:${i===0?'block':'none'}"><div style="display:grid;gap:5px">`;
           for(const r of races){
             const c=(r.overall_confidence||'').replace('\u207a','+');
-            const cBg=c==='SS'?'background:#fdf4ff;border:1.5px solid #c4b5fd':c.startsWith('S')?'background:#eff6ff;border:1px solid #bfdbfe':'background:#f0fdf4;border:1px solid #bbf7d0';
-            const badge=c?`<span style="background:${c==='SS'?'linear-gradient(135deg,#7c3aed,#6a0dad)':c.startsWith('S')?'#1d4ed8':'#15803d'};color:#fff;padding:1px 8px;border-radius:10px;font-size:0.78rem;font-weight:700">${c}</span>`:'';
+            const cBg=c==='SS'?'background:#f0fdf4;border:1.5px solid #86efac':c==='S'?'background:#eff6ff;border:1px solid #bfdbfe':c==='A'?'background:#fef2f2;border:1px solid #fecaca':'background:#fff;border:1px solid #e5e7eb';
+            const badge=c?`<span style="background:${c==='SS'?'linear-gradient(135deg,#16a34a,#15803d)':c==='S'?'#1a6fa8':c==='A'?'#c0392b':c==='B'||c==='C'?'#333':'#aaa'};color:#fff;padding:1px 8px;border-radius:10px;font-size:0.78rem;font-weight:700">${c}</span>`:'';
             const _cd=(r.surface||'')+(r.distance?r.distance+'m':'');
             cardsHtml+=`<a href="${r.url}" target="_blank" style="display:flex;align-items:center;gap:8px;padding:8px 12px;${cBg};border-radius:7px;text-decoration:none;color:inherit">
               ${badge}
@@ -3234,7 +3418,7 @@ BASE_HTML = """<!DOCTYPE html>
           return;
         }
         // 自信度A以上をフィルタ
-        const confLevel = {'SS':6,'S+':5,'S':4,'A+':3,'A':2,'B+':1,'B':0,'C':0};
+        const confLevel = {'SS':6,'S+':5,'S':4,'A+':3,'A':2,'B+':1,'B':0,'C':0,'D':0,'E':0};
         const getLevel = c=>(confLevel[c.replace('\u207a','+')]||0);
         let highRaces=[];
         for(const venue of order){
@@ -3257,16 +3441,19 @@ BASE_HTML = """<!DOCTYPE html>
           byVenue[r.venue].push(r);
         }
         // order順に会場を並べる（自信度別スタイリング）
-        const _confOrder={'SS':0,'S+':1,'S':2,'A+':3,'A':4};
+        const _confOrder={'SS':0,'S':1,'A':2,'B':3,'C':4,'D':5,'E':6};
         const _confBadge=(c)=>{
-          if(c==='SS') return `<span style="background:linear-gradient(135deg,#7c3aed,#6a0dad);color:#fff;padding:3px 10px;border-radius:12px;font-size:0.86rem;font-weight:800;white-space:nowrap;min-width:34px;text-align:center;box-shadow:0 2px 6px rgba(106,13,173,0.45);letter-spacing:0.5px">${c}</span>`;
-          if(c.startsWith('S')) return `<span style="background:#1d4ed8;color:#fff;padding:2px 9px;border-radius:12px;font-size:0.82rem;font-weight:700;white-space:nowrap;min-width:30px;text-align:center;box-shadow:0 1px 3px rgba(29,78,216,0.3)">${c}</span>`;
-          return `<span style="background:#15803d;color:#fff;padding:1px 8px;border-radius:12px;font-size:0.78rem;font-weight:700;white-space:nowrap;min-width:28px;text-align:center">${c||'—'}</span>`;
+          if(c==='SS') return `<span style="background:linear-gradient(135deg,#16a34a,#15803d);color:#fff;padding:3px 10px;border-radius:12px;font-size:0.86rem;font-weight:800;white-space:nowrap;min-width:34px;text-align:center;box-shadow:0 2px 6px rgba(22,163,74,0.45);letter-spacing:0.5px">${c}</span>`;
+          if(c==='S') return `<span style="background:#1a6fa8;color:#fff;padding:2px 9px;border-radius:12px;font-size:0.82rem;font-weight:700;white-space:nowrap;min-width:30px;text-align:center;box-shadow:0 1px 3px rgba(26,111,168,0.3)">${c}</span>`;
+          if(c==='A') return `<span style="background:#c0392b;color:#fff;padding:2px 9px;border-radius:12px;font-size:0.82rem;font-weight:700;white-space:nowrap;min-width:30px;text-align:center">${c}</span>`;
+          if(c==='B'||c==='C') return `<span style="background:#333;color:#fff;padding:1px 8px;border-radius:12px;font-size:0.78rem;font-weight:700;white-space:nowrap;min-width:28px;text-align:center">${c}</span>`;
+          return `<span style="background:#aaa;color:#fff;padding:1px 8px;border-radius:12px;font-size:0.78rem;font-weight:700;white-space:nowrap;min-width:28px;text-align:center">${c||'—'}</span>`;
         };
         const _confCard=(c)=>{
-          if(c==='SS') return 'background:#fdf4ff;border:1.5px solid #c4b5fd';
-          if(c.startsWith('S')) return 'background:#eff6ff;border:1px solid #bfdbfe';
-          return 'background:#fff;border:1px solid #bbf7d0';
+          if(c==='SS') return 'background:#f0fdf4;border:1.5px solid #86efac';
+          if(c==='S') return 'background:#eff6ff;border:1px solid #bfdbfe';
+          if(c==='A') return 'background:#fef2f2;border:1px solid #fecaca';
+          return 'background:#fff;border:1px solid #e5e7eb';
         };
         let html='';
         for(const venue of order){
@@ -3622,7 +3809,7 @@ BASE_HTML = """<!DOCTYPE html>
           `<h4 style="margin:0 0 6px;font-size:0.88rem;color:#374151">競馬場別</h4>${venueTable}`;
 
         // 脚質別
-        const styleOrder=['逃げ','先行','差し','追込'];
+        const styleOrder=['逃げ','先行','好位','中団','差し','追込'];
         const styleTable = _buildBreakdownTable(agg.by_running_style||{}, '脚質', styleOrder);
         document.getElementById('db-detail-running-style').innerHTML =
           `<h4 style="margin:8px 0 6px;font-size:0.88rem;color:#374151">脚質別成績</h4>${styleTable}`;
@@ -3896,7 +4083,7 @@ BASE_HTML = """<!DOCTYPE html>
         // ── 脚質別成績 ──
         let styleHtml='<p class="empty">データなし</p>';
         const styleData=d.running_style||{};
-        const styleKeys=['逃げ','先行','差し','追込'];
+        const styleKeys=['逃げ','先行','好位','中団','差し','追込'];
         const stylesAny=styleKeys.some(s=>styleData[s]&&styleData[s].total>0);
         if(stylesAny){
           const rows=styleKeys.map(s=>{
@@ -4001,6 +4188,113 @@ _auth_client_lock = __import__("threading").Lock()
 
 # ── 公式サイトオッズスクレーパー（JRA/NAR） ──
 _official_odds_scraper = None
+
+# ── 印固定: 発走N分前以降は印を変更しない ──
+MARK_FREEZE_MINUTES = 10  # 発走何分前に印を固定するか
+
+def _is_marks_frozen(race: dict) -> bool:
+    """発走時刻の MARK_FREEZE_MINUTES 分前以降なら True を返す"""
+    post_time = race.get("post_time", "")
+    if not post_time:
+        return False
+    try:
+        now = datetime.now()
+        h, m = map(int, post_time.split(":"))
+        race_start = now.replace(hour=h, minute=m, second=0, microsecond=0)
+        diff = (race_start - now).total_seconds()
+        # 発走時刻を過ぎている or N分前以内 → 固定
+        return diff <= MARK_FREEZE_MINUTES * 60
+    except Exception:
+        return False
+
+
+def _update_html_marks(date_key: str, venue: str, race_no: int, horses: list) -> bool:
+    """pred.json の印変更をHTMLファイルに反映する。
+
+    馬番に隣接する全ての印スパンを直接書き換える。
+    パターン非依存: 馬番と印の隣接関係を複数方向で検索。
+    Returns: 更新成功なら True
+    """
+    ALL_MARKS_STR = "◉◎○▲△★☆×"
+    ALL_MARKS = set(ALL_MARKS_STR)
+    html_path = os.path.join(OUTPUT_DIR, f"{date_key}_{venue}{race_no}R.html")
+    if not os.path.isfile(html_path):
+        return False
+
+    # 馬番→新マーク
+    new_map: dict[int, str] = {}
+    for h in horses:
+        m = h.get("mark", "")
+        if m and m in ALL_MARKS:
+            new_map[h.get("horse_no", 0)] = m
+    if not new_map:
+        return False
+
+    try:
+        with open(html_path, "r", encoding="utf-8") as f:
+            html = f.read()
+        original = html
+
+        MK = f"[{ALL_MARKS_STR}]"
+
+        # --- 馬番から印を特定して書き換える（全パターン対応） ---
+
+        for hno, new_mark in new_map.items():
+            # A: 馬カード — uma>馬番</span><span class="m-X"...>X</span>
+            html = re.sub(
+                rf'(<span class="uma [^"]*"[^>]*>{hno}</span>)'
+                rf'<span class="m-{MK}"([^>]*)>{MK}</span>',
+                rf'\1<span class="m-{new_mark}"\2>{new_mark}</span>',
+                html,
+            )
+            # B: 確率テーブル — <span class="m-X">X</span> 馬番</td>
+            html = re.sub(
+                rf'<span class="m-{MK}">{MK}</span> {hno}</td>',
+                rf'<span class="m-{new_mark}">{new_mark}</span> {hno}</td>',
+                html,
+            )
+            # C: 印まとめ欄 — <span class="m-X"...>X</span>...<uma>馬番</span>
+            html = re.sub(
+                rf'<span class="m-{MK}"([^>]*)>{MK}</span>'
+                rf'(\s*<div>\s*<strong[^>]*><span class="uma [^"]*">{hno}</span>)',
+                rf'<span class="m-{new_mark}"\1>{new_mark}</span>\2',
+                html,
+                flags=re.DOTALL,
+            )
+            # D: 買い目欄 — <span class="m-X"...>X<span class="uma wkN">馬番</span></span>
+            html = re.sub(
+                rf'<span class="m-{MK}"([^>]*)>{MK}<span class="uma ([^"]*)">{hno}</span></span>',
+                rf'<span class="m-{new_mark}"\1>{new_mark}<span class="uma \2">{hno}</span></span>',
+                html,
+            )
+            # E: まとめテーブル — 馬番</span></td><td><span class="m-X">X</span>
+            html = re.sub(
+                rf'(>{hno}</span>\s*</td>\s*<td[^>]*>)'
+                rf'<span class="m-{MK}">{MK}</span>',
+                rf'\1<span class="m-{new_mark}">{new_mark}</span>',
+                html,
+            )
+            # F: 大判印 — <div class="mlarge m-X">X</div>...data-live-odds="馬番"
+            html = re.sub(
+                rf'(<div class="mlarge) m-{MK}">{MK}(</div>.*?data-live-odds="{hno}")',
+                rf'\1 m-{new_mark}">{new_mark}\2',
+                html,
+                flags=re.DOTALL,
+            )
+            # G: JSON埋込メタ — "honmei_mark": "X"...馬番一致時のみ
+            # H: 印見解テキスト — 印+馬名
+            # (テキスト内の印は_parse_race_html_metaに影響しないため省略)
+
+        if html == original:
+            return False
+
+        with open(html_path, "w", encoding="utf-8") as f:
+            f.write(html)
+        return True
+    except Exception as e:
+        logger.warning("HTML印更新失敗 %s: %s", html_path, e)
+        return False
+
 
 def _get_official_odds_scraper():
     """OfficialOddsScraper のシングルトンを返す"""
@@ -4275,6 +4569,87 @@ def create_app():
                                     patched = True
                             except Exception:
                                 pass
+                    # ML予測確率をcompositeに反映し、印を再割り当て（発走10分前以降は印固定）
+                    # reassign_marks_dict内部で_apply_ml_composite_adjも呼ばれるため個別呼び出し不要
+                    _race_horses = race.get("horses", [])
+                    if _race_horses and any(h.get("win_prob") for h in _race_horses):
+                        try:
+                            from src.calculator.popularity_blend import reassign_marks_dict
+                            if not _is_marks_frozen(race):
+                                reassign_marks_dict(_race_horses)
+                            else:
+                                logger.debug("印固定中（発走%d分前以内）: %s", MARK_FREEZE_MINUTES, race.get("race_id"))
+                        except Exception:
+                            pass
+
+                    # フォーメーション買い目は無効化 — 既存データも除去
+                    race["formation_tickets"] = []
+                    race["formation_columns"] = {}
+                    race["tickets"] = []
+
+                    # チケットにmark情報を補完（既存JSONに未保存の場合）
+                    _mark_by_no = {h.get("horse_no"): h.get("mark", "") for h in race.get("horses", [])}
+                    for _t in race.get("tickets", []) + race.get("formation_tickets", []):
+                        if not _t.get("mark_a"):
+                            _combo = _t.get("combo", [])
+                            if len(_combo) >= 2:
+                                _t["mark_a"] = _mark_by_no.get(_combo[0], "")
+                                _t["mark_b"] = _mark_by_no.get(_combo[1], "")
+                            if len(_combo) >= 3:
+                                _t["mark_c"] = _mark_by_no.get(_combo[2], "")
+
+                    # formation_columnsが未保存の場合、印から排他列を構築
+                    if race.get("formation_tickets") and not race.get("formation_columns"):
+                        _col1, _col2, _col3 = [], [], []
+                        for h in race.get("horses", []):
+                            mk = h.get("mark", "")
+                            no = h.get("horse_no")
+                            if not no:
+                                continue
+                            if mk in ("◉", "◎"):
+                                _col1.append(no)
+                            elif mk in ("○", "▲"):
+                                _col2.append(no)
+                            elif mk in ("△", "★", "☆"):
+                                _col3.append(no)
+                        if _col1 or _col2 or _col3:
+                            race["formation_columns"] = {
+                                "col1": _col1,
+                                "col2": _col2,
+                                "col3": _col3,
+                            }
+
+                    # formation_columnsを排他化（旧累積列データ互換）
+                    _fc = race.get("formation_columns", {})
+                    if _fc:
+                        _c1 = _fc.get("col1", [])
+                        _c1s = set(_c1)
+                        _c2 = [n for n in _fc.get("col2", []) if n not in _c1s]
+                        _c2s = _c1s | set(_c2)
+                        _c3 = [n for n in _fc.get("col3", []) if n not in _c2s]
+                        race["formation_columns"] = {"col1": _c1, "col2": _c2, "col3": _c3}
+
+                    # フォーメーションチケットを排他列でフィルタ + 低EVチケット除外
+                    _fc = race.get("formation_columns", {})
+                    if _fc and race.get("formation_tickets"):
+                        _s1 = set(_fc.get("col1", []))
+                        _s2 = set(_fc.get("col2", []))
+                        _s3 = set(_fc.get("col3", []))
+                        _valid = []
+                        for _t in race["formation_tickets"]:
+                            _c = _t.get("combo", [])
+                            if len(_c) < 3:
+                                continue
+                            _cs = set(_c)
+                            # 3頭のうち各列から最低1頭ずつ含まれるか
+                            if not (_cs & _s1 and _cs & _s2 and _cs & _s3):
+                                continue
+                            # EV < 80% のチケットは除外（旧データ互換）
+                            if _t.get("ev", 0) < 80:
+                                _t["stake"] = 0
+                            _valid.append(_t)
+                        race["formation_tickets"] = _valid
+
                     if patched:
                         try:
                             with open(pred_file, "w", encoding="utf-8") as wf:
@@ -4331,6 +4706,31 @@ def create_app():
 
             if not result:
                 return jsonify(ok=False, error="オッズ未発売（発走時刻が近づくと取得できます）")
+
+            # 3) 三連複オッズ取得（netkeiba → 公式サイトフォールバック）
+            sanrenpuku_odds_map = {}
+            _san_source = ""
+            try:
+                from src.scraper.netkeiba import NetkeibaClient, OddsScraper as _OS
+                _nk_client = _get_auth_client() or NetkeibaClient(no_cache=True)
+                _san_scraper = _OS(_nk_client)
+                sanrenpuku_odds_map = _san_scraper.get_sanrenpuku_odds(race_id)
+                if sanrenpuku_odds_map:
+                    _san_source = "netkeiba"
+            except Exception as _se:
+                logger.debug("三連複オッズ netkeiba失敗: %s", _se)
+            # 公式サイトフォールバック
+            if not sanrenpuku_odds_map:
+                try:
+                    _off = _get_official_odds_scraper()
+                    if _off:
+                        sanrenpuku_odds_map = _off.get_sanrenpuku_odds(race_id)
+                        if sanrenpuku_odds_map:
+                            _san_source = "official"
+                except Exception as _se2:
+                    logger.debug("三連複オッズ 公式サイト失敗: %s", _se2)
+            if sanrenpuku_odds_map:
+                logger.info("三連複オッズ取得成功(%s): %s (%d組)", _san_source, race_id, len(sanrenpuku_odds_map))
 
             # {horse_no: [odds, rank]} に変換 → 実出走馬内で人気を再計算
             odds_map = {}
@@ -4412,15 +4812,78 @@ def create_app():
                                             _horses, race.get("venue", ""),
                                             _is_jra, len(_horses), _pop_stats,
                                         )
-                                        reassign_marks_dict(_horses)
-                                        logger.info("オッズ更新後の確率・印を再計算: %s", race_id)
+                                        if not _is_marks_frozen(race):
+                                            reassign_marks_dict(_horses)
+                                            # HTMLの印も同期
+                                            if date:
+                                                _dk = date.replace("-", "")
+                                                _vn = venue or race.get("venue", "")
+                                                _rn = race_no or race.get("race_no", 0)
+                                                if _update_html_marks(_dk, _vn, _rn, _horses):
+                                                    logger.info("HTML印を同期: %s %s%sR", _dk, _vn, _rn)
+                                            # AI印見解・馬個別見解も再生成
+                                            try:
+                                                from src.calculator.calibration import (
+                                                    generate_horse_comment,
+                                                    generate_horse_diagnosis,
+                                                    generate_mark_comment_rich,
+                                                )
+                                                _all_comps = [h.get("composite", 0) for h in _horses]
+                                                _rc = {
+                                                    "field_count": race.get("field_count", 0),
+                                                    "straight_m": race.get("straight_m", 0),
+                                                    "slope_type": race.get("slope_type", ""),
+                                                    "surface": race.get("surface", ""),
+                                                    "pace_predicted": race.get("pace_predicted", "MM"),
+                                                    "leading_horses": race.get("leading_horses", []),
+                                                    "front_horses": race.get("front_horses", []),
+                                                    "mid_horses": race.get("mid_horses", []),
+                                                    "rear_horses": race.get("rear_horses", []),
+                                                    "estimated_front_3f": race.get("estimated_front_3f"),
+                                                    "all_composites": _all_comps,
+                                                }
+                                                _mark_full = {"◉", "◎", "○", "▲"}
+                                                for _hd in _horses:
+                                                    _m = _hd.get("mark", "-")
+                                                    _lvl = "full" if _m in _mark_full else ("normal" if _m in ("△", "★", "☆") else "short")
+                                                    _hd["horse_comment"] = generate_horse_comment(_hd, _rc, _lvl)
+                                                    _hd["horse_diagnosis"] = generate_horse_diagnosis(_hd, _rc)
+                                                _sorted_h = sorted(_horses, key=lambda x: x.get("composite", 0), reverse=True)
+                                                race["mark_comment_rich"] = generate_mark_comment_rich(_sorted_h, _rc)
+                                                logger.info("AI印見解を再生成: %s", race_id)
+                                            except Exception as _ce:
+                                                logger.warning("AI印見解再生成に失敗: %s", _ce)
+                                            logger.info("オッズ更新後の確率・印を再計算: %s", race_id)
+                                        else:
+                                            logger.info("オッズ更新（印固定中）: %s", race_id)
                                 except Exception as _e:
                                     logger.warning("確率再計算に失敗: %s", _e)
+
+                                # 三連複チケットのオッズを実オッズで更新
+                                if sanrenpuku_odds_map:
+                                    for t in race.get("tickets", []):
+                                        if t.get("type") != "三連複":
+                                            continue
+                                        combo = t.get("combo", [])
+                                        if len(combo) == 3:
+                                            key = tuple(sorted(int(x) for x in combo))
+                                            if key in sanrenpuku_odds_map:
+                                                actual = sanrenpuku_odds_map[key]
+                                                t["odds"] = round(actual, 1)
+                                                prob = t.get("prob", 0)
+                                                if prob > 0:
+                                                    t["ev"] = round(prob * actual * 100, 1)
+                                    logger.info("三連複チケットを実オッズで更新: %s (%d組中)", race_id, len(sanrenpuku_odds_map))
+
                                 break
                         with open(pred_file, "w", encoding="utf-8") as f:
                             json.dump(pred, f, ensure_ascii=False, indent=2)
                     except Exception as e:
                         logger.warning("pred.json update failed: %s", e)
+
+            # レース一覧キャッシュをクリア（印・確率変更を即反映）
+            if date:
+                _predictions_cache.pop(date, None)
 
             return jsonify(ok=True, odds=odds_map, weights=weight_map)
         except Exception as e:
@@ -4432,8 +4895,10 @@ def create_app():
         date = request.args.get("date", datetime.now().strftime("%Y-%m-%d"))
         now = time.time()
         cached = _home_info_cache.get(date)
-        if cached and (now - cached[0]) < _WEATHER_CACHE_TTL:
-            return jsonify(**cached[1])
+        if cached:
+            ttl = cached[2] if len(cached) > 2 else _WEATHER_CACHE_TTL
+            if (now - cached[0]) < ttl:
+                return jsonify(**cached[1])
         venues = _get_todays_venues(date)
         weather = {}
         for v in venues:
@@ -4441,7 +4906,11 @@ def create_app():
             if coords:
                 weather[v["name"]] = _fetch_weather(coords[0], coords[1])
         result = {"date": date, "venues": venues, "weather": weather}
-        _home_info_cache[date] = (now, result)
+        # JRA場のみの場合はキャッシュTTLを短く（NAR場が後から取得可能になる場合に対応）
+        _jra_codes = {"01", "02", "03", "04", "05", "06", "07", "08", "09", "10"}
+        has_nar = any(v["code"] not in _jra_codes for v in venues)
+        ttl = _WEATHER_CACHE_TTL if has_nar else 300  # NAR含む:30分, JRAのみ:5分
+        _home_info_cache[date] = (now, result, ttl)
         return jsonify(**result)
 
     @app.route("/api/share_url")
@@ -4803,6 +5272,35 @@ def create_app():
                 except Exception as e:
                     logger.warning("odds fetch failed race_id=%s: %s", race_id, e)
 
+                # 三連複オッズ取得（netkeiba → 公式サイトフォールバック）
+                try:
+                    _san_map = {}
+                    try:
+                        _san_map = _get_nk_scraper().get_sanrenpuku_odds(race_id)
+                    except Exception:
+                        pass
+                    if not _san_map and official:
+                        try:
+                            _san_map = official.get_sanrenpuku_odds(race_id)
+                        except Exception:
+                            pass
+                    if _san_map:
+                        for t in race.get("tickets", []):
+                            if t.get("type") != "三連複":
+                                continue
+                            combo = t.get("combo", [])
+                            if len(combo) == 3:
+                                key = tuple(sorted(int(x) for x in combo))
+                                if key in _san_map:
+                                    t["odds"] = round(_san_map[key], 1)
+                                    prob = t.get("prob", 0)
+                                    if prob > 0:
+                                        t["ev"] = round(prob * _san_map[key] * 100, 1)
+                                    pred_modified = True
+                        logger.info("三連複オッズ一括更新: %s (%d組)", race_id, len(_san_map))
+                except Exception as _se:
+                    logger.debug("三連複オッズ一括取得失敗 %s: %s", race_id, _se)
+
                 # 馬体重・馬主を取得（公式サイト優先 → netkeiba フォールバック）
                 wt_fetched = False
                 if official:
@@ -4841,6 +5339,29 @@ def create_app():
                         else:
                             logger.debug("weight fetch skipped race_id=%s: %s", race_id, e)
 
+                # ばんえい: 馬場水分量を更新 + AI見解を再生成
+                if race.get("is_banei") and official:
+                    try:
+                        moisture = official.get_banei_moisture(race_id)
+                        if moisture is not None:
+                            old_wc = race.get("water_content")
+                            if old_wc != moisture:
+                                race["water_content"] = moisture
+                                pred_modified = True
+                                logger.info("ばんえい水分量更新: %s → %.1f%%", race_id, moisture)
+                    except Exception as _me:
+                        logger.debug("ばんえい水分量取得失敗 %s: %s", race_id, _me)
+                    # 水分量・馬体重が揃ったらAI見解を再生成
+                    try:
+                        from src.calculator.calibration import generate_banei_comment_dict
+                        new_comment = generate_banei_comment_dict(race)
+                        if new_comment and new_comment != race.get("pace_comment"):
+                            race["pace_comment"] = new_comment
+                            pred_modified = True
+                            logger.info("ばんえいAI見解再生成: %s", race_id)
+                    except Exception as _bce:
+                        logger.debug("ばんえいAI見解再生成失敗 %s: %s", race_id, _bce)
+
             out_path = os.path.join(OUTPUT_DIR, f"{date_key}_live_odds.json")
             with open(out_path, "w", encoding="utf-8") as of:
                 json.dump(live_odds, of, ensure_ascii=False)
@@ -4867,6 +5388,7 @@ def create_app():
                 )
                 _pop_stats = load_popularity_stats()
                 if _pop_stats:
+                    _frozen_count = 0
                     for race in races:
                         _horses = race.get("horses", [])
                         if any(h.get("popularity") for h in _horses):
@@ -4874,8 +5396,14 @@ def create_app():
                                 _horses, race.get("venue", ""),
                                 race.get("is_jra", True), len(_horses), _pop_stats,
                             )
-                            reassign_marks_dict(_horses)
-                    logger.info("一括オッズ更新後の確率・印を再計算完了")
+                            if not _is_marks_frozen(race):
+                                reassign_marks_dict(_horses)
+                            else:
+                                _frozen_count += 1
+                    if _frozen_count:
+                        logger.info("一括オッズ更新: 確率再計算完了（印固定: %dR）", _frozen_count)
+                    else:
+                        logger.info("一括オッズ更新後の確率・印を再計算完了")
             except Exception as _e:
                 logger.warning("一括確率再計算に失敗: %s", _e)
 
@@ -4985,6 +5513,7 @@ def create_app():
                 "--no_open",
                 "--workers", "3",
                 "--quiet",
+                "--no_html",
             ]
             _cflags = 0
             if sys.platform == "win32":
@@ -5339,10 +5868,12 @@ def create_app():
 
     @app.route("/api/odds/unfetched_dates")
     def api_odds_unfetched_dates():
-        """予想済みだがオッズ未取得の日付一覧を返す"""
+        """予想済みだがオッズ未取得の日付一覧を返す（2024-01-01〜昨日）"""
         try:
             from src.results_tracker import list_prediction_dates
-            pred_dates = list_prediction_dates()
+            yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+            pred_dates = [d for d in list_prediction_dates()
+                          if "2024-01-01" <= d <= yesterday]
             unfetched = []
             for d in pred_dates:
                 key = d.replace("-", "")
@@ -5356,9 +5887,10 @@ def create_app():
 
     @app.route("/api/predictions/unfetched_dates")
     def api_predictions_unfetched_dates():
-        """開催日だがまだ予想未作成の日付一覧を返す（直近の未予想日）"""
+        """開催日だがまだ予想未作成の日付一覧を返す（2024-01-01〜昨日）"""
         try:
             from src.results_tracker import list_prediction_dates
+            yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
             pred_dates_set = set(list_prediction_dates())
             # output/ の HTML ファイルから開催日を推測
             race_dates = set()
@@ -5368,7 +5900,8 @@ def create_app():
                         dk = name[:8]
                         if dk.isdigit():
                             d = f"{dk[:4]}-{dk[4:6]}-{dk[6:8]}"
-                            race_dates.add(d)
+                            if "2024-01-01" <= d <= yesterday:
+                                race_dates.add(d)
             # predictions ディレクトリからも日付を取得
             pred_dir = os.path.join(PROJECT_ROOT, "data", "predictions")
             if os.path.isdir(pred_dir):
@@ -5376,7 +5909,9 @@ def create_app():
                     if name.endswith("_pred.json") and len(name) >= 8:
                         dk = name[:8]
                         if dk.isdigit():
-                            race_dates.add(f"{dk[:4]}-{dk[4:6]}-{dk[6:8]}")
+                            d = f"{dk[:4]}-{dk[4:6]}-{dk[6:8]}"
+                            if "2024-01-01" <= d <= yesterday:
+                                race_dates.add(d)
             # 予想済み日付を除外
             unfetched = sorted([d for d in race_dates if d not in pred_dates_set], reverse=True)
             return jsonify(dates=unfetched)
@@ -5386,23 +5921,50 @@ def create_app():
 
     @app.route("/api/results/dates")
     def api_results_dates():
-        """予想済み日付一覧を返す"""
+        """予想済み日付一覧 + 日次統計を返す"""
         try:
-            from src.results_tracker import list_prediction_dates
+            from src.results_tracker import list_prediction_dates, aggregate_all
 
-            return jsonify(dates=list_prediction_dates())
+            dates = list_prediction_dates()
+            # 日次統計を取得（軽量フィールドのみ）
+            agg = aggregate_all(year_filter="all")
+            by_date = agg.get("by_date", [])
+            daily_stats = {}
+            for r in by_date:
+                d = r.get("date", "")
+                if not d:
+                    continue
+                ht = r.get("honmei_total", 0)
+                hw = r.get("honmei_win", 0)
+                hp2 = r.get("honmei_place2", 0)
+                hp3 = r.get("honmei_placed", 0)
+                stake = r.get("honmei_tansho_stake", ht * 100)
+                ret = r.get("honmei_tansho_ret", 0)
+                daily_stats[d] = {
+                    "races": r.get("total_races", 0),
+                    "profit": ret - stake,
+                    "roi": r.get("honmei_tansho_roi", 0),
+                    "win": hw,
+                    "place2": hp2,
+                    "placed": hp3,
+                    "total": ht,
+                    "rate": r.get("honmei_rate", 0),
+                }
+            return jsonify(dates=dates, daily_stats=daily_stats)
         except Exception as e:
             logger.warning("prediction dates list failed: %s", e, exc_info=True)
-            return jsonify(dates=[], error=str(e))
+            return jsonify(dates=[], daily_stats={}, error=str(e))
 
     @app.route("/api/results/unmatched_dates")
     def api_results_unmatched_dates():
-        """予想済みだが着順取得済みでない日付一覧を返す"""
+        """予想済みだが着順取得済みでない日付一覧を返す（2024-01-01〜昨日）"""
         try:
             from src.results_tracker import list_prediction_dates
             from config.settings import RESULTS_DIR
 
-            pred_dates = list_prediction_dates()
+            yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+            pred_dates = [d for d in list_prediction_dates()
+                          if "2024-01-01" <= d <= yesterday]
             unmatched = []
             for d in pred_dates:
                 key = d.replace("-", "")
@@ -5478,9 +6040,9 @@ def create_app():
                 ticket_roi_cum.append(roi_c)
                 honmei_roi_cum.append(h_roi_c)
 
-                # 月別収支 (YYYY-MM)
+                # 月別収支 (YYYY-MM) — ◉◎単勝ベース
                 month_key = d[:7]
-                profit_day = r.get("total_return", 0) - r.get("total_stake", 0)
+                profit_day = r.get("honmei_tansho_ret", 0) - r.get("honmei_tansho_stake", r.get("honmei_total", 0) * 100)
                 monthly_profit_map[month_key] = monthly_profit_map.get(month_key, 0) + profit_day
 
             monthly_sorted = sorted(monthly_profit_map.items())
@@ -5792,7 +6354,7 @@ def create_app():
             mm = _re.match(r"^\d{8}_(.+?)(\d+)R\.html$", f)
             if mm:
                 v, rno = mm.group(1), int(mm.group(2))
-                if v == "None" or v.startswith("地方") or v == "帯広":
+                if v == "None" or v.startswith("地方"):
                     continue
                 venues_dict.setdefault(v, []).append((rno, f))
 
@@ -5854,6 +6416,37 @@ function dNavRefreshOdds(date){{
 </script>"""
         )
 
+    import re as _re_fm
+    _RE_COL_MARK = _re_fm.compile(
+        r'class="m-([^"]+)"\s+style="margin-right:4px">[^<]*<span class="uma[^"]*">(\d+)</span>'
+    )
+    _RE_PLAIN_COMBO = _re_fm.compile(
+        r'<span class="ftkt-combo">(\d+(?:\s*-\s*\d+)+)</span>'
+    )
+
+    def _patch_formation_combo_marks(html: str) -> str:
+        """フォーメーション買い目のプレーン番号コンボをマーク付き表示に変換"""
+        # 列表示から馬番→マークのマッピングを構築
+        mark_map = {}
+        for m in _RE_COL_MARK.finditer(html):
+            mark, horse_no = m.group(1), m.group(2)
+            if horse_no not in mark_map:
+                mark_map[horse_no] = mark
+        if not mark_map:
+            return html
+
+        def _replace_combo(m):
+            nums = [n.strip() for n in m.group(1).split("-")]
+            parts = []
+            for n in nums:
+                mk = mark_map.get(n, "－")
+                parts.append(
+                    f'<span class="m-{mk}">{mk}</span><span class="uma">{n}</span>'
+                )
+            return '<span class="ftkt-combo">' + " - ".join(parts) + "</span>"
+
+        return _RE_PLAIN_COMBO.sub(_replace_combo, html)
+
     @app.route("/output/<path:filename>")
     def serve_output(filename):
         if ".." in filename or "/" in filename.replace("\\", "/"):
@@ -5882,15 +6475,23 @@ function dNavRefreshOdds(date){{
         # 古い CSS を最新版に差し替え（再生成不要で即反映）
         _OLD_CSS_MARKER = ".hds-row1{display:flex;align-items:center;gap:6px 8px;flex-wrap:wrap}"
         _NEW_CSS_PATCH = (
-            ".hds-row1{display:flex;align-items:center;gap:3px 5px;flex-wrap:nowrap;overflow-x:auto;scrollbar-width:none;white-space:nowrap}"
-            "\n.hds-row1::-webkit-scrollbar{display:none}"
+            ".hds-row1{display:flex;align-items:center;gap:3px 5px;flex-wrap:wrap}"
         )
         if _OLD_CSS_MARKER in html:
             html = html.replace(_OLD_CSS_MARKER, _NEW_CSS_PATCH)
             html = html.replace(
                 ".hds-row2{display:flex;align-items:center;gap:4px 10px;flex-wrap:wrap;padding-left:4px;margin-top:2px}",
-                ".hds-row2{display:flex;align-items:center;gap:3px 8px;flex-wrap:nowrap;padding-left:4px;margin-top:3px;white-space:nowrap}",
+                ".hds-row2{display:flex;align-items:center;gap:3px 8px;flex-wrap:wrap;padding-left:4px;margin-top:3px}",
             )
+        # 旧 nowrap パッチが適用済みの HTML も wrap に戻す
+        html = html.replace(
+            ".hds-row1{display:flex;align-items:center;gap:3px 5px;flex-wrap:nowrap;overflow-x:auto;scrollbar-width:none;white-space:nowrap}",
+            ".hds-row1{display:flex;align-items:center;gap:3px 5px;flex-wrap:wrap}",
+        )
+        html = html.replace(
+            ".hds-row2{display:flex;align-items:center;gap:3px 8px;flex-wrap:nowrap;padding-left:4px;margin-top:3px;white-space:nowrap}",
+            ".hds-row2{display:flex;align-items:center;gap:3px 8px;flex-wrap:wrap;padding-left:4px;margin-top:3px}",
+        )
         # グレードバッジのサイズを拡大
         html = html.replace(
             ".hds-grade-item{display:inline-flex;align-items:center;gap:1px;font-size:11px}",
@@ -5904,6 +6505,84 @@ function dNavRefreshOdds(date){{
             ".hds-grades{display:flex;gap:5px;align-items:center}",
             ".hds-grades{display:flex;gap:8px;align-items:center}",
         )
+
+        # 勝率・連対率・複勝率カラーパッチ（旧HTMLのCSSデフォルト色を除去）
+        html = html.replace(
+            '.hds-wr-win{font-size:12px;font-weight:700;color:#1e40af}',
+            '.hds-wr-win{font-size:12px;font-weight:700}',
+        )
+        # 旧ティール色を除去（再生成で順位色が入る）
+        html = html.replace(
+            'class="hds-wr-win" style="color:#0f766e"',
+            'class="hds-wr-win"',
+        )
+
+        # 券種ラベル色分け + CSS色パッチ（既存HTMLに即反映）
+        _OLD_FTKT_TYPE = ".ftkt-type{font-weight:700;min-width:42px;color:var(--navy);font-size:13px}"
+        _NEW_FTKT_TYPE = (
+            ".ftkt-type{font-weight:700;min-width:42px;font-size:13px;color:#fff;padding:2px 8px;border-radius:4px;text-align:center}"
+            "\n.ftkt-type-tansho{background:#16a34a}"
+            "\n.ftkt-type-umaren{background:#1a6fa8}"
+            "\n.ftkt-type-sanren{background:#c0392b}"
+        )
+        if _OLD_FTKT_TYPE in html:
+            html = html.replace(_OLD_FTKT_TYPE, _NEW_FTKT_TYPE)
+        # 旧 ftkt-type クラスに券種別サブクラスを付与
+        html = html.replace(
+            '<span class="ftkt-type">馬連</span>',
+            '<span class="ftkt-type ftkt-type-umaren">馬連</span>',
+        )
+        html = html.replace(
+            '<span class="ftkt-type">三連複</span>',
+            '<span class="ftkt-type ftkt-type-sanren">三連複</span>',
+        )
+        html = html.replace(
+            '<span class="ftkt-type">単勝</span>',
+            '<span class="ftkt-type ftkt-type-tansho">単勝</span>',
+        )
+        # 自信度バッジCSS色パッチ（SS=緑, S=青, A=赤, B/C=黒, D/E=灰）
+        html = html.replace(
+            ".b-SS{background:#6a0dad;color:#fff}",
+            ".b-SS{background:#16a34a;color:#fff}",
+        )
+        html = html.replace(
+            ".b-S{background:var(--navy);color:#fff}",
+            ".b-S{background:#1a6fa8;color:#fff}",
+        )
+        html = html.replace(
+            ".b-A2{background:var(--blue);color:#fff}",
+            ".b-A2{background:#c0392b;color:#fff}",
+        )
+        html = html.replace(
+            ".b-B2{background:#5dade2;color:#fff}",
+            ".b-B2{background:#333;color:#fff}",
+        )
+        html = html.replace(
+            ".b-C2{background:var(--muted);color:#fff}",
+            ".b-C2{background:#333;color:#fff}",
+        )
+        # .b-E クラス追加（既存HTMLにない場合）
+        if ".b-E{" not in html and ".b-D{background:" in html:
+            html = html.replace(
+                ".b-D{background:#aaa;color:#fff}",
+                ".b-D{background:#aaa;color:#fff}.b-E{background:#aaa;color:#fff}",
+            )
+        # レース結果リンクを3ボタン化（旧フォーマット→新3ボタン、全箇所置換）
+        import re as _re3
+        _old_link_pat = _re3.compile(
+            r'<a href="(https://(?:race|nar)\.netkeiba\.com)/race/result\.html\?race_id=(\d+)"'
+            r'[^>]*>📋 レース結果・払戻</a>'
+        )
+        _bs = "display:inline-block;font-size:12px;font-weight:600;color:#fff;text-decoration:none;border-radius:4px;padding:3px 12px;margin-right:6px"
+        def _replace_link(m):
+            _lb = m.group(1)
+            _lid = m.group(2)
+            return (
+                f'<a href="{_lb}/odds/index.html?race_id={_lid}" target="_blank" rel="noopener" style="{_bs};background:#16a34a">オッズ取得</a>'
+                f'<a href="{_lb}/race/result.html?race_id={_lid}" target="_blank" rel="noopener" style="{_bs};background:#1a6fa8">レース結果</a>'
+                f'<a href="{_lb}/race/movie.html?race_id={_lid}" target="_blank" rel="noopener" style="{_bs};background:#c0392b">レース映像</a>'
+            )
+        html = _old_link_pat.sub(_replace_link, html)
 
         # ナビバー注入
         if 'class="d-nav-wrap"' not in html:
@@ -5938,13 +6617,13 @@ function dNavRefreshOdds(date){{
                         pass
                 if _race_id:
                     _base = "https://race.netkeiba.com" if _is_jra else "https://nar.netkeiba.com"
+                    _btn = "display:inline-block;font-size:12px;font-weight:600;color:#fff;text-decoration:none;border-radius:4px;padding:3px 12px;margin-right:6px"
                     _rlink = (
-                        f'  <div style="margin-top:6px">'
-                        f'<a href="{_base}/race/result.html?race_id={_race_id}"'
-                        f' target="_blank" rel="noopener"'
-                        f' style="font-size:12px;color:#0369a1;text-decoration:none;'
-                        f'border:1px solid #0369a1;border-radius:4px;padding:2px 10px;margin-right:8px"'
-                        f">📋 レース結果・払戻</a></div>\n"
+                        f'  <div style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap">'
+                        f'<a href="{_base}/odds/index.html?race_id={_race_id}" target="_blank" rel="noopener" style="{_btn};background:#16a34a">オッズ取得</a>'
+                        f'<a href="{_base}/race/result.html?race_id={_race_id}" target="_blank" rel="noopener" style="{_btn};background:#1a6fa8">レース結果</a>'
+                        f'<a href="{_base}/race/movie.html?race_id={_race_id}" target="_blank" rel="noopener" style="{_btn};background:#c0392b">レース映像</a>'
+                        f"</div>\n"
                     )
                     _inject_tgt = '\n</div>\n<div class="card">\n<div class="section-title">■ レース概要</div>'
                     if _inject_tgt in html:
@@ -6076,6 +6755,81 @@ function dNavRefreshOdds(date){{
                         html = html.replace("</body>", _live_js + "\n</body>", 1)
                 except Exception:
                     pass
+
+        # 勝率/連対率/複勝率の順位色を動的適用（古いHTML + 新HTMLの両方に対応）
+        # 1位=緑, 2位=青, 3位=赤, 平均以上=黒, 平均以下=灰
+        _rate_color_js = """<script>
+(function(){
+  // 順位色を計算・適用（ユニーク値でランキング）
+  function applyColors(arr){
+    if(arr.length === 0) return;
+    var uniq = [];
+    var seen = {};
+    arr.forEach(function(x){
+      var k = Math.round(x.val * 100);
+      if(!seen[k]){seen[k]=true; uniq.push(x.val);}
+    });
+    uniq.sort(function(a,b){return b-a});
+    var avg = arr.reduce(function(s,x){return s+x.val},0) / arr.length;
+    arr.forEach(function(item){
+      var c;
+      if(uniq.length >= 1 && item.val >= uniq[0] - 0.001) c = '#16a34a';
+      else if(uniq.length >= 2 && item.val >= uniq[1] - 0.001) c = '#1a6fa8';
+      else if(uniq.length >= 3 && item.val >= uniq[2] - 0.001) c = '#c0392b';
+      else if(item.val >= avg) c = '#333';
+      else c = '#aaa';
+      item.el.style.color = c;
+    });
+  }
+  // --- hds-row2 カード（Level 3）---
+  var cg = {win:[], p2:[], p3:[]};
+  document.querySelectorAll('.hds-row2').forEach(function(row){
+    var labels = row.querySelectorAll('.hds-wr-label');
+    var vals = row.querySelectorAll('.hds-wr-win');
+    labels.forEach(function(lbl, i){
+      if(i >= vals.length) return;
+      var v = parseFloat(vals[i].textContent);
+      if(isNaN(v)) return;
+      var key = lbl.textContent.trim() === '勝' ? 'win' : lbl.textContent.trim() === '連' ? 'p2' : 'p3';
+      cg[key].push({el: vals[i], val: v});
+    });
+  });
+  applyColors(cg.win);
+  applyColors(cg.p2);
+  applyColors(cg.p3);
+  // --- テーブル（Level 6 確率表 / Level 2 全馬一覧）---
+  document.querySelectorAll('table thead tr').forEach(function(tr){
+    var ths = tr.querySelectorAll('th');
+    var colMap = {};
+    ths.forEach(function(th, i){
+      var t = th.textContent.trim();
+      if(t === '勝率') colMap.win = i;
+      if(t === '連対率') colMap.p2 = i;
+      if(t === '複勝率') colMap.p3 = i;
+    });
+    if(colMap.win === undefined) return;
+    var tbody = tr.closest('table').querySelector('tbody');
+    if(!tbody) return;
+    var tg = {win:[], p2:[], p3:[]};
+    tbody.querySelectorAll('tr').forEach(function(row){
+      var cells = row.querySelectorAll('td');
+      ['win','p2','p3'].forEach(function(key){
+        if(colMap[key] !== undefined && colMap[key] < cells.length){
+          var v = parseFloat(cells[colMap[key]].textContent);
+          if(!isNaN(v)) tg[key].push({el: cells[colMap[key]], val: v});
+        }
+      });
+    });
+    applyColors(tg.win);
+    applyColors(tg.p2);
+    applyColors(tg.p3);
+  });
+})();
+</script>"""
+        html = html.replace("</body>", _rate_color_js + "\n</body>", 1)
+
+        # フォーメーション買い目のプレーン番号をマーク付き表示に変換
+        html = _patch_formation_combo_marks(html)
 
         return Response(html, mimetype="text/html; charset=utf-8")
 
@@ -6494,9 +7248,13 @@ function dNavRefreshOdds(date){{
             if pos4c == min_p4c:
                 return "逃げ"
             r = pos4c / field_count
-            if r <= 0.40:
+            if r <= 0.22:
                 return "先行"
-            elif r <= 0.65:
+            elif r <= 0.38:
+                return "好位"
+            elif r <= 0.55:
+                return "中団"
+            elif r <= 0.72:
                 return "差し"
             else:
                 return "追込"
@@ -6516,7 +7274,7 @@ function dNavRefreshOdds(date){{
                 if isinstance(fp, int) and fp <= 3:
                     style_stats[style]["place3"] += 1
         running_style_stats = {}
-        for style in ["逃げ","先行","差し","追込"]:
+        for style in ["逃げ","先行","好位","中団","差し","追込"]:
             st = style_stats.get(style, {"total":0,"win":0,"place2":0,"place3":0,"odds_sum":0.0})
             t = st["total"]
             running_style_stats[style] = {
@@ -6813,6 +7571,14 @@ function dNavRefreshOdds(date){{
             nocache = request.args.get("nocache", "0") == "1"
             if nocache:
                 _personnel_stats_cache.clear()
+                # ディスクキャッシュも削除
+                import glob as _glob_p
+                from config.settings import DATABASE_PATH as _dbp
+                for _cf in _glob_p.glob(os.path.join(os.path.dirname(_dbp), "cache", "personnel_stats", "*.json")):
+                    try:
+                        os.remove(_cf)
+                    except Exception:
+                        pass
             cache_key = f"_year_{year_filter}" if year_filter else ""
             if cache_key not in _personnel_stats_cache or not _personnel_stats_cache.get(cache_key):
                 stats = compute_personnel_stats_from_race_log(year_filter=year_filter or None)
@@ -6978,11 +7744,13 @@ function dNavRefreshOdds(date){{
 
     @app.route("/api/results/unmatched_dates_db")
     def api_results_unmatched_dates_db():
-        """予想済みだが結果未取得の日付一覧（DB対応版）"""
+        """予想済みだが結果未取得の日付一覧（DB対応版、2024-01-01〜昨日）"""
         try:
             from src.results_tracker import list_prediction_dates
             from src.database import results_exist
-            pred_dates = list_prediction_dates()
+            yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+            pred_dates = [d for d in list_prediction_dates()
+                          if "2024-01-01" <= d <= yesterday]
             unmatched = [d for d in pred_dates if not results_exist(d)]
             return jsonify(dates=unmatched)
         except Exception as e:
@@ -7070,7 +7838,7 @@ function dNavRefreshOdds(date){{
         "dev_run2": ("前々走偏差値", "前々走の能力偏差値"),
         "chakusa_index_avg3": ("着差指数", "直近3走の着差指数平均"),
         # 展開・脚質
-        "horse_running_style": ("脚質", "逃げ/先行/差し/追込"),
+        "horse_running_style": ("脚質", "逃げ/先行/好位/中団/差し/追込"),
         "horse_condition_match": ("条件適性", "コース条件との適性度"),
         "ml_pos_est": ("ML位置取り予測", "機械学習による位置取り推定"),
         "ml_l3f_est": ("ML上がり予測", "機械学習による上がり3F推定"),
@@ -7097,6 +7865,308 @@ function dNavRefreshOdds(date){{
         "weight_kg_trend_3run": ("斤量トレンド", "直近3走の斤量変化傾向"),
     }
     _feature_imp_cache: list = []
+
+    # ──────────────────────────────────────────────
+    # 競馬場研究 API
+    # ──────────────────────────────────────────────
+
+    @app.route("/api/venue/profile")
+    def api_venue_profile():
+        """競馬場プロファイル（一覧 or 個別詳細）"""
+        from data.masters.venue_similarity import get_all_profiles, get_similar_venues
+        from data.masters.course_master import ALL_COURSES
+        from config.settings import get_composite_weights
+        from data.masters.venue_master import VENUE_CODE_TO_NAME
+
+        code = request.args.get("code", "").strip()
+        profiles = get_all_profiles()
+
+        if not code:
+            # 全場一覧
+            items = []
+            for vname, p in sorted(profiles.items(), key=lambda x: x[1].venue_code):
+                n_courses = sum(1 for c in ALL_COURSES if c.venue_code == p.venue_code)
+                items.append({
+                    "venue": vname,
+                    "venue_code": p.venue_code,
+                    "is_jra": p.is_jra,
+                    "has_turf": p.has_turf,
+                    "has_dirt": p.has_dirt,
+                    "direction": p.direction,
+                    "avg_straight_m": round(p.avg_straight_m, 1),
+                    "max_straight_m": p.max_straight_m,
+                    "slope_type": p.slope_type,
+                    "first_corner_score": round(p.first_corner_score, 2),
+                    "corner_type_dominant": p.corner_type_dominant,
+                    "n_courses": n_courses,
+                })
+            return jsonify({"venues": items})
+
+        # 個別詳細
+        venue_name = VENUE_CODE_TO_NAME.get(code)
+        if not venue_name or venue_name not in profiles:
+            return jsonify(error=f"不明な場コード: {code}"), 404
+
+        p = profiles[venue_name]
+        similar = get_similar_venues(venue_name, n=5)
+        weights = get_composite_weights(venue_name)
+        courses = [c for c in ALL_COURSES if c.venue_code == code]
+        course_list = []
+        for c in sorted(courses, key=lambda x: (x.surface, x.distance)):
+            course_list.append({
+                "course_id": f"{c.venue_code}_{c.surface}_{c.distance}",
+                "surface": c.surface,
+                "distance": c.distance,
+                "direction": c.direction,
+                "straight_m": c.straight_m,
+                "corner_count": c.corner_count,
+                "corner_type": c.corner_type,
+                "first_corner": c.first_corner,
+                "slope_type": c.slope_type,
+                "inside_outside": c.inside_outside,
+            })
+
+        sim_list = []
+        for sv, score in similar:
+            sp = profiles.get(sv)
+            sim_list.append({
+                "venue": sv,
+                "venue_code": sp.venue_code if sp else "",
+                "similarity": round(score, 3),
+            })
+
+        return jsonify({
+            "venue": venue_name,
+            "venue_code": code,
+            "is_jra": p.is_jra,
+            "has_turf": p.has_turf,
+            "has_dirt": p.has_dirt,
+            "direction": p.direction,
+            "profile": {
+                "avg_straight_m": round(p.avg_straight_m, 1),
+                "max_straight_m": p.max_straight_m,
+                "slope_type": p.slope_type,
+                "first_corner_score": round(p.first_corner_score, 2),
+                "corner_type_dominant": p.corner_type_dominant,
+            },
+            "composite_weights": {k: round(v, 3) for k, v in weights.items()},
+            "similar_venues": sim_list,
+            "courses": course_list,
+            "n_courses": len(course_list),
+        })
+
+    @app.route("/api/venue/bias")
+    def api_venue_bias():
+        """競馬場バイアス・傾向データ（course_dbベース）"""
+        from src.database import get_course_db, get_course_last3f_sigma
+        from collections import defaultdict
+
+        code = request.args.get("code", "").strip()
+        if not code:
+            return jsonify(error="code パラメータ必須"), 400
+
+        # course_db から当該venueの全コースデータを取得
+        try:
+            all_db = get_course_db()
+        except Exception:
+            all_db = {}
+        venue_keys = [k for k in all_db if k.startswith(f"{code}_")]
+
+        # 全レコードをコース別にまとめつつ、venue全体も集計
+        all_records: list = []
+        per_course_records: dict = {}
+        for ckey in sorted(venue_keys):
+            recs = all_db[ckey]
+            all_records.extend(recs)
+            per_course_records[ckey] = recs
+
+        def _aggregate_gate_bias(records):
+            """枠番別成績を集計（course_statsと同じロジック）"""
+            _gate_race = {}
+            for r in records:
+                gn = r.get("gate_no")
+                if not gn:
+                    continue
+                rk_ = (r.get("race_date", ""), r.get("class_name", ""), r.get("field_count", 0))
+                grk_ = (rk_, int(gn))
+                fp = r.get("finish_pos")
+                if grk_ not in _gate_race:
+                    _gate_race[grk_] = {"win": False, "place2": False, "place3": False, "odds": 0.0, "horses": 0}
+                entry = _gate_race[grk_]
+                entry["horses"] += 1
+                if fp == 1:
+                    entry["win"] = True
+                    entry["odds"] += float(r.get("win_odds") or 0)
+                if isinstance(fp, int) and fp <= 2:
+                    entry["place2"] = True
+                if isinstance(fp, int) and fp <= 3:
+                    entry["place3"] = True
+
+            gate_agg = defaultdict(lambda: {"runs": 0, "win": 0, "place2": 0, "place3": 0, "odds_sum": 0.0, "total_horses": 0})
+            for (_rk, gate), v in _gate_race.items():
+                g_str = str(gate)
+                gate_agg[g_str]["runs"] += 1
+                gate_agg[g_str]["total_horses"] += v["horses"]
+                if v["win"]:
+                    gate_agg[g_str]["win"] += 1
+                    gate_agg[g_str]["odds_sum"] += v["odds"]
+                if v["place2"]:
+                    gate_agg[g_str]["place2"] += 1
+                if v["place3"]:
+                    gate_agg[g_str]["place3"] += 1
+
+            result = {}
+            for g, v in sorted(gate_agg.items(), key=lambda x: int(x[0])):
+                if v["runs"] < 3:
+                    continue
+                t = v["runs"]
+                th = v["total_horses"]
+                result[g] = {
+                    "runs": t, "win": v["win"], "place2": v["place2"], "place3": v["place3"],
+                    "win_rate": round(v["win"] / t * 100, 1) if t else 0.0,
+                    "place2_rate": round(v["place2"] / t * 100, 1) if t else 0.0,
+                    "place3_rate": round(v["place3"] / t * 100, 1) if t else 0.0,
+                    "roi": round(v["odds_sum"] * 100 / th, 1) if th else 0.0,
+                }
+            return result
+
+        def _aggregate_running_style(records):
+            """脚質別成績を集計（course_statsと同じロジック）"""
+            _race_min_p4c = {}
+            for r in records:
+                rk_ = (r.get("race_date", ""), r.get("class_name", ""), r.get("field_count", 0))
+                p4c_ = r.get("position_4c")
+                if p4c_:
+                    _race_min_p4c[rk_] = min(_race_min_p4c.get(rk_, 999), p4c_)
+
+            def _pos_to_style(pos4c, field_count, race_key):
+                if not pos4c or not field_count or field_count < 4:
+                    return ""
+                min_p4c = _race_min_p4c.get(race_key, 1)
+                if pos4c == min_p4c:
+                    return "逃げ"
+                r = pos4c / field_count
+                if r <= 0.22:
+                    return "先行"
+                elif r <= 0.38:
+                    return "好位"
+                elif r <= 0.55:
+                    return "中団"
+                elif r <= 0.72:
+                    return "差し"
+                else:
+                    return "追込"
+
+            style_stats = defaultdict(lambda: {"total": 0, "win": 0, "place2": 0, "place3": 0, "odds_sum": 0.0})
+            for r in records:
+                rk_ = (r.get("race_date", ""), r.get("class_name", ""), r.get("field_count", 0))
+                style = _pos_to_style(r.get("position_4c"), r.get("field_count"), rk_)
+                if style:
+                    fp = r.get("finish_pos")
+                    style_stats[style]["total"] += 1
+                    if fp == 1:
+                        style_stats[style]["win"] += 1
+                        style_stats[style]["odds_sum"] += float(r.get("win_odds") or 0)
+                    if isinstance(fp, int) and fp <= 2:
+                        style_stats[style]["place2"] += 1
+                    if isinstance(fp, int) and fp <= 3:
+                        style_stats[style]["place3"] += 1
+
+            result = {}
+            for style in ["逃げ", "先行", "好位", "中団", "差し", "追込"]:
+                st = style_stats.get(style, {"total": 0, "win": 0, "place2": 0, "place3": 0, "odds_sum": 0.0})
+                t = st["total"]
+                result[style] = {
+                    "total": t, "win": st["win"], "place2": st["place2"], "place3": st["place3"],
+                    "win_rate": round(st["win"] / t * 100, 1) if t else 0.0,
+                    "place2_rate": round(st["place2"] / t * 100, 1) if t else 0.0,
+                    "place3_rate": round(st["place3"] / t * 100, 1) if t else 0.0,
+                    "roi": round(st["odds_sum"] * 100 / t, 1) if t else 0.0,
+                }
+            return result
+
+        # venue全体の集計
+        gate_bias_all = _aggregate_gate_bias(all_records)
+        running_style_all = _aggregate_running_style(all_records)
+
+        # コース別の集計
+        per_course = {}
+        for ckey, recs in per_course_records.items():
+            parts = ckey.split("_")
+            if len(parts) >= 3:
+                surf, dist = parts[1], parts[2]
+            else:
+                surf, dist = "", ""
+            per_course[ckey] = {
+                "surface": surf,
+                "distance": int(dist) if dist.isdigit() else 0,
+                "count": len(recs),
+                "gate_bias": _aggregate_gate_bias(recs),
+                "running_style": _aggregate_running_style(recs),
+            }
+
+        # 上がり3F（既存のcourse_dbベース関数を使用）
+        all_l3f = get_course_last3f_sigma()
+        last3f: dict = {}
+        for (vc, surf, dist), stats in all_l3f.items():
+            if vc == code:
+                ckey = f"{vc}_{surf}_{dist}"
+                last3f[ckey] = {
+                    "surface": surf,
+                    "distance": dist,
+                    "mean": round(stats.get("mean", 0), 2),
+                    "sigma": round(stats.get("sigma", 0), 2),
+                    "cnt": stats.get("cnt", 0),
+                }
+
+        # 人気別成績（win_oddsからレース内の人気順を算出）
+        def _aggregate_popularity(records):
+            """人気別成績を集計（win_oddsの低い順＝人気順）"""
+            # レース毎にグループ化
+            race_groups = defaultdict(list)
+            for r in records:
+                rk_ = (r.get("race_date", ""), r.get("class_name", ""), r.get("field_count", 0))
+                odds = r.get("win_odds")
+                if odds and r.get("finish_pos"):
+                    race_groups[rk_].append(r)
+            # レース毎にオッズ昇順でソートし人気順を付与
+            pop_stats = defaultdict(lambda: {"total": 0, "win": 0, "place2": 0, "place3": 0, "odds_sum": 0.0})
+            for rk_, horses in race_groups.items():
+                horses_sorted = sorted(horses, key=lambda x: float(x.get("win_odds") or 9999))
+                for rank, h in enumerate(horses_sorted, 1):
+                    pop_key = str(rank) if rank <= 12 else "13+"
+                    fp = h.get("finish_pos")
+                    pop_stats[pop_key]["total"] += 1
+                    if fp == 1:
+                        pop_stats[pop_key]["win"] += 1
+                        pop_stats[pop_key]["odds_sum"] += float(h.get("win_odds") or 0)
+                    if isinstance(fp, int) and fp <= 2:
+                        pop_stats[pop_key]["place2"] += 1
+                    if isinstance(fp, int) and fp <= 3:
+                        pop_stats[pop_key]["place3"] += 1
+            result = {}
+            for pop_key in sorted(pop_stats.keys(), key=lambda x: (0, int(x)) if x.isdigit() else (1, 0)):
+                st = pop_stats[pop_key]
+                t = st["total"]
+                result[pop_key] = {
+                    "total": t, "win": st["win"], "place2": st["place2"], "place3": st["place3"],
+                    "win_rate": round(st["win"] / t * 100, 1) if t else 0.0,
+                    "place2_rate": round(st["place2"] / t * 100, 1) if t else 0.0,
+                    "place3_rate": round(st["place3"] / t * 100, 1) if t else 0.0,
+                    "roi": round(st["odds_sum"] * 100 / t, 1) if t else 0.0,
+                }
+            return result
+
+        popularity_all = _aggregate_popularity(all_records)
+
+        return jsonify({
+            "venue_code": code,
+            "gate_bias": gate_bias_all,
+            "running_style": running_style_all,
+            "popularity": popularity_all,
+            "per_course": per_course,
+            "last3f": last3f,
+        })
 
     @app.route("/api/feature_importance")
     def api_feature_importance():

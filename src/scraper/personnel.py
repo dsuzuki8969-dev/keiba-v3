@@ -89,7 +89,8 @@ class JockeyScraper:
             stats.lower_short_dev = stats.lower_long_dev
             stats.kaisyu_type = self._classify_kaisyu(long_data)
 
-        # プロフィールページの年度別データから勝率補正
+        # プロフィールページの年度別データから勝率ベース偏差値を算出
+        # recent 20走は短期変動が大きいため、キャリア全体の勝率も考慮する
         prof_url = f"{BASE_URL}/jockey/{jockey_id}/"
         prof_soup = self.client.get(prof_url)
         if prof_soup:
@@ -99,18 +100,26 @@ class JockeyScraper:
                 total_runs = yearly.get("total_runs", 0)
                 if total_runs >= 50:
                     overall_wr = total_wins / total_runs
-                    # 全体勝率で偏差値を補正（人気内訳不明なので平均的な比率で推定）
-                    # 上位人気(1-3番)比率 ≈ 30%、下位人気(4+)比率 ≈ 70% と仮定
-                    est_upper_wr = min(overall_wr * 2.0, 0.60)
-                    est_lower_wr = max(overall_wr * 0.4, 0.01)
-                    stats.upper_long_dev = self._calc_deviation(
-                        int(est_upper_wr * total_runs * 0.3), int(total_runs * 0.3), "upper"
-                    )
-                    stats.lower_long_dev = self._calc_deviation(
-                        int(est_lower_wr * total_runs * 0.7), int(total_runs * 0.7), "lower"
-                    )
-                    stats.upper_short_dev = stats.upper_long_dev
-                    stats.lower_short_dev = stats.lower_long_dev
+                    # 全体勝率から直接偏差値を算出
+                    # JRA平均勝率 ≈ 0.08, σ ≈ 0.04
+                    # 偏差値50 = 8%勝率、60 = 12%、70 = 16%、40 = 4%
+                    career_dev = max(30.0, min(70.0, 50.0 + (overall_wr - 0.08) / 0.04 * 10))
+                    _upper_runs = long_data.get("upper_runs", 0) if long_data else 0
+                    _lower_runs = long_data.get("lower_runs", 0) if long_data else 0
+                    # recent データが不十分（5走未満）→ career_dev で上書き
+                    # recent データが十分 → career_dev を下限として保証
+                    if _upper_runs < 5:
+                        stats.upper_long_dev = career_dev
+                        stats.upper_short_dev = career_dev
+                    else:
+                        stats.upper_long_dev = max(stats.upper_long_dev, career_dev)
+                        stats.upper_short_dev = max(stats.upper_short_dev, career_dev)
+                    if _lower_runs < 5:
+                        stats.lower_long_dev = career_dev
+                        stats.lower_short_dev = career_dev
+                    else:
+                        stats.lower_long_dev = max(stats.lower_long_dev, career_dev)
+                        stats.lower_short_dev = max(stats.lower_short_dev, career_dev)
 
         # コース別成績を構築
         stats.course_records = self._build_course_records_from_races(races)
@@ -367,6 +376,18 @@ class TrainerScraper:
         stats.rank = self._classify_rank(data, is_nar=is_nar)
         stats.kaisyu_type = self._classify_kaisyu(data)
 
+        # 勝率から偏差値を算出
+        # JRA実測: 平均≈0.076, σ≈0.031（15名サンプル）
+        # NAR実測: 平均≈0.10, σ≈0.04（race_log集計）
+        wr = data.get("long_win_rate", 0.0)
+        tr = data.get("total_runs", 0)
+        if tr >= 20 and wr > 0:
+            if is_nar:
+                base_rate, sigma = 0.10, 0.04  # NAR
+            else:
+                base_rate, sigma = 0.07, 0.03  # JRA
+            stats.deviation = max(30.0, min(70.0, 50.0 + (wr - base_rate) / sigma * 10))
+
         # ページタイトルからフルネームを取得
         for s in [prof_soup, soup]:
             if s:
@@ -502,23 +523,59 @@ class TrainerScraper:
             "break_recovery": 0.0,
         }
 
-        # 方法1: ResultsByYears テーブルから累計データを取得
+        # 方法1: ResultsByYears テーブルから年度別データを取得
+        # 累計（キャリア全体）ではなく直近3年の勝率を使用
+        # （長期キャリア調教師の初期低勝率に引きずられるのを防止）
         rby = soup.select(".ResultsByYears")
         if rby:
+            yearly_data = []  # [(year, wins, runs), ...]
+            cumulative_wins, cumulative_runs = 0, 0
             for row in rby[0].select("tr"):
                 cells = row.select("td, th")
                 if len(cells) >= 7:
                     text = cells[0].get_text(strip=True)
                     if text == "累計":
                         try:
-                            wins = int(cells[2].get_text(strip=True).replace(",", ""))
-                            runs = int(cells[6].get_text(strip=True).replace(",", ""))
-                            data["total_wins"] = wins
-                            data["total_runs"] = runs
-                            if runs > 0:
-                                data["long_win_rate"] = wins / runs
+                            cumulative_wins = int(cells[2].get_text(strip=True).replace(",", ""))
+                            cumulative_runs = int(cells[6].get_text(strip=True).replace(",", ""))
                         except (ValueError, IndexError):
                             pass
+                    elif text.isdigit() and len(text) == 4:
+                        # 年度行（例: 2026, 2025, ...）
+                        try:
+                            y_wins = int(cells[2].get_text(strip=True).replace(",", ""))
+                            y_runs = int(cells[6].get_text(strip=True).replace(",", ""))
+                            if y_runs > 0:
+                                yearly_data.append((int(text), y_wins, y_runs))
+                        except (ValueError, IndexError):
+                            pass
+
+            # 直近3年 vs 累計の高い方を採用
+            # （現役上昇中 → 直近、引退/ベテラン → 累計キャリアピーク）
+            recent_wins, recent_runs = 0, 0
+            for _y, _w, _r in sorted(yearly_data, reverse=True)[:3]:
+                recent_wins += _w
+                recent_runs += _r
+
+            recent_wr = recent_wins / recent_runs if recent_runs >= 30 else 0.0
+            cumulative_wr = cumulative_wins / cumulative_runs if cumulative_runs > 0 else 0.0
+
+            if recent_wr >= cumulative_wr and recent_runs >= 30:
+                # 直近が累計以上 → 直近を使用（現役で好調/安定）
+                data["total_wins"] = recent_wins
+                data["total_runs"] = recent_runs
+                data["long_win_rate"] = recent_wr
+            elif cumulative_runs > 0:
+                # 累計の方が高い or 直近サンプル不足 → 累計を使用
+                data["total_wins"] = cumulative_wins
+                data["total_runs"] = cumulative_runs
+                data["long_win_rate"] = cumulative_wr
+
+            # 短期勝率: 直近1年
+            if yearly_data:
+                latest = sorted(yearly_data, reverse=True)[0]
+                if latest[2] >= 10:
+                    data["short_win_rate"] = latest[1] / latest[2]
 
         # 方法2: ResultsByYears がなければレース一覧テーブルから集計
         if data["total_runs"] == 0:
@@ -669,8 +726,32 @@ _KANJI_NORMALIZE = str.maketrans({
 
 
 def _normalize_name(name: str) -> str:
-    """異体字を正規化して名前マッチング精度を上げる"""
-    return name.translate(_KANJI_NORMALIZE)
+    """異体字正規化 + 表記揺れ統一（ソース間の名前突合用）
+
+    対応パターン:
+    - 異体字: 龍→竜、邊→辺 等
+    - 所属プレフィックス: (美)矢作芳人 → 矢作芳人
+    - 全角/半角スペース: 田島 寿一 → 田島寿一
+    - 外国人騎手: C.ルメール → ルメール
+    - マーカー記号: △長浜 → 長浜
+    """
+    import re as _re
+    s = name.translate(_KANJI_NORMALIZE)
+    # 所属サフィックス/プレフィックス除去: (美)矢作、赤津和（浦和）、（大井）森泰斗 等
+    s = _re.sub(r"[（(][^）)]+[）)]", "", s)
+    # 全角/半角スペース除去
+    s = s.replace("\u3000", "").replace(" ", "")
+    # 外国人騎手: ドット表記統一（全角．→半角. , 中点·→.）
+    # ※ C.デムーロとM.デムーロは別人なのでプレフィックス自体は保持
+    s = _re.sub(r"^([A-Za-zＡ-Ｚａ-ｚ]+)[．·]", lambda m: m.group(1) + ".", s)
+    # 全角英字→半角英字（Ｃ.ルメール → C.ルメール）
+    s = s.translate(str.maketrans(
+        "ＡＢＣＤＥＦＧＨＩＪＫＬＭＮＯＰＱＲＳＴＵＶＷＸＹＺ",
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+    ))
+    # マーカー記号除去
+    s = _re.sub(r"^[△▲★☆◉◎○×◇●▼\s]+", "", s)
+    return s.strip()
 
 
 def build_jockey_stats_from_course_db(
@@ -1417,6 +1498,20 @@ class _BatchNarRaceLogCache:
         self._jockey_name_to_ids = self._build_name_map(conn, "jockey_id", "jockey_name")
         self._trainer_name_to_ids = self._build_name_map(conn, "trainer_id", "trainer_name")
 
+        # IDごとの正規名（最多件数の名前）の長さを事前計算
+        # 短縮名の偽マッチ防止に使用（例: 「渡辺竜」3文字 → 「渡辺竜也」4文字）
+        self._id_canonical_name_len: Dict[str, int] = {}
+        for name_map in (self._jockey_name_to_ids, self._trainer_name_to_ids):
+            # id → (max_count, name_len)
+            _id_best: Dict[str, tuple] = {}
+            for name_key, id_counts in name_map.items():
+                for pid, cnt in id_counts.items():
+                    prev = _id_best.get(pid, (0, 0))
+                    if cnt > prev[0]:
+                        _id_best[pid] = (cnt, len(name_key))
+            for pid, (_, nlen) in _id_best.items():
+                self._id_canonical_name_len[pid] = nlen
+
         # ---- 2. NAR全騎手の勝率ランキング（パーセンタイル用）----
         all_j = conn.execute(
             "SELECT jockey_id, COUNT(*) as runs, "
@@ -1508,35 +1603,33 @@ class _BatchNarRaceLogCache:
         return result
 
     def _resolve_id(self, name: str, name_map: Dict[str, Dict[str, int]]) -> Optional[str]:
-        """名前からrace_log上のIDを解決（完全一致 → 部分一致）"""
+        """名前からrace_log上のIDを解決（完全一致のみ。部分一致は誤マッチが多いため廃止）"""
         clean = re.sub(r"[（(].+?[）)]", "", name).replace("\u3000", "").strip()
         norm = _normalize_name(clean)
         if len(norm) < 2:
             return None
 
         # 完全一致を優先
-        if norm in name_map:
-            return max(name_map[norm], key=name_map[norm].get)
-        if clean != norm and clean in name_map:
-            return max(name_map[clean], key=name_map[clean].get)
+        # 正規化で短縮名にマッチするケースを防止
+        # 例: 「渡邊竜」→正規化→「渡辺竜」→ race_logの短縮名「渡辺竜」(=渡辺竜也の別名)にヒット
+        # 対策: マッチしたIDの正規名長と比較し、2文字以上差がある場合はスキップ
+        def _validate(key: str) -> Optional[str]:
+            if key not in name_map:
+                return None
+            best_id = max(name_map[key], key=name_map[key].get)
+            # 正規名長チェック: IDの正規名をcanonical_name_lenで取得
+            canonical_len = self._id_canonical_name_len.get(best_id, len(key))
+            if len(key) != canonical_len:
+                return None  # 名前長不一致 → 短縮名や別人の偽マッチ
+            return best_id
 
-        # 部分一致（キーにnormが含まれるか）
-        candidates: Dict[str, int] = {}
-        for key, ids in name_map.items():
-            if norm in key or key in norm:
-                for pid, cnt in ids.items():
-                    candidates[pid] = candidates.get(pid, 0) + cnt
-        if candidates:
-            return max(candidates, key=candidates.get)
-
-        # cleanでも部分一致
+        result = _validate(norm)
+        if result:
+            return result
         if clean != norm:
-            for key, ids in name_map.items():
-                if clean in key or key in clean:
-                    for pid, cnt in ids.items():
-                        candidates[pid] = candidates.get(pid, 0) + cnt
-            if candidates:
-                return max(candidates, key=candidates.get)
+            result = _validate(clean)
+            if result:
+                return result
 
         return None
 
@@ -1802,47 +1895,88 @@ class PersonnelDBManager:
         jockey_ids = {h.jockey_id: h.jockey for h in horses if h.jockey_id}
         trainer_ids = {h.trainer_id: h.trainer for h in horses if h.trainer_id}
 
-        logger.info("騎手%d名 / 厩舎%dの成績取得", len(jockey_ids), len(trainer_ids))
+        # NAR騎手・調教師のIDセットを馬のvenueから構築（IDプレフィックスは不統一のため）
+        # JRA所属ID（00xxx/01xxx）はNAR出走があってもJRA扱いを維持（race_log汚染防止）
+        # 05xxxはnetkeiba共通ID（NAR調教師も使用）なのでvenue判定に従う
+        _JRA_VENUES = {"札幌","函館","福島","新潟","東京","中山","中京","京都","阪神","小倉"}
+        _JRA_ID_PREFIXES = {"00", "01"}
+        _nar_jockey_ids = {h.jockey_id for h in horses
+                           if h.jockey_id and h.jockey_id[:2] not in _JRA_ID_PREFIXES
+                           and getattr(h, "venue", "") not in _JRA_VENUES and getattr(h, "venue", "")}
+        _nar_trainer_ids = {h.trainer_id for h in horses
+                            if h.trainer_id and h.trainer_id[:2] not in _JRA_ID_PREFIXES
+                            and getattr(h, "venue", "") not in _JRA_VENUES and getattr(h, "venue", "")}
+        logger.info("騎手%d名 / 厩舎%dの成績取得 (NAR騎手%d, NAR厩舎%d)",
+                     len(jockey_ids), len(trainer_ids), len(_nar_jockey_ids), len(_nar_trainer_ids))
 
         # ---- race_log 一括プリロード ----
         _nar_cache = _BatchNarRaceLogCache()
 
         for jid, jname in jockey_ids.items():
+            # NAR騎手のみ race_log クロスチェック対象
+            # JRA騎手は少数NAR出走記録で偏差値が歪むため対象外
+            _is_nar_jockey = jid in _nar_jockey_ids
             cached = self.get_jockey(jid)
             if not force and not self.is_stale(f"jockey_{jid}"):
                 if cached and cached.upper_long_dev != 50.0:
-                    # キャッシュ済み — race_logでクロスチェック
-                    # （course_db由来の不正確な値を検出・補正する）
-                    # min_runs=30: 少数走のJRA騎手がNARデータで誤補正されるのを防止
-                    rl = _nar_cache.get_jockey_stats(jid, jname, min_runs=30)
-                    if rl and rl.upper_long_dev != 50.0:
-                        diff = abs(rl.upper_long_dev - cached.upper_long_dev)
-                        if diff >= 15.0:
-                            logger.info("RACE_LOG 補正 騎手 %s: %.1f → %.1f",
-                                        jname, cached.upper_long_dev, rl.upper_long_dev)
-                            self.store_jockey(rl)
+                    # キャッシュ済み — NAR騎手のみrace_logでクロスチェック
+                    if _is_nar_jockey:
+                        rl = _nar_cache.get_jockey_stats(jid, jname, min_runs=30)
+                        if rl and rl.upper_long_dev != 50.0:
+                            diff = abs(rl.upper_long_dev - cached.upper_long_dev)
+                            if diff >= 15.0:
+                                logger.info("RACE_LOG 補正 騎手 %s: %.1f → %.1f",
+                                            jname, cached.upper_long_dev, rl.upper_long_dev)
+                                self.store_jockey(rl)
                     else:
                         logger.debug("CACHE 騎手 %s", jname)
                     continue
                 elif cached and cached.upper_long_dev == 50.0 and course_db:
-                    # キャッシュが50.0（未取得相当）→ race_log優先、なければcourse_db
-                    rl = _nar_cache.get_jockey_stats(jid, jname)
-                    if rl and rl.upper_long_dev != 50.0:
-                        logger.debug("RACE_LOG 騎手 %s: upper=%.1f", jname, rl.upper_long_dev)
-                        self.store_jockey(rl)
-                        continue
+                    # キャッシュが50.0（未取得相当）→ NAR騎手はrace_log優先、なければcourse_db
+                    if _is_nar_jockey:
+                        rl = _nar_cache.get_jockey_stats(jid, jname)
+                        if rl and rl.upper_long_dev != 50.0:
+                            logger.debug("RACE_LOG 騎手 %s: upper=%.1f", jname, rl.upper_long_dev)
+                            self.store_jockey(rl)
+                            continue
                     stats = build_jockey_stats_from_course_db(jid, jname, course_db)
                     if stats.upper_long_dev not in (50.0, 40.0):
                         logger.debug("COURSE_DB 騎手 %s: upper=%.1f", jname, stats.upper_long_dev)
                         self.store_jockey(stats)
                         continue
-                # course_dbフォールバック失敗/不正確 → race_logで再計算（ID制限なし）
-                _cached_dev = getattr(cached, "upper_long_dev", 50.0) if cached else 50.0
-                if _cached_dev in (50.0, 40.0):
-                    fb = _nar_cache.get_jockey_stats(jid, jname)
-                    if fb and fb.upper_long_dev != 50.0:
-                        self.store_jockey(fb)
-                        continue
+                # course_dbフォールバック失敗 → NAR騎手のみrace_logで再計算
+                if _is_nar_jockey:
+                    _cached_dev = getattr(cached, "upper_long_dev", 50.0) if cached else 50.0
+                    if _cached_dev in (50.0, 40.0):
+                        fb = _nar_cache.get_jockey_stats(jid, jname)
+                        if fb and fb.upper_long_dev != 50.0:
+                            self.store_jockey(fb)
+                            continue
+            # NAR公式IDはnetkeibaIDと体系が異なるためフェッチすると別人データ取得
+            # NAR騎手はrace_log/course_dbのみで算出
+            if _is_nar_jockey:
+                stats = None
+                # race_log優先
+                rl = _nar_cache.get_jockey_stats(jid, jname, min_runs=5)
+                if rl and rl.upper_long_dev != 50.0:
+                    stats = rl
+                    logger.debug("RACE_LOG 騎手 %s: %.1f", jname, rl.upper_long_dev)
+                # course_dbフォールバック
+                if (not stats or stats.upper_long_dev in (50.0, 40.0)) and course_db:
+                    fb = build_jockey_stats_from_course_db(jid, jname, course_db)
+                    if fb.upper_long_dev not in (50.0, 40.0):
+                        stats = fb
+                        logger.debug("COURSE_DB 騎手 %s: %.1f", jname, fb.upper_long_dev)
+                if stats:
+                    self.store_jockey(stats)
+                else:
+                    # データなし → デフォルト50.0で保存
+                    self.store_jockey(JockeyStats(
+                        jockey_id=jid, jockey_name=jname,
+                        upper_long_dev=50.0, upper_short_dev=50.0,
+                        lower_long_dev=50.0, lower_short_dev=50.0,
+                    ))
+                continue
             logger.debug("FETCH 騎手 %s", jname)
             stats = j_scraper.fetch(jid, jname)
             if stats.upper_long_dev == 50.0 and course_db:
@@ -1851,15 +1985,6 @@ class PersonnelDBManager:
                 if fb.upper_long_dev not in (50.0, 40.0):
                     stats = fb
                     logger.debug("→ course_db フォールバック: %.1f", stats.upper_long_dev)
-            # race_logクロスチェック（ID制限なし — NAR騎手以外はNoneが返る）
-            # 50.0/40.0フォールバック時は min_runs=5（少数でも有用）、
-            # それ以外のクロスチェック時は min_runs=30（信頼性確保）
-            _mr = 5 if stats.upper_long_dev in (50.0, 40.0) else 30
-            rl = _nar_cache.get_jockey_stats(jid, jname, min_runs=_mr)
-            if rl and rl.upper_long_dev != 50.0:
-                if stats.upper_long_dev in (50.0, 40.0) or abs(rl.upper_long_dev - stats.upper_long_dev) >= 15.0:
-                    logger.debug("→ race_log: %.1f (web/cdb: %.1f)", rl.upper_long_dev, stats.upper_long_dev)
-                    stats = rl
             self.store_jockey(stats)
 
         # NAR調教師ID（11xxx）→ netkeiba ID（05xxx）の名前逆引き用マップ構築
@@ -1870,41 +1995,69 @@ class PersonnelDBManager:
                     _nk_name_to_tid[_tdata.get("trainer_name", "")] = _tid
 
         for tid, tname in trainer_ids.items():
+            # NAR調教師のみ race_log クロスチェック対象
+            # JRA調教師は少数NAR出走記録で偏差値が歪むため対象外
+            _is_nar_trainer = tid in _nar_trainer_ids
             cached = self.get_trainer(tid)
             # C/D はウェブ取得失敗時のデフォルト値なのでcourse_dbで再計算
             if not force and not self.is_stale(f"trainer_{tid}"):
                 if cached and cached.rank not in (JushaRank.C, JushaRank.D):
-                    # キャッシュ済み — race_logでクロスチェック
-                    # （course_db由来の不正確な値を検出・補正する）
-                    rl = _nar_cache.get_trainer_stats(tid, tname, min_runs=30)
-                    if rl and rl.deviation != 50.0:
-                        diff = abs(rl.deviation - cached.deviation)
-                        if diff >= 15.0:
-                            logger.info("RACE_LOG 補正 厩舎 %s: %.1f → %.1f",
-                                        tname, cached.deviation, rl.deviation)
-                            self.store_trainer(rl)
+                    # キャッシュ済み — NAR調教師のみrace_logでクロスチェック
+                    if _is_nar_trainer:
+                        rl = _nar_cache.get_trainer_stats(tid, tname, min_runs=30)
+                        if rl and rl.deviation != 50.0:
+                            diff = abs(rl.deviation - cached.deviation)
+                            if diff >= 15.0:
+                                logger.info("RACE_LOG 補正 厩舎 %s: %.1f → %.1f",
+                                            tname, cached.deviation, rl.deviation)
+                                self.store_trainer(rl)
                     else:
                         logger.debug("CACHE 厩舎 %s", tname)
                     continue
                 elif cached and course_db:
-                    # キャッシュがC/D → race_log優先、なければcourse_db
-                    rl = _nar_cache.get_trainer_stats(tid, tname)
-                    if rl and rl.deviation != 50.0:
-                        logger.debug("RACE_LOG 厩舎 %s: rank=%s, dev=%.1f",
-                                     tname, rl.rank.value, rl.deviation)
-                        self.store_trainer(rl)
-                        continue
+                    # キャッシュがC/D → NAR調教師はrace_log優先、なければcourse_db
+                    if _is_nar_trainer:
+                        rl = _nar_cache.get_trainer_stats(tid, tname)
+                        if rl and rl.deviation != 50.0:
+                            logger.debug("RACE_LOG 厩舎 %s: rank=%s, dev=%.1f",
+                                         tname, rl.rank.value, rl.deviation)
+                            self.store_trainer(rl)
+                            continue
                     stats = build_trainer_stats_from_course_db(tid, tname, course_db, _nk_name_to_tid)
                     if stats.rank not in (JushaRank.C, JushaRank.D) or stats.short_momentum:
                         logger.debug("COURSE_DB 厩舎 %s: rank=%s", tname, stats.rank.value)
                         self.store_trainer(stats)
                         continue
-                # course_dbフォールバック失敗 → race_logで再計算（ID制限なし）
-                if cached:
+                # course_dbフォールバック失敗 → NAR調教師のみrace_logで再計算
+                if _is_nar_trainer and cached:
                     fb = _nar_cache.get_trainer_stats(tid, tname)
                     if fb and fb.deviation != 50.0:
                         self.store_trainer(fb)
                         continue
+            # NAR公式IDはnetkeibaIDと体系が異なるためフェッチすると別人データ取得
+            # NAR調教師はrace_log/course_dbのみで算出
+            if _is_nar_trainer:
+                stats = None
+                # race_log優先
+                rl = _nar_cache.get_trainer_stats(tid, tname, min_runs=5)
+                if rl and rl.deviation != 50.0:
+                    stats = rl
+                    logger.debug("RACE_LOG 厩舎 %s: dev=%.1f", tname, rl.deviation)
+                # course_dbフォールバック
+                if (not stats or stats.deviation == 50.0) and course_db:
+                    fb = build_trainer_stats_from_course_db(tid, tname, course_db, _nk_name_to_tid)
+                    if fb.rank not in (JushaRank.C, JushaRank.D):
+                        stats = fb
+                        logger.debug("COURSE_DB 厩舎 %s: rank=%s", tname, fb.rank.value)
+                if stats:
+                    self.store_trainer(stats)
+                else:
+                    # データなし → デフォルトで保存
+                    self.store_trainer(TrainerStats(
+                        trainer_id=tid, trainer_name=tname,
+                        stable_name="", location="地方",
+                    ))
+                continue
             logger.debug("FETCH 厩舎 %s", tname)
             stats = t_scraper.fetch(tid, tname)
             if stats.rank in (JushaRank.C, JushaRank.D) and course_db:
@@ -1912,13 +2065,6 @@ class PersonnelDBManager:
                 if fb.rank not in (JushaRank.C, JushaRank.D):
                     stats = fb
                     logger.debug("→ course_db フォールバック: rank=%s", stats.rank.value)
-            # race_logクロスチェック（ID制限なし）
-            _mr = 5 if stats.rank in (JushaRank.C, JushaRank.D) else 30
-            rl = _nar_cache.get_trainer_stats(tid, tname, min_runs=_mr)
-            if rl and rl.deviation != 50.0:
-                if stats.rank in (JushaRank.C, JushaRank.D) or abs(rl.deviation - stats.deviation) >= 15.0:
-                    logger.debug("→ race_log: dev=%.1f (web/cdb: %.1f)", rl.deviation, stats.deviation)
-                    stats = rl
             self.store_trainer(stats)
 
         if save:

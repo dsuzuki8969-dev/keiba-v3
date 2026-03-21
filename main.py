@@ -206,6 +206,7 @@ def run_date_analysis(
     venues: list | None = None,
     workers: int = 3,
     official_only: bool = False,
+    no_html: bool = False,
 ):
     """
     ①日付を入力 → ②その日の中央競馬・地方競馬の全レースを分析
@@ -285,7 +286,7 @@ def run_date_analysis(
     client = scraper.client  # 認証済みクライアントを使用
 
     analyses_by_venue = {}  # {"東京": {1: analysis, 2: ...}, ...}
-    formatter = HTMLFormatter()
+    formatter = None if no_html else HTMLFormatter()
 
     # ── フェーズ1: 全レースデータを並列プリフェッチ ─────────────────────────
     # ネットワークI/Oが主ボトルネック。複数ワーカーが独立したレートリミットで
@@ -419,13 +420,14 @@ def run_date_analysis(
             analyses_by_venue[venue] = {}
         analyses_by_venue[venue][race_no] = analysis
 
-        # 個別レースHTML生成（ダッシュボードHOMEタブが {date}_{venue}XR.html を参照するため）
-        date_key = date.replace("-", "")
-        ind_fname = f"{date_key}_{venue}{race_no}R.html"
-        ind_fpath = os.path.join(output_dir, ind_fname)
-        os.makedirs(output_dir, exist_ok=True)
-        with open(ind_fpath, "w", encoding="utf-8") as _f:
-            _f.write(minify_html(formatter.render(analysis)))
+        # 個別レースHTML生成（--no_html 時はスキップ）
+        if formatter:
+            date_key = date.replace("-", "")
+            ind_fname = f"{date_key}_{venue}{race_no}R.html"
+            ind_fpath = os.path.join(output_dir, ind_fname)
+            os.makedirs(output_dir, exist_ok=True)
+            with open(ind_fpath, "w", encoding="utf-8") as _f:
+                _f.write(minify_html(formatter.render(analysis)))
 
         ok_count += 1
         # 進捗行は quiet でも常に出力（ダッシュボードの進捗パース用）
@@ -448,36 +450,43 @@ def run_date_analysis(
         print("\n[エラー] 分析できたレースが1件もありません")
         sys.exit(1)
 
-    # 統合HTML生成
-    print("\n[3/3] 統合HTML出力中...")
-    html = render_date_analysis_html(analyses_by_venue, date, formatter)
-    os.makedirs(output_dir, exist_ok=True)
-    fname = f"{date.replace('-', '')}_全レース.html"
-    fpath = os.path.join(output_dir, fname)
-    with open(fpath, "w", encoding="utf-8") as f:
-        f.write(html)
+    # 統合HTML生成（--no_html 時はスキップ）
+    fpath = None
+    if formatter:
+        print("\n[3/3] 統合HTML出力中...")
+        html = render_date_analysis_html(analyses_by_venue, date, formatter)
+        os.makedirs(output_dir, exist_ok=True)
+        fname = f"{date.replace('-', '')}_全レース.html"
+        fpath = os.path.join(output_dir, fname)
+        with open(fpath, "w", encoding="utf-8") as f:
+            f.write(html)
 
     # 予想JSONを保存（結果照合・成績集計に使用）
     try:
-        from src.results_tracker import save_prediction, generate_simple_html
+        from src.results_tracker import save_prediction
 
         pred_path = save_prediction(date, analyses_by_venue)
         print(f"       予想データ保存: {os.path.basename(pred_path)}")
 
-        # 配布用HTML（印・買い目のみ）を自動生成
-        try:
-            simple_path = generate_simple_html(date, output_dir)
-            if simple_path:
-                print(f"       配布用HTML生成: {os.path.basename(simple_path)}")
-        except Exception as _e:
-            logger.warning("simple html generation failed: %s", _e, exc_info=True)
-            print(f"       [警告] 配布用HTML生成失敗: {_e}")
+        # 配布用HTML（--no_html 時はスキップ）
+        if formatter:
+            try:
+                from src.results_tracker import generate_simple_html
+                simple_path = generate_simple_html(date, output_dir)
+                if simple_path:
+                    print(f"       配布用HTML生成: {os.path.basename(simple_path)}")
+            except Exception as _e:
+                logger.warning("simple html generation failed: %s", _e, exc_info=True)
+                print(f"       [警告] 配布用HTML生成失敗: {_e}")
     except Exception as e:
         logger.warning("prediction save failed: %s", e, exc_info=True)
         print(f"       [警告] 予想データ保存失敗: {e}")
 
     n_races = sum(len(r) for r in analyses_by_venue.values())
-    print(f"\n[完了] {os.path.abspath(fpath)}")
+    if fpath:
+        print(f"\n[完了] {os.path.abspath(fpath)}")
+    else:
+        print(f"\n[完了] HTML生成スキップ（--no_html）")
     print(f"       競馬場: {list(analyses_by_venue.keys())}")
     print(f"       分析成功: {n_races}レース  (スキップ: {skip_count})")
     if skip_count > 0 and total > 0:
@@ -485,7 +494,7 @@ def run_date_analysis(
         if pct_skip >= 30:
             print(f"\n[!] 警告: スキップ率 {pct_skip:.0f}% と高く、出力が不十分です。")
             print("    キャッシュ削除(--no_cache)またはネット接続を確認してください。")
-    if open_browser:
+    if open_browser and fpath:
         try:
             import webbrowser
             from pathlib import Path
@@ -569,6 +578,7 @@ if __name__ == "__main__":
     p.add_argument("--quiet", "-q", action="store_true", help="冗長ログを抑制")
     p.add_argument("--limit", type=int, default=0, help="先頭Nレースのみ処理（テスト用）")
     p.add_argument("--workers", type=int, default=3, help="並列フェッチのワーカー数 (デフォルト:3)")
+    p.add_argument("--no_html", action="store_true", help="静的HTML生成をスキップ（JSON出力のみ）")
     p.add_argument("--serve", action="store_true", help="基準タイム収集のWeb管理画面を起動")
     p.add_argument(
         "--collect_ml_data",
@@ -625,6 +635,7 @@ if __name__ == "__main__":
             venues=venues_list,
             workers=args.workers,
             official_only=getattr(args, "official", False),
+            no_html=args.no_html,
         )
     elif args.db_stats:
         print(StandardTimeDBBuilder().stats())

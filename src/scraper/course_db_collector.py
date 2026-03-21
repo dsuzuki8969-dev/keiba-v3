@@ -29,6 +29,32 @@ from src.models import PaceType, PastRun
 
 logger = get_logger(__name__)
 
+# パース結果キャッシュ（レースID単位）
+_PARSED_CACHE_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "data", "cache", "course_db_parsed")
+
+
+def _load_parsed_cache(race_id: str) -> Optional[List[dict]]:
+    """パース済みPastRunリストをキャッシュから読み込む"""
+    path = os.path.join(_PARSED_CACHE_DIR, f"{race_id}.json")
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, "rb") as f:
+            return _fast_load(f)
+    except Exception:
+        return None
+
+
+def _save_parsed_cache(race_id: str, runs: List[dict]):
+    """パース済みPastRunリストをキャッシュに保存"""
+    os.makedirs(_PARSED_CACHE_DIR, exist_ok=True)
+    path = os.path.join(_PARSED_CACHE_DIR, f"{race_id}.json")
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(runs, f, ensure_ascii=False, separators=(",", ":"))
+    except Exception:
+        logger.debug("パースキャッシュ保存失敗: %s", race_id, exc_info=True)
+
 
 def _parse_time(time_str: str) -> float:
     """ "1:34.5" -> 94.5秒"""
@@ -578,11 +604,34 @@ def collect_course_db_from_results(
         ids = race_list_scraper.get_race_ids(d)
         day_runs = 0
         if ids:
-            ids = [
-                r for r in ids[:max_races_per_day] if not is_banei(get_venue_code_from_race_id(r))
-            ]
+            ids = ids[:max_races_per_day]
             for rid in ids:
                 vc = get_venue_code_from_race_id(rid)
+
+                # パース結果キャッシュを確認（HTMLパースをスキップ）
+                cached_dicts = _load_parsed_cache(rid)
+                if cached_dicts is not None:
+                    for rd in cached_dicts:
+                        cid = rd.get("course_id", "")
+                        dup_key = (
+                            rd.get("race_date", ""),
+                            rd.get("finish_pos", 0),
+                            rd.get("horse_no", 0),
+                            round(rd.get("finish_time_sec", 0), 1),
+                        )
+                        if cid not in existing_keys:
+                            existing_keys[cid] = set()
+                        if dup_key in existing_keys[cid]:
+                            continue
+                        existing_keys[cid].add(dup_key)
+                        if cid not in all_runs:
+                            all_runs[cid] = []
+                        all_runs[cid].append(rd)
+                        day_runs += 1
+                        total_runs += 1
+                    continue
+
+                # キャッシュなし → HTMLパース
                 base = (
                     "https://nar.netkeiba.com"
                     if vc not in JRA_CODES
@@ -629,13 +678,17 @@ def collect_course_db_from_results(
                     first_3f_sec=first_3f,
                     race_pace=pace_from_lap,
                 )
-                for pr in past_runs:
-                    cid = pr.course_id
+                # パース結果をキャッシュ保存
+                run_dicts = [_past_run_to_dict(pr) for pr in past_runs]
+                _save_parsed_cache(rid, run_dicts)
+
+                for rd in run_dicts:
+                    cid = rd.get("course_id", "")
                     dup_key = (
-                        pr.race_date,
-                        pr.finish_pos,
-                        pr.horse_no,
-                        round(pr.finish_time_sec, 1),
+                        rd.get("race_date", ""),
+                        rd.get("finish_pos", 0),
+                        rd.get("horse_no", 0),
+                        round(rd.get("finish_time_sec", 0), 1),
                     )
                     if cid not in existing_keys:
                         existing_keys[cid] = set()
@@ -644,7 +697,7 @@ def collect_course_db_from_results(
                     existing_keys[cid].add(dup_key)
                     if cid not in all_runs:
                         all_runs[cid] = []
-                    all_runs[cid].append(_past_run_to_dict(pr))
+                    all_runs[cid].append(rd)
                     day_runs += 1
                     total_runs += 1
                 time.sleep(1.5)
@@ -784,6 +837,34 @@ def load_preload_course_db(path: str, target_date: str = None) -> Dict[str, List
     return result
 
 
+def _safe_float(v) -> float:
+    """馬身表記("1/2", "3/4"等)や文字列を安全にfloatに変換"""
+    if v is None:
+        return 0.0
+    if isinstance(v, (int, float)):
+        return float(v)
+    s = str(v).strip()
+    if not s:
+        return 0.0
+    try:
+        return float(s)
+    except ValueError:
+        # "1/2" → 0.5, "1 1/2" → 1.5 等
+        try:
+            if "/" in s:
+                parts = s.split()
+                if len(parts) == 2:
+                    whole = float(parts[0])
+                    num, den = parts[1].split("/")
+                    return whole + float(num) / float(den)
+                else:
+                    num, den = s.split("/")
+                    return float(num) / float(den)
+        except Exception:
+            pass
+        return 0.0
+
+
 def _dict_to_past_run(d: dict) -> PastRun:
     corners = d.get("positions_corners", [])
     if not isinstance(corners, list):
@@ -813,10 +894,10 @@ def _dict_to_past_run(d: dict) -> PastRun:
         position_4c=int(pos4c or 4),
         positions_corners=corners,
         finish_pos=int(d.get("finish_pos", 1)),
-        finish_time_sec=float(d.get("finish_time_sec", 0)),
-        last_3f_sec=float(d.get("last_3f_sec", 35.5)),
-        margin_behind=float(d.get("margin_behind") or 0),
-        margin_ahead=float(d.get("margin_ahead") or 0),
+        finish_time_sec=float(d.get("finish_time_sec") or 0),
+        last_3f_sec=float(d.get("last_3f_sec") or 35.5),
+        margin_behind=_safe_float(d.get("margin_behind")),
+        margin_ahead=_safe_float(d.get("margin_ahead")),
         pace=pace_obj,
         first_3f_sec=float(first_3f) if first_3f is not None else None,
         is_generation=bool(d.get("is_generation", False)),

@@ -428,7 +428,7 @@ class RaceResultScraper:
             data_text = data_intro.text
 
             # 距離
-            distance_match = re.search(r"([芝ダ])(\d+)m", data_text)
+            distance_match = re.search(r"([芝ダ直])(\d+)m", data_text)
             if distance_match:
                 surface = "芝" if distance_match.group(1) == "芝" else "ダート"
                 distance = int(distance_match.group(2))
@@ -471,6 +471,17 @@ class RaceResultScraper:
 
             rows = result_table.select("tbody tr")
 
+            # ヘッダーからオッズ・人気カラムを動的検出（ばんえい対応）
+            odds_col, pop_col = 12, 13  # デフォルト（JRA/NAR標準）
+            header = result_table.select_one("thead tr")
+            if header:
+                for i, th in enumerate(header.select("th")):
+                    t = th.get_text(strip=True)
+                    if "単勝" in t:
+                        odds_col = i
+                    elif t == "人気":
+                        pop_col = i
+
             for row in rows:
                 try:
                     cells = row.select("td")
@@ -500,12 +511,12 @@ class RaceResultScraper:
                     # 着差
                     margin = cells[8].text.strip()
 
-                    # オッズ
-                    odds_text = cells[12].text.strip()
+                    # オッズ（ヘッダー検出位置を使用）
+                    odds_text = cells[odds_col].text.strip() if len(cells) > odds_col else ""
                     odds = float(odds_text) if odds_text.replace(".", "").isdigit() else 0.0
 
-                    # 人気
-                    popularity_text = cells[13].text.strip()
+                    # 人気（ヘッダー検出位置を使用）
+                    popularity_text = cells[pop_col].text.strip() if len(cells) > pop_col else ""
                     popularity = int(popularity_text) if popularity_text.isdigit() else 0
 
                     horses.append(

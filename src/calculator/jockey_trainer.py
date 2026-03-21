@@ -191,7 +191,9 @@ class TrainingEvaluator:
             sigma = (mean_3f - last_3f) / std_3f if std_3f > 0 else 0.0
 
             rec.sigma_from_mean = sigma
-            rec.intensity_label = self._sigma_to_label(sigma)
+            # 競馬ブックの生テキストがあればそちらを優先（"通常"以外）
+            if not rec.intensity_label or rec.intensity_label == "通常":
+                rec.intensity_label = self._sigma_to_label(sigma)
             enriched.append(rec)
 
         return enriched
@@ -360,20 +362,23 @@ def calc_ana_score(
     if eval_result.baken_type == BakenType.IPPATSU:
         score += 0.5
 
-    # 9. ML複勝率がルール複勝率を大幅に上回る（過小評価検知）
-    ml_p = getattr(eval_result, "ml_place_prob", None)
-    if ml_p is not None:
-        rule_p = eval_result.place3_prob
-        ml_gap = ml_p - rule_p
+    # 9. 予測複勝率が市場複勝率を大幅に上回る（過小評価検知）
+    # 旧ロジック: ml_place_prob を使用していたが、ブレンド後に None クリアされるため常に無効だった
+    # 新ロジック: place3_prob（ML+ルールブレンド済み）と市場確率（オッズベース）の差分で判定
+    blended_p3 = eval_result.place3_prob
+    if blended_p3 is not None and eff_odds is not None:
+        # 市場確率: オッズから経験的に複勝確率を推定
+        market_p3 = min(0.90, 1.0 / (eff_odds ** 0.65) * 0.7)
+        ml_gap = blended_p3 - market_p3
         if ml_gap >= 0.15:
-            score += 2.0
+            score += 2.5
         elif ml_gap >= 0.08:
-            score += 1.0
+            score += 1.5
 
     # タイプ分類
     if score >= ANA_SCORE_A:
         # 穴A: 能力が高い×オッズが過小評価
-        if eval_result.composite >= 55:
+        if eval_result.composite >= 50:
             return score, AnaType.ANA_A
         return score, AnaType.ANA_B
     if score >= ANA_SCORE_B:
@@ -386,18 +391,15 @@ def _calc_probability_gap_score(
     eval_result: "HorseEvaluation",
     all_evals: List["HorseEvaluation"],
 ) -> float:
-    """三連率ギャップスコア (最大6pt) — 精密化版"""
-    import math
-
+    """三連率ギャップスコア (最大6pt) — H13: 実績データ参照版"""
     odds = eval_result.effective_odds
     if odds is None:
         return 0.0
 
     theoretical_place3 = eval_result.place3_prob
 
-    # 市場評価: 単勝オッズ→複勝確率への経験的変換
-    # 単勝1倍台は複勝80%超、10倍は複勝25%程度という経験則に基づくべき乗変換
-    market_place3 = min(0.90, 1.0 / (odds ** 0.65) * 0.7)
+    # H13: 市場確率の推定を改善 — 実績統計があればそちらを優先
+    market_place3 = _estimate_market_place3(odds)
 
     gap = theoretical_place3 - market_place3
     if gap >= 0.30:
@@ -411,6 +413,24 @@ def _calc_probability_gap_score(
     return 0.0
 
 
+def _estimate_market_place3(odds: float) -> float:
+    """オッズから市場複勝確率を推定（H13: 実績統計優先）"""
+    try:
+        from src.calculator.popularity_blend import load_popularity_stats, _odds_range_key
+        stats = load_popularity_stats()
+        if stats:
+            range_key = _odds_range_key(odds)
+            # JRA/NAR両方を参照し、データがある方を使用
+            for org in ("JRA", "NAR"):
+                data = stats.get("by_odds_range", {}).get(org, {}).get("_overall", {}).get(range_key, {})
+                if data and "top3" in data:
+                    return data["top3"]
+    except Exception:
+        pass
+    # フォールバック: 旧式の経験則的変換
+    return min(0.90, 1.0 / (odds ** 0.65) * 0.7)
+
+
 # ============================================================
 # I-1b: 特選穴馬スコア (Cohen's d ベース重み付き)
 # ============================================================
@@ -420,16 +440,17 @@ def calc_tokusen_score(
     all_evals: List["HorseEvaluation"],
 ) -> float:
     """
-    特選穴馬スコア算出（最大16pt、閾値7pt）
+    特選穴馬スコア算出（最大10pt、閾値3pt）
 
-    Cohen's d に基づく重み:
-      course_record (d=1.17): 最大4.0pt
-      course_total  (d=0.85): 最大3.0pt
-      composite     (d=0.68): 最大2.5pt
-      place3_prob   (d=0.54): 最大2.0pt
-      odds_consistency (d=0.50): 最大1.5pt
-      ability_trend (lift 3.5x): 最大2.0pt
-      pace_last3f_eval (d=0.46): 最大1.0pt
+    top5外の穴馬（☆候補）向けスコアリング。
+    ML win_prob を主軸に据え、compositeは除外（top5除外と重複するため）。
+
+    因子:
+      win_prob     (主軸): 最大3.5pt
+      course_record: 最大2.0pt
+      course_total:  最大1.5pt
+      place3_prob:   最大1.5pt
+      ability_trend: 最大1.0pt
     """
     from config.settings import TOKUSEN_ODDS_THRESHOLD
 
@@ -437,80 +458,237 @@ def calc_tokusen_score(
     if eff_odds is None or eff_odds < TOKUSEN_ODDS_THRESHOLD:
         return 0.0
 
+    # ML win_prob が穴馬として有望か
+    wp = eval_result.win_prob
+    if wp < 0.04:
+        return 0.0
+
     score = 0.0
-    factor_hits = 0  # 主要4因子のうちスコア獲得した数
 
-    # --- 1. course_record (d=1.17) — コース実績偏差値 ---
+    # --- 1. win_prob (主軸) — ML予測勝率 ---
+    if wp >= 0.08:
+        score += 3.5
+    elif wp >= 0.06:
+        score += 2.5
+    elif wp >= 0.04:
+        score += 1.5
+
+    # --- 2. course_record — コース実績偏差値 ---
     cr = eval_result.course.course_record
-    if cr >= 58:
-        score += 4.0
-        factor_hits += 1
-    elif cr >= 52:
-        score += 2.5
-        factor_hits += 1
+    if cr >= 52:
+        score += 2.0
     elif cr >= 45:
-        score += 1.5
-        factor_hits += 1
-
-    # --- 2. course_total (d=0.85) — コース総合偏差値 ---
-    ct = eval_result.course.total
-    if ct >= 57:
-        score += 3.0
-        factor_hits += 1
-    elif ct >= 52:
-        score += 1.5
-        factor_hits += 1
-
-    # --- 3. composite (d=0.68) — 総合指数 ---
-    comp = eval_result.composite
-    if comp >= 55:
-        score += 2.5
-        factor_hits += 1
-    elif comp >= 50:
         score += 1.0
-        factor_hits += 1
 
-    # --- 4. place3_prob (d=0.54) — 複勝率推定 ---
+    # --- 3. course_total — コース総合偏差値 ---
+    ct = eval_result.course.total
+    if ct >= 52:
+        score += 1.5
+
+    # --- 4. place3_prob — 複勝率推定 ---
     field_count = len(all_evals) or 1
     base_p3 = 3.0 / field_count
     p3 = eval_result.place3_prob
-    if p3 >= base_p3 * 1.8:
-        score += 2.0
-        factor_hits += 1
-    elif p3 >= base_p3 * 1.3:
-        score += 1.0
-        factor_hits += 1
-
-    # --- 5. odds_consistency_adj (d=0.50) — オッズ整合性 ---
-    oc = eval_result.odds_consistency_adj
-    if oc >= 2.0:
+    if p3 >= base_p3 * 1.5:
         score += 1.5
-    elif oc >= 0.5:
+    elif p3 >= base_p3 * 1.2:
         score += 0.5
 
-    # --- 6. ability_trend (lift 3.5x) — 近走トレンド ---
+    # --- 5. ability_trend — 近走トレンド ---
     from src.models import Trend
     trend = eval_result.ability.trend
-    if trend == Trend.RAPID_UP:
-        score += 2.0
-    elif trend == Trend.UP:
-        score += 1.5
-
-    # --- 7. pace_last3f_eval (d=0.46) — 上がり3F評価 ---
-    last3f = getattr(eval_result.pace, "last3f_eval", 0.0)
-    if last3f >= 55:
+    if trend in (Trend.RAPID_UP, Trend.UP):
         score += 1.0
-
-    # 追加条件: 主要4因子(course_record/course_total/composite/place3_prob)のうち
-    # 2つ以上でスコア獲得していないと特選対象外
-    if factor_hits < 2:
-        return 0.0
 
     return score
 
 
 # ============================================================
-# I-2: 危険な人気馬の検知
+# I-1b: 特選危険馬の検知
+# ============================================================
+
+
+def calc_tokusen_kiken_score(
+    eval_result: "HorseEvaluation",
+    all_evals: List["HorseEvaluation"],
+    is_jra: bool = True,
+) -> float:
+    """
+    特選危険馬スコア算出（ML×composite二重否定方式・JRA/NAR分離）
+
+    コンセプト: 「人気なのにMLもルールベースも低評価」の馬を特定。
+    2つの独立した評価軸が一致して「来ない」と言っている馬だけを捕捉。
+
+    必須条件（JRA/NAR別閾値）:
+      ① 人気 ≤ pop_limit かつ odds < odds_limit（人気馬である）
+      ② win_prob_rank ≥ 頭数×ml_pct（MLが低評価）
+      ③ composite_rank ≥ 頭数×comp_pct（ルールベースも低評価）
+
+    JRA: ②③はOR条件（どちらか一方で通過。大頭数ANDは構造的矛盾）
+    NAR: ②③はAND条件（小頭数で両方一致が妥当。現行維持）
+
+    追加スコア（必須条件通過後）:
+      前走大敗（8着以下）      : +2pt
+      連続凡走（直近3走中2走+） : +2pt
+      同馬場複勝率20%未満       : +2pt
+      騎手グレードD以下         : +1pt
+      過去勝率5%未満            : +1pt
+      長期休み明け（120日+）    : +1pt
+
+    閾値: 合計 ≥ 3.0pt で × 確定
+    目標: × 印の勝率 < 5.0%、複勝率 < 15.0%
+    """
+    from config.settings import (
+        TOKUSEN_KIKEN_POP_LIMIT_JRA, TOKUSEN_KIKEN_POP_LIMIT_NAR,
+        TOKUSEN_KIKEN_ODDS_LIMIT_JRA, TOKUSEN_KIKEN_ODDS_LIMIT_NAR,
+        TOKUSEN_KIKEN_ML_RANK_PCT_JRA, TOKUSEN_KIKEN_ML_RANK_PCT_NAR,
+        TOKUSEN_KIKEN_COMP_RANK_PCT_JRA, TOKUSEN_KIKEN_COMP_RANK_PCT_NAR,
+    )
+
+    pop_limit = TOKUSEN_KIKEN_POP_LIMIT_JRA if is_jra else TOKUSEN_KIKEN_POP_LIMIT_NAR
+    odds_limit = TOKUSEN_KIKEN_ODDS_LIMIT_JRA if is_jra else TOKUSEN_KIKEN_ODDS_LIMIT_NAR
+    ml_pct = TOKUSEN_KIKEN_ML_RANK_PCT_JRA if is_jra else TOKUSEN_KIKEN_ML_RANK_PCT_NAR
+    comp_pct = TOKUSEN_KIKEN_COMP_RANK_PCT_JRA if is_jra else TOKUSEN_KIKEN_COMP_RANK_PCT_NAR
+
+    horse = eval_result.horse
+    n = len(all_evals)
+    if n < 4:
+        return 0.0
+
+    # ---- 必須条件①: 人気馬である（pop_limit以内 & odds_limit未満）----
+    eff_odds = eval_result.effective_odds
+    if eff_odds is None or eff_odds >= odds_limit:
+        return 0.0
+
+    real_pop = horse.popularity
+    if real_pop is not None:
+        if real_pop > pop_limit:
+            return 0.0
+    else:
+        # 予測オッズから推定人気順
+        sorted_effs = sorted(
+            [e.effective_odds for e in all_evals if e.effective_odds]
+        )
+        est_pop = (
+            sorted_effs.index(eff_odds) + 1 if eff_odds in sorted_effs else 99
+        )
+        if est_pop > pop_limit:
+            return 0.0
+
+    # ---- 必須条件②③: ML低評価 / composite低評価 ----
+    sorted_wp = sorted(all_evals, key=lambda e: e.win_prob, reverse=True)
+    rank_wp = next(
+        (
+            i + 1
+            for i, e in enumerate(sorted_wp)
+            if e.horse.horse_id == horse.horse_id
+        ),
+        n,
+    )
+    wp_threshold = max(3, int(n * ml_pct))  # 最低3位以下
+
+    sorted_comp = sorted(all_evals, key=lambda e: e.composite, reverse=True)
+    rank_comp = next(
+        (
+            i + 1
+            for i, e in enumerate(sorted_comp)
+            if e.horse.horse_id == horse.horse_id
+        ),
+        n,
+    )
+    comp_threshold = max(3, int(n * comp_pct))  # 最低3位以下
+
+    ml_low = rank_wp >= wp_threshold
+    comp_low = rank_comp >= comp_threshold
+
+    if is_jra:
+        # JRA: ML低評価 OR composite低評価（どちらか一方で通過）
+        # 大頭数ではAND条件が構造的に厳しすぎる（0.4%通過→機能不全）
+        if not (ml_low or comp_low):
+            return 0.0
+    else:
+        # NAR: 現行維持（AND — 小頭数で両方一致が妥当）
+        if not (ml_low and comp_low):
+            return 0.0
+
+    # ---- 必須条件を全て通過 → 追加スコアリング ----
+    score = 0.0
+
+    # --- 1. 前走大敗（8着以下）: +2pt ---
+    if hasattr(horse, "past_runs") and horse.past_runs:
+        prev_fp = getattr(horse.past_runs[0], "finish_pos", None)
+        if prev_fp is not None and prev_fp >= 8:
+            score += 2.0
+
+    # --- 2. 連続凡走（直近3走中2走以上が着外=4着以下）: +2pt ---
+    if hasattr(horse, "past_runs") and horse.past_runs:
+        recent = horse.past_runs[:3]
+        poor_count = sum(
+            1 for r in recent
+            if getattr(r, "finish_pos", None) and r.finish_pos >= 4
+        )
+        if len(recent) >= 2 and poor_count >= 2:
+            score += 2.0
+
+    # --- 3. 同馬場複勝率が低い（20%未満）: +2pt ---
+    same_surf_rate = getattr(eval_result, "_same_surf_place_rate", None)
+    if same_surf_rate is None:
+        # 過去走からの計算フォールバック
+        if hasattr(horse, "past_runs") and horse.past_runs:
+            cur_surface = None
+            for e in all_evals:
+                if hasattr(e, "_race_surface"):
+                    cur_surface = e._race_surface
+                    break
+            if cur_surface:
+                same_runs = [
+                    r
+                    for r in horse.past_runs
+                    if getattr(r, "surface", None) == cur_surface
+                    and getattr(r, "finish_pos", None)
+                ]
+                if same_runs:
+                    same_surf_rate = sum(
+                        1 for r in same_runs if r.finish_pos <= 3
+                    ) / len(same_runs)
+    if same_surf_rate is not None and same_surf_rate < 0.20:
+        score += 2.0
+
+    # --- 4. 騎手グレードD以下: +1pt ---
+    jockey_grade = getattr(eval_result, "jockey_grade", None)
+    if jockey_grade in ("D", "E"):
+        score += 1.0
+
+    # --- 5. 過去勝率5%未満: +1pt ---
+    if hasattr(horse, "past_runs") and horse.past_runs:
+        wins = sum(
+            1 for r in horse.past_runs
+            if getattr(r, "finish_pos", None) == 1
+        )
+        total = len(horse.past_runs)
+        if total >= 3 and (wins / total) < 0.05:
+            score += 1.0
+
+    # --- 6. 長期休み明け（120日以上）: +1pt ---
+    days_off = getattr(eval_result.ability, "days_since_last", None)
+    if days_off is None and hasattr(horse, "past_runs") and horse.past_runs:
+        last_date = getattr(horse.past_runs[0], "date", None)
+        if last_date and hasattr(horse, "_race_date"):
+            try:
+                from datetime import datetime
+                d1 = datetime.strptime(str(horse._race_date), "%Y-%m-%d")
+                d0 = datetime.strptime(str(last_date), "%Y-%m-%d")
+                days_off = (d1 - d0).days
+            except Exception:
+                pass
+    if days_off is not None and days_off >= 120:
+        score += 1.0
+
+    return score
+
+
+# ============================================================
+# I-2: 危険な人気馬の検知（旧方式 — 特選危険馬に段階的移行中）
 # ============================================================
 
 
@@ -634,6 +812,37 @@ def calc_kiken_score(
 # I-1: 三連率推定
 # ============================================================
 
+# テーブルキャッシュ（モジュールレベル）
+_RANK_TABLE: Optional[dict] = None
+_RANK_TABLE_LOADED = False
+
+
+def _load_rank_table() -> Optional[dict]:
+    """順位ベース確率テーブルをロード（初回のみ）"""
+    global _RANK_TABLE, _RANK_TABLE_LOADED
+    if _RANK_TABLE_LOADED:
+        return _RANK_TABLE
+    import json
+    import os
+    from config.settings import RANK_PROBABILITY_TABLE_PATH
+    if os.path.exists(RANK_PROBABILITY_TABLE_PATH):
+        try:
+            with open(RANK_PROBABILITY_TABLE_PATH, "r", encoding="utf-8") as f:
+                _RANK_TABLE = json.load(f)
+        except Exception:
+            _RANK_TABLE = None
+    _RANK_TABLE_LOADED = True
+    return _RANK_TABLE
+
+
+def _field_group_key(n: int) -> str:
+    """頭数→グループキー"""
+    if n <= 8:
+        return "small"
+    if n <= 14:
+        return "medium"
+    return "large"
+
 
 def estimate_three_win_rates(
     composite: float,
@@ -642,20 +851,159 @@ def estimate_three_win_rates(
     course_score: float = 50.0,
     all_pace_scores: Optional[List[float]] = None,
     all_course_scores: Optional[List[float]] = None,
+    field_count: int = 0,
+    is_jra: bool = True,
 ) -> Tuple[float, float, float]:
     """
-    総合偏差値から勝率・連対率・複勝率を独立推定。
+    総合偏差値から勝率・連対率・複勝率を推定。
 
-    【案A】 連対・複勝を勝率の単純倍数ではなく独立シグナルで推定。
-      - 連対率: composite + pace補正（展開適性が連対に独立して寄与）
-      - 複勝率: composite + pace補正 + course補正（適性の広さが複勝に寄与）
-
-    【案C】 temperatureをレース拮抗度で動的調整。
-      - 拮抗レース(composite std小) → 高温（差をつけすぎない）
-      - 一強レース(composite std大) → 低温（有力馬に確率を集中）
+    Phase 11: テーブルベース + gap補正方式。
+    テーブル未存在時はsoftmaxフォールバック。
 
     Returns: (win_prob, top2_prob, top3_prob)
     """
+    from config.settings import USE_RANK_TABLE
+
+    n = len(all_composites)
+    if n == 0:
+        return 0.0, 0.0, 0.0
+
+    # テーブルベース方式を試行
+    if USE_RANK_TABLE:
+        table = _load_rank_table()
+        if table is not None:
+            result = _estimate_from_rank_table(
+                composite, all_composites, table,
+                pace_score, course_score,
+                all_pace_scores, all_course_scores,
+                field_count or n, is_jra,
+            )
+            if result is not None:
+                return result
+
+    # フォールバック: 旧softmax方式
+    return _estimate_softmax(
+        composite, all_composites,
+        pace_score, course_score,
+        all_pace_scores, all_course_scores,
+    )
+
+
+def _estimate_from_rank_table(
+    composite: float,
+    all_composites: List[float],
+    table: dict,
+    pace_score: float,
+    course_score: float,
+    all_pace_scores: Optional[List[float]],
+    all_course_scores: Optional[List[float]],
+    field_count: int,
+    is_jra: bool,
+) -> Optional[Tuple[float, float, float]]:
+    """テーブルベースの三連率推定"""
+    import statistics as _st
+    from config.settings import (
+        RANK_GAP_THRESHOLD_STRONG,
+        RANK_GAP_MULT_MAX,
+        RANK_GAP_FLAT_FACTOR_MAX,
+    )
+
+    n = len(all_composites)
+    org = "JRA" if is_jra else "NAR"
+
+    # composite順位を算出
+    sorted_comp = sorted(all_composites, reverse=True)
+    # 同値の場合はリスト内のインデックスで順位を決定
+    rank = sorted_comp.index(composite) + 1
+
+    fc_str = str(field_count)
+    fg = _field_group_key(field_count)
+
+    # テーブル参照: by_field_count → by_field_group の2段フォールバック
+    fc_data = table.get("by_field_count", {}).get(org, {})
+    fg_data = table.get("by_field_group", {}).get(org, {})
+
+    entry = None
+    rank_str = str(rank)
+
+    if fc_str in fc_data and rank_str in fc_data[fc_str]:
+        entry = fc_data[fc_str][rank_str]
+    elif fg in fg_data and rank_str in fg_data[fg]:
+        entry = fg_data[fg][rank_str]
+
+    if entry is None:
+        return None
+
+    base_win = entry["win"]
+    base_top2 = entry["top2"]
+    base_top3 = entry["top3"]
+
+    # ---- gap補正（一強・混戦の検出）----
+    gap_1_2 = (sorted_comp[0] - sorted_comp[1]) if n >= 2 else 0.0
+
+    if gap_1_2 >= RANK_GAP_THRESHOLD_STRONG:
+        # 一強レース: 1位を引き上げ、他を圧縮
+        if rank == 1:
+            gap_mult = 1.0 + min(RANK_GAP_MULT_MAX, (gap_1_2 - 2.5) * 0.12)
+        else:
+            gap_mult = 1.0 - min(0.15, (gap_1_2 - 2.5) * 0.03)
+        base_win *= gap_mult
+        # top2/top3は控えめに補正（勝率ほど極端にしない）
+        top2_gap_mult = 1.0 + (gap_mult - 1.0) * 0.5
+        top3_gap_mult = 1.0 + (gap_mult - 1.0) * 0.3
+        base_top2 *= top2_gap_mult
+        base_top3 *= top3_gap_mult
+    elif gap_1_2 < 1.0:
+        # 混戦レース: 均等化方向へ
+        flat_factor = max(0, 1.0 - gap_1_2) * RANK_GAP_FLAT_FACTOR_MAX
+        base_win = base_win * (1 - flat_factor) + (1.0 / n) * flat_factor
+        base_top2 = base_top2 * (1 - flat_factor) + (2.0 / n) * flat_factor
+        base_top3 = base_top3 * (1 - flat_factor) + (3.0 / n) * flat_factor
+
+    # ---- pace/course補正 ----
+    if all_pace_scores and len(all_pace_scores) == n:
+        try:
+            mean_pace = _st.mean(all_pace_scores)
+            std_pace = _st.stdev(all_pace_scores) if n >= 3 else 1.0
+            if std_pace > 0.5:
+                pace_z = (pace_score - mean_pace) / std_pace
+                # pace偏差が高い馬は連対率にプラス
+                base_top2 += pace_z * 0.02
+        except Exception:
+            pass
+
+    if all_course_scores and len(all_course_scores) == n:
+        try:
+            mean_course = _st.mean(all_course_scores)
+            std_course = _st.stdev(all_course_scores) if n >= 3 else 1.0
+            if std_course > 0.5:
+                course_z = (course_score - mean_course) / std_course
+                # course偏差が高い馬は複勝率にプラス
+                base_top3 += course_z * 0.015
+        except Exception:
+            pass
+
+    # ---- 整合性制約 ----
+    win_prob = max(0.01, min(0.85, base_win))
+    top2_prob = max(0.02, min(0.92, base_top2))
+    top3_prob = max(0.03, min(0.95, base_top3))
+
+    # 個馬制約: win <= top2 <= top3
+    top2_prob = max(top2_prob, win_prob)
+    top3_prob = max(top3_prob, top2_prob)
+
+    return win_prob, top2_prob, top3_prob
+
+
+def _estimate_softmax(
+    composite: float,
+    all_composites: List[float],
+    pace_score: float = 50.0,
+    course_score: float = 50.0,
+    all_pace_scores: Optional[List[float]] = None,
+    all_course_scores: Optional[List[float]] = None,
+) -> Tuple[float, float, float]:
+    """旧softmax方式（フォールバック用）"""
     import math
     import statistics as _st
 
@@ -663,32 +1011,25 @@ def estimate_three_win_rates(
     if n == 0:
         return 0.0, 0.0, 0.0
 
-    # ---- 温度キャリブレーション: 実績統計ベンチマーク適合 ----
-    # 実績データ: ◎(一般1人気)=勝率33.4%, ◉(一強1人気)=勝率50.6%
-    # 1位-2位ギャップから目標勝率を決定し、温度を逆算
     _sorted_comp = sorted(all_composites, reverse=True)
     gap_1_2 = (_sorted_comp[0] - _sorted_comp[1]) if n >= 2 else 0.0
     if gap_1_2 >= 5.0:
-        _target_top = 0.55  # ◉レベルの一強（近似誤差補正込み）
+        _target_top = 0.55
     elif gap_1_2 >= 1.0:
-        # 線形補間: gap=1→0.20, gap=5→0.55
         _target_top = 0.20 + (gap_1_2 - 1.0) * 0.0875
     else:
-        _target_top = max(1.5 / n, 0.12)  # 拮抗レース
+        _target_top = max(1.5 / n, 0.12)
 
-    # 1位と中央値のギャップからtemperatureを逆算
     _median_comp = _sorted_comp[n // 2] if n >= 2 else _sorted_comp[0]
     _gap_to_med = _sorted_comp[0] - _median_comp
     _target_ratio = _target_top * n / max(0.01, 1.0 - _target_top)
     if _target_ratio > 1.0 and _gap_to_med > 0.5:
         temp_win = _gap_to_med / math.log(_target_ratio)
     else:
-        temp_win = 8.0  # 拮抗レースフォールバック
+        temp_win = 8.0
 
-    # 安全クランプ（極端な温度を防止）
     temp_win = max(3.0, min(10.0, temp_win))
 
-    # ---- 勝率: composite softmax ----
     exp_win = [math.exp((c - 50) / temp_win) for c in all_composites]
     total_win = sum(exp_win)
     if total_win == 0:
@@ -697,8 +1038,6 @@ def estimate_three_win_rates(
     own_idx = all_composites.index(composite) if composite in all_composites else 0
     win_prob = exp_win[own_idx] / total_win
 
-    # ---- 案A: 連対率 — composite + pace補正 ----
-    # pace_score が高い馬は展開上有利 → composite以上に連対しやすい
     if all_pace_scores and len(all_pace_scores) == n:
         try:
             mean_pace = _st.mean(all_pace_scores)
@@ -709,13 +1048,11 @@ def estimate_three_win_rates(
     else:
         top2_eff = list(all_composites)
 
-    temp_top2 = temp_win + 1.4  # 連対（実績: ◎52.2%, ◉71.3%）
+    temp_top2 = temp_win + 1.4
     exp_top2 = [math.exp((c - 50) / temp_top2) for c in top2_eff]
     total_top2 = sum(exp_top2)
     place2_prob = (exp_top2[own_idx] / total_top2 * 2.0) if total_top2 > 0 else 2 / n
 
-    # ---- 案A: 複勝率 — composite + pace補正 + course補正 ----
-    # course_score が高い馬はコース適性が高く、複勝圏に粘りやすい
     if all_pace_scores and all_course_scores and len(all_pace_scores) == n and len(all_course_scores) == n:
         try:
             mean_pace   = _st.mean(all_pace_scores)
@@ -729,7 +1066,7 @@ def estimate_three_win_rates(
     else:
         top3_eff = list(all_composites)
 
-    temp_top3 = temp_win + 2.6  # 複勝（実績: ◎64.6%, ◉81.6%）
+    temp_top3 = temp_win + 2.6
     exp_top3 = [math.exp((c - 50) / temp_top3) for c in top3_eff]
     total_top3 = sum(exp_top3)
     place3_prob = (exp_top3[own_idx] / total_top3 * 3.0) if total_top3 > 0 else 3 / n
