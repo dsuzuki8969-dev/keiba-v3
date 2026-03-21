@@ -1295,14 +1295,10 @@ class RaceAnalysisEngine:
             is_banei=_is_banei,
         )
 
-        # ---- Step 10b: フォーメーション買い目生成 ----
+        # ---- Step 10b: フォーメーション買い目生成（表示廃止、formation構造のみ保持） ----
         formation = generate_formation_tickets(evaluations, race, confidence.value)
-        # フォーメーションから買い目を取り出し、資金配分
-        if formation.get("sanrenpuku"):
-            buy, reason = should_buy_race(formation["sanrenpuku"], confidence, evaluations, is_banei=_is_banei)
-            if buy:
-                tickets = allocate_stakes(formation["sanrenpuku"], confidence)
-        total_budget = sum(getattr(t, "stake", 0) for t in tickets)
+        tickets = []
+        total_budget = 0
 
         has_any_odds = any(ev.horse.odds is not None for ev in evaluations)
         is_pre_day = not has_any_odds

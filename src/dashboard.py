@@ -4522,41 +4522,7 @@ def create_app():
                         if h.get("odds") and h.get("predicted_tansho_odds") and h.get("odds_divergence") is None:
                             _recalc_divergence(h)
                             patched = True
-                    # 馬個別見解・印見解・全頭診断が未生成の場合はオンデマンド生成
-                    _needs_gen = race.get("horses") and (
-                        not race["horses"][0].get("horse_comment")
-                        or not race["horses"][0].get("horse_diagnosis")
-                    )
-                    if _needs_gen:
-                        try:
-                            from src.calculator.calibration import generate_horse_comment, generate_horse_diagnosis, generate_mark_comment_rich
-                            all_composites = [hd.get("composite", 0) for hd in race["horses"]]
-                            _rc = {
-                                "field_count": race.get("field_count", 0),
-                                "straight_m": race.get("straight_m", 0),
-                                "slope_type": race.get("slope_type", ""),
-                                "surface": race.get("surface", ""),
-                                "pace_predicted": race.get("pace_predicted", "MM"),
-                                "leading_horses": race.get("leading_horses", []),
-                                "front_horses": race.get("front_horses", []),
-                                "mid_horses": race.get("mid_horses", []),
-                                "rear_horses": race.get("rear_horses", []),
-                                "estimated_front_3f": race.get("estimated_front_3f"),
-                                "all_composites": all_composites,
-                            }
-                            _mark_set = {"◉", "◎", "○", "▲"}
-                            for hd in race["horses"]:
-                                m = hd.get("mark", "-")
-                                lvl = "full" if m in _mark_set else ("normal" if m in ("△", "★", "☆") else "short")
-                                hd["horse_comment"] = generate_horse_comment(hd, _rc, lvl)
-                                # 全頭診断用短評
-                                if not hd.get("horse_diagnosis"):
-                                    hd["horse_diagnosis"] = generate_horse_diagnosis(hd, _rc)
-                            sorted_h = sorted(race["horses"], key=lambda x: x.get("composite", 0), reverse=True)
-                            race["mark_comment_rich"] = generate_mark_comment_rich(sorted_h, _rc)
-                            patched = True
-                        except Exception:
-                            pass
+                    # 馬個別見解・印見解・買い目は廃止（2026-03 以降）
 
                     # JRA結果CNAME を動的に導出（未保存の場合）
                     if not race.get("result_cname") and race.get("race_id"):
@@ -4821,38 +4787,6 @@ def create_app():
                                                 _rn = race_no or race.get("race_no", 0)
                                                 if _update_html_marks(_dk, _vn, _rn, _horses):
                                                     logger.info("HTML印を同期: %s %s%sR", _dk, _vn, _rn)
-                                            # AI印見解・馬個別見解も再生成
-                                            try:
-                                                from src.calculator.calibration import (
-                                                    generate_horse_comment,
-                                                    generate_horse_diagnosis,
-                                                    generate_mark_comment_rich,
-                                                )
-                                                _all_comps = [h.get("composite", 0) for h in _horses]
-                                                _rc = {
-                                                    "field_count": race.get("field_count", 0),
-                                                    "straight_m": race.get("straight_m", 0),
-                                                    "slope_type": race.get("slope_type", ""),
-                                                    "surface": race.get("surface", ""),
-                                                    "pace_predicted": race.get("pace_predicted", "MM"),
-                                                    "leading_horses": race.get("leading_horses", []),
-                                                    "front_horses": race.get("front_horses", []),
-                                                    "mid_horses": race.get("mid_horses", []),
-                                                    "rear_horses": race.get("rear_horses", []),
-                                                    "estimated_front_3f": race.get("estimated_front_3f"),
-                                                    "all_composites": _all_comps,
-                                                }
-                                                _mark_full = {"◉", "◎", "○", "▲"}
-                                                for _hd in _horses:
-                                                    _m = _hd.get("mark", "-")
-                                                    _lvl = "full" if _m in _mark_full else ("normal" if _m in ("△", "★", "☆") else "short")
-                                                    _hd["horse_comment"] = generate_horse_comment(_hd, _rc, _lvl)
-                                                    _hd["horse_diagnosis"] = generate_horse_diagnosis(_hd, _rc)
-                                                _sorted_h = sorted(_horses, key=lambda x: x.get("composite", 0), reverse=True)
-                                                race["mark_comment_rich"] = generate_mark_comment_rich(_sorted_h, _rc)
-                                                logger.info("AI印見解を再生成: %s", race_id)
-                                            except Exception as _ce:
-                                                logger.warning("AI印見解再生成に失敗: %s", _ce)
                                             logger.info("オッズ更新後の確率・印を再計算: %s", race_id)
                                         else:
                                             logger.info("オッズ更新（印固定中）: %s", race_id)

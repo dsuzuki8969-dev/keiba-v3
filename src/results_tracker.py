@@ -237,70 +237,7 @@ def save_prediction(date: str, analyses_by_venue: dict, *, lightweight: bool = F
                 }
                 race_data["horses"].append(horse_data)
 
-            # 馬個別見解・印見解を自動生成（lightweight時はスキップ）
-            if not lightweight:
-                try:
-                    from src.calculator.calibration import generate_horse_comment, generate_horse_diagnosis, generate_mark_comment_rich
-                    all_composites = [hd["composite"] for hd in race_data["horses"]]
-                    _rc = {
-                        "field_count": race_data.get("field_count", 0),
-                        "straight_m": race_data.get("straight_m", 0),
-                        "slope_type": race_data.get("slope_type", ""),
-                        "surface": race_data.get("surface", ""),
-                        "pace_predicted": race_data.get("pace_predicted", "MM"),
-                        "leading_horses": race_data.get("leading_horses", []),
-                        "front_horses": race_data.get("front_horses", []),
-                        "mid_horses": race_data.get("mid_horses", []),
-                        "rear_horses": race_data.get("rear_horses", []),
-                        "estimated_front_3f": race_data.get("estimated_front_3f"),
-                        "all_composites": all_composites,
-                        "is_banei": race_data.get("is_banei", False),
-                        "water_content": race_data.get("water_content"),
-                        "all_horses": race_data.get("horses", []),
-                    }
-                    mark_order = {"◉", "◎", "○", "▲"}
-                    for hd in race_data["horses"]:
-                        m = hd.get("mark", "-")
-                        if m in mark_order:
-                            lvl = "full"
-                        elif m in ("△", "★", "☆"):
-                            lvl = "normal"
-                        else:
-                            lvl = "short"
-                        hd["horse_comment"] = generate_horse_comment(hd, _rc, lvl)
-                        # 全頭診断用短評
-                        hd["horse_diagnosis"] = generate_horse_diagnosis(hd, _rc)
-
-                    sorted_h = sorted(race_data["horses"], key=lambda x: x.get("composite", 0), reverse=True)
-                    race_data["mark_comment_rich"] = generate_mark_comment_rich(sorted_h, _rc)
-                except Exception:
-                    pass
-
-            # 三連複フォーメーション買い目を formation_tickets に保存
-            formation = analysis.formation or {}
-            for t in formation.get("sanrenpuku", []):
-                if isinstance(t, dict):
-                    race_data["formation_tickets"].append({
-                        "type": "三連複",
-                        "combo": [t.get("a"), t.get("b"), t.get("c")],
-                        "mark_a": t.get("mark_a", ""),
-                        "mark_b": t.get("mark_b", ""),
-                        "mark_c": t.get("mark_c", ""),
-                        "ev": round(t.get("ev", 0), 1),
-                        "stake": t.get("stake", 0),
-                        "signal": t.get("signal", ""),
-                        "prob": round(t.get("prob", 0), 6),
-                        "odds": round(t.get("odds", 0), 1),
-                    })
-
-            # フォーメーション列情報を保存（フロントエンド表示用）
-            _fm_cols = {}
-            for _ck in ("col1", "col2", "col3"):
-                _col_evals = formation.get(_ck, [])
-                if _col_evals:
-                    _fm_cols[_ck] = [e.horse.horse_no for e in _col_evals if hasattr(e, "horse")]
-            if _fm_cols:
-                race_data["formation_columns"] = _fm_cols
+            # 馬個別見解・印見解・買い目は廃止（2026-03 以降）
 
             # バリューベット
             race_data["value_bets"] = []
@@ -316,17 +253,6 @@ def save_prediction(date: str, analyses_by_venue: dict, *, lightweight: bool = F
                     "signal": vb.get("signal", ""),
                     "prob": vb.get("prob", 0),
                 })
-
-            # LLM見解生成（API設定時のみ、lightweight時はスキップ）
-            if not lightweight:
-                try:
-                    from src.output.llm_narrative import generate_pace_narrative, generate_mark_narrative
-                    if not race_data.get("llm_pace_comment"):
-                        race_data["llm_pace_comment"] = generate_pace_narrative(race_data)
-                    if not race_data.get("llm_mark_comment"):
-                        race_data["llm_mark_comment"] = generate_mark_narrative(race_data)
-                except Exception:
-                    pass  # フォールバック: 既存テンプレート見解を使用
 
             payload["races"].append(race_data)
 

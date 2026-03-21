@@ -609,8 +609,8 @@ def judge_confidence(
     ss_gap_threshold = CONFIDENCE_SS_GAP_JRA if is_jra else CONFIDENCE_SS_GAP_NAR
     ss_value_threshold = CONFIDENCE_SS_VALUE_JRA if is_jra else CONFIDENCE_SS_VALUE_NAR
 
-    # SS判定: スコア≥0.65 + 硬性条件(2/3) + オッズゲート
-    if score >= 0.65:
+    # SS判定: スコア≥SS閾値 + 硬性条件(2/3) + オッズゲート
+    if score >= thresholds["SS"]:
         sorted_comp = sorted(evaluations, key=lambda e: e.composite, reverse=True)
         sorted_wp = sorted(evaluations, key=lambda e: e.win_prob, reverse=True)
         top_ev = sorted_comp[0]

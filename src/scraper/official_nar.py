@@ -187,10 +187,98 @@ class OfficialNARScraper:
                 race_id = f"{year}{netkeiba_vc}{mmdd}{rno:02d}"
                 race_ids.append(race_id)
 
+        # ばんえい(帯広)補完: keiba.go.jpはばんえいを含まないため別途取得
+        if not any(rid[4:6] == "65" for rid in race_ids):
+            banei_ids = self._get_banei_race_ids(year, mmdd)
+            race_ids.extend(banei_ids)
+
         race_ids.sort()
-        logger.info("NAR race list: %d レース (%d 開催場)",
-                     len(race_ids), len(venues))
+        logger.info("NAR race list: %d レース (%d 開催場%s)",
+                     len(race_ids), len(venues),
+                     " +ばんえい" if any(r[4:6] == "65" for r in race_ids) else "")
         return race_ids
+
+    def _get_banei_race_ids(self, year: str, mmdd: str) -> List[str]:
+        """ばんえい(帯広)のレースIDを取得
+
+        keiba.go.jpはばんえいを含まないため、nar.netkeiba.comで
+        レース一覧を確認し、存在すればID一覧を返す。
+        """
+        try:
+            # nar.netkeiba.comの出馬表で1R目をプローブ
+            probe_id = f"{year}65{mmdd}01"
+            probe_url = f"https://nar.netkeiba.com/race/shutuba.html"
+            resp = self._session.get(
+                probe_url,
+                params={"race_id": probe_id},
+                headers=_HEADERS,
+                timeout=10,
+            )
+            if resp.status_code != 200:
+                return []
+            # 出馬表テーブルが存在すれば開催日
+            soup = BeautifulSoup(resp.text, "html.parser")
+            # ばんえいの出走表には馬名リンクが含まれる
+            horse_links = soup.select("a[href*='/horse/']")
+            if len(horse_links) < 3:
+                return []
+            # レース数を推定: nar.netkeiba.comのレース一覧から取得を試みる
+            race_count = self._probe_banei_race_count(year, mmdd)
+            ids = [f"{year}65{mmdd}{rno:02d}" for rno in range(1, race_count + 1)]
+            logger.info("ばんえい補完: %dR検出", race_count)
+            return ids
+        except Exception as e:
+            logger.debug("ばんえい補完失敗: %s", e)
+            return []
+
+    def _probe_banei_race_count(self, year: str, mmdd: str) -> int:
+        """nar.netkeiba.comでばんえいのレース数を推定"""
+        try:
+            date_key = f"{year}{mmdd}"
+            url = "https://nar.netkeiba.com/top/race_list_sub.html"
+            # まず日付タブからkaisai_idを取得
+            date_url = "https://nar.netkeiba.com/top/race_list_get_date_list.html"
+            resp = self._session.get(
+                date_url,
+                params={"kaisai_date": date_key, "encoding": "UTF-8"},
+                headers=_HEADERS,
+                timeout=10,
+            )
+            if resp.status_code == 200:
+                soup = BeautifulSoup(resp.text, "html.parser")
+                # 帯広のkaisai_idを探す
+                for a in soup.select("a[href*='kaisai_date=']"):
+                    href = a.get("href", "")
+                    if date_key not in href:
+                        continue
+                    mi = re.search(r"kaisai_id=(\d+)", href)
+                    if not mi:
+                        continue
+                    kid = mi.group(1)
+                    # kaisai_idが65で始まるものがばんえい
+                    if not kid.startswith("65"):
+                        continue
+                    # このkaisai_idでレース一覧を取得
+                    sub_resp = self._session.get(
+                        url,
+                        params={"kaisai_date": date_key, "kaisai_id": kid, "encoding": "UTF-8"},
+                        headers=_HEADERS,
+                        timeout=10,
+                    )
+                    if sub_resp.status_code == 200:
+                        sub_soup = BeautifulSoup(sub_resp.text, "html.parser")
+                        race_links = sub_soup.select("a[href*='race_id=']")
+                        count = 0
+                        for a_tag in race_links:
+                            m = re.search(r"race_id=(\d{12})", a_tag.get("href", ""))
+                            if m and m.group(1)[4:6] == "65":
+                                count += 1
+                        if count > 0:
+                            return count
+        except Exception:
+            pass
+        # デフォルト: ばんえいは通常10-12R
+        return 12
 
     def fetch_horse_history(self, lineage_code: str, horse_name: str = ""):
         """NAR公式 HorseMarkInfo から過去走を取得

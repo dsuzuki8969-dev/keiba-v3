@@ -428,16 +428,12 @@ CONFIDENCE_SS_GAP_NAR = 5.0        # NAR: 現行維持
 CONFIDENCE_SS_VALUE_JRA = 1.10     # JRA: 微緩和
 CONFIDENCE_SS_VALUE_NAR = 1.20     # NAR: 現行維持
 
-# JRA: win_prob主軸の自信度閾値（6信号モデルはJRA大頭数で序列逆転するため）
-# 累積勝率: 0.30+=76%, 0.15+=32%, 0.10+=31%, 0.06+=28%, <0.06=7%
-# 広帯域で中間ノイズ（0.14-0.16/0.18-0.20スパイク）を平均化
-# Phase 7: win_prob分布再較正 — Phase 2後の圧縮分布に合わせて引き下げ
-CONFIDENCE_WP_THRESHOLDS_JRA = {"SS": 0.25, "S": 0.15, "A": 0.10, "B": 0.06, "C": 0.03, "D": 0.01}
-
-# 閾値（score → ConfidenceLevel） — Phase 12: JRA/NAR統一（7信号スコア方式）
-CONFIDENCE_THRESHOLDS_JRA = {"S": 0.45, "A": 0.35, "B": 0.25, "C": 0.15, "D": 0.08}
-# Phase 7: 7信号スコア分布に合わせて引き下げ（旧0.55/0.42/0.30/0.20/0.10）
-CONFIDENCE_THRESHOLDS_NAR = {"S": 0.45, "A": 0.35, "B": 0.25, "C": 0.15, "D": 0.08}
+# Phase 12: JRA/NAR統一自信度閾値（7信号スコア方式）
+# 旧JRA方式（win_prob閾値のみ）は Phase 11 rank_prob_table 導入後に
+# 全レースA以上になる構造的欠陥があったため廃止。
+# JRA/NARとも同一の7信号スコア → 閾値テーブルで判定。
+CONFIDENCE_THRESHOLDS_JRA = {"SS": 0.65, "S": 0.45, "A": 0.35, "B": 0.25, "C": 0.15, "D": 0.08}
+CONFIDENCE_THRESHOLDS_NAR = {"SS": 0.65, "S": 0.45, "A": 0.35, "B": 0.25, "C": 0.15, "D": 0.08}
 
 # ============================================================
 # 買い目 期待値閾値 (5-2)
