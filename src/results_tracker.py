@@ -404,6 +404,80 @@ def _lookup_corners_from_cache(race_id: str, horse_no: int) -> list:
 
 # コーナー補完用キャッシュ（同一会話内で同じrace_idを再パースしない）
 _corners_cache: dict = {}
+# 上がり3Fランクキャッシュ: race_id → {horse_no: rank}
+_l3f_rank_cache: dict = {}
+
+
+def _lookup_l3f_rank_from_cache(race_id: str, horse_no: int) -> int | None:
+    """result.htmlキャッシュからレース内の上がり3F順位を取得（1=最速）"""
+    if race_id in _l3f_rank_cache:
+        return _l3f_rank_cache[race_id].get(horse_no)
+
+    import lz4.frame
+    import os
+    import re as _re
+    from bs4 import BeautifulSoup
+
+    cache_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "cache")
+    keys = [
+        f"nar.netkeiba.com_race_result.html_race_id={race_id}",
+        f"race.netkeiba.com_race_result.html_race_id={race_id}",
+    ]
+    html = None
+    for key in keys:
+        lz4_path = os.path.join(cache_dir, f"{key}.html.lz4")
+        txt_path = os.path.join(cache_dir, f"{key}.html")
+        for path in (lz4_path, txt_path):
+            if os.path.exists(path):
+                try:
+                    if path.endswith(".lz4"):
+                        with open(path, "rb") as f:
+                            html = lz4.frame.decompress(f.read()).decode("utf-8", errors="replace")
+                    else:
+                        with open(path, "r", encoding="utf-8", errors="replace") as f:
+                            html = f.read()
+                    break
+                except Exception:
+                    pass
+        if html:
+            break
+
+    rank_map: dict = {}
+    if not html:
+        _l3f_rank_cache[race_id] = rank_map
+        return None
+
+    soup = BeautifulSoup(html, "html.parser")
+    # result テーブルから馬番と上がり3Fを抽出（JRA: race_table_01, NAR: RaceTable01）
+    table = soup.select_one("table.race_table_01") or soup.select_one("table.RaceTable01")
+    if not table:
+        _l3f_rank_cache[race_id] = rank_map
+        return None
+
+    l3f_by_no: list = []  # [(last_3f, horse_no), ...]
+    for row in table.select("tr")[1:]:
+        cells = row.select("td")
+        if len(cells) < 12:
+            continue
+        try:
+            hno = int(cells[2].get_text(strip=True))  # 馬番は[2]
+        except (ValueError, IndexError):
+            continue
+        l3f_text = cells[11].get_text(strip=True) if len(cells) > 11 else ""  # 上3Fは[11]
+        try:
+            l3f_val = float(l3f_text)
+            if 28.0 <= l3f_val <= 50.0:
+                l3f_by_no.append((l3f_val, hno))
+        except (ValueError, TypeError):
+            pass
+
+    # ランク算出（昇順=速い順=1位）
+    l3f_by_no.sort(key=lambda x: x[0])
+    for rank, (_, hno) in enumerate(l3f_by_no, 1):
+        rank_map[hno] = rank
+
+    _l3f_rank_cache[race_id] = rank_map
+    return rank_map.get(horse_no)
 
 
 def _get_corners_for_run(run) -> list:
@@ -471,6 +545,56 @@ def _get_corners_for_run(run) -> list:
     corners = _lookup_corners_from_cache(race_id, horse_no)
     _corners_cache[cache_key] = corners
     return corners
+
+
+def _get_l3f_rank_for_run(run) -> int | None:
+    """PastRunの上がり3Fランクを取得（DBからrace_id特定→result HTMLキャッシュ）"""
+    import sqlite3
+    import os
+
+    rd = getattr(run, "race_date", "")
+    venue = getattr(run, "venue", "")
+    horse_no = getattr(run, "horse_no", 0)
+    distance = getattr(run, "distance", 0)
+    finish_pos = getattr(run, "finish_pos", 0)
+    if not rd or not venue or not horse_no or not finish_pos or finish_pos >= 90:
+        return None
+
+    from data.masters.venue_master import VENUE_NAME_TO_CODE
+    vc = VENUE_NAME_TO_CODE.get(venue, "")
+    if not vc:
+        return None
+
+    # race_idをDBから取得（_get_corners_for_runと同じロジック）
+    db_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "keiba.db")
+    if not os.path.exists(db_path):
+        return None
+
+    try:
+        conn = sqlite3.connect(db_path)
+        row = None
+        if distance and finish_pos:
+            row = conn.execute(
+                "SELECT race_id FROM race_log "
+                "WHERE race_date = ? AND venue_code = ? AND horse_no = ? "
+                "AND distance = ? AND finish_pos = ? LIMIT 1",
+                (rd, vc, horse_no, distance, finish_pos),
+            ).fetchone()
+        if not row and distance:
+            row = conn.execute(
+                "SELECT race_id FROM race_log "
+                "WHERE race_date = ? AND venue_code = ? AND horse_no = ? "
+                "AND distance = ? LIMIT 1",
+                (rd, vc, horse_no, distance),
+            ).fetchone()
+        conn.close()
+    except Exception:
+        return None
+
+    if not row:
+        return None
+
+    return _lookup_l3f_rank_from_cache(row[0], horse_no)
 
 
 def _extract_past_runs(horse, count: int = 3, run_records=None) -> list:
@@ -561,7 +685,7 @@ def _extract_past_runs(horse, count: int = 3, run_records=None) -> list:
             "speed_dev_grade": speed_dev_grade,
             "race_id": getattr(run, "race_id", ""),
             "result_cname": getattr(run, "result_cname", ""),
-            "last_3f_rank": l3f_rank_by_date.get(rd),
+            "last_3f_rank": l3f_rank_by_date.get(rd) or _get_l3f_rank_for_run(run),
         })
     return result
 
