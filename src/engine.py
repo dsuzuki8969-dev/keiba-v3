@@ -1363,7 +1363,8 @@ class RaceAnalysisEngine:
             analysis.estimated_mid_time = None
 
         # ---- 各馬の個別セクションタイム予測 ----
-        # スタート/勝負所/ゴール前ビジュアルの前後差に使用
+        # ev.pace が _evaluate_horse() で確定した後に実行
+        # （_evaluate_horse内でPaceDeviationCalculator.calc()がev.paceを新オブジェクトに置換するため）
         if front_3f_est and not _is_banei:
             from src.calculator.pace_course import PaceDeviationCalculator
             _is_dirt_course = "ダート" in (race.course.course_id if race.course else "")
@@ -1372,25 +1373,48 @@ class RaceAnalysisEngine:
                 pace_type, PaceDeviationCalculator.POSITION_SEC_PER_RANK
             )
             _fc = max(1, race.field_count or len(evaluations))
+            _race_dist = race.distance or (race.course.distance if race.course else 1200)
             for ev in evaluations:
-                # 各馬の前半3F: レース前半3F + 初角位置分の秒差
                 _pos_init = getattr(ev, "_normalized_position", 0.5)
-                _pos_rank = _pos_init * _fc
-                ev.pace.estimated_front_3f = round(front_3f_est + _pos_rank * _sec_per_rank, 2)
 
-                # 各馬の道中タイム: 初角→4角の位置変化を秒差で表現
-                _pos_4c = ev.pace.estimated_position_4c
-                if _pos_4c is not None:
-                    _pos_4c_rank = _pos_4c * _fc
-                    ev.pace.estimated_mid_sec = round(_pos_4c_rank * _sec_per_rank, 2)
+                # Phase 9: 過去走実データから各セクションタイムを推定
+                # 同距離帯(±200m)の過去走を優先（距離による道中ペース差が大きいため）
+                _mid_same, _mid_all = [], []
+                for _run in (ev.horse.past_runs or [])[-10:]:
+                    _ft = getattr(_run, 'finish_time_sec', None)
+                    _l3f_r = getattr(_run, 'last_3f_sec', None)
+                    _dist = getattr(_run, 'distance', 0)
+                    if _ft and _l3f_r and _dist > 1200 and _ft > 0 and _l3f_r > 0:
+                        _spd = (_ft - _l3f_r) / (_dist - 600)  # 秒/m（上がり3F区間除く）
+                        _mid_all.append(_spd)
+                        if abs(_dist - _race_dist) <= 200:
+                            _mid_same.append(_spd)
+                _mid_speeds = _mid_same if _mid_same else _mid_all
+
+                if _mid_speeds:
+                    _avg_spd = sum(_mid_speeds) / len(_mid_speeds)
+                    ev.pace.estimated_front_3f = round(_avg_spd * 600, 2)
+                    _today_mid_dist = max(0, _race_dist - 1200)
+                    ev.pace.estimated_mid_sec = round(_avg_spd * _today_mid_dist, 2)
                 else:
-                    ev.pace.estimated_mid_sec = round(_pos_rank * _sec_per_rank, 2)
+                    # フォールバック: レース基準タイムから逆算
+                    _l3f_fb = ev.pace.estimated_last3f or (last_3f_est or 0)
+                    _today_mid_dist_fb = max(0, _race_dist - 1200)
+                    if predicted_race_time and predicted_race_time > 0 and front_3f_est:
+                        # 基準タイムから前半3F・上がり3Fを引いた残りが道中
+                        _base_mid = predicted_race_time - front_3f_est - (last_3f_est or 0)
+                        _base_speed = _base_mid / _today_mid_dist_fb if _today_mid_dist_fb > 0 else 0
+                        ev.pace.estimated_front_3f = round(front_3f_est + _pos_init * _fc * _sec_per_rank, 2)
+                        ev.pace.estimated_mid_sec = round(max(0, _base_mid + _pos_init * _fc * _sec_per_rank * (_today_mid_dist_fb / 600 if _today_mid_dist_fb > 0 else 0)), 2)
+                    else:
+                        _init_rank = _pos_init * _fc
+                        ev.pace.estimated_front_3f = round((front_3f_est or 35.0) + _init_rank * _sec_per_rank, 2)
+                        ev.pace.estimated_mid_sec = 0.0
 
-                # Phase 15: 推定走破タイム（前半3F + 道中秒差 + 上がり3F）
+                # 推定走破タイム
                 _l3f = ev.pace.estimated_last3f or (last_3f_est or 0)
-                ev.pace.estimated_total_time = round(
-                    ev.pace.estimated_front_3f + ev.pace.estimated_mid_sec + _l3f, 2
-                )
+                _tt = ev.pace.estimated_front_3f + (ev.pace.estimated_mid_sec or 0) + _l3f
+                ev.pace.estimated_total_time = round(_tt, 2)
 
         return analysis
 

@@ -87,6 +87,7 @@ def save_prediction(date: str, analyses_by_venue: dict, *, lightweight: bool = F
                 "mid_horses": list(analysis.mid_horses or []),
                 "rear_horses": list(analysis.rear_horses or []),
                 "predicted_race_time": _round_or_none(getattr(analysis, "predicted_race_time", None)),
+                "estimated_mid_time": _round_or_none(getattr(analysis, "estimated_mid_time", None)),
                 "final_formation": getattr(analysis, "final_formation", None),
                 "pace_reliability_label": getattr(analysis, "pace_reliability_label", ""),
                 "llm_pace_comment": getattr(analysis, "llm_pace_comment", ""),
@@ -155,6 +156,7 @@ def save_prediction(date: str, analyses_by_venue: dict, *, lightweight: bool = F
                     "pace_estimated_last3f": _round_or_none(ev.pace.estimated_last3f),
                     "pace_estimated_front3f": _round_or_none(ev.pace.estimated_front_3f),
                     "pace_estimated_mid_sec": _round_or_none(ev.pace.estimated_mid_sec),
+                    "pace_estimated_total_time": _round_or_none(getattr(ev.pace, "estimated_total_time", None)),
                     "position_initial": round(getattr(ev, "_normalized_position", 0.5), 3),
                     "running_style": ""
                     if race_data.get("is_banei")
@@ -494,22 +496,27 @@ def _extract_past_runs(horse, count: int = 3, run_records=None) -> list:
     for run in runs[:count]:
         rd = getattr(run, "race_date", "")
         sd = dev_by_date.get(rd)
-        # 通過順 (positions_corners)
-        corners = getattr(run, "positions_corners", None)
+        # 通過順 (positions_corners) — 取消・除外馬(fp>=90)は通過データなし
+        fp_check = getattr(run, "finish_pos", 0) or 0
+        corners = getattr(run, "positions_corners", None) if fp_check < 90 else None
         if corners:
             if isinstance(corners, (list, tuple)):
                 corners_str = "-".join(str(c) for c in corners)
             else:
                 corners_str = str(corners)
         else:
-            # result.htmlキャッシュからコーナー通過順を補完
-            try:
-                cached_corners = _get_corners_for_run(run)
-                if cached_corners:
-                    corners_str = "-".join(str(c) for c in cached_corners)
-                else:
+            # result.htmlキャッシュからコーナー通過順を補完（取消・除外馬は除く）
+            fp = getattr(run, "finish_pos", 0)
+            if fp and fp < 90:
+                try:
+                    cached_corners = _get_corners_for_run(run)
+                    if cached_corners:
+                        corners_str = "-".join(str(c) for c in cached_corners)
+                    else:
+                        corners_str = ""
+                except Exception:
                     corners_str = ""
-            except Exception:
+            else:
                 corners_str = ""
         # ペース
         pace = getattr(run, "pace", None)
