@@ -59,7 +59,12 @@ def _calc_raw_position_score(
     """
     runs = horse.past_runs
     if not runs:
-        return 0.45
+        # 初出走馬: 騎手の位置取り傾向を反映
+        if jockey_cache and hasattr(horse, 'jockey') and horse.jockey:
+            jockey_pos = jockey_cache.get(horse.jockey)
+            if jockey_pos is not None:
+                return jockey_pos
+        return 0.50  # 中立値（0.45は前寄りすぎ）
 
     dist = course.distance
     surf = course.surface
@@ -607,6 +612,7 @@ class Last3FEvaluator:
         horse=None,
         race_info=None,
         pace_context: Optional[Dict] = None,
+        field_avg_last3f: Optional[float] = None,
     ) -> float:
         """
         F-3: 馬固有の推定上がり3Fを算出
@@ -615,8 +621,8 @@ class Last3FEvaluator:
         if self.ml_predictor and horse is not None and race_info is not None:
             ml_pred = self.ml_predictor.predict(horse, race_info, pace_context)
             if ml_pred is not None:
-                # ML予測もコース種別の現実的範囲にクランプ（芝:32-40秒、ダート:35-42秒）
                 is_dirt_ml = "ダート" in course_id
+                # ML予測もコース種別の現実的範囲にクランプ（芝:32-40秒、ダート:35-42秒）
                 lo_ml, hi_ml = (35.0, 42.0) if is_dirt_ml else (32.0, 40.0)
                 return max(lo_ml, min(hi_ml, ml_pred))
 
@@ -639,7 +645,13 @@ class Last3FEvaluator:
 
         is_dirt = "ダート" in course_id
         surface_default = 37.5 if is_dirt else 35.5
-        base_last3f = self.get_baseline(course_id, pace_type) or surface_default
+
+        if not horse_runs and field_avg_last3f is not None:
+            # 初出走馬: 同レース他馬の推定上がり3F平均を基準にする
+            base_last3f = field_avg_last3f
+        else:
+            _db_baseline = self.get_baseline(course_id, pace_type)
+            base_last3f = _db_baseline or surface_default
         if is_dirt and not self.get_baseline(course_id, pace_type):
             # ダートの補正幅は芝より小さい（末脚差が出にくい）
             type_correction *= 0.6
@@ -664,14 +676,31 @@ class PaceDeviationCalculator:
 
     POSITION_SEC_PER_RANK = 0.12  # 位置取り1頭差のタイム差(秒) 暫定・フォールバック
 
-    # 案F-2: ペース別・位置取り秒差テーブル
-    # 実データ検証: ハイペースほど位置取り1頭差のタイム差が大きい
+    # 案F-2: 面×ペース別・位置取り秒差テーブル
+    # 2026-03-22 実データ検証: data/ml 58254レース 296226ペアから統計
+    # 芝は位置差がタイム差にほとんど影響しない（中央値≒0）
+    # ダートは位置差がタイム差に大きく影響（中央値0.2-0.3秒）
+    POSITION_SEC_BY_PACE_TURF = {
+        PaceType.HH: 0.07,   # 芝H: 実測mean=0.066
+        PaceType.HM: 0.08,
+        PaceType.MM: 0.08,   # 芝M: 実測mean=0.077-0.108
+        PaceType.MS: 0.10,
+        PaceType.SS: 0.10,   # 芝S: 実測mean=0.105-0.126
+    }
+    POSITION_SEC_BY_PACE_DIRT = {
+        PaceType.HH: 0.33,   # ダートH: 実測mean=0.333
+        PaceType.HM: 0.34,
+        PaceType.MM: 0.30,   # ダートM: 実測mean=0.280-0.362
+        PaceType.MS: 0.28,
+        PaceType.SS: 0.33,   # ダートS: 実測mean=0.329
+    }
+    # 後方互換用フォールバック（芝とダートの中間値）
     POSITION_SEC_BY_PACE = {
-        PaceType.HH: 0.19,   # ハイペース: 消耗戦で位置取り差が拡大
-        PaceType.HM: 0.16,
-        PaceType.MM: 0.12,   # 現行デフォルト値
-        PaceType.MS: 0.09,
-        PaceType.SS: 0.07,   # スロー: 直線勝負で位置取り差が縮小
+        PaceType.HH: 0.20,
+        PaceType.HM: 0.18,
+        PaceType.MM: 0.15,
+        PaceType.MS: 0.14,
+        PaceType.SS: 0.15,
     }
 
     # 案F-4: コース別 base_score 変換係数のデフォルト
@@ -738,6 +767,7 @@ class PaceDeviationCalculator:
             last3f_type,
             horse=horse,
             race_info=race_info,
+            field_avg_last3f=field_baseline_override,
             pace_context=pace_context,
         )
         _baseline_db = last3f_evaluator.get_baseline(course.course_id, pace_type)
@@ -750,19 +780,15 @@ class PaceDeviationCalculator:
             # フォールバック: ダートは芝より上がり3Fが遅い
             baseline_last3f = 40.5 if "ダート" in course.course_id else 36.0
 
-        # 位置取り秒差（コース別較正値があれば使用）
+        # 位置取り秒差（面×ペース別の実データ検証値を使用）
         fc = max(1, field_count or 16)
         pos_rank = int(est_position * fc)
-        # 案F-2: ペース別の位置取り秒差係数を使用
-        # コース別DBがあればそれを基準に、ペース補正を乗算
-        base_sec_per_rank = self.position_sec_per_rank_db.get(
-            course.course_id, self.POSITION_SEC_PER_RANK
-        )
-        pace_multiplier = (
-            self.POSITION_SEC_BY_PACE.get(pace_type, self.POSITION_SEC_PER_RANK)
-            / self.POSITION_SEC_PER_RANK  # MM=1.0 を基準に正規化
-        )
-        sec_per_rank = base_sec_per_rank * pace_multiplier
+        is_dirt_course = "ダート" in course.course_id
+        _sec_table = self.POSITION_SEC_BY_PACE_DIRT if is_dirt_course else self.POSITION_SEC_BY_PACE_TURF
+        sec_per_rank = _sec_table.get(pace_type, self.POSITION_SEC_PER_RANK)
+        # コース別較正値があればそれを優先
+        if course.course_id in self.position_sec_per_rank_db:
+            sec_per_rank = self.position_sec_per_rank_db[course.course_id]
         position_sec = pos_rank * sec_per_rank
 
         # F3: ダート砂被りペナルティ

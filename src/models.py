@@ -452,7 +452,8 @@ class TrainingRecord:
     # 強度判定(計算層が算出)
     intensity_label: str = "通常"  # 猛時計/やや速い/通常/やや軽め/軽め
     sigma_from_mean: float = 0.0  # 厩舎平均からのσ
-    comment: str = ""  # 厩舎コメント（競馬ブック等から取得）
+    comment: str = ""  # 調教短評（tanpyo）/ 併せ馬コメント
+    stable_comment: str = ""  # 厩舎の話（danwa、競馬ブック厩舎の話ページから取得）
 
 
 # ============================================================
@@ -515,6 +516,8 @@ class PaceDeviation:
     # 推定値
     estimated_position_4c: Optional[float] = None  # 推定4角番手
     estimated_last3f: Optional[float] = None  # 推定上がり3F
+    estimated_front_3f: Optional[float] = None  # 各馬の推定前半3F（秒）
+    estimated_mid_sec: Optional[float] = None  # 各馬の推定道中タイム（秒）
     running_style: Optional["RunningStyle"] = None  # 脚質（formatter表示用）
 
     @property

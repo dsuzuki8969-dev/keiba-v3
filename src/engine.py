@@ -717,25 +717,21 @@ class RaceAnalysisEngine:
                 for i, h in enumerate(horses)
             }
         else:
-            # 2パス方式: baselineがDBにない場合、フィールド全馬のest_last3f平均を使う
-            _baseline_from_db = self.last3f_evaluator.get_baseline(
-                race.course.course_id, pace_type
-            )
-            _field_baseline = None
-            if _baseline_from_db is None:
-                # Pass 1: 全馬のest_last3fを事前計算してフィールド平均を求める
-                import statistics as _stat_bl
-                _est_l3fs = []
-                for horse in horses:
-                    _si = self.style_classifier.classify(horse.past_runs, surface=race.course.surface)
-                    _l3f_type = _si.get("last3f_type", "安定中位末脚")
-                    _el = self.last3f_evaluator.estimate_last3f(
-                        horse.past_runs, pace_type, race.course.course_id,
-                        _l3f_type, horse=horse, race_info=race, pace_context=pace_context,
-                    )
-                    _est_l3fs.append(_el)
-                if _est_l3fs:
-                    _field_baseline = _stat_bl.mean(_est_l3fs)
+            # 2パス方式: 過去走ありの馬のest_last3f平均を常に計算
+            # 初出走馬にはこの平均値をフォールバックとして使用
+            import statistics as _stat_bl
+            _est_l3fs = []
+            for horse in horses:
+                if not horse.past_runs:
+                    continue  # 初出走馬はPass 1から除外
+                _si = self.style_classifier.classify(horse.past_runs, surface=race.course.surface)
+                _l3f_type = _si.get("last3f_type", "安定中位末脚")
+                _el = self.last3f_evaluator.estimate_last3f(
+                    horse.past_runs, pace_type, race.course.course_id,
+                    _l3f_type, horse=horse, race_info=race, pace_context=pace_context,
+                )
+                _est_l3fs.append(_el)
+            _field_baseline = _stat_bl.mean(_est_l3fs) if _est_l3fs else None
 
             # ---- 2パス位置取り正規化: 全馬のest_positionを事前計算 ----
             _pos_predictor = getattr(self.pace_dev_calc, 'position_predictor', None)
@@ -1358,6 +1354,34 @@ class RaceAnalysisEngine:
             final_formation=final_formation,
             pace_reliability_label=pace_reliability.value if pace_reliability else "B",
         )
+
+        # ---- 各馬の個別セクションタイム予測 ----
+        # スタート/勝負所/ゴール前ビジュアルの前後差に使用
+        if front_3f_est and not _is_banei:
+            from src.calculator.pace_course import PaceDeviationCalculator
+            _is_dirt_course = "ダート" in (race.course.course_id if race.course else "")
+            _sec_table = PaceDeviationCalculator.POSITION_SEC_BY_PACE_DIRT if _is_dirt_course else PaceDeviationCalculator.POSITION_SEC_BY_PACE_TURF
+            _sec_per_rank = _sec_table.get(
+                pace_type, PaceDeviationCalculator.POSITION_SEC_PER_RANK
+            )
+            _fc = max(1, race.field_count or len(evaluations))
+            for ev in evaluations:
+                # 各馬の前半3F: レース前半3F + 初角位置分の秒差
+                _pos_init = getattr(ev, "_normalized_position", 0.5)
+                _pos_rank = _pos_init * _fc
+                ev.pace.estimated_front_3f = round(front_3f_est + _pos_rank * _sec_per_rank, 2)
+
+                # 各馬の道中タイム: 初角→4角の位置変化を秒差で表現
+                # 先頭馬の道中を基準タイムとし、4角位置での先頭差を計算
+                _pos_4c = ev.pace.estimated_position_4c
+                if _pos_4c is not None:
+                    # 4角での先頭とのタイム差（秒）
+                    _pos_4c_rank = _pos_4c * _fc
+                    ev.pace.estimated_mid_sec = round(_pos_4c_rank * _sec_per_rank, 2)
+                else:
+                    # フォールバック: 初角位置の秒差をそのまま使用
+                    ev.pace.estimated_mid_sec = round(_pos_rank * _sec_per_rank, 2)
+
         return analysis
 
     # 予想タイム用クラス補正係数（1勝/C1 = 0.0 基準）

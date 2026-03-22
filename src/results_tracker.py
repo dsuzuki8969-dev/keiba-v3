@@ -153,6 +153,8 @@ def save_prediction(date: str, analyses_by_venue: dict, *, lightweight: bool = F
                     "pace_jockey": round(ev.pace.jockey_pace, 2),
                     "pace_estimated_pos4c": round(ev.pace.estimated_position_4c * len(analysis.evaluations) + 1, 1) if ev.pace.estimated_position_4c is not None else None,
                     "pace_estimated_last3f": _round_or_none(ev.pace.estimated_last3f),
+                    "pace_estimated_front3f": _round_or_none(ev.pace.estimated_front_3f),
+                    "pace_estimated_mid_sec": _round_or_none(ev.pace.estimated_mid_sec),
                     "position_initial": round(getattr(ev, "_normalized_position", 0.5), 3),
                     "running_style": ""
                     if race_data.get("is_banei")
@@ -325,6 +327,7 @@ def _extract_training_records(records) -> list:
             "intensity_label": getattr(rec, "intensity_label", "通常"),
             "sigma_from_mean": _round_or_none(getattr(rec, "sigma_from_mean", None), 2),
             "comment": getattr(rec, "comment", ""),
+            "stable_comment": getattr(rec, "stable_comment", ""),
         })
     return result
 

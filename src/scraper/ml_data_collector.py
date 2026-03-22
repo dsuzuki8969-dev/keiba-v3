@@ -515,6 +515,7 @@ def parse_result_page(soup: BeautifulSoup, race_id: str) -> Optional[dict]:
             "finish_time_sec": finish_time_sec if finish_time_sec > 0 else None,
             "margin": margin,
             "last_3f_sec": last3f,
+            "first_3f_sec": round(finish_time_sec - last3f, 2) if (finish_time_sec and finish_time_sec > 0 and last3f and last3f > 0) else None,
             "positions_corners": corners,
             "odds": odds,
             "popularity": popularity,

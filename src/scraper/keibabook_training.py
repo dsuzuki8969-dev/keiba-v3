@@ -569,7 +569,7 @@ class KeibabookTrainingScraper:
                 comments = self._parse_danwa_table(danwa_soup)
                 for name, recs in training_map.items():
                     if name in comments and recs:
-                        recs[0].comment = comments[name]
+                        recs[0].stable_comment = comments[name]
 
         return training_map
 
@@ -651,7 +651,7 @@ class KeibabookTrainingScraper:
                 comments = self._parse_danwa_table(danwa_soup)
                 for name, recs in training_map.items():
                     if name in comments and recs:
-                        recs[0].comment = comments[name]
+                        recs[0].stable_comment = comments[name]
 
         return training_map
 
@@ -722,9 +722,14 @@ class KeibabookTrainingScraper:
     def _parse_danwa_table(self, soup: BeautifulSoup) -> Dict[str, str]:
         """
         danwa（厩舎の話）ページから馬名→コメントの辞書を取得。
-        列構成: 枠番・馬番・馬名・性齢・騎手・厩舎の話 等。ヘッダーから動的検出。
+
+        HTML構造（2行1組）:
+          row[0]: 枠番 | 馬番 | 馬名（3列）
+          row[1]: colspan コメント本文（1列）
+          row[2]: 空行（場合あり）
         """
         result: Dict[str, str] = {}
+        # 最も行数が多いテーブルをdanwaテーブルと推定
         table = (
             soup.select_one("table.danwa")
             or soup.select_one("table[class*='danwa']")
@@ -736,30 +741,28 @@ class KeibabookTrainingScraper:
         if not table:
             return result
 
-        header_row = table.select_one("tr")
-        cells_all = header_row.select("th, td") if header_row else []
-        headers = self._detect_danwa_headers(cells_all)
-
-        rows = table.select("tr")[1:]
+        rows = table.select("tr")[1:]  # ヘッダー行をスキップ
+        current_name = ""
         for row in rows:
             cells = row.select("td")
-            if len(cells) < 2:
+            if not cells:
                 continue
-            name_idx = headers.get("horse_name", 0)
-            comm_idx = headers.get("comment", -1)
-            name_el = row.select_one("a[href*='horse']")
-            name = ""
-            if name_el:
-                name = name_el.get_text(strip=True)
-            if not name and 0 <= name_idx < len(cells):
-                name = cells[name_idx].get_text(strip=True)
-            comm = ""
-            if 0 <= comm_idx < len(cells):
-                comm = cells[comm_idx].get_text(strip=True)
-            elif comm_idx < 0 and len(cells) > 1:
-                comm = cells[-1].get_text(strip=True)
-            if name:
-                result[name] = comm or ""
+            text = cells[-1].get_text(strip=True) if cells else ""
+
+            if len(cells) >= 2:
+                # 馬名行（枠番・馬番・馬名 の複数列）
+                # 馬名はリンクから取得を優先
+                name_el = row.select_one("a[href*='horse']")
+                if name_el:
+                    current_name = name_el.get_text(strip=True)
+                else:
+                    current_name = cells[-1].get_text(strip=True)
+            elif len(cells) == 1 and current_name:
+                # コメント行（colspan=全列、1セルのみ）
+                comment = text
+                if comment and len(comment) > 3:
+                    result[current_name] = comment
+                    current_name = ""  # 次の馬へ
         return result
 
     def _detect_danwa_headers(self, cells: list) -> dict:
