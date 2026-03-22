@@ -1355,30 +1355,12 @@ class RaceAnalysisEngine:
             pace_reliability_label=pace_reliability.value if pace_reliability else "B",
         )
 
-        # ---- Phase 14: 道中タイム・セクション別ペースラベル ----
+        # ---- Phase 14: 道中タイム算出 ----
         if front_3f_est and last_3f_est and predicted_race_time:
             _mid = round(predicted_race_time - front_3f_est - last_3f_est, 1)
             analysis.estimated_mid_time = max(0, _mid)
-            # セクション別H/M/S判定
-            # 前半3F: 全体ペースと連動
-            analysis.front_3f_pace = pace_type.value
-            # 道中: 全体ペースと同じ（中間区間は全体傾向に追従）
-            analysis.mid_pace = pace_type.value
-            # 後半3F: コース基準値との比較（前半との比較ではない）
-            _is_dirt = "ダート" in (race.course.course_id if race.course else "")
-            _last3f_baseline = 37.5 if _is_dirt else 34.5
-            _last3f_diff = last_3f_est - _last3f_baseline
-            if _last3f_diff <= -0.8:
-                analysis.last_3f_pace = "H"  # 基準より速い上がり
-            elif _last3f_diff >= 0.8:
-                analysis.last_3f_pace = "S"  # 基準より遅い上がり
-            else:
-                analysis.last_3f_pace = "M"
         else:
             analysis.estimated_mid_time = None
-            analysis.front_3f_pace = ""
-            analysis.mid_pace = ""
-            analysis.last_3f_pace = ""
 
         # ---- 各馬の個別セクションタイム予測 ----
         # スタート/勝負所/ゴール前ビジュアルの前後差に使用
@@ -1397,15 +1379,18 @@ class RaceAnalysisEngine:
                 ev.pace.estimated_front_3f = round(front_3f_est + _pos_rank * _sec_per_rank, 2)
 
                 # 各馬の道中タイム: 初角→4角の位置変化を秒差で表現
-                # 先頭馬の道中を基準タイムとし、4角位置での先頭差を計算
                 _pos_4c = ev.pace.estimated_position_4c
                 if _pos_4c is not None:
-                    # 4角での先頭とのタイム差（秒）
                     _pos_4c_rank = _pos_4c * _fc
                     ev.pace.estimated_mid_sec = round(_pos_4c_rank * _sec_per_rank, 2)
                 else:
-                    # フォールバック: 初角位置の秒差をそのまま使用
                     ev.pace.estimated_mid_sec = round(_pos_rank * _sec_per_rank, 2)
+
+                # Phase 15: 推定走破タイム（前半3F + 道中秒差 + 上がり3F）
+                _l3f = ev.pace.estimated_last3f or (last_3f_est or 0)
+                ev.pace.estimated_total_time = round(
+                    ev.pace.estimated_front_3f + ev.pace.estimated_mid_sec + _l3f, 2
+                )
 
         return analysis
 
@@ -1770,6 +1755,22 @@ def _normalize_probs(evaluations: List[HorseEvaluation]) -> None:
             for ev in evaluations:
                 if ev.win_prob is not None:
                     ev.win_prob = ev.win_prob / tw2
+
+    # 市場確率アンカリング: モデル推定と市場確率をブレンドして過度な圧縮を防止
+    from config.settings import MARKET_BLEND_RATIO
+    has_odds = sum(1 for ev in evaluations if ev.horse.odds is not None and ev.horse.odds > 0)
+    if MARKET_BLEND_RATIO > 0 and has_odds >= len(evaluations) * 0.5:
+        for ev in evaluations:
+            odds = ev.horse.odds
+            if odds is not None and odds > 0 and ev.win_prob is not None:
+                market_prob = min(0.95, 0.80 / odds)
+                ev.win_prob = (1 - MARKET_BLEND_RATIO) * ev.win_prob + MARKET_BLEND_RATIO * market_prob
+        # ブレンド後の再正規化
+        tw3 = sum(ev.win_prob or 0.0 for ev in evaluations)
+        if tw3 > 0:
+            for ev in evaluations:
+                if ev.win_prob is not None:
+                    ev.win_prob = ev.win_prob / tw3
 
 
 # ============================================================
