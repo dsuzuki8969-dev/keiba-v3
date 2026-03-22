@@ -612,7 +612,7 @@ class RaceAnalysisEngine:
             return RaceAnalysis(
                 race=race,
                 evaluations=[],
-                pace_type_predicted=PaceType.MM,
+                pace_type_predicted=PaceType.M,
                 pace_reliability=ConfidenceLevel.D,
                 leading_horses=[],
                 front_horses=[],
@@ -676,7 +676,7 @@ class RaceAnalysisEngine:
         # ---- Step 1: ペース予測 ----
         if _is_banei:
             # ばんえい: ペース予測スキップ（一定ペース）
-            pace_type = PaceType.MM
+            pace_type = PaceType.M
             pace_score = 50.0
             leaders = []
             front_rate = 0.5
@@ -1355,6 +1355,31 @@ class RaceAnalysisEngine:
             pace_reliability_label=pace_reliability.value if pace_reliability else "B",
         )
 
+        # ---- Phase 14: 道中タイム・セクション別ペースラベル ----
+        if front_3f_est and last_3f_est and predicted_race_time:
+            _mid = round(predicted_race_time - front_3f_est - last_3f_est, 1)
+            analysis.estimated_mid_time = max(0, _mid)
+            # セクション別H/M/S判定
+            # 前半3F: 全体ペースと連動
+            analysis.front_3f_pace = pace_type.value
+            # 道中: 全体ペースと同じ（中間区間は全体傾向に追従）
+            analysis.mid_pace = pace_type.value
+            # 後半3F: コース基準値との比較（前半との比較ではない）
+            _is_dirt = "ダート" in (race.course.course_id if race.course else "")
+            _last3f_baseline = 37.5 if _is_dirt else 34.5
+            _last3f_diff = last_3f_est - _last3f_baseline
+            if _last3f_diff <= -0.8:
+                analysis.last_3f_pace = "H"  # 基準より速い上がり
+            elif _last3f_diff >= 0.8:
+                analysis.last_3f_pace = "S"  # 基準より遅い上がり
+            else:
+                analysis.last_3f_pace = "M"
+        else:
+            analysis.estimated_mid_time = None
+            analysis.front_3f_pace = ""
+            analysis.mid_pace = ""
+            analysis.last_3f_pace = ""
+
         # ---- 各馬の個別セクションタイム予測 ----
         # スタート/勝負所/ゴール前ビジュアルの前後差に使用
         if front_3f_est and not _is_banei:
@@ -1434,8 +1459,7 @@ class RaceAnalysisEngine:
                 avg_time = _st.mean(times)
                 # ペース補正: HH→速い(-1.5秒), SS→遅い(+1.5秒)
                 pace_corr = {
-                    PaceType.HH: -1.5, PaceType.HM: -0.7,
-                    PaceType.MM: 0.0, PaceType.MS: 0.7, PaceType.SS: 1.5,
+                    PaceType.H: -1.1, PaceType.M: 0.0, PaceType.S: 1.1,
                 }.get(pace_type, 0.0)
                 # クラス補正: course_dbサンプル平均クラスとの差を秒数に変換
                 grade_corr = 0.0
@@ -1481,9 +1505,9 @@ class RaceAnalysisEngine:
                 comp_rank[ev.horse.horse_no] = i + 1
 
             # ペースタイプによる前後シフト量
-            pv = pace_type.value if pace_type else "MM"
-            # HH: 前崩れ（逃げ→後方、先行→中団）, SS: 前残り（差し→後方に下がりがち）
-            shift = {"HH": 2, "HM": 1, "MM": 0, "MS": -1, "SS": -2}.get(pv, 0)
+            pv = pace_type.value if pace_type else "M"
+            # H: 前崩れ（逃げ→後方、先行→中団）, S: 前残り（差し→後方に下がりがち）
+            shift = {"H": 2, "M": 0, "S": -2}.get(pv, 0)
 
             # 各馬の最終位置スコアを算出
             # 初角位置: 逃げ=1, 先行=2, 差し=3, 追込=4
@@ -1727,6 +1751,25 @@ def _normalize_probs(evaluations: List[HorseEvaluation]) -> None:
             ev.place2_prob = min(0.95, ev.place2_prob / t2 * 2.0)   # Σ ≈ 2.0
         if t3 > 0 and ev.place3_prob is not None:
             ev.place3_prob = min(0.95, ev.place3_prob / t3 * 3.0)   # Σ ≈ 3.0
+
+    # オッズベースの勝率上限制約（高オッズ馬のML過大予測をキャップ）
+    capped = False
+    for ev in evaluations:
+        odds = ev.horse.odds
+        if odds is not None and odds > 0 and ev.win_prob is not None:
+            market_prob = min(0.95, 0.80 / odds)  # 控除率補正後の市場確率
+            cap = max(market_prob * 3.0, 0.005)   # 市場の3倍を上限（最低0.5%保証）
+            if ev.win_prob > cap:
+                ev.win_prob = cap
+                capped = True
+
+    # キャップ後の再正規化
+    if capped:
+        tw2 = sum(ev.win_prob or 0.0 for ev in evaluations)
+        if tw2 > 0:
+            for ev in evaluations:
+                if ev.win_prob is not None:
+                    ev.win_prob = ev.win_prob / tw2
 
 
 # ============================================================

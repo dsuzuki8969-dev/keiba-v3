@@ -171,7 +171,7 @@ def calc_predicted_odds(
     total = sum(base_scores.values())
     support: Dict[str, float] = {hid: s / total for hid, s in base_scores.items()}
 
-    deduction = ODDS_DEDUCTION.get("JRA" if is_jra else "JRA", 0.80)
+    deduction = ODDS_DEDUCTION.get("JRA" if is_jra else "NAR", 0.80)
     result: Dict[str, float] = {}
     for hid, rate in support.items():
         result[hid] = round((1 / rate) * deduction, 1) if rate > 0 else 999.9

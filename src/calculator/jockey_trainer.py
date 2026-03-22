@@ -458,6 +458,17 @@ def calc_tokusen_score(
     if eff_odds is None or eff_odds < TOKUSEN_ODDS_THRESHOLD:
         return 0.0
 
+    # 人気上位は穴馬対象外（calc_ana_scoreと同じパターン）
+    real_pop = eval_result.horse.popularity
+    if real_pop is not None:
+        if real_pop < 5:
+            return 0.0
+    else:
+        sorted_effs = sorted([e.effective_odds for e in all_evals if e.effective_odds])
+        est_pop = sorted_effs.index(eff_odds) + 1 if eff_odds in sorted_effs else 99
+        if est_pop < 5:
+            return 0.0
+
     # ML win_prob が穴馬として有望か
     wp = eval_result.win_prob
     if wp < 0.04:
@@ -561,17 +572,19 @@ def calc_tokusen_kiken_score(
         return 0.0
 
     real_pop = horse.popularity
+    real_odds = horse.odds
+
+    # 実オッズも実人気も不明 → 予測値による誤判定を防止
+    if real_pop is None and real_odds is None:
+        return 0.0
+
     if real_pop is not None:
         if real_pop > pop_limit:
             return 0.0
-    else:
-        # 予測オッズから推定人気順
-        sorted_effs = sorted(
-            [e.effective_odds for e in all_evals if e.effective_odds]
-        )
-        est_pop = (
-            sorted_effs.index(eff_odds) + 1 if eff_odds in sorted_effs else 99
-        )
+    elif real_odds is not None:
+        # 実オッズはあるが人気なし → 実オッズベースで推定
+        sorted_real = sorted([e.horse.odds for e in all_evals if e.horse.odds is not None])
+        est_pop = sorted_real.index(real_odds) + 1 if real_odds in sorted_real else 99
         if est_pop > pop_limit:
             return 0.0
 
