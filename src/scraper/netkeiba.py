@@ -1553,7 +1553,11 @@ class HorseHistoryParser:
         margin_ahead = self._parse_margin(margin_text)
         if margin_ahead is None:
             margin_ahead = 0.0
-        pos_text = cells[21].get_text(strip=True) if len(cells) > 21 else ""
+        # 取消・除外馬（finish_pos=99）は通過データなし
+        if finish_pos == 99:
+            pos_text = ""
+        else:
+            pos_text = cells[21].get_text(strip=True) if len(cells) > 21 else ""
         corners = self._parse_corners(pos_text)
         pos_4c = corners[-1] if corners else self._parse_4c(pos_text)
         pace_text = cells[22].get_text(strip=True) if len(cells) > 22 else ""
