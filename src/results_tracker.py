@@ -484,6 +484,7 @@ def _extract_past_runs(horse, count: int = 3, run_records=None) -> list:
     # run_records から走破偏差値をrace_dateでマッピング
     # run_records は (PastRun, dev, std_time) or (PastRun, dev, std_time, l3f_rank) のタプル
     dev_by_date = {}
+    l3f_rank_by_date = {}
     if run_records:
         for rec in run_records:
             pr = rec[0]
@@ -491,6 +492,9 @@ def _extract_past_runs(horse, count: int = 3, run_records=None) -> list:
             rd = getattr(pr, "race_date", "")
             if rd and dev is not None:
                 dev_by_date[rd] = round(dev, 1)
+            # l3f_rank（4要素目）
+            if len(rec) >= 4 and rec[3] is not None and rd:
+                l3f_rank_by_date[rd] = rec[3]
 
     result = []
     for run in runs[:count]:
@@ -557,6 +561,7 @@ def _extract_past_runs(horse, count: int = 3, run_records=None) -> list:
             "speed_dev_grade": speed_dev_grade,
             "race_id": getattr(run, "race_id", ""),
             "result_cname": getattr(run, "result_cname", ""),
+            "last_3f_rank": l3f_rank_by_date.get(rd),
         })
     return result
 
