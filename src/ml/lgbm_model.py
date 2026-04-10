@@ -51,335 +51,262 @@ SIRE_MAP_PATH = os.path.join(MODEL_DIR, "horse_sire_map.pkl")    # horse_id → 
 SIRE_STATS_PATH = os.path.join(MODEL_DIR, "sire_rolling_stats.pkl")  # RollingSireTracker
 
 FEATURE_COLUMNS = [
-    "surface", "distance", "condition", "field_count",
-    "is_jra", "grade_code", "venue_code", "month",
-    # コース構造4因子 + 回り方向
-    "venue_straight_m", "venue_slope", "venue_first_corner",
-    "venue_corner_type", "venue_direction",
-    # 馬個体
-    "gate_no", "horse_no", "sex_code", "age",
-    "weight_kg", "horse_weight", "weight_change",
-    "horse_win_rate", "horse_place_rate", "horse_runs",
-    "horse_avg_finish", "horse_last_finish", "horse_days_since",
-    "jockey_win_rate", "jockey_place_rate", "jockey_runs",
+    # ============================================================
+    # ML特徴量大整理 (223本→約110本)
+    # Step1: dead特徴量64本削除
+    # Step2: 血統×条件33本→2本(context_pr)
+    # Step3: 馬pr4本→1本(horse_context_pr)
+    # Step4: 重複16本削除
+    # Step5: ml_l3f_est削除
+    # Step6: dev_run1/2にグレード補正
+    # Step9: speed_indexグレード補正版追加
+    # ============================================================
+    # レース条件（surface/distance/conditionは他特徴量に吸収済みだが残す）
+    "grade_code", "venue_code", "field_count", "first_corner_m",
+    # 馬個体（horse_noは枠効果、weight_changeが本体）
+    "gate_no", "age", "weight_change",
+    "horse_win_rate", "horse_avg_finish", "horse_days_since",
+    # 騎手（win_rate系→pr系に集約、runs/wr系削除）
+    "jockey_win_rate",
     "jockey_win_rate_90d", "jockey_place_rate_90d",
-    "jockey_venue_wr", "jockey_surface_wr", "jockey_dist_wr",
-    "jockey_surf_dist_wr", "jockey_surf_dist_pr",
-    "jockey_sim_venue_wr", "jockey_sim_venue_pr",
-    "jockey_sim_venue_dist_wr", "jockey_sim_venue_dist_pr",
-    "trainer_win_rate", "trainer_place_rate", "trainer_runs",
-    "trainer_win_rate_90d", "trainer_place_rate_90d", "trainer_venue_wr",
-    "trainer_surface_wr", "trainer_dist_wr",
-    "trainer_surf_dist_wr", "trainer_surf_dist_pr",
-    "trainer_sim_venue_wr", "trainer_sim_venue_pr",
-    "trainer_sim_venue_dist_wr", "trainer_sim_venue_dist_pr",
-    "jt_combo_wr", "jt_combo_runs",
-    # 競馬場類似度重み付き実績
-    "venue_sim_place_rate", "venue_sim_win_rate", "venue_sim_avg_finish",
-    "venue_sim_runs", "venue_sim_n_venues",
+    "jockey_surf_dist_pr",                # 馬場面×距離帯の複勝率
+    "jockey_sim_venue_dist_pr",           # 類似場×距離帯の複勝率
+    # 調教師（runs/wr系削除、pr系に集約）
+    "trainer_win_rate",
+    "trainer_win_rate_90d", "trainer_place_rate_90d",
+    "trainer_surf_dist_pr",               # 馬場面×距離帯の複勝率
+    "trainer_sim_venue_dist_pr",          # 類似場×距離帯の複勝率
+    # 騎手×調教師コンボ
+    "jt_combo_wr",
+    # 競馬場類似度重み付き実績（avg_finish/n_venuesは重複→削除）
+    "venue_sim_place_rate", "venue_sim_win_rate",
+    "venue_sim_runs",
     "same_dir_place_rate", "same_dir_runs",
-    # 血統ローリング (父馬・母父馬の産駒成績)
+    # 血統ローリング（基本: win_rate/place_rateはcontext_prに吸収→残す）
     "sire_win_rate", "sire_place_rate",
     "bms_win_rate", "bms_place_rate",
-    # Tier1追加特徴量 (Step 1)
-    "trend_position_slope", "trend_deviation_slope",
-    "dev_run1", "dev_run2", "chakusa_index_avg3",
+    # Tier1追加特徴量
+    "trend_position_slope",
+    "dev_run1_adj", "dev_run2_adj",       # Step6: グレード補正版 (旧dev_run1/2)
+    "chakusa_index_avg3",
     "is_jockey_change", "kishu_pattern_code",
     "is_long_break",
     "horse_running_style", "horse_condition_match",
-    # Batch1: ②コーナー別位置変化
-    "avg_pos_change_3to4c",   # 3角→4角の位置前進量の平均（正=前進=Good）
-    "pos_change_3to4c_last",  # 前走の3角→4角位置前進量
-    "avg_pos_change_1to4c",   # 1角→4角の総移動量の平均（正=前進）
-    "front_hold_rate",        # 1角先頭30%時に4角でも維持できた率
-    # Batch1: ③着差指数の再設計
-    "margin_norm_last",       # 前走の頭数補正着差（0=勝ち, 負=負けた幅）
-    "margin_norm_avg3",       # 直近3走の頭数補正着差平均
-    # Batch2: ①タイム指数（走破タイム補正）
-    "speed_index_last",       # 前走のタイム指数（正=基準より速い）
-    "speed_index_avg3",       # 直近3走タイム指数平均
-    "speed_index_best3",      # 直近3走タイム指数最高値
-    # Batch4: ⑤道中タイムペース適性
-    "place_rate_fast_pace",   # ハイペース（逃げ馬道中タイムが速い）時の複勝率
-    "place_rate_slow_pace",   # スローペース時の複勝率
-    "pace_pref_score",        # ハイペース複勝率 - スローペース複勝率（展開得意/不得意）
-    "pace_count_fast",        # ハイペース出走数（信頼度）
-    "pace_count_slow",        # スローペース出走数
-    "pace_norm_last",         # 前走のレースペース指標（連続値、正=ハイペース）
-    "pace_norm_avg3",         # 直近3走のペース指標平均（連続値）
-    # Batch5: 展開予測（フィールド脚質構成）
-    "front_runner_count_in_race",  # フィールド内の逃げ・先行馬数（running_style<0.35）
-    "pace_pressure_index",         # 逃げ・先行馬比率（0=スロー予測, 1=ハイペース予測）
-    "style_pace_affinity",         # 脚質×展開相性スコア（+1=追込でハイペース/最高、-1=逃げでハイペース/最悪）
-    # Step 2: サブモデル出力スタッキング特徴量
-    "ml_pos_est", "ml_l3f_est",
-    # Task #26: コース分析特徴量
-    "gate_venue_wr", "style_surface_wr", "gate_style_wr",
-    # Task #27: 血統×コンテキスト特徴量
-    "sire_surf_wr", "sire_smile_wr", "bms_surf_wr",
-    # Batch3: ④ニック理論（父×母父の組み合わせ複勝率）
+    # 距離ロス（コーナーロス）特徴量（重複5本削除→2本残す）
+    "past_avg_outer_ratio",               # 直近5走の全コーナー平均相対位置（外回り度）
+    "past_corner_loss_sec_avg",           # 直近5走の推定コーナーロス秒平均
+    "past_corner_loss_sec_last",          # 前走の推定コーナーロス秒
+    # 着差指数
+    "margin_norm_last",                   # 前走の頭数補正着差
+    "margin_norm_avg3",                   # 直近3走の頭数補正着差平均
+    # タイム指数（重複3本削除→2本+グレード補正2本）
+    "speed_index_avg_6m",                 # 過去半年のタイム指数平均（最高gain）
+    "speed_index_best3",                  # 直近3走タイム指数最高値
+    "speed_index_adj_6m",                 # Step9: グレード補正版
+    "speed_index_adj_best3",              # Step9: グレード補正版
+    "speed_index_best_1y",                # 過去1年のタイム指数ベスト
+    "speed_index_trend",                  # 過去1年のタイム指数傾き
+    # 展開予測（フィールド脚質構成）
+    "front_runner_count_in_race",
+    "pace_pressure_index",
+    "style_pace_affinity",                # 脚質×展開相性（ペース適性6本を吸収）
+    "pace_count_fast",                    # ハイペース出走数（信頼度）
+    # Step 2サブモデル（ml_l3f_estはgain=0→削除）
+    "ml_pos_est",
+    # コース分析（スパースだがstyle_surface_wrのみ残す）
+    "style_surface_wr",
+    # 血統×コンテキスト（旧: sire_surf_wr/smile_wr/bms_surf_wr → context_prに統合）
+    "sire_surf_wr", "bms_surf_wr",
+    # ニック理論
     "sire_x_bms_place_rate",
-    # 類似場加重×条件別: 父馬
-    "sire_surf_dist_wr", "sire_surf_dist_pr",
-    "sire_sim_venue_wr", "sire_sim_venue_pr",
-    "sire_sim_venue_dist_wr", "sire_sim_venue_dist_pr",
-    # 類似場加重×条件別: 母父
-    "bms_surf_dist_wr", "bms_surf_dist_pr",
-    "bms_sim_venue_wr", "bms_sim_venue_pr",
-    "bms_sim_venue_dist_wr", "bms_sim_venue_dist_pr",
-    # 父×母父 win rate
-    "sire_bms_wr",
-    # ② クラス変化特徴量
-    "class_change", "prev_grade_code",
-    # ③ スピード指数 (走破タイム距離補正)
-    "speed_sec_per_m_est",
-    # ① レース内相対特徴量 (2パス方式)
-    "jockey_place_rank_in_race", "trainer_place_rank_in_race",
-    "horse_form_rank_in_race", "horse_place_rank_in_race",
-    "venue_sim_rank_in_race",
-    "jockey_place_zscore_in_race", "horse_form_zscore_in_race",
-    "relative_weight_kg",
-    "jockey_wp_ratio", "trainer_wp_ratio",
+    # Step2: 血統context_pr（33本→2本に統合）
+    "sire_context_pr",                    # 父の現レース条件に最適な複勝率
+    "bms_context_pr",                     # 母父の現レース条件に最適な複勝率
+    # クラス変化
+    "class_change",
+    # レース内相対特徴量（重複解消後）
+    "jockey_place_rank_in_race",
+    "trainer_place_rank_in_race",
     # ML-1 追加特徴量
     "jt_combo_wr_30d",
     "jt_combo_place_rate_30d",
-    "weight_kg_trend_3run",
-    # ---- Phase 10B: 展開特徴量追加 ----
-    "field_pace_variance",        # フィールド内脚質分散（均等vsペース偏り）
-    "early_position_est",         # 序盤位置取り推定（枠番×脚質）
-    "last3f_pace_diff",           # 上がり3F推定 - 位置推定の差分
-    "pace_horse_match",           # 馬のペース選好×予想ペースの一致度
-    # ---- Phase 10B: 血統特徴量追加 ----
-    "sire_credibility",           # 父馬の産駒成績信頼度 log(runs+1)
-    "bms_credibility",            # 母父の産駒成績信頼度 log(runs+1)
-    "sire_surface_pref",          # 父馬の芝/ダ適性差（芝PR - ダートPR）
-    "bms_surface_pref",           # 母父の芝/ダ適性差
-    "sire_dist_pref",             # 父馬の距離適性差（短距離PR - 長距離PR）
-    "sire_recent_trend",          # 父馬の直近産駒成績トレンド
-    # ---- Phase 10B: 調教師特徴量追加 ----
-    "trainer_class_trend",        # 直近20走のクラスレベル推移
-    "trainer_rest_wr",            # 休養明け馬の複勝率
-    # ---- Phase 11: タイム指数マルチウィンドウ ----
-    "speed_index_avg_1y",         # 過去1年のタイム指数平均
-    "speed_index_best_1y",        # 過去1年のタイム指数ベスト
-    "speed_index_avg_6m",         # 過去半年のタイム指数平均
-    "speed_index_trend",          # 過去1年のタイム指数傾き（正=改善）
-    # ---- Phase 11: 馬の条件別複勝率 ----
-    "horse_pr_2y",                # 過去2年の複勝率
-    "horse_venue_pr",             # 当競馬場での複勝率
-    "horse_dist_pr",              # 当距離帯(±200m)の複勝率
-    "horse_smile_pr",             # 当SMILE区分の複勝率
-    "horse_style_pr",             # 脚質帯(前/中/後)の複勝率
-    "horse_gate_pr",              # 枠番帯の複勝率
-    "horse_jockey_pr",            # 当騎手との複勝率
-    # ---- Phase 11: 騎手の条件別複勝率 + 2年ウィンドウ ----
-    "jockey_pr_2y",               # 過去2年の複勝率
-    "jockey_venue_pr",            # 当競馬場の複勝率
-    "jockey_dist_pr",             # 当距離帯の複勝率
-    "jockey_smile_pr",            # 当SMILE区分の複勝率
-    "jockey_cond_pr",             # 当馬場状態の複勝率
-    # ---- Phase 11: 調教師の条件別複勝率 + 2年ウィンドウ ----
-    "trainer_pr_2y",              # 過去2年の複勝率
-    "trainer_venue_pr",           # 当競馬場の複勝率
-    "trainer_dist_pr",            # 当距離帯の複勝率
-    "trainer_smile_pr",           # 当SMILE区分の複勝率
-    "trainer_cond_pr",            # 当馬場状態の複勝率
-    # ---- Phase 11: 父の条件別複勝率 ----
-    "sire_smile_pr",              # SMILE区分の産駒複勝率
-    "sire_cond_pr",               # 馬場状態別の産駒複勝率
-    "sire_venue_pr",              # 当競馬場の産駒複勝率（非加重）
-    # ---- Phase 11: 母父の条件別複勝率 ----
-    "bms_smile_pr",               # SMILE区分の産駒複勝率
-    "bms_cond_pr",                # 馬場状態別の産駒複勝率
-    "bms_venue_pr",               # 当競馬場の産駒複勝率（非加重）
-    "bms_dist_pr",                # SMILE区分複勝率（母父独自）
-    # ---- Phase 12: 条件別複勝率追加 ----
-    "horse_cond_pr",              # 馬の馬場状態別複勝率
-    "jockey_pace_pr",             # 騎手のペース別複勝率
-    "jockey_style_pr",            # 騎手の脚質別複勝率
-    "jockey_gate_pr",             # 騎手の枠番帯別複勝率
-    "jockey_horse_pr",            # 騎手の騎乗馬別複勝率
-    "trainer_pace_pr",            # 調教師のペース別複勝率
-    "trainer_style_pr",           # 調教師の脚質別複勝率
-    "trainer_gate_pr",            # 調教師の枠番帯別複勝率
-    "trainer_horse_pr",           # 調教師の騎乗馬別複勝率
-    "sire_pace_pr",               # 父のペース別産駒複勝率
-    "sire_style_pr",              # 父の脚質別産駒複勝率
-    "sire_gate_pr",               # 父の枠番帯別産駒複勝率
-    "sire_jockey_pr",             # 父×騎手の産駒複勝率
-    "sire_trainer_pr",            # 父×調教師の産駒複勝率
-    "bms_pace_pr",                # 母父のペース別産駒複勝率
-    "bms_style_pr",               # 母父の脚質別産駒複勝率
-    "bms_gate_pr",                # 母父の枠番帯別産駒複勝率
-    "bms_jockey_pr",              # 母父×騎手の産駒複勝率
-    "bms_trainer_pr",             # 母父×調教師の産駒複勝率
+    # Step3: 馬context_pr（4本→1本に統合: smile/style/gate/cond→horse_context_pr）
+    "horse_pr_2y",                        # 過去2年の複勝率
+    "horse_venue_pr",                     # 当競馬場での複勝率
+    "horse_dist_pr",                      # 当距離帯の複勝率
+    "horse_jockey_pr",                    # 当騎手との複勝率
+    "horse_context_pr",                   # 条件別最適複勝率（smile/style/gate/condを統合）
+    # 騎手の条件別複勝率（重複解消後）
+    "jockey_pr_2y",                       # 過去2年の複勝率
+    "jockey_dist_pr",                     # 当距離帯の複勝率
+    "jockey_smile_pr",                    # 当SMILE区分の複勝率
+    "jockey_cond_pr",                     # 当馬場状態の複勝率
+    "jockey_horse_pr",                    # 騎手の騎乗馬別複勝率
+    # 調教師の条件別複勝率（重複解消後）
+    "trainer_pr_2y",                      # 過去2年の複勝率
+    "trainer_dist_pr",                    # 当距離帯の複勝率
+    "trainer_smile_pr",                   # 当SMILE区分の複勝率
+    "trainer_cond_pr",                    # 当馬場状態の複勝率
+    "trainer_horse_pr",                   # 調教師の騎乗馬別複勝率
+    # ---- 調教特徴量 [24本] 現状維持 ----
+    # A: タイム系（自馬比較）
+    "train_final_4f",
+    "train_final_3f_self_best_ratio",
+    "train_final_3f_trend",
+    "train_final_3f_rank_in_race",
+    "train_final_3f_dev",
+    "train_final_1f_dev",
+    "train_final_1f_trend",
+    # B: ラスト加速・余力系
+    "train_first1f_pace",
+    # C: 強さ効率系
+    "train_intensity_max",
+    "train_3f_per_intensity",
+    "train_efficiency_self_diff",
+    "train_narinori_3f",
+    # D: 厩舎基準偏差系
+    "train_3f_trainer_dev",
+    "train_1f_trainer_dev",
+    "train_trainer_intensity_diff",
+    # E: ボリューム・パターン系
+    "train_volume_self_diff",
+    "train_intensity_pattern",
+    "train_course_primary",
+    # F: 併せ馬系
+    "train_partner_margin",
+    "train_partner_win_rate",
+    # G: コメント・評価系
+    "train_stable_mark",
+    "train_comment_sentiment",
+    # H: 複合・状態推定系
+    "train_state_score",
+    "train_readiness_index",
 ]
 
 # ばんえい専用: コーナー/ペース/上がり3F/SMILE/脚質/スピード指数など存在しない概念を除外
 # 全0特徴量(trend_deviation_slope, chakusa_index_avg3, margin_norm_*)と100%NaN(trainer_rest_wr)も除外
 # 高NaN血統特徴量はLightGBMがNaNをネイティブ処理するため残す
 FEATURE_COLUMNS_BANEI = [
-    # レース条件（surface/distance/venue_codeは帯広1場固定→除外）
-    "condition", "field_count", "month", "grade_code",
+    # ばんえい専用: コーナー/ペース/上がり3F/SMILE/脚質/スピード指数など存在しない概念を除外
+    # レース条件
+    "condition", "field_count", "grade_code",
     # 馬個体（weight_kg=斤量、horse_weight=馬体重 — ばんえい最重要）
-    "gate_no", "horse_no", "sex_code", "age",
+    "gate_no", "age",
     "weight_kg", "horse_weight", "weight_change",
     # 馬の成績
-    "horse_win_rate", "horse_place_rate", "horse_runs",
-    "horse_avg_finish", "horse_last_finish", "horse_days_since",
+    "horse_win_rate", "horse_avg_finish", "horse_days_since",
     # 騎手の成績
-    "jockey_win_rate", "jockey_place_rate", "jockey_runs",
+    "jockey_win_rate",
     "jockey_win_rate_90d", "jockey_place_rate_90d",
-    "jockey_venue_wr",
     # 調教師の成績
-    "trainer_win_rate", "trainer_place_rate", "trainer_runs",
+    "trainer_win_rate",
     "trainer_win_rate_90d", "trainer_place_rate_90d",
-    "trainer_venue_wr",
     # 騎手×調教師コンボ
-    "jt_combo_wr", "jt_combo_runs",
+    "jt_combo_wr",
     "jt_combo_wr_30d", "jt_combo_place_rate_30d",
     # 血統ローリング
     "sire_win_rate", "sire_place_rate",
     "bms_win_rate", "bms_place_rate",
-    "sire_bms_wr",
-    # フォーム・トレンド（全0の trend_deviation_slope, chakusa_index_avg3 は除外）
+    # フォーム・トレンド
     "trend_position_slope",
-    "dev_run1", "dev_run2",
+    "dev_run1_adj", "dev_run2_adj",
     "is_jockey_change", "is_long_break",
     # クラス変化
-    "class_change", "prev_grade_code",
+    "class_change",
     # レース内相対特徴量
     "jockey_place_rank_in_race", "trainer_place_rank_in_race",
-    "horse_form_rank_in_race", "horse_place_rank_in_race",
-    "jockey_place_zscore_in_race", "horse_form_zscore_in_race",
-    "relative_weight_kg",
-    "jockey_wp_ratio", "trainer_wp_ratio",
-    # 斤量トレンド
-    "weight_kg_trend_3run",
-    # 血統信頼度・トレンド
-    "sire_credibility", "bms_credibility",
-    "sire_recent_trend",
-    # 調教師特徴量（trainer_rest_wr は100%NaN→除外）
-    "trainer_class_trend",
     # 馬の条件別複勝率
     "horse_pr_2y", "horse_venue_pr",
-    "horse_gate_pr", "horse_jockey_pr",
-    "horse_cond_pr",
+    "horse_jockey_pr",
     # 騎手の条件別複勝率
-    "jockey_pr_2y", "jockey_venue_pr", "jockey_cond_pr",
+    "jockey_pr_2y", "jockey_cond_pr",
+    "jockey_horse_pr",
     # 調教師の条件別複勝率
-    "trainer_pr_2y", "trainer_venue_pr", "trainer_cond_pr",
-    # 血統×競馬場・条件
-    "sire_venue_pr", "sire_cond_pr",
-    "bms_venue_pr", "bms_cond_pr",
-    # 枠番帯別
-    "jockey_gate_pr", "trainer_gate_pr",
-    "sire_gate_pr", "bms_gate_pr",
-    # 個別馬×人コンボ
-    "jockey_horse_pr", "trainer_horse_pr",
-    "sire_jockey_pr", "sire_trainer_pr",
-    "bms_jockey_pr", "bms_trainer_pr",
+    "trainer_pr_2y", "trainer_cond_pr",
+    "trainer_horse_pr",
+    # 血統context_pr
+    "sire_context_pr", "bms_context_pr",
 ]
 
-CATEGORICAL_FEATURES = ["venue_code", "venue_direction"]
+CATEGORICAL_FEATURES = ["venue_code"]
 
-# 6カテゴリ特徴量グループ定義 (能力/展開/適性/騎手/調教師/血統)
-# compositeの6因子と対応。旧「市場」「体型」カテゴリは各カテゴリに吸収済み。
-FEATURE_CATEGORY_6: Dict[str, List[str]] = {
-    "能力":   ["dev_run1", "dev_run2", "chakusa_index_avg3",
-               "avg_pos_change_3to4c", "pos_change_3to4c_last",
-               "avg_pos_change_1to4c", "front_hold_rate",
+# 7カテゴリ特徴量グループ定義 (能力/展開/適性/騎手/調教師/血統/調教)
+# compositeの6因子 + 調教(第7因子)。ML大整理後の~110本版。
+FEATURE_CATEGORY_7: Dict[str, List[str]] = {
+    "能力":   ["dev_run1_adj", "dev_run2_adj", "chakusa_index_avg3",
                "margin_norm_last", "margin_norm_avg3",
-               "trend_position_slope", "trend_deviation_slope",
-               "horse_win_rate", "horse_place_rate", "horse_avg_finish",
-               "horse_last_finish", "horse_runs",
+               "trend_position_slope",
+               "horse_win_rate", "horse_avg_finish",
                "venue_sim_place_rate", "venue_sim_win_rate",
-               "venue_sim_avg_finish", "venue_sim_runs", "venue_sim_n_venues",
+               "venue_sim_runs",
                "same_dir_place_rate", "same_dir_runs",
-               "horse_form_rank_in_race", "horse_place_rank_in_race",
-               "venue_sim_rank_in_race", "horse_form_zscore_in_race",
-               "class_change", "prev_grade_code",
-               # 旧「体型」から吸収: 馬体・状態・年齢
-               "horse_weight", "weight_change", "is_long_break",
-               "horse_days_since", "sex_code", "age", "weight_kg",
-               "relative_weight_kg", "weight_kg_trend_3run",
-               # Phase 11: タイム指数マルチウィンドウ + 馬の条件別複勝率
-               "speed_index_avg_1y", "speed_index_best_1y",
-               "speed_index_avg_6m", "speed_index_trend",
+               "class_change",
+               # 馬体・状態・年齢
+               "weight_change", "is_long_break",
+               "horse_days_since", "age",
+               # タイム指数 + 馬の条件別複勝率
+               "speed_index_avg_6m", "speed_index_best3",
+               "speed_index_adj_6m", "speed_index_adj_best3",
+               "speed_index_best_1y", "speed_index_trend",
                "horse_pr_2y", "horse_venue_pr", "horse_dist_pr",
-               "horse_smile_pr", "horse_style_pr", "horse_gate_pr",
-               "horse_cond_pr"],
-    "展開":   ["ml_pos_est", "horse_running_style", "ml_l3f_est", "speed_sec_per_m_est",
-               "speed_index_last", "speed_index_avg3", "speed_index_best3",
-               "place_rate_fast_pace", "place_rate_slow_pace", "pace_pref_score",
-               "pace_count_fast", "pace_count_slow",
-               "pace_norm_last", "pace_norm_avg3",
-               "front_runner_count_in_race", "pace_pressure_index", "style_pace_affinity",
-               # Phase 10B 追加
-               "field_pace_variance", "early_position_est",
-               "last3f_pace_diff", "pace_horse_match"],
-    "適性":   ["surface", "distance", "condition", "is_jra",
-               "venue_straight_m", "venue_slope", "venue_first_corner",
-               "venue_corner_type", "venue_direction",
-               "horse_condition_match", "grade_code", "month",
-               "venue_code", "field_count",
-               # 旧「体型」から吸収: 枠番
-               "gate_no", "horse_no",
-               "gate_venue_wr", "style_surface_wr", "gate_style_wr"],
+               "horse_jockey_pr", "horse_context_pr",
+               "past_avg_outer_ratio", "past_corner_loss_sec_avg",
+               "past_corner_loss_sec_last"],
+    "展開":   ["ml_pos_est", "horse_running_style",
+               "front_runner_count_in_race", "pace_pressure_index",
+               "style_pace_affinity", "pace_count_fast"],
+    "適性":   ["horse_condition_match", "grade_code",
+               "venue_code", "field_count", "first_corner_m",
+               "gate_no", "style_surface_wr"],
     "騎手":   ["is_jockey_change", "kishu_pattern_code",
-               "jockey_win_rate", "jockey_place_rate", "jockey_runs",
+               "jockey_win_rate",
                "jockey_win_rate_90d", "jockey_place_rate_90d",
-               "jockey_venue_wr", "jockey_surface_wr", "jockey_dist_wr",
-               "jockey_surf_dist_wr", "jockey_surf_dist_pr",
-               "jockey_sim_venue_wr", "jockey_sim_venue_pr",
-               "jockey_sim_venue_dist_wr", "jockey_sim_venue_dist_pr",
-               "jockey_place_rank_in_race", "jockey_place_zscore_in_race",
-               "jockey_wp_ratio",
-               # Phase 11: 騎手の条件別複勝率 + 2年ウィンドウ
-               "jockey_pr_2y", "jockey_venue_pr", "jockey_dist_pr",
+               "jockey_surf_dist_pr",
+               "jockey_sim_venue_dist_pr",
+               "jockey_place_rank_in_race",
+               "jockey_pr_2y", "jockey_dist_pr",
                "jockey_smile_pr", "jockey_cond_pr",
-               "horse_jockey_pr",
-               "jockey_pace_pr", "jockey_style_pr", "jockey_gate_pr", "jockey_horse_pr"],
-    "調教師": ["trainer_win_rate", "trainer_place_rate", "trainer_runs",
+               "jockey_horse_pr"],
+    "調教師": ["trainer_win_rate",
                "trainer_win_rate_90d", "trainer_place_rate_90d",
-               "trainer_venue_wr", "trainer_surface_wr", "trainer_dist_wr",
-               "trainer_surf_dist_wr", "trainer_surf_dist_pr",
-               "trainer_sim_venue_wr", "trainer_sim_venue_pr",
-               "trainer_sim_venue_dist_wr", "trainer_sim_venue_dist_pr",
-               "jt_combo_wr", "jt_combo_runs",
-               "trainer_place_rank_in_race", "trainer_wp_ratio",
+               "trainer_surf_dist_pr",
+               "trainer_sim_venue_dist_pr",
+               "jt_combo_wr",
+               "trainer_place_rank_in_race",
                "jt_combo_wr_30d", "jt_combo_place_rate_30d",
-               # Phase 10B 追加
-               "trainer_class_trend", "trainer_rest_wr",
-               # Phase 11: 調教師の条件別複勝率 + 2年ウィンドウ
-               "trainer_pr_2y", "trainer_venue_pr", "trainer_dist_pr",
+               "trainer_pr_2y", "trainer_dist_pr",
                "trainer_smile_pr", "trainer_cond_pr",
-               "trainer_pace_pr", "trainer_style_pr", "trainer_gate_pr", "trainer_horse_pr"],
+               "trainer_horse_pr"],
     "血統":   ["sire_win_rate", "sire_place_rate",
                "bms_win_rate", "bms_place_rate",
-               "sire_surf_wr", "sire_smile_wr", "bms_surf_wr",
-               "sire_x_bms_place_rate", "sire_bms_wr",
-               "sire_surf_dist_wr", "sire_surf_dist_pr",
-               "sire_sim_venue_wr", "sire_sim_venue_pr",
-               "sire_sim_venue_dist_wr", "sire_sim_venue_dist_pr",
-               "bms_surf_dist_wr", "bms_surf_dist_pr",
-               "bms_sim_venue_wr", "bms_sim_venue_pr",
-               "bms_sim_venue_dist_wr", "bms_sim_venue_dist_pr",
-               # Phase 10B 追加
-               "sire_credibility", "bms_credibility",
-               "sire_surface_pref", "bms_surface_pref",
-               "sire_dist_pref", "sire_recent_trend",
-               # Phase 11: 父/母父の条件別複勝率
-               "sire_smile_pr", "sire_cond_pr", "sire_venue_pr",
-               "bms_smile_pr", "bms_cond_pr", "bms_venue_pr", "bms_dist_pr",
-               # Phase 12: ペース/脚質/枠番/騎手/調教師別
-               "sire_pace_pr", "sire_style_pr", "sire_gate_pr",
-               "sire_jockey_pr", "sire_trainer_pr",
-               "bms_pace_pr", "bms_style_pr", "bms_gate_pr",
-               "bms_jockey_pr", "bms_trainer_pr"],
+               "sire_surf_wr", "bms_surf_wr",
+               "sire_x_bms_place_rate",
+               "sire_context_pr", "bms_context_pr"],
+    "調教":   [# A: タイム系
+               "train_final_4f", "train_final_3f_self_best_ratio",
+               "train_final_3f_trend", "train_final_3f_rank_in_race",
+               "train_final_3f_dev", "train_final_1f_dev", "train_final_1f_trend",
+               # B: ラスト加速・余力系
+               "train_first1f_pace",
+               # C: 強さ効率系
+               "train_intensity_max", "train_3f_per_intensity",
+               "train_efficiency_self_diff", "train_narinori_3f",
+               # D: 厩舎基準偏差系
+               "train_3f_trainer_dev", "train_1f_trainer_dev",
+               "train_trainer_intensity_diff",
+               # E: ボリューム・パターン系
+               "train_volume_self_diff", "train_intensity_pattern",
+               "train_course_primary",
+               # F: 併せ馬系
+               "train_partner_margin", "train_partner_win_rate",
+               # G: コメント・評価系
+               "train_stable_mark", "train_comment_sentiment",
+               # H: 複合・状態推定系
+               "train_state_score", "train_readiness_index"],
 }
 # 後方互換: 旧名称からの参照
-SHAP_FEATURE_GROUPS = FEATURE_CATEGORY_6
+FEATURE_CATEGORY_6 = FEATURE_CATEGORY_7
+SHAP_FEATURE_GROUPS = FEATURE_CATEGORY_7
 
 SURFACE_MAP = {"芝": 0, "ダート": 1, "障害": 2}
 CONDITION_MAP = {"良": 0, "稍": 1, "稍重": 1, "重": 2, "不": 3, "不良": 3}
@@ -609,13 +536,17 @@ class _EntityStats:
             return None, None
         return w_wins / w_runs, w_places / w_runs
 
+    # Step8: min_samplesを3→5に引き上げ（統計信頼性向上）
+    _MIN_SAMPLES_BASIC = 5
+    _MIN_SAMPLES_COND = 8  # 条件別（style_pr, cond_pr等）
+
     @property
     def win_rate(self):
-        return self.wins / self.runs if self.runs >= 3 else None
+        return self.wins / self.runs if self.runs >= self._MIN_SAMPLES_BASIC else None
 
     @property
     def place_rate(self):
-        return self.places / self.runs if self.runs >= 3 else None
+        return self.places / self.runs if self.runs >= self._MIN_SAMPLES_BASIC else None
 
     def rate_recent(self, cutoff: str, use_place=False):
         w, r = 0, 0
@@ -623,87 +554,87 @@ class _EntityStats:
             if d >= cutoff:
                 r += 1
                 w += int(ip if use_place else iw)
-        return w / r if r >= 3 else None
+        return w / r if r >= self._MIN_SAMPLES_BASIC else None
 
     def venue_wr(self, venue: str):
         v = self.venue.get(venue)
         if not v:
             return None
         r = v[2] if len(v) >= 3 else v[1]  # 旧2要素互換
-        return v[0] / r if r >= 3 else None
+        return v[0] / r if r >= self._MIN_SAMPLES_BASIC else None
 
     def venue_pr(self, venue: str):
-        """Phase 11: 競馬場別複勝率"""
+        """競馬場別複勝率"""
         v = self.venue.get(venue)
         if not v or len(v) < 3:
             return None
-        return v[1] / v[2] if v[2] >= 3 else None
+        return v[1] / v[2] if v[2] >= self._MIN_SAMPLES_BASIC else None
 
     def surface_wr(self, surface: str):
         v = self.surface.get(surface)
         if not v:
             return None
         r = v[2] if len(v) >= 3 else v[1]
-        return v[0] / r if r >= 3 else None
+        return v[0] / r if r >= self._MIN_SAMPLES_BASIC else None
 
     def dist_cat_wr(self, dc: str):
         v = self.dist_cat.get(dc)
         if not v:
             return None
         r = v[2] if len(v) >= 3 else v[1]
-        return v[0] / r if r >= 3 else None
+        return v[0] / r if r >= self._MIN_SAMPLES_BASIC else None
 
     def dist_cat_pr(self, dc: str):
-        """Phase 11: 距離帯別複勝率"""
+        """距離帯別複勝率"""
         v = self.dist_cat.get(dc)
         if not v or len(v) < 3:
             return None
-        return v[1] / v[2] if v[2] >= 3 else None
+        return v[1] / v[2] if v[2] >= self._MIN_SAMPLES_BASIC else None
 
     def smile_pr(self, smile_cat: str):
-        """Phase 11: SMILE区分別複勝率"""
+        """SMILE区分別複勝率"""
         v = getattr(self, 'smile', {}).get(smile_cat)
         if not v or len(v) < 3:
             return None
-        return v[1] / v[2] if v[2] >= 3 else None
+        return v[1] / v[2] if v[2] >= self._MIN_SAMPLES_COND else None
 
     def cond_pr(self, condition: str):
-        """Phase 11: 馬場状態別複勝率"""
+        """馬場状態別複勝率"""
         v = getattr(self, 'cond', {}).get(condition)
         if not v or len(v) < 3:
             return None
-        return v[1] / v[2] if v[2] >= 3 else None
+        return v[1] / v[2] if v[2] >= self._MIN_SAMPLES_COND else None
 
     def pace_pr(self, pace_grp: str):
-        """Phase 12: ペース別複勝率"""
+        """ペース別複勝率"""
         v = getattr(self, 'pace', {}).get(pace_grp)
         if not v or len(v) < 3:
             return None
-        return v[1] / v[2] if v[2] >= 3 else None
+        return v[1] / v[2] if v[2] >= self._MIN_SAMPLES_COND else None
 
     def style_pr(self, style_grp: str):
-        """Phase 12: 脚質別複勝率"""
+        """脚質別複勝率"""
         v = getattr(self, 'style', {}).get(style_grp)
         if not v or len(v) < 3:
             return None
-        return v[1] / v[2] if v[2] >= 3 else None
+        return v[1] / v[2] if v[2] >= self._MIN_SAMPLES_COND else None
 
     def gate_pr(self, gate_grp: str):
-        """Phase 12: 枠番帯別複勝率"""
+        """枠番帯別複勝率"""
         v = getattr(self, 'gate', {}).get(gate_grp)
         if not v or len(v) < 3:
             return None
-        return v[1] / v[2] if v[2] >= 3 else None
+        return v[1] / v[2] if v[2] >= self._MIN_SAMPLES_COND else None
 
     def horse_combo_pr(self, horse_id: str):
-        """Phase 12: 騎乗馬別複勝率"""
+        """騎乗馬別複勝率"""
         v = getattr(self, 'horse_combo', {}).get(horse_id)
         if not v or len(v) < 3:
             return None
-        return v[1] / v[2] if v[2] >= 3 else None
+        return v[1] / v[2] if v[2] >= self._MIN_SAMPLES_BASIC else None
 
     def rate_recent_2y(self, date_str: str):
-        """Phase 11: 過去2年間の複勝率"""
+        """過去2年間の複勝率"""
         try:
             cutoff = (datetime.strptime(date_str, "%Y-%m-%d")
                       - timedelta(days=730)).strftime("%Y-%m-%d")
@@ -714,7 +645,41 @@ class _EntityStats:
             if cutoff <= d < date_str:
                 r += 1
                 w += int(ip)
-        return w / r if r >= 3 else None
+        return w / r if r >= self._MIN_SAMPLES_BASIC else None
+
+    def context_pr(self, venue: str, surface: str, dist_cat: str,
+                   smile_cat: str, condition: str,
+                   min_basic: int = 5, min_cond: int = 8) -> Optional[float]:
+        """Step2/3: 現レース条件に最適な複勝率を優先順位付きで返す
+
+        優先1: 馬場面×距離帯（最も条件マッチ）
+        優先2: SMILE区分
+        優先3: 馬場状態
+        優先4: 馬場面
+        優先5: 全体
+        """
+        # 優先1: 馬場面×距離帯
+        if surface and dist_cat:
+            v = self.surf_dist.get((surface, dist_cat))
+            if v and v[2] >= min_cond:
+                return v[1] / v[2]
+        # 優先2: SMILE区分
+        if smile_cat:
+            v = self.smile.get(smile_cat)
+            if v and v[2] >= min_cond:
+                return v[1] / v[2]
+        # 優先3: 馬場状態
+        if condition:
+            v = self.cond.get(condition)
+            if v and v[2] >= min_cond:
+                return v[1] / v[2]
+        # 優先4: 馬場面
+        if surface:
+            v = self.surface.get(surface)
+            if v and v[2] >= min_basic:
+                return v[1] / v[2]
+        # 優先5: 全体
+        return self.place_rate
 
 
 class _HorseStats:
@@ -746,7 +711,8 @@ class _HorseStats:
                pos1c: Optional[int] = None, pos3c: Optional[int] = None,
                speed_index: Optional[float] = None,
                race_pace_norm: Optional[float] = None,
-               gate_no: Optional[int] = None):
+               gate_no: Optional[int] = None,
+               positions_corners: Optional[List] = None):
         self.wins += int(is_win)
         self.runs += 1
         self.places += int(is_place)
@@ -757,17 +723,28 @@ class _HorseStats:
             self.venue_runs.append((venue, surface, finish_pos))
             if len(self.venue_runs) > 30:
                 self.venue_runs.pop(0)
-        # Phase 11: 19-tuple (旧16-tuple + venue, surface, gate_no)
+        # Phase 11+距離ロス: 22-tuple (旧19-tuple + n_corners, avg_corner_rel_pos, corner_spread)
         # idx: 0=date, 1=finish_pos, 2=field_count, 3=pos4c, 4=margin_behind,
         #      5=condition, 6=jockey_id, 7=last_3f_sec, 8=run_distance,
         #      9=win_odds, 10=grade_code, 11=finish_time_sec, 12=pos1c, 13=pos3c,
-        #      14=speed_index, 15=race_pace_norm, 16=venue, 17=surface, 18=gate_no
+        #      14=speed_index, 15=race_pace_norm, 16=venue, 17=surface, 18=gate_no,
+        #      19=n_corners, 20=avg_corner_rel_pos, 21=corner_spread
+        _n_corners = None
+        _avg_corner_rel = None
+        _corner_spread = None
+        if positions_corners and isinstance(positions_corners, list) and field_count and field_count > 1:
+            _valid_c = [c for c in positions_corners if isinstance(c, (int, float)) and c > 0]
+            if _valid_c:
+                _n_corners = len(_valid_c)
+                _avg_corner_rel = sum(c / field_count for c in _valid_c) / _n_corners
+                _corner_spread = max(_valid_c) - min(_valid_c)
         self.run_details.append((date_str, finish_pos, field_count, pos4c,
                                   margin_behind, condition, jockey_id,
                                   last_3f_sec, run_distance,
                                   win_odds, grade_code, finish_time_sec,
                                   pos1c, pos3c, speed_index, race_pace_norm,
-                                  venue, surface, gate_no))
+                                  venue, surface, gate_no,
+                                  _n_corners, _avg_corner_rel, _corner_spread))
         if len(self.run_details) > 20:
             self.run_details.pop(0)
         if jockey_id:
@@ -805,6 +782,7 @@ class _HorseStats:
             "horse_style_pr": None, "horse_gate_pr": None,
             "horse_jockey_pr": None,
             "horse_cond_pr": None,
+            "horse_context_pr": None,
         }
         if not self.run_details:
             return result
@@ -923,13 +901,35 @@ class _HorseStats:
         if n_g >= 2: result["horse_gate_pr"] = p_g / n_g
         if n_j >= 2: result["horse_jockey_pr"] = p_j / n_j
         if n_cond >= 2: result["horse_cond_pr"] = p_cond / n_cond
+
+        # Step3: horse_context_pr — smile/style/gate/condの統合（4本→1本）
+        # 優先順位: SMILE区分 → 馬場状態 → 脚質 → 枠番 → 全体(horse_pr_2y)
+        _ctx = None
+        if n_sm >= 3 and _ctx is None:
+            _ctx = p_sm / n_sm
+        if n_cond >= 3 and _ctx is None:
+            _ctx = p_cond / n_cond
+        if n_st >= 3 and _ctx is None:
+            _ctx = p_st / n_st
+        if n_g >= 3 and _ctx is None:
+            _ctx = p_g / n_g
+        if n_2y >= 3 and _ctx is None:
+            _ctx = p_2y / n_2y
+        result["horse_context_pr"] = _ctx
         return result
 
+    # Step9: speed_indexグレード補正係数
+    _SI_GRADE_BOOST = {
+        8: 1.15, 7: 1.10, 6: 1.05, 5: 1.03,   # G1/G2/G3/OP
+        4: 1.00, 3: 1.00, 2: 0.97, 1: 0.95, 0: 0.90,  # 3勝/2勝/1勝/未勝利/新馬
+    }
+
     def get_speed_index_windows(self, date_str: str) -> dict:
-        """Phase 11: タイム指数のマルチウィンドウ特徴量"""
+        """Phase 11 + Step9: タイム指数のマルチウィンドウ特徴量 + グレード補正版"""
         result = {
             "speed_index_avg_1y": None, "speed_index_best_1y": None,
             "speed_index_avg_6m": None, "speed_index_trend": None,
+            "speed_index_adj_6m": None, "speed_index_adj_best3": None,
         }
         if not self.run_details:
             return result
@@ -942,6 +942,9 @@ class _HorseStats:
 
         si_1y = []  # (date, speed_index) 過去1年
         si_6m = []  # 過去半年
+        si_6m_adj = []  # グレード補正版
+        si_recent = []  # 直近走（best3用）
+        si_recent_adj = []
         for d in self.run_details:
             d_date = d[0]
             if d_date >= date_str:
@@ -949,10 +952,16 @@ class _HorseStats:
             si_val = d[14] if len(d) > 14 else None
             if si_val is None:
                 continue
+            si_f = float(si_val)
+            gc = d[10] if len(d) > 10 else 1
+            si_adj = si_f * self._SI_GRADE_BOOST.get(gc, 1.0)
             if d_date >= cutoff_1y:
-                si_1y.append((d_date, float(si_val)))
+                si_1y.append((d_date, si_f))
             if d_date >= cutoff_6m:
-                si_6m.append((d_date, float(si_val)))
+                si_6m.append((d_date, si_f))
+                si_6m_adj.append(si_adj)
+            si_recent.append(si_f)
+            si_recent_adj.append(si_adj)
 
         if si_1y:
             vals = [v for _, v in si_1y]
@@ -970,6 +979,16 @@ class _HorseStats:
         if si_6m:
             vals_6m = [v for _, v in si_6m]
             result["speed_index_avg_6m"] = sum(vals_6m) / len(vals_6m)
+        if si_6m_adj:
+            result["speed_index_adj_6m"] = sum(si_6m_adj) / len(si_6m_adj)
+
+        # Step9: best3のグレード補正版
+        if len(si_recent) >= 1:
+            best3 = sorted(si_recent[-10:], reverse=True)[:3]
+            result["speed_index_best3"] = max(best3) if best3 else None
+        if len(si_recent_adj) >= 1:
+            best3_adj = sorted(si_recent_adj[-10:], reverse=True)[:3]
+            result["speed_index_adj_best3"] = max(best3_adj) if best3_adj else None
 
         return result
 
@@ -1271,6 +1290,7 @@ class RollingStatsTracker:
                     speed_index=_horse_speed_idx.get(hid),
                     race_pace_norm=_race_pace_norm,
                     gate_no=h.get("gate_no") or h.get("horse_no"),
+                    positions_corners=h.get("positions_corners"),
                 )
 
             if jid and tid:
@@ -1414,8 +1434,8 @@ class RollingStatsTracker:
             "jockey_venue_wr": s.venue_wr(venue),
             "jockey_surface_wr": s.surface_wr(surface),
             "jockey_dist_wr": s.dist_cat_wr(dist_cat),
-            "jockey_surf_dist_wr": sd[0]/sd[2] if sd[2] >= 3 else None,
-            "jockey_surf_dist_pr": sd[1]/sd[2] if sd[2] >= 3 else None,
+            "jockey_surf_dist_wr": sd[0]/sd[2] if sd[2] >= 5 else None,
+            "jockey_surf_dist_pr": sd[1]/sd[2] if sd[2] >= 5 else None,
             "jockey_sim_venue_wr": sim_wr,
             "jockey_sim_venue_pr": sim_pr,
             "jockey_sim_venue_dist_wr": sim_d_wr,
@@ -1471,8 +1491,8 @@ class RollingStatsTracker:
             # ⑥ 調教師の馬場別・距離帯別勝率
             "trainer_surface_wr": s.surface_wr(surface) if surface else None,
             "trainer_dist_wr": s.dist_cat_wr(dist_cat) if dist_cat else None,
-            "trainer_surf_dist_wr": sd[0]/sd[2] if sd[2] >= 3 else None,
-            "trainer_surf_dist_pr": sd[1]/sd[2] if sd[2] >= 3 else None,
+            "trainer_surf_dist_wr": sd[0]/sd[2] if sd[2] >= 5 else None,
+            "trainer_surf_dist_pr": sd[1]/sd[2] if sd[2] >= 5 else None,
             "trainer_sim_venue_wr": sim_wr,
             "trainer_sim_venue_pr": sim_pr,
             "trainer_sim_venue_dist_wr": sim_d_wr,
@@ -1710,8 +1730,8 @@ class RollingStatsTracker:
         _empty = {
             "trend_position_slope": None,
             "trend_deviation_slope": None,
-            "dev_run1": None,
-            "dev_run2": None,
+            "dev_run1_adj": None,
+            "dev_run2_adj": None,
             "chakusa_index_avg3": None,
             "is_jockey_change": 0,
             "kishu_pattern_code": 0.0,
@@ -1726,6 +1746,12 @@ class RollingStatsTracker:
             "pos_change_3to4c_last": None,
             "avg_pos_change_1to4c": None,
             "front_hold_rate": None,
+            # 距離ロス（コーナーロス）特徴量
+            "past_avg_outer_ratio": None,
+            "past_outer_ratio_last": None,
+            "past_corner_loss_sec_avg": None,
+            "past_corner_loss_sec_last": None,
+            "past_pos_spread": None,
             # Batch1: ③着差指数の再設計
             "margin_norm_last": None,
             "margin_norm_avg3": None,
@@ -1757,17 +1783,33 @@ class RollingStatsTracker:
             return _empty
 
         # run_details: (date, finish_pos, field_count, pos4c, margin_behind, condition, jockey_id, ...)
+        # Step6: グレード補正付き着順正規化
+        _GRADE_WEIGHT = {
+            8: 1.40, 7: 1.30, 6: 1.20, 5: 1.10,  # G1/G2/G3/OP
+            4: 1.05, 3: 1.00, 2: 0.95, 1: 0.90, 0: 0.85,  # 3勝/2勝/1勝/未勝利/新馬
+        }
+
         def _norm_pos(fp, fc):
             """着順を0-1スケールに正規化 (1=1着, 0=最下位)"""
             if fp is None or not fc or fc <= 1:
                 return None
             return 1.0 - (fp - 1) / (fc - 1)
 
-        # dev_run1, dev_run2 (直近1走・2走の正規化着順)
+        def _norm_pos_adj(fp, fc, grade_code):
+            """グレード補正付き着順正規化 (G1の3着 > 未勝利の3着)"""
+            if fp is None or not fc or fc <= 1:
+                return None
+            raw = 1.0 - (fp - 1) / (fc - 1)
+            gw = _GRADE_WEIGHT.get(grade_code, 1.0)
+            return min(1.0, raw * gw)
+
+        # dev_run1_adj, dev_run2_adj (直近1走・2走のグレード補正付き正規化着順)
         d1 = details[-1]
         d2 = details[-2] if len(details) >= 2 else None
-        dev_run1 = _norm_pos(d1[1], d1[2])
-        dev_run2 = _norm_pos(d2[1], d2[2]) if d2 else None
+        d1_gc = d1[10] if len(d1) > 10 else 1
+        d2_gc = d2[10] if d2 and len(d2) > 10 else 1
+        dev_run1 = _norm_pos_adj(d1[1], d1[2], d1_gc)
+        dev_run2 = _norm_pos_adj(d2[1], d2[2], d2_gc) if d2 else None
 
         # trend_position_slope: 直近3走の正規化着順の傾き
         recent3_pos = [_norm_pos(d[1], d[2]) for d in details[-3:]]
@@ -1870,6 +1912,45 @@ class RollingStatsTracker:
                     fh_success += 1
         front_hold_rate = fh_success / fh_total if fh_total >= 2 else None
 
+        # 距離ロス（コーナーロス）特徴量
+        # run_details idx: 19=n_corners, 20=avg_corner_rel_pos, 21=corner_spread
+        _SEC_PER_RANK_TURF = 0.08   # 芝M相当（pace_course.py POSITION_SEC_BY_PACE_TURF）
+        _SEC_PER_RANK_DIRT = 0.30   # ダートM相当（pace_course.py POSITION_SEC_BY_PACE_DIRT）
+
+        # 全コーナー平均相対位置（外回り度）
+        _outer_vals = [d[20] for d in details[-5:]
+                       if len(d) > 20 and d[20] is not None]
+        past_avg_outer_ratio = (sum(_outer_vals) / len(_outer_vals)
+                                if _outer_vals else None)
+        past_outer_ratio_last = (d1[20] if len(d1) > 20 and d1[20] is not None
+                                 else None)
+
+        # 推定コーナーロス秒: (avg_rel_pos - 0.5) × n_corners × sec_per_rank × field_count
+        # 0.5 = フィールド中間位置を基準。正=外回りロス、負=内側で距離短縮
+        def _corner_loss_sec(d_item):
+            if len(d_item) <= 20:
+                return None
+            avg_rel = d_item[20]  # avg_corner_rel_pos
+            nc = d_item[19]       # n_corners
+            fc = d_item[2]        # field_count
+            surf = d_item[17] if len(d_item) > 17 else ""  # surface
+            if avg_rel is None or not nc or not fc or fc <= 1:
+                return None
+            spr = _SEC_PER_RANK_DIRT if surf == "ダート" else _SEC_PER_RANK_TURF
+            return (avg_rel - 0.5) * nc * spr * fc
+
+        _loss_vals = [v for v in (_corner_loss_sec(d) for d in details[-5:])
+                      if v is not None]
+        past_corner_loss_sec_avg = (sum(_loss_vals) / len(_loss_vals)
+                                    if _loss_vals else None)
+        past_corner_loss_sec_last = _corner_loss_sec(d1) if d1 else None
+
+        # コーナー間位置変動幅（max - min）
+        _spread_vals = [d[21] for d in details[-5:]
+                        if len(d) > 21 and d[21] is not None]
+        past_pos_spread = (sum(_spread_vals) / len(_spread_vals)
+                           if _spread_vals else None)
+
         # Batch1: ③着差指数の再設計
         # margin_norm = -(margin_behind) / (field_count - 1): 勝ち=0, 大敗=負大値
         # 符号: 大きい(0に近い)ほど良い、小さい(負)ほど悪い
@@ -1930,8 +2011,8 @@ class RollingStatsTracker:
         return {
             "trend_position_slope": trend_pos,
             "trend_deviation_slope": trend_dev,
-            "dev_run1": dev_run1,
-            "dev_run2": dev_run2,
+            "dev_run1_adj": dev_run1,
+            "dev_run2_adj": dev_run2,
             "chakusa_index_avg3": chakusa_avg3,
             "is_jockey_change": is_change,
             "kishu_pattern_code": kishu_code,
@@ -1946,6 +2027,12 @@ class RollingStatsTracker:
             "pos_change_3to4c_last": pos_change_3to4c_last,
             "avg_pos_change_1to4c": avg_pos_change_1to4c,
             "front_hold_rate": front_hold_rate,
+            # 距離ロス（コーナーロス）特徴量
+            "past_avg_outer_ratio": past_avg_outer_ratio,
+            "past_outer_ratio_last": past_outer_ratio_last,
+            "past_corner_loss_sec_avg": past_corner_loss_sec_avg,
+            "past_corner_loss_sec_last": past_corner_loss_sec_last,
+            "past_pos_spread": past_pos_spread,
             # Batch1: ③着差指数の再設計
             "margin_norm_last": margin_norm_last,
             "margin_norm_avg3": margin_norm_avg3,
@@ -2393,6 +2480,55 @@ class RollingSireTracker:
             "bms_trainer_pr": _pr(_bt, (bms_id, trainer_id)) if trainer_id else None,
         }
 
+    def get_sire_context_pr(self, sire_id: str, bms_id: str,
+                             venue: str, surface: str, smile_cat: str,
+                             condition: str) -> dict:
+        """Step2: 血統context_pr — 33本→2本に統合
+
+        優先順位付きで最適な複勝率を返す:
+        優先1: 類似場×馬場面（最も条件マッチ）
+        優先2: 馬場面×SMILE区分
+        優先3: SMILE区分
+        優先4: 馬場面
+        優先5: 全体
+        """
+        def _ctx(eid, surf_dist_tbl, smile_tbl, venue_surf_tbl, surf_tbl, base_tbl):
+            if not eid:
+                return None
+            # 優先1: 類似場×馬場面
+            if venue and surface:
+                _sv_wr, _sv_pr = self._sim_venue_rate_id(
+                    eid, venue_surf_tbl, {}, venue, surface)
+                if _sv_pr is not None:
+                    return _sv_pr
+            # 優先2: 馬場面×SMILE区分
+            if surface and smile_cat:
+                sd = surf_dist_tbl.get(eid, {}).get((surface, smile_cat), [0, 0, 0])
+                if sd[2] >= 5:
+                    return sd[1] / sd[2]
+            # 優先3: SMILE区分
+            if smile_cat:
+                sm = smile_tbl.get((eid, smile_cat), [0, 0, 0])
+                if sm[2] >= 5:
+                    return sm[1] / sm[2]
+            # 優先4: 馬場面
+            if surface:
+                sf = surf_tbl.get((eid, surface), [0, 0, 0])
+                if sf[2] >= 5:
+                    return sf[1] / sf[2]
+            # 優先5: 全体
+            s = base_tbl.get(eid, [0, 0, 0])
+            if s[2] >= 5:
+                return s[1] / s[2]
+            return None
+
+        return {
+            "sire_context_pr": _ctx(sire_id, self._sire_surf_dist, self._sire_smile,
+                                     self._sire_venue_surf, self._sire_surf, self._sire),
+            "bms_context_pr": _ctx(bms_id, self._bms_surf_dist, self._bms_smile,
+                                    self._bms_venue_surf, self._bms_surf, self._bms),
+        }
+
     def _sim_venue_rate_id(self, eid: str,
                            vs_outer: dict, vsd_outer: dict,
                            target_venue: str, surface: str, dist_cat: str = None,
@@ -2674,6 +2810,14 @@ def _extract_features(
                 feat.update({"venue_straight_m": None, "venue_slope": None,
                              "venue_first_corner": None, "venue_corner_type": None,
                              "venue_direction": None})
+            # コース別の初角実距離(m)をcourse_masterから取得
+            try:
+                from data.masters.course_master import get_all_courses
+                _cid = f"{vc_str}_{surface}_{distance}"
+                _cm = get_all_courses().get(_cid)
+                feat["first_corner_m"] = _cm.first_corner_m if _cm and _cm.first_corner_m > 0 else None
+            except Exception:
+                feat["first_corner_m"] = None
     except Exception:
         feat.update({"venue_straight_m": None, "venue_slope": None,
                      "venue_first_corner": None, "venue_corner_type": None,
@@ -2746,6 +2890,9 @@ def _extract_features(
             sire_id, bms_id,
             pace_grp=_pace_grp, style_grp=_style_grp, gate_grp=_gate_grp,
             jockey_id=jid, trainer_id=tid))
+        # Step2: 血統context_pr（33本→2本に統合）
+        feat.update(sire_tracker.get_sire_context_pr(
+            sire_id, bms_id, venue, surface, smile_cat, _condition))
     else:
         feat.update({"sire_win_rate": None, "sire_place_rate": None,
                      "bms_win_rate": None, "bms_place_rate": None,
@@ -2769,7 +2916,9 @@ def _extract_features(
                      "sire_pace_pr": None, "sire_style_pr": None, "sire_gate_pr": None,
                      "sire_jockey_pr": None, "sire_trainer_pr": None,
                      "bms_pace_pr": None, "bms_style_pr": None, "bms_gate_pr": None,
-                     "bms_jockey_pr": None, "bms_trainer_pr": None})
+                     "bms_jockey_pr": None, "bms_trainer_pr": None,
+                     # Step2: context_pr
+                     "sire_context_pr": None, "bms_context_pr": None})
 
     # Tier1追加特徴量 (Step 1) + ② 前走オッズ・クラス変化
     extra = tracker.get_horse_extra_features(
@@ -2839,8 +2988,10 @@ def _extract_features(
                      "horse_dist_pr": None, "horse_smile_pr": None,
                      "horse_style_pr": None, "horse_gate_pr": None,
                      "horse_jockey_pr": None, "horse_cond_pr": None,
+                     "horse_context_pr": None,
                      "speed_index_avg_1y": None, "speed_index_best_1y": None,
-                     "speed_index_avg_6m": None, "speed_index_trend": None})
+                     "speed_index_avg_6m": None, "speed_index_trend": None,
+                     "speed_index_adj_6m": None, "speed_index_adj_best3": None})
 
     # Phase 10B: 展開特徴量（per-horse計算分）
     # early_position_est: 枠番×脚質から序盤位置取りを推定
@@ -2926,49 +3077,17 @@ def _add_race_relative_features(feats: List[dict]) -> None:
         return [(v - mu) / sigma if v is not None and sigma > 1e-9 else (0.0 if v is not None else None)
                 for v in vals]
 
-    # 各特徴量リスト抽出
-    jpr  = [f.get("jockey_place_rate") for f in feats]
-    tpr  = [f.get("trainer_place_rate") for f in feats]
-    form = [f.get("dev_run1") for f in feats]
-    hpr  = [f.get("horse_place_rate") for f in feats]
-    vsim = [f.get("venue_sim_place_rate") for f in feats]
-    wkg  = [f.get("weight_kg") for f in feats]
+    # 各特徴量リスト抽出（ML大整理後: 重複削除済み）
+    jpr  = [f.get("jockey_place_rate") or f.get("jockey_place_rate_90d") for f in feats]
+    tpr  = [f.get("trainer_place_rate") or f.get("trainer_place_rate_90d") for f in feats]
 
-    # ランク
+    # ランク（残存: jockey_place_rank_in_race, trainer_place_rank_in_race のみ）
     jpr_rank  = _rank_normalize(jpr)
     tpr_rank  = _rank_normalize(tpr)
-    form_rank = _rank_normalize(form)
-    hpr_rank  = _rank_normalize(hpr)
-    vsim_rank = _rank_normalize(vsim)
-
-    # zスコア
-    jpr_z  = _zscore(jpr)
-    form_z = _zscore(form)
-
-    # 相対体重
-    valid_wkg = [v for v in wkg if v is not None]
-    wkg_mean = sum(valid_wkg) / len(valid_wkg) if valid_wkg else None
 
     for i, f in enumerate(feats):
         f["jockey_place_rank_in_race"]   = jpr_rank[i]
         f["trainer_place_rank_in_race"]  = tpr_rank[i]
-        f["horse_form_rank_in_race"]     = form_rank[i]
-        f["horse_place_rank_in_race"]    = hpr_rank[i]
-        f["venue_sim_rank_in_race"]      = vsim_rank[i]
-        f["jockey_place_zscore_in_race"] = jpr_z[i]
-        f["horse_form_zscore_in_race"]   = form_z[i]
-        f["relative_weight_kg"] = (f.get("weight_kg") - wkg_mean
-                                   if f.get("weight_kg") is not None and wkg_mean is not None
-                                   else None)
-        # win/place 比率
-        jwr = f.get("jockey_win_rate")
-        jpr_v = f.get("jockey_place_rate")
-        f["jockey_wp_ratio"] = (jwr / max(jpr_v, 1e-6)
-                                if jwr is not None and jpr_v is not None else None)
-        twr = f.get("trainer_win_rate")
-        tpr_v = f.get("trainer_place_rate")
-        f["trainer_wp_ratio"] = (twr / max(tpr_v, 1e-6)
-                                 if twr is not None and tpr_v is not None else None)
 
     # Batch5: 展開予測（フィールド脚質構成）
     # horse_running_style: 0=逃げ, 1=追込 (直近5走の4角位置/頭数の平均)
@@ -2983,14 +3102,6 @@ def _add_race_relative_features(feats: List[dict]) -> None:
         front_count = None
         pace_pressure = None
 
-    # Phase 10B: フィールド内脚質分散（均等 vs 偏り）
-    if len(valid_styles) >= 2:
-        _s_mean = sum(valid_styles) / len(valid_styles)
-        _s_var = sum((s - _s_mean) ** 2 for s in valid_styles) / len(valid_styles)
-        field_pace_var = _s_var ** 0.5  # 標準偏差
-    else:
-        field_pace_var = None
-
     for i, f in enumerate(feats):
         f["front_runner_count_in_race"] = front_count
         f["pace_pressure_index"] = pace_pressure
@@ -3002,19 +3113,7 @@ def _add_race_relative_features(feats: List[dict]) -> None:
         else:
             f["style_pace_affinity"] = None
 
-        # Phase 10B: フィールド脚質分散
-        f["field_pace_variance"] = field_pace_var
-
-        # Phase 10B: pace_horse_match — 馬のペース選好×予想ペース圧力の一致度
-        # pace_pref_score: 正=ハイペース得意, 負=スロー得意
-        # pace_pressure: 高=ハイペース予測
-        _pps = f.get("pace_pref_score")
-        if _pps is not None and pace_pressure is not None:
-            # 正規化: pace_pressure を [-1,1] スケールに変換 (0.5→0)
-            _pp_centered = (pace_pressure - 0.3) * 3.0  # 0.3を中立点として±
-            f["pace_horse_match"] = _pps * _pp_centered
-        else:
-            f["pace_horse_match"] = None
+        # Phase 10B: field_pace_variance, pace_horse_match は ML大整理で削除済み
 
 
 # ============================================================
@@ -3201,7 +3300,7 @@ def train_model(
         import numpy as np
         mat = []
         for f in rows:
-            mat.append([float(f[c]) if f[c] is not None else float("nan")
+            mat.append([float(f.get(c)) if f.get(c) is not None else float("nan")
                         for c in _feat_cols])
         return np.array(mat, dtype=np.float32)
 
@@ -3460,6 +3559,16 @@ def _collect_all_rows(valid_days: int = 30):
     all_train_rows: List[Tuple] = []
     all_valid_groups: List[Tuple] = []
 
+    # 調教特徴量抽出器をロード
+    training_extractor = None
+    try:
+        from src.ml.training_features import TrainingFeatureExtractor
+        training_extractor = TrainingFeatureExtractor()
+        training_extractor.load_all()
+        logger.info("調教特徴量抽出器ロード完了")
+    except Exception as e:
+        logger.warning("調教特徴量ロード失敗（スキップ）: %s", e)
+
     for race in races:
         date_str    = race.get("date", "")
         is_valid    = date_str >= split_date
@@ -3468,6 +3577,19 @@ def _collect_all_rows(valid_days: int = 30):
         venue_str   = str(race.get("venue_code", "") or "").zfill(2)
         distance    = int(race.get("distance") or 0)
         smile_cat   = _smile_key_ml(distance) if distance else ""
+        race_id     = race.get("race_id", "")
+
+        # 調教特徴量をレース単位で一括取得
+        train_feats_map = {}
+        if training_extractor:
+            horse_names = [
+                h.get("horse_name", "") for h in race.get("horses", [])
+                if h.get("horse_name")
+            ]
+            if horse_names:
+                train_feats_map = training_extractor.get_race_training_features(
+                    race_id, horse_names, date_str
+                )
 
         race_feats, race_labels = [], []
         for h in race.get("horses", []):
@@ -3478,6 +3600,10 @@ def _collect_all_rows(valid_days: int = 30):
             sid, bid = sire_map.get(hid, ("", ""))
             feat = _extract_features(dict(h, sire_id=sid, bms_id=bid),
                                      race, tracker, sire_tracker)
+            # 調教特徴量をマージ
+            hname = h.get("horse_name", "")
+            if hname in train_feats_map:
+                feat.update(train_feats_map[hname])
             race_feats.append(feat)
             race_labels.append(1 if fp <= 3 else 0)
 
@@ -3760,9 +3886,31 @@ class LGBMPredictor:
         if model is None:
             return {}
 
+        # 調教特徴量をレース単位で取得
+        train_feats_map = {}
+        try:
+            if not hasattr(self, "_training_extractor"):
+                from src.ml.training_features import TrainingFeatureExtractor
+                self._training_extractor = TrainingFeatureExtractor()
+                self._training_extractor.load_all()
+            race_id = race_dict.get("race_id", "")
+            date_str = race_dict.get("date", "")
+            if race_id and self._training_extractor:
+                horse_names = [h.get("horse_name", "") for h in horse_dicts if h.get("horse_name")]
+                if horse_names:
+                    train_feats_map = self._training_extractor.get_race_training_features(
+                        race_id, horse_names, date_str
+                    )
+        except Exception:
+            pass
+
         features, ids = [], []
         for h in horse_dicts:
             feat = _extract_features(h, race_dict, self._tracker, self._sire_tracker)
+            # 調教特徴量をマージ
+            hname = h.get("horse_name", "")
+            if hname in train_feats_map:
+                feat.update(train_feats_map[hname])
             features.append(feat)
             ids.append(h.get("horse_id", ""))
 
@@ -3820,6 +3968,7 @@ class LGBMPredictor:
             cond = race_info.track_condition_dirt
 
         race_dict = {
+            "race_id": race_info.race_id,
             "date": race_info.race_date,
             "venue": race_info.venue,
             "surface": race_info.course.surface,
@@ -3849,6 +3998,7 @@ class LGBMPredictor:
             pos_est, l3f_est = ev_map.get(h.horse_id, (None, None))
             horse_dicts.append({
                 "horse_id": h.horse_id,
+                "horse_name": h.horse_name,
                 "jockey_id": h.jockey_id,
                 "trainer_id": h.trainer_id,
                 "gate_no": h.gate_no,
@@ -3904,6 +4054,7 @@ class LGBMPredictor:
             cond = race_info.track_condition_dirt
 
         race_dict = {
+            "race_id": race_info.race_id,
             "date": race_info.race_date,
             "venue": race_info.venue,
             "surface": race_info.course.surface,
@@ -3931,6 +4082,7 @@ class LGBMPredictor:
             pos_est, l3f_est = ev_map.get(h.horse_id, (None, None))
             horse_dicts.append({
                 "horse_id": h.horse_id,
+                "horse_name": h.horse_name,
                 "jockey_id": h.jockey_id,
                 "trainer_id": h.trainer_id,
                 "gate_no": h.gate_no,

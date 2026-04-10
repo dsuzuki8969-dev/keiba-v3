@@ -1,19 +1,18 @@
 """
-600m地点（最終コーナー）位置取り予測 LightGBM モデル  (Phase B)
+初角（1コーナー）位置取り予測 LightGBM モデル
 
 目的:
-  展開偏差値の精度向上のため、各馬の最終コーナー相対位置を予測する。
-  既存の固定マッピング (_estimate_position) を置き換える。
+  逃げ馬判定の精度向上のため、各馬の初角相対位置を予測する。
+  従来の「4角位置×0.85」逆算を置き換える。
+
+学習データ:
+  - JRA: positions_corners[0] = 真の初角通過順位
+  - NAR: positions_corners[0] = 最終コーナー（小回りで初角プロキシ）
+  - corner_count, straight_m 等のコース特性で位置変動を学習
 
 使い方:
-  python -m src.ml.position_model                    # 学習 + 評価
-  python -m src.ml.position_model --evaluate-only    # 保存済みモデルで評価のみ
-  python -m src.ml.position_model --importance       # 特徴量重要度を表示
-
-設計:
-  - 目的変数: rel_position (最終コーナー位置/頭数, 0.0=先頭, 1.0=最後方)
-  - 特徴量: レース条件 + 馬の当日情報 + 過去位置ローリング + 騎手位置傾向 + ペース文脈
-  - 時系列分割 (train: ~cutoff / val: cutoff~)
+  python -m src.ml.first1c_model                    # 学習 + 評価
+  python -m src.ml.first1c_model --evaluate-only    # 保存済みモデルで評価のみ
 """
 
 import json
@@ -36,10 +35,10 @@ logger = get_logger(__name__)
 
 _PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
 ML_DATA_DIR = os.path.join(_PROJECT_ROOT, "data", "ml")
-MODEL_PATH = os.path.join(ML_DATA_DIR, "position_model.txt")
-META_PATH = os.path.join(ML_DATA_DIR, "position_meta.json")
-JOCKEY_CACHE_PATH = os.path.join(ML_DATA_DIR, "position_jockey_cache.json")
-TRAINER_CACHE_PATH = os.path.join(ML_DATA_DIR, "position_trainer_cache.json")
+MODEL_PATH = os.path.join(ML_DATA_DIR, "first1c_model.txt")
+META_PATH = os.path.join(ML_DATA_DIR, "first1c_meta.json")
+JOCKEY_CACHE_PATH = os.path.join(ML_DATA_DIR, "first1c_jockey_cache.json")
+TRAINER_CACHE_PATH = os.path.join(ML_DATA_DIR, "first1c_trainer_cache.json")
 
 WARMUP_DAYS = 90
 VAL_MONTHS = 4
@@ -68,44 +67,41 @@ LGB_PARAMS = {
 }
 
 FEATURE_COLUMNS = [
+    # レース条件
     "venue_code", "surface_enc", "distance", "condition_enc",
     "field_count", "grade_enc", "is_jra",
+    # 当日情報
     "gate_no", "horse_no", "weight_kg", "sex_enc", "age",
     "horse_weight", "weight_change", "relative_horse_no",
-    "n_corners",
+    # コース特性（1角専用）
+    "n_corners", "corner_count", "first_corner_enc", "straight_m",
+    "relative_gate_no",
+    # 過去位置ローリング（最終コーナー）
     "hist_pos_mean3", "hist_pos_mean5", "hist_pos_latest", "hist_pos_trend",
     "hist_pos_std5", "hist_pos_best5", "hist_pos_worst5",
+    # 過去成績
     "hist_finish_mean3", "hist_finish_mean5",
     "hist_l3f_mean5", "hist_run_count",
-    "hist_pos_same_surface", "hist_pos_same_venue",
+    "hist_pos_same_surface", "hist_pos_same_venue", "hist_pos_same_distband",
     "hist_win_rate5", "hist_place3_rate5",
     "hist_dist_change", "days_since_last",
+    # 騎手
     "jockey_avg_pos", "jockey_course_avg_pos", "jockey_ride_count",
-    # 騎手前行き率特徴量（Phase10追加）
-    "jockey_nige_rate",          # 騎手の逃げ率（1角1位率）
-    "jockey_mae_iki_rate",       # 騎手の前行き率（1角3位以内率）
-    "jockey_ds_mae_iki_rate",    # 差追馬での前行き率
-    # 調教師位置取り特徴量（Phase10追加）
-    "trainer_avg_pos",           # 調教師管理馬の平均位置
-    "trainer_mae_iki_rate",      # 調教師管理馬の前行き率
-    "trainer_ds_mae_iki_rate",   # 調教師管理馬の差追前行き率
+    # 騎手前行き率（Phase10追加）
+    "jockey_nige_rate", "jockey_mae_iki_rate", "jockey_ds_mae_iki_rate",
+    # 調教師位置取り（Phase10追加）
+    "trainer_avg_pos", "trainer_mae_iki_rate", "trainer_ds_mae_iki_rate",
     # 4角版率特徴量（Phase11追加: 勝負所でどこにいるか）
-    "jockey_4c_nige_rate",       # 4角で先頭キープ率（逃げ馬の粘り力）
-    "jockey_4c_mae_iki_rate",    # 4角で3番手以内率（射程圏確保力）
-    "jockey_4c_ds_mae_iki_rate", # 差追馬の4角前行き率（差し馬を押し上げる力）
-    "trainer_4c_nige_rate",      # 調教師管理馬の4角逃げ維持率
-    "trainer_4c_mae_iki_rate",   # 調教師管理馬の4角前行き率
-    "trainer_4c_ds_mae_iki_rate",# 調教師管理馬の差追4角前行き率
+    "jockey_4c_nige_rate", "jockey_4c_mae_iki_rate", "jockey_4c_ds_mae_iki_rate",
+    "trainer_4c_nige_rate", "trainer_4c_mae_iki_rate", "trainer_4c_ds_mae_iki_rate",
     # 1角→4角軌跡特徴量（Phase11追加: レース中の位置変化）
-    "jockey_pos_delta",          # 1角→4角の平均位置変化（+後退/-前進）
-    "jockey_hold_rate",          # 位置維持率（垂れない力）
-    "jockey_ds_pos_delta",       # 差追馬での位置変化
-    "trainer_pos_delta",         # 調教師の1角→4角平均軌跡
-    "trainer_hold_rate",         # 調教師の位置維持率
-    "trainer_ds_pos_delta",      # 調教師の差追軌跡
+    "jockey_pos_delta", "jockey_hold_rate", "jockey_ds_pos_delta",
+    "trainer_pos_delta", "trainer_hold_rate", "trainer_ds_pos_delta",
+    # ペース文脈
     "pace_n_front", "pace_front_ratio", "horse_style_est",
-    # 距離帯別位置取り（Phase3追加）
-    "hist_pos_same_distband",
+    # 1角専用ローリング
+    "hist_1c_mean3", "hist_1c_mean5", "hist_1c_latest",
+    "hist_1c_best5", "hist_escape_rate5", "hist_escape_rate_all",
     # フィールド強度特徴量（Phase9D追加）
     "grade_diff",               # 現レースグレード - 過去平均グレード（昇級=正）
     "hist_finish_rate_mean5",   # 過去5走の正規化着順平均（着順/出走頭数）
@@ -119,88 +115,195 @@ def _distance_band(d: int) -> str:
     return "mile"
 
 
-def _relative_position(corners: list, field_count: int) -> float:
+def _first_corner_position(corners: list, field_count: int) -> float:
+    """初角相対位置: positions_corners[0] / field_count"""
     if not corners or field_count <= 0:
         return np.nan
-    # 通過順0はデータ欠損（NARスクレイピングで取得不能な角）
-    # 最終角から順に有効値（0でない値）を探して使用
-    for pos in reversed(corners):
-        if isinstance(pos, (int, float)) and pos > 0:
-            return pos / max(field_count, 1)
-    # 全角が0（全欠損）→ NaN扱い
-    return np.nan
+    return corners[0] / max(field_count, 1)
 
 
-def _encode_surface(s: str) -> int:
-    return 0 if "芝" in str(s) else 1
+def _encode_condition(cond: str) -> int:
+    return {"良": 0, "稍重": 1, "稍": 1, "重": 2, "不良": 3}.get(str(cond), 0)
 
 
-def _encode_condition(c: str) -> int:
-    m = {"良": 0, "稍重": 1, "稍": 1, "重": 2, "不良": 3, "不": 3}
-    return m.get(str(c), 0)
+def _encode_grade(grade: str) -> int:
+    g = str(grade) if grade else ""
+    for i, pat in enumerate(["新馬", "未勝利", "1勝", "2勝", "3勝",
+                             "オープン", "リステッド", "G3", "G2", "G1"]):
+        if pat in g:
+            return i
+    return 2
 
 
-def _encode_grade(g: str) -> int:
-    m = {"新馬": 0, "未勝利": 1, "1勝": 2, "500万": 2, "2勝": 3, "1000万": 3,
-         "3勝": 4, "1600万": 4, "OP": 5, "L": 5, "G3": 6, "G2": 7, "G1": 8,
-         "交流重賞": 6, "その他": 2}
-    return m.get(str(g), 2)
-
-
-def _encode_sex(s: str) -> int:
+def _encode_sex(s) -> int:
     return {"牡": 0, "牝": 1, "セ": 2, "セン": 2}.get(str(s), 0)
 
 
-def load_ml_data() -> pd.DataFrame:
-    """last3f_model と同形式でデータ読込"""
+def _encode_first_corner(fc: str) -> int:
+    return {"短い": 0, "普通": 1, "長い": 2, "長いのみ": 2, "なし": 1}.get(str(fc), 1)
+
+
+# ============================================================
+# データ読込: last3f_model.load_ml_data() を再利用
+# ============================================================
+def load_ml_data():
     from src.ml.last3f_model import load_ml_data as _load
     return _load()
 
 
+# ============================================================
+# 特徴量構築
+# ============================================================
 def build_feature_table(df: pd.DataFrame) -> pd.DataFrame:
-    """位置取り予測用の特徴量を構築"""
+    """DataFrameに1角専用の特徴量を追加"""
     t0 = time.time()
+
     df = df.copy()
     df["race_date_dt"] = pd.to_datetime(df["race_date"], errors="coerce")
     df = df.dropna(subset=["race_date_dt"]).sort_values(["race_date_dt", "race_id", "horse_no"])
     df = df.reset_index(drop=True)
 
-    df["surface_enc"] = df["surface"].apply(_encode_surface)
-    df["condition_enc"] = df["condition"].apply(_encode_condition)
-    df["grade_enc"] = df["grade"].apply(_encode_grade)
-    df["sex_enc"] = df["sex"].apply(_encode_sex)
-    df["dist_band"] = df["distance"].apply(_distance_band)
+    # course_id 生成
+    df["course_id"] = df["venue_code"].astype(str).str.zfill(2) + "_" + df["surface"].astype(str) + "_" + df["distance"].astype(str)
 
-    df["rel_position"] = df.apply(
-        lambda r: _relative_position(r["positions_corners"], r["field_count"]), axis=1
+    # 目的変数: 初角相対位置
+    df["first1c_rel"] = df.apply(
+        lambda r: _first_corner_position(r["positions_corners"], r["field_count"]), axis=1
     )
-    df["relative_horse_no"] = df["horse_no"] / df["field_count"].clip(lower=1)
-    df["course_id"] = df["venue_code"] + "_" + df["surface_enc"].astype(str) + "_" + df["distance"].astype(str)
-    df["n_corners"] = df["positions_corners"].apply(lambda x: len(x) if isinstance(x, list) else 0)
 
+    # 最終コーナー相対位置（既存position_modelと同じ）
+    df["rel_position"] = df.apply(
+        lambda r: r["positions_corners"][-1] / max(r["field_count"], 1)
+        if r["positions_corners"] and r["field_count"] > 0 else np.nan, axis=1
+    )
+
+    # エンコーディング
+    df["surface_enc"] = df["surface"].map(lambda s: 0 if s == "芝" else 1)
+    df["condition_enc"] = df["condition"].map(_encode_condition)
+    df["grade_enc"] = df.get("grade", pd.Series(dtype=str)).fillna("").map(_encode_grade)
+    df["sex_enc"] = df["sex"].map(_encode_sex)
+    df["is_jra"] = df["is_jra"].astype(int)
+    df["relative_horse_no"] = df["horse_no"] / df["field_count"].clip(lower=1)
+    df["relative_gate_no"] = df["gate_no"] / df["field_count"].clip(lower=1)
+
+    # コーナー数
+    def _calc_n_corners(dist):
+        if dist >= 1800:
+            return 4
+        elif dist >= 1600:
+            return 3
+        return 2
+
+    df["n_corners"] = df["distance"].apply(_calc_n_corners)
+
+    # CourseMasterからコース特性を取得
+    logger.info("コース特性特徴量を構築中...")
+    _build_course_features(df)
+
+    # 過去走ローリング
     logger.info("過去走ローリング特徴量を構築中...")
     _build_horse_history_features(df)
 
-    logger.info("騎手位置特徴量を構築中...")
-    _build_jockey_position_features(df)
+    # 1角専用ローリング
+    logger.info("1角専用ローリング特徴量を構築中...")
+    _build_1c_history_features(df)
 
+    # 条件別位置取り
+    logger.info("条件別位置取り特徴量を構築中...")
+    _build_conditional_pos_rolling(df, "hist_pos_same_surface", "surface_enc")
+    _build_conditional_pos_rolling(df, "hist_pos_same_venue", "venue_code")
+    df["_distband"] = df["distance"].apply(_distance_band)
+    _build_conditional_pos_rolling(df, "hist_pos_same_distband", "_distband")
+    df.drop(columns=["_distband"], inplace=True)
+
+    # 勝率
+    df["_win"] = (df["finish_pos"] == 1).astype(float)
+    df["_place3"] = (df["finish_pos"] <= 3).astype(float)
+    gw = df.groupby("horse_id")
+    df["hist_win_rate5"] = gw["_win"].transform(lambda x: x.shift(1).rolling(5, min_periods=1).mean())
+    df["hist_place3_rate5"] = gw["_place3"].transform(lambda x: x.shift(1).rolling(5, min_periods=1).mean())
+    df.drop(columns=["_win", "_place3"], inplace=True)
+
+    # 距離変更
+    g = df.groupby("horse_id")
+    dist = g["distance"]
+    df["hist_dist_change"] = df["distance"] - dist.transform(lambda x: x.shift(1))
+
+    # Phase9D: フィールド強度特徴量
+    df["_finish_rate"] = df["finish_pos"] / df["field_count"].clip(lower=1)
+    df["hist_finish_rate_mean5"] = g["_finish_rate"].transform(
+        lambda x: x.shift(1).rolling(5, min_periods=1).mean()
+    )
+    df["_grade_enc_hist"] = g["grade_enc"].transform(
+        lambda x: x.shift(1).rolling(5, min_periods=1).mean()
+    )
+    df["grade_diff"] = df["grade_enc"] - df["_grade_enc_hist"]
+    df.drop(columns=["_finish_rate", "_grade_enc_hist"], inplace=True)
+
+    # 騎手
+    logger.info("騎手集約特徴量を構築中...")
+    _build_jockey_features(df)
+
+    # 調教師
     logger.info("調教師位置特徴量を構築中...")
-    _build_trainer_position_features(df)
+    _build_trainer_features(df)
 
+    # ペース文脈
     logger.info("ペース文脈特徴量を構築中...")
     _build_pace_context_features(df)
 
+    # 出走間隔
     df["days_since_last"] = df.groupby("horse_id")["race_date_dt"].diff().dt.days
 
-    logger.info(f"特徴量構築完了: {len(df):,}行, {time.time()-t0:.1f}秒")
+    df.sort_values(["race_date_dt", "race_id", "horse_no"], inplace=True)
+
+    elapsed = time.time() - t0
+    logger.info(f"特徴量構築完了: {len(df):,}行, {elapsed:.1f}秒")
     return df
 
 
-def _build_horse_history_features(df: pd.DataFrame) -> None:
-    df.sort_values(["horse_id", "race_date_dt"], inplace=True)
-    g = df.groupby("horse_id")
+def _build_course_features(df: pd.DataFrame) -> None:
+    """CourseMasterからコース特性を取得"""
+    try:
+        from data.masters.course_master import get_all_courses
+        courses = get_all_courses()
+    except Exception:
+        logger.warning("CourseMasterの読込に失敗。デフォルト値を使用")
+        df["corner_count"] = df["n_corners"]
+        df["first_corner_enc"] = 1
+        df["straight_m"] = 300
+        return
 
+    # course_id → CourseMaster マッピング
+    corner_count_arr = np.full(len(df), np.nan)
+    first_corner_arr = np.full(len(df), 1.0)
+    straight_arr = np.full(len(df), 300.0)
+
+    for idx in df.index:
+        vc = str(df.at[idx, "venue_code"]).zfill(2)
+        surf = df.at[idx, "surface"]
+        dist = df.at[idx, "distance"]
+        cid = f"{vc}_{surf}_{dist}"
+        cm = courses.get(cid)
+        if cm:
+            corner_count_arr[idx] = cm.corner_count
+            first_corner_arr[idx] = _encode_first_corner(cm.first_corner)
+            straight_arr[idx] = cm.straight_m
+        else:
+            corner_count_arr[idx] = df.at[idx, "n_corners"]
+
+    df["corner_count"] = corner_count_arr
+    df["first_corner_enc"] = first_corner_arr
+    df["straight_m"] = straight_arr
+
+
+def _build_horse_history_features(df: pd.DataFrame) -> None:
+    """馬の過去走からローリング特徴量を計算"""
+    df.sort_values(["horse_id", "race_date_dt"], inplace=True)
+
+    g = df.groupby("horse_id")
     pos = g["rel_position"]
+
     df["hist_pos_mean3"] = pos.transform(lambda x: x.shift(1).rolling(3, min_periods=1).mean())
     df["hist_pos_mean5"] = pos.transform(lambda x: x.shift(1).rolling(5, min_periods=1).mean())
     df["hist_pos_latest"] = pos.transform(lambda x: x.shift(1))
@@ -218,63 +321,115 @@ def _build_horse_history_features(df: pd.DataFrame) -> None:
 
     df["hist_run_count"] = g.cumcount()
 
-    _build_conditional_pos_rolling(df, "hist_pos_same_surface", "surface_enc")
-    _build_conditional_pos_rolling(df, "hist_pos_same_venue", "venue_code")
 
-    # 距離帯別位置取り（Phase3追加）
-    df["_distband"] = df["distance"].apply(_distance_band)
-    _build_conditional_pos_rolling(df, "hist_pos_same_distband", "_distband")
-    df.drop(columns=["_distband"], inplace=True)
+def _build_1c_history_features(df: pd.DataFrame) -> None:
+    """1角専用ローリング特徴量を計算
 
-    df["_win"] = (df["finish_pos"] == 1).astype(float)
-    df["_place3"] = (df["finish_pos"] <= 3).astype(float)
-    gw = df.groupby("horse_id")
-    df["hist_win_rate5"] = gw["_win"].transform(lambda x: x.shift(1).rolling(5, min_periods=1).mean())
-    df["hist_place3_rate5"] = gw["_place3"].transform(lambda x: x.shift(1).rolling(5, min_periods=1).mean())
-    df.drop(columns=["_win", "_place3"], inplace=True)
+    過去走の初角相対位置と逃げ成功率を蓄積。
+    リーケージ防止のため日付ベースで遅延蓄積。
+    """
+    df.sort_values(["horse_id", "race_date_dt"], inplace=True)
 
-    dist = g["distance"]
-    df["hist_dist_change"] = df["distance"] - dist.transform(lambda x: x.shift(1))
+    hist_1c_mean3 = np.full(len(df), np.nan)
+    hist_1c_mean5 = np.full(len(df), np.nan)
+    hist_1c_latest = np.full(len(df), np.nan)
+    hist_1c_best5 = np.full(len(df), np.nan)
+    escape_rate5 = np.full(len(df), np.nan)
+    escape_rate_all = np.full(len(df), np.nan)
 
-    # Phase9D: フィールド強度特徴量
-    # 正規化着順: finish_pos / field_count（0-1スケール）
-    df["_finish_rate"] = df["finish_pos"] / df["field_count"].clip(lower=1)
-    df["hist_finish_rate_mean5"] = g["_finish_rate"].transform(
-        lambda x: x.shift(1).rolling(5, min_periods=1).mean()
-    )
-    # グレード変化: 現レースグレード - 過去5走平均グレード
-    df["_grade_enc_hist"] = g["grade_enc"].transform(
-        lambda x: x.shift(1).rolling(5, min_periods=1).mean()
-    )
-    df["grade_diff"] = df["grade_enc"] - df["_grade_enc_hist"]
-    df.drop(columns=["_finish_rate", "_grade_enc_hist"], inplace=True)
+    # 馬ごとに1角位置履歴を蓄積
+    horse_1c_buf: Dict[str, list] = {}  # horse_id → [first1c_rel, ...]
+    horse_escape_buf: Dict[str, list] = {}  # horse_id → [is_leader, ...]
+
+    prev_date = None
+    date_batch = []
+
+    for idx in df.index:
+        current_date = df.at[idx, "race_date_dt"]
+
+        # 日付が変わったら前日分を蓄積（リーケージ防止）
+        if prev_date is not None and current_date != prev_date:
+            for bi in date_batch:
+                hid = df.at[bi, "horse_id"]
+                fc_rel = df.at[bi, "first1c_rel"]
+                if np.isnan(fc_rel):
+                    continue
+                horse_1c_buf.setdefault(hid, []).append(fc_rel)
+                horse_escape_buf.setdefault(hid, []).append(1.0 if fc_rel <= 1.0 / max(df.at[bi, "field_count"], 1) else 0.0)
+            date_batch = []
+
+        hid = df.at[idx, "horse_id"]
+        buf = horse_1c_buf.get(hid, [])
+        esc = horse_escape_buf.get(hid, [])
+
+        if buf:
+            recent5 = buf[-5:]
+            recent3 = buf[-3:]
+            hist_1c_mean3[idx] = np.mean(recent3)
+            hist_1c_mean5[idx] = np.mean(recent5)
+            hist_1c_latest[idx] = buf[-1]
+            hist_1c_best5[idx] = min(recent5)
+        if esc:
+            recent5_esc = esc[-5:]
+            escape_rate5[idx] = np.mean(recent5_esc)
+            escape_rate_all[idx] = np.mean(esc)
+
+        date_batch.append(idx)
+        prev_date = current_date
+
+    df["hist_1c_mean3"] = hist_1c_mean3
+    df["hist_1c_mean5"] = hist_1c_mean5
+    df["hist_1c_latest"] = hist_1c_latest
+    df["hist_1c_best5"] = hist_1c_best5
+    df["hist_escape_rate5"] = escape_rate5
+    df["hist_escape_rate_all"] = escape_rate_all
 
     df.sort_values(["race_date_dt", "race_id", "horse_no"], inplace=True)
 
 
 def _build_conditional_pos_rolling(df: pd.DataFrame, out_col: str, cond_col: str) -> None:
+    """条件別位置取りローリング"""
     results = np.full(len(df), np.nan)
-    buf: Dict[Tuple[str, object], List[float]] = defaultdict(list)
+    buf: Dict[Tuple, List[float]] = defaultdict(list)
     df_sorted = df.sort_values(["horse_id", "race_date_dt"])
+
     prev_hid = None
+    prev_date = None
+    pending = []
+
     for idx in df_sorted.index:
         hid = df_sorted.at[idx, "horse_id"]
-        cond_val = df_sorted.at[idx, cond_col]
-        rp = df_sorted.at[idx, "rel_position"]
+        dt = df_sorted.at[idx, "race_date_dt"]
+
         if hid != prev_hid:
-            buf.clear()
+            for pi, pkey, pval in pending:
+                if not np.isnan(pval):
+                    buf[pkey].append(pval)
+            pending = []
             prev_hid = hid
+            prev_date = None
+
+        if prev_date is not None and dt != prev_date:
+            for pi, pkey, pval in pending:
+                if not np.isnan(pval):
+                    buf[pkey].append(pval)
+            pending = []
+
+        cond_val = df_sorted.at[idx, cond_col]
         key = (hid, cond_val)
-        hist = buf[key]
-        if hist:
-            results[idx] = np.mean(hist[-5:])
-        if not np.isnan(rp) and 0 <= rp <= 1:
-            buf[key].append(rp)
+        vals = buf.get(key, [])
+        if vals:
+            results[idx] = np.mean(vals[-5:])
+
+        rp = df_sorted.at[idx, "rel_position"]
+        pending.append((idx, key, rp))
+        prev_date = dt
+
     df[out_col] = results
 
 
 def _get_pos_1c(corners, field_count: int) -> Tuple[Optional[int], float]:
-    """1角通過順位と相対位置を取得。corners[0]が1角。0=欠損扱い。"""
+    """1角通過順位と相対位置を取得"""
     if not corners or not isinstance(corners, list) or field_count <= 0:
         return None, np.nan
     pos = corners[0]
@@ -284,7 +439,7 @@ def _get_pos_1c(corners, field_count: int) -> Tuple[Optional[int], float]:
 
 
 def _get_pos_4c(corners, field_count: int) -> Tuple[Optional[int], float]:
-    """最終コーナー通過順位と相対位置を取得。最終角から逆順に有効値を探す。"""
+    """最終コーナー通過順位と相対位置を取得"""
     if not corners or not isinstance(corners, list) or field_count <= 0:
         return None, np.nan
     for pos in reversed(corners):
@@ -294,10 +449,7 @@ def _get_pos_4c(corners, field_count: int) -> Tuple[Optional[int], float]:
 
 
 def _get_pos_delta(corners, field_count: int) -> Tuple[float, bool]:
-    """1角→最終角の相対位置変化を返す。
-    Returns:
-        (delta, is_valid): delta=正は後退、負は前進。is_valid=Falseなら計算不可。
-    """
+    """1角→最終角の相対位置変化。正=後退、負=前進。"""
     if not corners or not isinstance(corners, list) or len(corners) < 2 or field_count <= 0:
         return np.nan, False
     pos_1c = corners[0]
@@ -308,102 +460,97 @@ def _get_pos_delta(corners, field_count: int) -> Tuple[float, bool]:
             break
     if not (isinstance(pos_1c, (int, float)) and pos_1c > 0) or pos_4c is None:
         return np.nan, False
-    rel_1c = pos_1c / max(field_count, 1)
-    rel_4c = pos_4c / max(field_count, 1)
-    delta = rel_4c - rel_1c  # 正=後退、負=前進
+    delta = (pos_4c / max(field_count, 1)) - (pos_1c / max(field_count, 1))
     return delta, True
 
 
-def _build_jockey_position_features(df: pd.DataFrame) -> None:
-    """騎手位置取り特徴量: 平均位置 + 1角率 + 4角率 + 1角→4角軌跡"""
+def _build_jockey_features(df: pd.DataFrame) -> None:
+    """騎手の位置取り傾向（1角率 + 4角率 + 1角→4角軌跡）"""
     df.sort_values(["race_date_dt", "race_id"], inplace=True)
-    j_pos_sum: Dict[str, float] = defaultdict(float)
-    j_pos_cnt: Dict[str, int] = defaultdict(int)
-    j_course_pos_sum: Dict[Tuple[str, str], float] = defaultdict(float)
-    j_course_pos_cnt: Dict[Tuple[str, str], int] = defaultdict(int)
-    j_rides: Dict[str, int] = defaultdict(int)
-    # Phase10: 1角前行き率用
+
+    jockey_pos_sum: Dict[str, float] = {}
+    jockey_pos_cnt: Dict[str, int] = {}
+    jockey_course_sum: Dict[Tuple[str, str], float] = {}
+    jockey_course_cnt: Dict[Tuple[str, str], int] = {}
+    # Phase10: 1角
     j_nige_cnt: Dict[str, int] = defaultdict(int)
     j_mae_iki_cnt: Dict[str, int] = defaultdict(int)
     j_1c_valid: Dict[str, int] = defaultdict(int)
     j_ds_mae_iki_cnt: Dict[str, int] = defaultdict(int)
     j_ds_valid: Dict[str, int] = defaultdict(int)
-    # Phase11: 4角版率
-    j_4c_nige_cnt: Dict[str, int] = defaultdict(int)       # 4角1位（逃げ粘り）
-    j_4c_mae_iki_cnt: Dict[str, int] = defaultdict(int)    # 4角3位以内（勝負所で前）
+    # Phase11: 4角
+    j_4c_nige_cnt: Dict[str, int] = defaultdict(int)
+    j_4c_mae_iki_cnt: Dict[str, int] = defaultdict(int)
     j_4c_valid: Dict[str, int] = defaultdict(int)
-    j_4c_ds_mae_iki_cnt: Dict[str, int] = defaultdict(int) # 差追馬の4角前行き
+    j_4c_ds_mae_iki_cnt: Dict[str, int] = defaultdict(int)
     j_4c_ds_valid: Dict[str, int] = defaultdict(int)
-    # Phase11: 1角→4角軌跡
-    j_delta_sum: Dict[str, float] = defaultdict(float)     # 位置変化の合計
-    j_delta_cnt: Dict[str, int] = defaultdict(int)         # 有効軌跡数
-    j_hold_cnt: Dict[str, int] = defaultdict(int)          # 位置維持or改善の回数
-    j_ds_delta_sum: Dict[str, float] = defaultdict(float)  # 差追馬の位置変化
+    # Phase11: 軌跡
+    j_delta_sum: Dict[str, float] = defaultdict(float)
+    j_delta_cnt: Dict[str, int] = defaultdict(int)
+    j_hold_cnt: Dict[str, int] = defaultdict(int)
+    j_ds_delta_sum: Dict[str, float] = defaultdict(float)
     j_ds_delta_cnt: Dict[str, int] = defaultdict(int)
 
-    j_avg = np.full(len(df), np.nan)
-    j_course_avg = np.full(len(df), np.nan)
-    j_ride_count = np.full(len(df), np.nan)
-    j_nige_rate = np.full(len(df), np.nan)
+    avg_arr = np.full(len(df), np.nan)
+    course_avg_arr = np.full(len(df), np.nan)
+    ride_cnt_arr = np.zeros(len(df))
+    j_nige_rate_arr = np.full(len(df), np.nan)
     j_mae_iki_rate_arr = np.full(len(df), np.nan)
     j_ds_mae_iki_rate_arr = np.full(len(df), np.nan)
-    # Phase11出力配列
     j_4c_nige_rate_arr = np.full(len(df), np.nan)
     j_4c_mae_iki_rate_arr = np.full(len(df), np.nan)
     j_4c_ds_mae_iki_rate_arr = np.full(len(df), np.nan)
     j_pos_delta_arr = np.full(len(df), np.nan)
     j_hold_rate_arr = np.full(len(df), np.nan)
     j_ds_pos_delta_arr = np.full(len(df), np.nan)
+
     prev_date = None
-    date_batch: List[int] = []
+    date_batch = []
 
     def _flush_batch(batch):
-        """日付バッチの統計を更新（未来漏洩防止）"""
-        for i in batch:
-            jid = df.at[i, "jockey_id"]
-            cid = df.at[i, "course_id"]
-            rp = df.at[i, "rel_position"]
-            j_rides[jid] += 1
+        for bi in batch:
+            jid = df.at[bi, "jockey_id"]
+            rp = df.at[bi, "rel_position"]
+            cid = df.at[bi, "course_id"]
             if not np.isnan(rp) and 0 <= rp <= 1:
-                j_pos_sum[jid] += rp
-                j_pos_cnt[jid] += 1
-                j_course_pos_sum[(jid, cid)] += rp
-                j_course_pos_cnt[(jid, cid)] += 1
-            corners = df.at[i, "positions_corners"]
-            fc = df.at[i, "field_count"]
-            is_ds = not np.isnan(rp) and rp > 0.5  # 差追馬判定
-            # --- 1角データ ---
+                jockey_pos_sum[jid] = jockey_pos_sum.get(jid, 0) + rp
+                jockey_pos_cnt[jid] = jockey_pos_cnt.get(jid, 0) + 1
+                jockey_course_sum[(jid, cid)] = jockey_course_sum.get((jid, cid), 0) + rp
+                jockey_course_cnt[(jid, cid)] = jockey_course_cnt.get((jid, cid), 0) + 1
+            corners = df.at[bi, "positions_corners"]
+            fc = df.at[bi, "field_count"]
+            is_ds = not np.isnan(rp) and rp > 0.5
+            threshold = 3.0 / max(fc, 1)
+            # 1角
             pos_1c, pos_1c_rel = _get_pos_1c(corners, fc)
             if pos_1c is not None:
                 j_1c_valid[jid] += 1
                 if pos_1c == 1:
                     j_nige_cnt[jid] += 1
-                threshold = 3.0 / max(fc, 1)
                 if pos_1c_rel <= threshold:
                     j_mae_iki_cnt[jid] += 1
                 if is_ds:
                     j_ds_valid[jid] += 1
                     if pos_1c_rel <= threshold:
                         j_ds_mae_iki_cnt[jid] += 1
-            # --- 4角データ（Phase11: 勝負所で正しい位置にいるか） ---
+            # 4角（Phase11）
             pos_4c, pos_4c_rel = _get_pos_4c(corners, fc)
             if pos_4c is not None:
                 j_4c_valid[jid] += 1
                 if pos_4c == 1:
                     j_4c_nige_cnt[jid] += 1
-                threshold_4c = 3.0 / max(fc, 1)
-                if pos_4c_rel <= threshold_4c:
+                if pos_4c_rel <= threshold:
                     j_4c_mae_iki_cnt[jid] += 1
                 if is_ds:
                     j_4c_ds_valid[jid] += 1
-                    if pos_4c_rel <= threshold_4c:
+                    if pos_4c_rel <= threshold:
                         j_4c_ds_mae_iki_cnt[jid] += 1
-            # --- 1角→4角軌跡（Phase11: レース中の位置変化） ---
+            # 軌跡（Phase11）
             delta, delta_valid = _get_pos_delta(corners, fc)
             if delta_valid:
                 j_delta_sum[jid] += delta
                 j_delta_cnt[jid] += 1
-                if delta <= 0:  # 位置維持or前進
+                if delta <= 0:
                     j_hold_cnt[jid] += 1
                 if is_ds:
                     j_ds_delta_sum[jid] += delta
@@ -417,70 +564,68 @@ def _build_jockey_position_features(df: pd.DataFrame) -> None:
 
         jid = df.at[idx, "jockey_id"]
         cid = df.at[idx, "course_id"]
-        if j_pos_cnt[jid] > 0:
-            j_avg[idx] = j_pos_sum[jid] / j_pos_cnt[jid]
-        if j_course_pos_cnt[(jid, cid)] > 0:
-            j_course_avg[idx] = j_course_pos_sum[(jid, cid)] / j_course_pos_cnt[(jid, cid)]
-        j_ride_count[idx] = j_rides[jid]
-        # Phase10: 1角前行き率
+
+        cnt = jockey_pos_cnt.get(jid, 0)
+        if cnt > 0:
+            avg_arr[idx] = jockey_pos_sum[jid] / cnt
+        ride_cnt_arr[idx] = cnt
+        cc = jockey_course_cnt.get((jid, cid), 0)
+        if cc > 0:
+            course_avg_arr[idx] = jockey_course_sum[(jid, cid)] / cc
+        # 1角率
         if j_1c_valid[jid] >= 10:
-            j_nige_rate[idx] = j_nige_cnt[jid] / j_1c_valid[jid]
+            j_nige_rate_arr[idx] = j_nige_cnt[jid] / j_1c_valid[jid]
             j_mae_iki_rate_arr[idx] = j_mae_iki_cnt[jid] / j_1c_valid[jid]
         if j_ds_valid[jid] >= 5:
             j_ds_mae_iki_rate_arr[idx] = j_ds_mae_iki_cnt[jid] / j_ds_valid[jid]
-        # Phase11: 4角版率（勝負所でどこにいるか）
+        # 4角率（Phase11）
         if j_4c_valid[jid] >= 10:
             j_4c_nige_rate_arr[idx] = j_4c_nige_cnt[jid] / j_4c_valid[jid]
             j_4c_mae_iki_rate_arr[idx] = j_4c_mae_iki_cnt[jid] / j_4c_valid[jid]
         if j_4c_ds_valid[jid] >= 5:
             j_4c_ds_mae_iki_rate_arr[idx] = j_4c_ds_mae_iki_cnt[jid] / j_4c_ds_valid[jid]
-        # Phase11: 軌跡（レース中にどう動くか）
+        # 軌跡（Phase11）
         if j_delta_cnt[jid] >= 10:
             j_pos_delta_arr[idx] = j_delta_sum[jid] / j_delta_cnt[jid]
             j_hold_rate_arr[idx] = j_hold_cnt[jid] / j_delta_cnt[jid]
         if j_ds_delta_cnt[jid] >= 5:
             j_ds_pos_delta_arr[idx] = j_ds_delta_sum[jid] / j_ds_delta_cnt[jid]
+
         date_batch.append(idx)
         prev_date = current_date
 
     if date_batch:
         _flush_batch(date_batch)
 
-    df["jockey_avg_pos"] = j_avg
-    df["jockey_course_avg_pos"] = j_course_avg
-    df["jockey_ride_count"] = j_ride_count
-    df["jockey_nige_rate"] = j_nige_rate
+    df["jockey_avg_pos"] = avg_arr
+    df["jockey_course_avg_pos"] = course_avg_arr
+    df["jockey_ride_count"] = ride_cnt_arr
+    df["jockey_nige_rate"] = j_nige_rate_arr
     df["jockey_mae_iki_rate"] = j_mae_iki_rate_arr
     df["jockey_ds_mae_iki_rate"] = j_ds_mae_iki_rate_arr
-    # Phase11: 4角版率
     df["jockey_4c_nige_rate"] = j_4c_nige_rate_arr
     df["jockey_4c_mae_iki_rate"] = j_4c_mae_iki_rate_arr
     df["jockey_4c_ds_mae_iki_rate"] = j_4c_ds_mae_iki_rate_arr
-    # Phase11: 軌跡
     df["jockey_pos_delta"] = j_pos_delta_arr
     df["jockey_hold_rate"] = j_hold_rate_arr
     df["jockey_ds_pos_delta"] = j_ds_pos_delta_arr
-    df.sort_values(["race_date_dt", "race_id", "horse_no"], inplace=True)
 
 
-def _build_trainer_position_features(df: pd.DataFrame) -> None:
-    """調教師位置取り特徴量: 平均位置 + 1角率 + 4角率 + 1角→4角軌跡"""
+def _build_trainer_features(df: pd.DataFrame) -> None:
+    """調教師位置取り特徴量（1角率 + 4角率 + 軌跡）"""
     df.sort_values(["race_date_dt", "race_id"], inplace=True)
     t_pos_sum: Dict[str, float] = defaultdict(float)
     t_pos_cnt: Dict[str, int] = defaultdict(int)
-    t_rides: Dict[str, int] = defaultdict(int)
-    # Phase10: 1角
     t_mae_iki_cnt: Dict[str, int] = defaultdict(int)
     t_1c_valid: Dict[str, int] = defaultdict(int)
     t_ds_mae_iki_cnt: Dict[str, int] = defaultdict(int)
     t_ds_valid: Dict[str, int] = defaultdict(int)
-    # Phase11: 4角版率
+    # Phase11
     t_4c_nige_cnt: Dict[str, int] = defaultdict(int)
     t_4c_mae_iki_cnt: Dict[str, int] = defaultdict(int)
     t_4c_valid: Dict[str, int] = defaultdict(int)
     t_4c_ds_mae_iki_cnt: Dict[str, int] = defaultdict(int)
     t_4c_ds_valid: Dict[str, int] = defaultdict(int)
-    # Phase11: 軌跡
     t_delta_sum: Dict[str, float] = defaultdict(float)
     t_delta_cnt: Dict[str, int] = defaultdict(int)
     t_hold_cnt: Dict[str, int] = defaultdict(int)
@@ -490,7 +635,6 @@ def _build_trainer_position_features(df: pd.DataFrame) -> None:
     t_avg = np.full(len(df), np.nan)
     t_mae_iki_rate_arr = np.full(len(df), np.nan)
     t_ds_mae_iki_rate_arr = np.full(len(df), np.nan)
-    # Phase11
     t_4c_nige_rate_arr = np.full(len(df), np.nan)
     t_4c_mae_iki_rate_arr = np.full(len(df), np.nan)
     t_4c_ds_mae_iki_rate_arr = np.full(len(df), np.nan)
@@ -498,7 +642,7 @@ def _build_trainer_position_features(df: pd.DataFrame) -> None:
     t_hold_rate_arr = np.full(len(df), np.nan)
     t_ds_pos_delta_arr = np.full(len(df), np.nan)
     prev_date = None
-    date_batch: List[int] = []
+    date_batch = []
 
     def _flush_batch(batch):
         for i in batch:
@@ -506,38 +650,36 @@ def _build_trainer_position_features(df: pd.DataFrame) -> None:
             if not tid:
                 continue
             rp = df.at[i, "rel_position"]
-            t_rides[tid] += 1
             if not np.isnan(rp) and 0 <= rp <= 1:
                 t_pos_sum[tid] += rp
                 t_pos_cnt[tid] += 1
             corners = df.at[i, "positions_corners"]
             fc = df.at[i, "field_count"]
             is_ds = not np.isnan(rp) and rp > 0.5
+            threshold = 3.0 / max(fc, 1)
             # 1角
             pos_1c, pos_1c_rel = _get_pos_1c(corners, fc)
             if pos_1c is not None:
                 t_1c_valid[tid] += 1
-                threshold = 3.0 / max(fc, 1)
                 if pos_1c_rel <= threshold:
                     t_mae_iki_cnt[tid] += 1
                 if is_ds:
                     t_ds_valid[tid] += 1
                     if pos_1c_rel <= threshold:
                         t_ds_mae_iki_cnt[tid] += 1
-            # 4角（Phase11）
+            # 4角
             pos_4c, pos_4c_rel = _get_pos_4c(corners, fc)
             if pos_4c is not None:
                 t_4c_valid[tid] += 1
                 if pos_4c == 1:
                     t_4c_nige_cnt[tid] += 1
-                threshold_4c = 3.0 / max(fc, 1)
-                if pos_4c_rel <= threshold_4c:
+                if pos_4c_rel <= threshold:
                     t_4c_mae_iki_cnt[tid] += 1
                 if is_ds:
                     t_4c_ds_valid[tid] += 1
-                    if pos_4c_rel <= threshold_4c:
+                    if pos_4c_rel <= threshold:
                         t_4c_ds_mae_iki_cnt[tid] += 1
-            # 軌跡（Phase11）
+            # 軌跡
             delta, delta_valid = _get_pos_delta(corners, fc)
             if delta_valid:
                 t_delta_sum[tid] += delta
@@ -561,13 +703,11 @@ def _build_trainer_position_features(df: pd.DataFrame) -> None:
             t_mae_iki_rate_arr[idx] = t_mae_iki_cnt[tid] / t_1c_valid[tid]
         if tid and t_ds_valid[tid] >= 10:
             t_ds_mae_iki_rate_arr[idx] = t_ds_mae_iki_cnt[tid] / t_ds_valid[tid]
-        # Phase11: 4角版率
         if tid and t_4c_valid[tid] >= 20:
             t_4c_nige_rate_arr[idx] = t_4c_nige_cnt[tid] / t_4c_valid[tid]
             t_4c_mae_iki_rate_arr[idx] = t_4c_mae_iki_cnt[tid] / t_4c_valid[tid]
         if tid and t_4c_ds_valid[tid] >= 10:
             t_4c_ds_mae_iki_rate_arr[idx] = t_4c_ds_mae_iki_cnt[tid] / t_4c_ds_valid[tid]
-        # Phase11: 軌跡
         if tid and t_delta_cnt[tid] >= 20:
             t_pos_delta_arr[idx] = t_delta_sum[tid] / t_delta_cnt[tid]
             t_hold_rate_arr[idx] = t_hold_cnt[tid] / t_delta_cnt[tid]
@@ -582,11 +722,9 @@ def _build_trainer_position_features(df: pd.DataFrame) -> None:
     df["trainer_avg_pos"] = t_avg
     df["trainer_mae_iki_rate"] = t_mae_iki_rate_arr
     df["trainer_ds_mae_iki_rate"] = t_ds_mae_iki_rate_arr
-    # Phase11: 4角版率
     df["trainer_4c_nige_rate"] = t_4c_nige_rate_arr
     df["trainer_4c_mae_iki_rate"] = t_4c_mae_iki_rate_arr
     df["trainer_4c_ds_mae_iki_rate"] = t_4c_ds_mae_iki_rate_arr
-    # Phase11: 軌跡
     df["trainer_pos_delta"] = t_pos_delta_arr
     df["trainer_hold_rate"] = t_hold_rate_arr
     df["trainer_ds_pos_delta"] = t_ds_pos_delta_arr
@@ -594,8 +732,10 @@ def _build_trainer_position_features(df: pd.DataFrame) -> None:
 
 
 def _build_pace_context_features(df: pd.DataFrame) -> None:
-    horse_style: Dict[str, float] = {}
+    """ペース文脈特徴量"""
     df.sort_values(["race_date_dt", "race_id"], inplace=True)
+
+    horse_style: Dict[str, float] = {}
     n_front = np.full(len(df), np.nan)
     front_ratio = np.full(len(df), np.nan)
     self_style = np.full(len(df), np.nan)
@@ -625,30 +765,38 @@ def _build_pace_context_features(df: pd.DataFrame) -> None:
     df.sort_values(["race_date_dt", "race_id", "horse_no"], inplace=True)
 
 
+# ============================================================
+# 学習・評価
+# ============================================================
 def prepare_datasets(df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
-    mask_target = df["rel_position"].notna() & (df["rel_position"] >= 0) & (df["rel_position"] <= 1)
+    """ウォームアップ除外 + 時系列 train/val 分割"""
+    df = df.copy()
+    mask_target = df["first1c_rel"].notna() & (df["first1c_rel"] >= 0) & (df["first1c_rel"] <= 1)
     min_date = df["race_date_dt"].min()
     warmup_end = min_date + timedelta(days=WARMUP_DAYS)
     mask_warmup = df["race_date_dt"] >= warmup_end
     mask_hist = df["hist_run_count"] >= 1
-    mask_fc = df["field_count"] >= 4
+    mask_field = df["field_count"] >= 4
 
-    valid = df[mask_target & mask_warmup & mask_hist & mask_fc].copy()
-    logger.info(f"有効データ: {len(valid):,}行")
+    valid = df[mask_target & mask_warmup & mask_hist & mask_field].copy()
+    logger.info(f"有効データ: {len(valid):,}行 (除外: 目的変数{(~mask_target).sum():,}, "
+                f"ウォームアップ{(~mask_warmup).sum():,}, 初走{(~mask_hist).sum():,})")
 
     max_date = valid["race_date_dt"].max()
     cutoff = max_date - timedelta(days=30 * VAL_MONTHS)
     train = valid[valid["race_date_dt"] < cutoff]
     val = valid[valid["race_date_dt"] >= cutoff]
-    logger.info(f"Train: {len(train):,}行, Val: {len(val):,}行")
+
+    logger.info(f"Train: {len(train):,}行 (~{cutoff.strftime('%Y-%m-%d')})")
+    logger.info(f"Val:   {len(val):,}行 ({cutoff.strftime('%Y-%m-%d')}~)")
     return train, val
 
 
 def train_model(train_df: pd.DataFrame, val_df: pd.DataFrame) -> lgb.Booster:
     X_train = train_df[FEATURE_COLUMNS].copy()
-    y_train = train_df["rel_position"]
+    y_train = train_df["first1c_rel"]
     X_val = val_df[FEATURE_COLUMNS].copy()
-    y_val = val_df["rel_position"]
+    y_val = val_df["first1c_rel"]
 
     for col in CATEGORICAL_FEATURES:
         if col in X_train.columns:
@@ -658,14 +806,19 @@ def train_model(train_df: pd.DataFrame, val_df: pd.DataFrame) -> lgb.Booster:
     dtrain = lgb.Dataset(X_train, label=y_train, categorical_feature=CATEGORICAL_FEATURES)
     dval = lgb.Dataset(X_val, label=y_val, reference=dtrain, categorical_feature=CATEGORICAL_FEATURES)
 
+    callbacks = [
+        lgb.log_evaluation(period=200),
+        lgb.early_stopping(stopping_rounds=100),
+    ]
+
     model = lgb.train(
-        LGB_PARAMS,
-        dtrain,
+        LGB_PARAMS, dtrain,
         num_boost_round=3000,
         valid_sets=[dtrain, dval],
         valid_names=["train", "val"],
-        callbacks=[lgb.log_evaluation(period=200), lgb.early_stopping(stopping_rounds=100)],
+        callbacks=callbacks,
     )
+
     logger.info(f"学習完了: {model.best_iteration} rounds, best MAE={model.best_score['val']['l1']:.4f}")
     return model
 
@@ -676,54 +829,42 @@ def evaluate_model(model: lgb.Booster, val_df: pd.DataFrame) -> dict:
         if col in X_val.columns:
             X_val[col] = X_val[col].astype("category")
 
-    y_true = val_df["rel_position"].values
+    y_true = val_df["first1c_rel"].values
     y_pred = model.predict(X_val, num_iteration=model.best_iteration)
     y_pred = np.clip(y_pred, 0.0, 1.0)
 
-    y_baseline = val_df["hist_pos_mean3"].values.copy()
+    # ベースライン: 過去走平均位置
+    y_baseline = val_df["hist_1c_mean3"].values.copy()
     bl_mask = np.isnan(y_baseline)
-    y_baseline[bl_mask] = val_df.loc[bl_mask, "hist_pos_mean5"].values
+    y_baseline[bl_mask] = val_df.loc[bl_mask, "hist_pos_mean3"].values
     still_nan = np.isnan(y_baseline)
     y_baseline[still_nan] = 0.5
 
     mae_model = np.mean(np.abs(y_true - y_pred))
     mae_baseline = np.mean(np.abs(y_true - y_baseline))
+    improvement = (mae_baseline - mae_model) / mae_baseline * 100
+
     within_01 = np.mean(np.abs(y_true - y_pred) <= 0.1) * 100
     within_02 = np.mean(np.abs(y_true - y_pred) <= 0.2) * 100
-    improvement_mae = (mae_baseline - mae_model) / mae_baseline * 100 if mae_baseline > 0 else 0.0
 
     # JRA/NAR別
     jra_mask = val_df["is_jra"].values.astype(bool)
-    metrics_jra = _calc_subset_metrics(y_true, y_pred, y_baseline, jra_mask)
-    metrics_nar = _calc_subset_metrics(y_true, y_pred, y_baseline, ~jra_mask)
-
-    # 芝/ダート別
-    turf_mask = val_df["surface_enc"].values == 0
-    metrics_turf = _calc_subset_metrics(y_true, y_pred, y_baseline, turf_mask)
-    metrics_dirt = _calc_subset_metrics(y_true, y_pred, y_baseline, ~turf_mask)
-
-    # 距離帯別
-    dist_metrics = {}
-    for lo, hi, label in DISTANCE_BANDS:
-        mask = val_df["distance"].between(lo, hi).values
-        if mask.sum() > 0:
-            dist_metrics[label] = _calc_subset_metrics(y_true, y_pred, y_baseline, mask)
+    metrics_jra = _calc_subset(y_true, y_pred, y_baseline, jra_mask)
+    metrics_nar = _calc_subset(y_true, y_pred, y_baseline, ~jra_mask)
 
     return {
-        "val_size": len(y_true),
-        "mae_model": round(mae_model, 4),
-        "mae_baseline": round(mae_baseline, 4),
-        "improvement_mae_pct": round(improvement_mae, 2),
-        "within_0.1": round(within_01, 2),
-        "within_0.2": round(within_02, 2),
+        "val_size": len(val_df),
+        "mae_model": round(float(mae_model), 4),
+        "mae_baseline": round(float(mae_baseline), 4),
+        "improvement_mae_pct": round(float(improvement), 2),
+        "within_0.1": round(float(within_01), 2),
+        "within_0.2": round(float(within_02), 2),
         "best_iteration": model.best_iteration,
         "by_org": {"JRA": metrics_jra, "NAR": metrics_nar},
-        "by_surface": {"芝": metrics_turf, "ダート": metrics_dirt},
-        "by_distance": dist_metrics,
     }
 
 
-def _calc_subset_metrics(y_true, y_pred, y_baseline, mask) -> dict:
+def _calc_subset(y_true, y_pred, y_baseline, mask) -> dict:
     if mask.sum() == 0:
         return {"n": 0}
     yt, yp, yb = y_true[mask], y_pred[mask], y_baseline[mask]
@@ -731,17 +872,57 @@ def _calc_subset_metrics(y_true, y_pred, y_baseline, mask) -> dict:
         "n": int(mask.sum()),
         "mae_model": round(float(np.mean(np.abs(yt - yp))), 4),
         "mae_baseline": round(float(np.mean(np.abs(yt - yb))), 4),
-        "within_0.1": round(float(np.mean(np.abs(yt - yp) <= 0.1) * 100), 2),
         "within_0.2": round(float(np.mean(np.abs(yt - yp) <= 0.2) * 100), 2),
     }
 
 
+def print_report(metrics: dict, fi=None) -> None:
+    print("\n" + "=" * 60)
+    print("  初角位置取り予測モデル  学習レポート")
+    print("=" * 60)
+    print(f"\n検証データ: {metrics['val_size']:,}行")
+    print(f"\n{'指標':<20} {'モデル':>10} {'ベースライン':>12} {'改善':>8}")
+    print("-" * 55)
+    print(f"{'MAE':<20} {metrics['mae_model']:>10.4f} {metrics['mae_baseline']:>12.4f} "
+          f"{metrics.get('improvement_mae_pct', 0):>+7.2f}%")
+    print(f"{'±0.1以内 (%)':<20} {metrics['within_0.1']:>10.2f}")
+    print(f"{'±0.2以内 (%)':<20} {metrics['within_0.2']:>10.2f}")
+
+    for label, key in [("JRA", "JRA"), ("NAR", "NAR")]:
+        m = metrics["by_org"].get(key, {})
+        if m.get("n", 0) > 0:
+            print(f"\n  {label:>8} MAE={m['mae_model']:.4f} (BL={m['mae_baseline']:.4f}) "
+                  f"±0.2={m['within_0.2']:.1f}%  n={m['n']:,}")
+
+    if fi is not None:
+        print(f"\n  特徴量重要度 Top 15:")
+        for i, row in fi.head(15).iterrows():
+            bar = "#" * int(row["pct"])
+            print(f"    {i+1:>2}. {row['feature']:<28} {row['pct']:>6.2f}%  {bar}")
+
+    print(f"\n  学習ラウンド: {metrics['best_iteration']}")
+    print("=" * 60)
+
+
+def get_feature_importance(model: lgb.Booster) -> pd.DataFrame:
+    imp = model.feature_importance(importance_type="gain")
+    names = model.feature_name()
+    fi = pd.DataFrame({"feature": names, "importance": imp})
+    fi = fi.sort_values("importance", ascending=False).reset_index(drop=True)
+    fi["pct"] = (fi["importance"] / fi["importance"].sum() * 100).round(2)
+    return fi
+
+
+# ============================================================
+# 保存・読込
+# ============================================================
 def save_model(model: lgb.Booster, metrics: dict) -> None:
     os.makedirs(os.path.dirname(MODEL_PATH), exist_ok=True)
     model.save_model(MODEL_PATH)
     meta = {
         "feature_columns": FEATURE_COLUMNS,
         "categorical_features": CATEGORICAL_FEATURES,
+        "lgb_params": LGB_PARAMS,
         "metrics": metrics,
         "trained_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "best_iteration": model.best_iteration,
@@ -757,220 +938,78 @@ def load_model() -> Optional[lgb.Booster]:
     return lgb.Booster(model_file=MODEL_PATH)
 
 
-def load_meta() -> Optional[dict]:
-    if not os.path.exists(META_PATH):
-        return None
-    with open(META_PATH, "r", encoding="utf-8") as f:
-        return json.load(f)
-
-
-def _build_person_cache_stats(valid_df: pd.DataFrame, id_col: str) -> Dict[str, dict]:
-    """騎手/調教師の位置取りキャッシュ用統計を一括計算"""
-    stats: Dict[str, dict] = defaultdict(lambda: {
-        "nige": 0, "mae_iki": 0, "valid_1c": 0,
-        "ds_mae_iki": 0, "ds_valid": 0,
-        "4c_nige": 0, "4c_mae_iki": 0, "valid_4c": 0,
-        "4c_ds_mae_iki": 0, "4c_ds_valid": 0,
-        "delta_sum": 0.0, "delta_cnt": 0, "hold_cnt": 0,
-        "ds_delta_sum": 0.0, "ds_delta_cnt": 0,
-    })
-    for idx in valid_df.index:
-        pid = valid_df.at[idx, id_col]
-        if not pid:
-            continue
-        corners = valid_df.at[idx, "positions_corners"]
-        fc = valid_df.at[idx, "field_count"]
-        rp = valid_df.at[idx, "rel_position"]
-        is_ds = rp > 0.5
-        s = stats[pid]
-        threshold = 3.0 / max(fc, 1)
-        # 1角
-        pos_1c, pos_1c_rel = _get_pos_1c(corners, fc)
-        if pos_1c is not None:
-            s["valid_1c"] += 1
-            if pos_1c == 1:
-                s["nige"] += 1
-            if pos_1c_rel <= threshold:
-                s["mae_iki"] += 1
-            if is_ds:
-                s["ds_valid"] += 1
-                if pos_1c_rel <= threshold:
-                    s["ds_mae_iki"] += 1
-        # 4角
-        pos_4c, pos_4c_rel = _get_pos_4c(corners, fc)
-        if pos_4c is not None:
-            s["valid_4c"] += 1
-            if pos_4c == 1:
-                s["4c_nige"] += 1
-            if pos_4c_rel <= threshold:
-                s["4c_mae_iki"] += 1
-            if is_ds:
-                s["4c_ds_valid"] += 1
-                if pos_4c_rel <= threshold:
-                    s["4c_ds_mae_iki"] += 1
-        # 軌跡
-        delta, delta_valid = _get_pos_delta(corners, fc)
-        if delta_valid:
-            s["delta_sum"] += delta
-            s["delta_cnt"] += 1
-            if delta <= 0:
-                s["hold_cnt"] += 1
-            if is_ds:
-                s["ds_delta_sum"] += delta
-                s["ds_delta_cnt"] += 1
-    return stats
-
-
-def _stats_to_cache_dict(stats: Dict[str, dict], min_1c: int, min_4c: int,
-                         min_ds: int, min_delta: int, min_ds_delta: int) -> dict:
-    """統計dictをキャッシュJSON用dictに変換"""
-    nige_rate, mae_iki_rate, ds_mae_iki_rate = {}, {}, {}
-    nige_rate_4c, mae_iki_rate_4c, ds_mae_iki_rate_4c = {}, {}, {}
-    pos_delta, hold_rate, ds_pos_delta = {}, {}, {}
-    for pid, s in stats.items():
-        if s["valid_1c"] >= min_1c:
-            nige_rate[pid] = round(s["nige"] / s["valid_1c"], 4)
-            mae_iki_rate[pid] = round(s["mae_iki"] / s["valid_1c"], 4)
-        if s["ds_valid"] >= min_ds:
-            ds_mae_iki_rate[pid] = round(s["ds_mae_iki"] / s["ds_valid"], 4)
-        if s["valid_4c"] >= min_4c:
-            nige_rate_4c[pid] = round(s["4c_nige"] / s["valid_4c"], 4)
-            mae_iki_rate_4c[pid] = round(s["4c_mae_iki"] / s["valid_4c"], 4)
-        if s["4c_ds_valid"] >= min_ds:
-            ds_mae_iki_rate_4c[pid] = round(s["4c_ds_mae_iki"] / s["4c_ds_valid"], 4)
-        if s["delta_cnt"] >= min_delta:
-            pos_delta[pid] = round(s["delta_sum"] / s["delta_cnt"], 4)
-            hold_rate[pid] = round(s["hold_cnt"] / s["delta_cnt"], 4)
-        if s["ds_delta_cnt"] >= min_ds_delta:
-            ds_pos_delta[pid] = round(s["ds_delta_sum"] / s["ds_delta_cnt"], 4)
-    return {
-        "nige_rate": nige_rate, "mae_iki_rate": mae_iki_rate,
-        "ds_mae_iki_rate": ds_mae_iki_rate,
-        "4c_nige_rate": nige_rate_4c, "4c_mae_iki_rate": mae_iki_rate_4c,
-        "4c_ds_mae_iki_rate": ds_mae_iki_rate_4c,
-        "pos_delta": pos_delta, "hold_rate": hold_rate,
-        "ds_pos_delta": ds_pos_delta,
-    }
-
-
-def build_jockey_cache(df: pd.DataFrame) -> None:
-    valid = df[df["rel_position"].notna() & (df["rel_position"] >= 0) & (df["rel_position"] <= 1)]
-    avg = valid.groupby("jockey_id")["rel_position"].mean().to_dict()
-    course_avg = valid.groupby(["jockey_id", "course_id"])["rel_position"].mean()
-    course_avg_dict = {f"{jid}|{cid}": v for (jid, cid), v in course_avg.items()}
-    rides = df.groupby("jockey_id").size().to_dict()
-
-    j_stats = _build_person_cache_stats(valid, "jockey_id")
-    rate_dict = _stats_to_cache_dict(j_stats, min_1c=10, min_4c=10, min_ds=5,
-                                     min_delta=10, min_ds_delta=5)
-    cache = {
-        "avg": {k: round(v, 4) for k, v in avg.items()},
-        "course_avg": {k: round(v, 4) for k, v in course_avg_dict.items()},
-        "rides": rides,
-        **rate_dict,
-    }
-    with open(JOCKEY_CACHE_PATH, "w", encoding="utf-8") as f:
-        json.dump(cache, f, ensure_ascii=False)
-    logger.info(f"騎手キャッシュ保存: {JOCKEY_CACHE_PATH} "
-                f"(1角率: {len(rate_dict['mae_iki_rate'])}騎手, "
-                f"4角率: {len(rate_dict['4c_mae_iki_rate'])}騎手, "
-                f"軌跡: {len(rate_dict['pos_delta'])}騎手)")
-
-
-def build_trainer_cache(df: pd.DataFrame) -> None:
-    """調教師位置取りキャッシュ構築（推論用）"""
-    valid = df[df["rel_position"].notna() & (df["rel_position"] >= 0) & (df["rel_position"] <= 1)]
-    avg = valid.groupby("trainer_id")["rel_position"].mean().to_dict()
-
-    t_stats = _build_person_cache_stats(valid, "trainer_id")
-    rate_dict = _stats_to_cache_dict(t_stats, min_1c=20, min_4c=20, min_ds=10,
-                                     min_delta=20, min_ds_delta=10)
-    cache = {
-        "avg": {k: round(v, 4) for k, v in avg.items()},
-        **rate_dict,
-    }
-    with open(TRAINER_CACHE_PATH, "w", encoding="utf-8") as f:
-        json.dump(cache, f, ensure_ascii=False)
-    logger.info(f"調教師キャッシュ保存: {TRAINER_CACHE_PATH} "
-                f"(1角率: {len(rate_dict['mae_iki_rate'])}調教師, "
-                f"4角率: {len(rate_dict['4c_mae_iki_rate'])}調教師, "
-                f"軌跡: {len(rate_dict['pos_delta'])}調教師)")
-
-
 # ============================================================
 # 予測インターフェース
 # ============================================================
-
-class PositionPredictor:
-    """600m地点（最終コーナー）相対位置を予測。PaceDeviationCalculatorから使用"""
+class First1CPredictor:
+    """初角位置取り予測クラス"""
 
     def __init__(self):
-        self.model: Optional[lgb.Booster] = None
-        self.meta: Optional[dict] = None
-        self._jockey_cache: Dict[str, float] = {}
-        self._jockey_course_cache: Dict[Tuple[str, str], float] = {}
-        self._jockey_ride_cache: Dict[str, int] = {}
-        # Phase10: 1角前行き率
-        self._jockey_nige_rate: Dict[str, float] = {}
-        self._jockey_mae_iki_rate: Dict[str, float] = {}
-        self._jockey_ds_mae_iki_rate: Dict[str, float] = {}
-        # Phase11: 4角版率 + 軌跡
-        self._jockey_4c_nige_rate: Dict[str, float] = {}
-        self._jockey_4c_mae_iki_rate: Dict[str, float] = {}
-        self._jockey_4c_ds_mae_iki_rate: Dict[str, float] = {}
-        self._jockey_pos_delta: Dict[str, float] = {}
-        self._jockey_hold_rate: Dict[str, float] = {}
-        self._jockey_ds_pos_delta: Dict[str, float] = {}
-        # 調教師キャッシュ
-        self._trainer_cache: Dict[str, float] = {}
-        self._trainer_mae_iki_rate: Dict[str, float] = {}
-        self._trainer_ds_mae_iki_rate: Dict[str, float] = {}
-        self._trainer_4c_nige_rate: Dict[str, float] = {}
-        self._trainer_4c_mae_iki_rate: Dict[str, float] = {}
-        self._trainer_4c_ds_mae_iki_rate: Dict[str, float] = {}
-        self._trainer_pos_delta: Dict[str, float] = {}
-        self._trainer_hold_rate: Dict[str, float] = {}
-        self._trainer_ds_pos_delta: Dict[str, float] = {}
+        self.model = None
         self._loaded = False
+        self._jockey_cache = {}
+        self._jockey_course_cache = {}
+        self._jockey_ride_cache = {}
+        # Phase10: 1角前行き率
+        self._jockey_nige_rate = {}
+        self._jockey_mae_iki_rate = {}
+        self._jockey_ds_mae_iki_rate = {}
+        # Phase11: 4角版率 + 軌跡
+        self._jockey_4c_nige_rate = {}
+        self._jockey_4c_mae_iki_rate = {}
+        self._jockey_4c_ds_mae_iki_rate = {}
+        self._jockey_pos_delta = {}
+        self._jockey_hold_rate = {}
+        self._jockey_ds_pos_delta = {}
+        # 調教師
+        self._trainer_cache = {}
+        self._trainer_mae_iki_rate = {}
+        self._trainer_ds_mae_iki_rate = {}
+        self._trainer_4c_nige_rate = {}
+        self._trainer_4c_mae_iki_rate = {}
+        self._trainer_4c_ds_mae_iki_rate = {}
+        self._trainer_pos_delta = {}
+        self._trainer_hold_rate = {}
+        self._trainer_ds_pos_delta = {}
 
-    def load(self) -> bool:
+    def ensure_loaded(self) -> bool:
+        if self._loaded:
+            return self.model is not None
         self.model = load_model()
-        self.meta = load_meta()
-        if self.model is not None:
+        self._loaded = True
+        if self.model:
             # 特徴量数整合チェック
             n_model = self.model.num_feature()
             n_code = len(FEATURE_COLUMNS)
             if n_model != n_code:
                 logger.warning(
-                    "位置取りモデル特徴量不整合: モデル=%d, コード=%d → 再学習必要 (retrain_all.py --pos)",
+                    "初角モデル特徴量不整合: モデル=%d, コード=%d → 再学習必要",
                     n_model, n_code,
                 )
                 self.model = None
                 return False
-            self._loaded = True
             self._load_jockey_cache()
             self._load_trainer_cache()
-            return True
-        return False
+        return self.model is not None
 
     @property
     def is_available(self) -> bool:
         return self._loaded and self.model is not None
 
     def _load_jockey_cache(self) -> None:
-        if os.path.exists(JOCKEY_CACHE_PATH):
-            with open(JOCKEY_CACHE_PATH, "r", encoding="utf-8") as f:
+        cache_path = os.path.join(ML_DATA_DIR, "position_jockey_cache.json")
+        if os.path.exists(cache_path):
+            with open(cache_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
             self._jockey_cache = data.get("avg", {})
             self._jockey_course_cache = {
                 tuple(k.split("|")): v for k, v in data.get("course_avg", {}).items()
             }
             self._jockey_ride_cache = data.get("rides", {})
-            # Phase10: 1角前行き率
             self._jockey_nige_rate = data.get("nige_rate", {})
             self._jockey_mae_iki_rate = data.get("mae_iki_rate", {})
             self._jockey_ds_mae_iki_rate = data.get("ds_mae_iki_rate", {})
-            # Phase11: 4角版率 + 軌跡
+            # Phase11
             self._jockey_4c_nige_rate = data.get("4c_nige_rate", {})
             self._jockey_4c_mae_iki_rate = data.get("4c_mae_iki_rate", {})
             self._jockey_4c_ds_mae_iki_rate = data.get("4c_ds_mae_iki_rate", {})
@@ -979,8 +1018,9 @@ class PositionPredictor:
             self._jockey_ds_pos_delta = data.get("ds_pos_delta", {})
 
     def _load_trainer_cache(self) -> None:
-        if os.path.exists(TRAINER_CACHE_PATH):
-            with open(TRAINER_CACHE_PATH, "r", encoding="utf-8") as f:
+        cache_path = os.path.join(ML_DATA_DIR, "position_trainer_cache.json")
+        if os.path.exists(cache_path):
+            with open(cache_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
             self._trainer_cache = data.get("avg", {})
             self._trainer_mae_iki_rate = data.get("mae_iki_rate", {})
@@ -993,38 +1033,52 @@ class PositionPredictor:
             self._trainer_ds_pos_delta = data.get("ds_pos_delta", {})
 
     def predict(self, horse, race_info, pace_context: dict = None) -> Optional[float]:
+        """初角相対位置(0-1)を予測"""
         if not self.is_available:
             return None
         features = self._build_features(horse, race_info, pace_context)
         if features is None:
             return None
+
         feat_df = pd.DataFrame([features])[FEATURE_COLUMNS]
         for col in CATEGORICAL_FEATURES:
             if col in feat_df.columns:
                 feat_df[col] = feat_df[col].astype("category")
-        # None や文字列型（NAR 出走表で horse_weight 等が欠損する場合）を数値に変換
         for col in feat_df.columns:
             if col not in CATEGORICAL_FEATURES:
                 feat_df[col] = pd.to_numeric(feat_df[col], errors="coerce")
+
         pred = self.model.predict(feat_df, num_iteration=self.model.best_iteration)[0]
         return float(np.clip(pred, 0.0, 1.0))
 
     def _build_features(self, horse, race_info, pace_context) -> Optional[dict]:
-        from src.models import PastRun
-
         course = race_info.course
         runs = horse.past_runs or []
         if not runs:
             return None
 
-        # cornerデータがある走のみ使用（学習データと同じ条件: _relative_positionはcornerなしをNaN除外）
-        # position_4c=finish_posフォールバックは学習データに含まれないため、推論時も除外
+        # 最終コーナー位置データ
         pos_runs = [r for r in runs if r.positions_corners]
         pos_vals = [r.relative_position for r in pos_runs if r.relative_position is not None]
-        # cornerデータが全くない場合のフォールバック: 全走の相対位置を使用（精度は低い）
         if not pos_vals:
             pos_runs = [r for r in runs if r.relative_position is not None]
             pos_vals = [r.relative_position for r in pos_runs]
+
+        # 1角位置データ
+        # JRA: positions_corners[0] = 初角、NAR: positions_corners[0] = 最終角
+        # positions_cornersが空の場合はposition_4c/relative_positionでフォールバック
+        fc_vals = []
+        fc_escapes = []
+        for r in runs:
+            if r.positions_corners:
+                fc_rel = r.positions_corners[0] / max(r.field_count, 1)
+                fc_vals.append(fc_rel)
+                fc_escapes.append(1.0 if r.positions_corners[0] == 1 else 0.0)
+            elif r.position_4c and r.field_count:
+                # positions_cornersが空（DBフォールバック時）→ position_4cを代用
+                fc_rel = r.position_4c / max(r.field_count, 1)
+                fc_vals.append(fc_rel)
+                fc_escapes.append(1.0 if r.position_4c == 1 else 0.0)
 
         f = {}
         f["venue_code"] = course.venue_code
@@ -1045,7 +1099,9 @@ class PositionPredictor:
         f["horse_weight"] = horse.horse_weight
         f["weight_change"] = horse.weight_change
         f["relative_horse_no"] = horse.horse_no / max(race_info.field_count, 1)
+        f["relative_gate_no"] = horse.gate_no / max(race_info.field_count, 1)
 
+        # コーナー数
         n_corners = 2
         if course.distance >= 1800:
             n_corners = 4
@@ -1053,13 +1109,16 @@ class PositionPredictor:
             n_corners = 3
         f["n_corners"] = n_corners
 
+        # コース特性
+        f["corner_count"] = getattr(course, "corner_count", n_corners)
+        f["first_corner_enc"] = _encode_first_corner(getattr(course, "first_corner", "普通"))
+        f["straight_m"] = getattr(course, "straight_m", 300)
+
+        # 過去位置ローリング
         f["hist_pos_mean3"] = np.mean(pos_vals[:3]) if pos_vals else np.nan
         f["hist_pos_mean5"] = np.mean(pos_vals[:5]) if pos_vals else np.nan
         f["hist_pos_latest"] = pos_vals[0] if pos_vals else np.nan
-        f["hist_pos_trend"] = (
-            (f["hist_pos_latest"] - f["hist_pos_mean5"])
-            if pos_vals and len(pos_vals) >= 5 else np.nan
-        )
+        f["hist_pos_trend"] = (f["hist_pos_latest"] - f["hist_pos_mean5"]) if pos_vals and len(pos_vals) >= 5 else np.nan
         f["hist_pos_std5"] = float(np.std(pos_vals[:5])) if len(pos_vals) >= 2 else np.nan
         f["hist_pos_best5"] = min(pos_vals[:5]) if pos_vals else np.nan
         f["hist_pos_worst5"] = max(pos_vals[:5]) if pos_vals else np.nan
@@ -1076,8 +1135,6 @@ class PositionPredictor:
         f["hist_pos_same_surface"] = np.mean(same_surf[:5]) if same_surf else np.nan
         same_venue = [r.relative_position for r in pos_runs if r.venue == course.venue]
         f["hist_pos_same_venue"] = np.mean(same_venue[:5]) if same_venue else np.nan
-
-        # 距離帯別位置取り
         target_band = _distance_band(course.distance)
         same_distband = [r.relative_position for r in pos_runs if _distance_band(r.distance) == target_band]
         f["hist_pos_same_distband"] = np.mean(same_distband[:5]) if same_distband else np.nan
@@ -1094,6 +1151,7 @@ class PositionPredictor:
         except Exception:
             f["days_since_last"] = np.nan
 
+        # 騎手
         jid = horse.jockey_id or ""
         cid_key = f"{course.venue_code}_{f['surface_enc']}_{course.distance}"
         f["jockey_avg_pos"] = self._jockey_cache.get(jid, np.nan)
@@ -1108,14 +1166,14 @@ class PositionPredictor:
         f["trainer_avg_pos"] = self._trainer_cache.get(tid, np.nan)
         f["trainer_mae_iki_rate"] = self._trainer_mae_iki_rate.get(tid, np.nan)
         f["trainer_ds_mae_iki_rate"] = self._trainer_ds_mae_iki_rate.get(tid, np.nan)
-        # Phase11: 4角版率（勝負所でどこにいるか）
+        # Phase11: 4角版率
         f["jockey_4c_nige_rate"] = self._jockey_4c_nige_rate.get(jid, np.nan)
         f["jockey_4c_mae_iki_rate"] = self._jockey_4c_mae_iki_rate.get(jid, np.nan)
         f["jockey_4c_ds_mae_iki_rate"] = self._jockey_4c_ds_mae_iki_rate.get(jid, np.nan)
         f["trainer_4c_nige_rate"] = self._trainer_4c_nige_rate.get(tid, np.nan)
         f["trainer_4c_mae_iki_rate"] = self._trainer_4c_mae_iki_rate.get(tid, np.nan)
         f["trainer_4c_ds_mae_iki_rate"] = self._trainer_4c_ds_mae_iki_rate.get(tid, np.nan)
-        # Phase11: 軌跡（レース中の位置変化）
+        # Phase11: 軌跡
         f["jockey_pos_delta"] = self._jockey_pos_delta.get(jid, np.nan)
         f["jockey_hold_rate"] = self._jockey_hold_rate.get(jid, np.nan)
         f["jockey_ds_pos_delta"] = self._jockey_ds_pos_delta.get(jid, np.nan)
@@ -1128,11 +1186,17 @@ class PositionPredictor:
         f["pace_front_ratio"] = pc.get("front_ratio", np.nan)
         f["horse_style_est"] = f["hist_pos_mean5"]
 
+        # 1角専用
+        f["hist_1c_mean3"] = np.mean(fc_vals[:3]) if fc_vals else np.nan
+        f["hist_1c_mean5"] = np.mean(fc_vals[:5]) if fc_vals else np.nan
+        f["hist_1c_latest"] = fc_vals[0] if fc_vals else np.nan
+        f["hist_1c_best5"] = min(fc_vals[:5]) if fc_vals else np.nan
+        f["hist_escape_rate5"] = np.mean(fc_escapes[:5]) if fc_escapes else np.nan
+        f["hist_escape_rate_all"] = np.mean(fc_escapes) if fc_escapes else np.nan
+
         # Phase9D: フィールド強度特徴量
-        # 正規化着順: finish_pos / field_count
         finish_rates = [r.finish_pos / max(r.field_count, 1) for r in runs if r.finish_pos and r.field_count]
         f["hist_finish_rate_mean5"] = np.mean(finish_rates[:5]) if finish_rates else np.nan
-        # グレード変化: 現レースグレード - 過去平均グレード
         past_grades = [_encode_grade(r.grade) for r in runs if hasattr(r, "grade") and r.grade]
         f["grade_diff"] = (
             f["grade_enc"] - np.mean(past_grades[:5])
@@ -1142,95 +1206,33 @@ class PositionPredictor:
         return f
 
 
-def print_report(metrics: dict, fi=None) -> None:
-    print("\n" + "=" * 60)
-    print("  4角位置取り予測モデル  学習レポート")
-    print("=" * 60)
-    print(f"\n検証データ: {metrics['val_size']:,}行")
-    print(f"\n{'指標':<20} {'モデル':>10} {'ベースライン':>12} {'改善':>8}")
-    print("-" * 55)
-    print(f"{'MAE':<20} {metrics['mae_model']:>10.4f} {metrics['mae_baseline']:>12.4f} "
-          f"{metrics.get('improvement_mae_pct', 0):>+7.2f}%")
-    print(f"{'±0.1以内 (%)':<20} {metrics['within_0.1']:>10.2f}")
-    print(f"{'±0.2以内 (%)':<20} {metrics['within_0.2']:>10.2f}")
+# ============================================================
+# メイン
+# ============================================================
+if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--evaluate-only", action="store_true")
+    parser.add_argument("--importance", action="store_true")
+    args = parser.parse_args()
 
-    for label, key in [("JRA/NAR別", "by_org"), ("芝/ダート別", "by_surface"), ("距離帯別", "by_distance")]:
-        sub = metrics.get(key, {})
-        if not sub:
-            continue
-        print(f"\n  {label}:")
-        for name, m in sub.items():
-            if m.get("n", 0) == 0:
-                continue
-            print(f"    {name:<12} MAE={m['mae_model']:.4f} (BL={m['mae_baseline']:.4f}) "
-                  f"±0.2={m.get('within_0.2', 0):.1f}%  n={m['n']:,}")
-
-    if fi is not None:
-        print(f"\n  特徴量重要度 Top 15:")
-        for i, row in fi.head(15).iterrows():
-            bar = "#" * int(row["pct"] / 2)
-            print(f"    {i + 1:>2}. {row['feature']:<28} {row['pct']:>6.2f}%  {bar}")
-
-    print(f"\n  学習ラウンド: {metrics['best_iteration']}")
-    print("=" * 60)
-
-
-def get_feature_importance(model: lgb.Booster) -> pd.DataFrame:
-    imp = model.feature_importance(importance_type="gain")
-    names = model.feature_name()
-    fi = pd.DataFrame({"feature": names, "importance": imp})
-    fi = fi.sort_values("importance", ascending=False).reset_index(drop=True)
-    fi["pct"] = (fi["importance"] / fi["importance"].sum() * 100).round(2)
-    return fi
-
-
-def run_training_pipeline() -> dict:
-    t_all = time.time()
-    logger.info("Step 1/6: データ読込")
-    df = load_ml_data()
-    logger.info("Step 2/6: 特徴量構築")
-    df = build_feature_table(df)
-    logger.info("Step 3/6: データ分割")
-    train_df, val_df = prepare_datasets(df)
-    logger.info("Step 4/6: モデル学習")
-    model = train_model(train_df, val_df)
-    logger.info("Step 5/6: 評価")
-    metrics = evaluate_model(model, val_df)
-    fi = get_feature_importance(model)
-    logger.info("Step 6/6: 保存")
-    save_model(model, metrics)
-    build_jockey_cache(df)
-    build_trainer_cache(df)
-    print_report(metrics, fi)
-    logger.info(f"パイプライン完了: {time.time()-t_all:.1f}秒")
-    return metrics
-
-
-def main():
-    if "--evaluate-only" in sys.argv:
+    if args.evaluate_only:
         model = load_model()
-        if model is None:
+        if not model:
             print("モデルが見つかりません")
-            return
+            sys.exit(1)
         df = load_ml_data()
         df = build_feature_table(df)
         _, val_df = prepare_datasets(df)
         metrics = evaluate_model(model, val_df)
+        fi = get_feature_importance(model) if args.importance else None
+        print_report(metrics, fi)
+    else:
+        df = load_ml_data()
+        df = build_feature_table(df)
+        train_df, val_df = prepare_datasets(df)
+        model = train_model(train_df, val_df)
+        metrics = evaluate_model(model, val_df)
         fi = get_feature_importance(model)
         print_report(metrics, fi)
-    elif "--importance" in sys.argv:
-        model = load_model()
-        if model is None:
-            print("モデルが見つかりません")
-            return
-        fi = get_feature_importance(model)
-        print("\n特徴量重要度:")
-        for i, row in fi.iterrows():
-            bar = "#" * int(row["pct"] / 2)
-            print(f"  {i + 1:>2}. {row['feature']:<28} {row['pct']:>6.2f}%  {bar}")
-    else:
-        run_training_pipeline()
-
-
-if __name__ == "__main__":
-    main()
+        save_model(model, metrics)

@@ -56,6 +56,7 @@ DISTANCE_BANDS = [(0, 1399, "sprint"), (1400, 1799, "mile"),
 
 CATEGORICAL_FEATURES = [
     "venue_code", "surface_enc", "condition_enc", "grade_enc", "sex_enc",
+    "corner_type_enc", "slope_type_enc",
 ]
 
 # LightGBM ハイパーパラメータ
@@ -177,6 +178,32 @@ def _encode_sex(s: str) -> int:
     return {"牡": 0, "牝": 1, "セ": 2, "セン": 2}.get(str(s), 0)
 
 
+def _encode_corner_type(ct: str) -> int:
+    """コーナー形態エンコード"""
+    return {"大回り": 0, "小回り": 1, "スパイラル": 2}.get(str(ct), 1)
+
+
+def _encode_slope_type(st: str) -> int:
+    """坂エンコード"""
+    return {"坂なし": 0, "軽坂": 1, "急坂": 2}.get(str(st), 0)
+
+
+# コースマスタ辞書 (venue_code + surface_enc + distance → CourseMaster)
+_COURSE_MASTER_MAP: dict = {}
+
+
+def _get_course_master_map() -> dict:
+    """コースマスタのルックアップ辞書を遅延構築"""
+    if _COURSE_MASTER_MAP:
+        return _COURSE_MASTER_MAP
+    from data.masters.course_master import ALL_COURSES
+    for c in ALL_COURSES:
+        surf = 0 if c.surface == "芝" else 1
+        key = f"{c.venue_code}_{surf}_{c.distance}"
+        _COURSE_MASTER_MAP[key] = c
+    return _COURSE_MASTER_MAP
+
+
 def build_feature_table(df: pd.DataFrame) -> pd.DataFrame:
     """DataFrameに過去走ローリング特徴量・騎手集約・ペース文脈を追加"""
     t0 = time.time()
@@ -213,6 +240,18 @@ def build_feature_table(df: pd.DataFrame) -> pd.DataFrame:
 
     # --- 出走間隔 ---
     df["days_since_last"] = df.groupby("horse_id")["race_date_dt"].diff().dt.days
+
+    # --- 脚質別上がり3F特徴量（Phase4追加）---
+    logger.info("脚質別上がり3F特徴量を構築中...")
+    _build_style_l3f_features(df)
+
+    # --- フィールド強度特徴量（Phase8追加）---
+    logger.info("フィールド強度特徴量を構築中...")
+    _build_field_strength_features(df)
+
+    # --- コース形状特徴量（Phase5追加）---
+    logger.info("コース形状特徴量を構築中...")
+    _build_course_geometry_features(df)
 
     elapsed = time.time() - t0
     logger.info(f"特徴量構築完了: {len(df):,}行, {elapsed:.1f}秒")
@@ -402,6 +441,153 @@ def _build_pace_context_features(df: pd.DataFrame) -> None:
     df.sort_values(["race_date_dt", "race_id", "horse_no"], inplace=True)
 
 
+def _build_style_l3f_features(df: pd.DataFrame) -> None:
+    """脚質別の上がり3F平均特徴量を計算
+
+    先行型(相対位置<=0.3)と後方型(>=0.5)のレースでの上がり3F平均を分離。
+    同じ馬でも脚質により上がり3Fパフォーマンスが異なることを捉える。
+    """
+    df.sort_values(["horse_id", "race_date_dt"], inplace=True)
+
+    front_mean = np.full(len(df), np.nan)
+    rear_mean = np.full(len(df), np.nan)
+
+    # 馬ごとに先行型/後方型の上がり3F履歴を蓄積
+    horse_front_buf: Dict[str, list] = {}  # horse_id → [l3f_sec, ...]
+    horse_rear_buf: Dict[str, list] = {}
+
+    prev_date = None
+    date_batch = []
+
+    for idx in df.index:
+        current_date = df.at[idx, "race_date_dt"]
+
+        # 日付が変わったら前日分の結果を蓄積（リーケージ防止）
+        if prev_date is not None and current_date != prev_date:
+            for bi in date_batch:
+                hid = df.at[bi, "horse_id"]
+                rp = df.at[bi, "rel_position"]
+                l3f = df.at[bi, "last_3f_sec"]
+                if np.isnan(rp) or np.isnan(l3f) or l3f < 28 or l3f > 48:
+                    continue
+                if rp <= 0.3:
+                    horse_front_buf.setdefault(hid, []).append(l3f)
+                elif rp >= 0.5:
+                    horse_rear_buf.setdefault(hid, []).append(l3f)
+            date_batch = []
+
+        hid = df.at[idx, "horse_id"]
+        fb = horse_front_buf.get(hid, [])
+        rb = horse_rear_buf.get(hid, [])
+        if fb:
+            front_mean[idx] = np.mean(fb[-5:])
+        if rb:
+            rear_mean[idx] = np.mean(rb[-5:])
+
+        date_batch.append(idx)
+        prev_date = current_date
+
+    df["hist_l3f_front_mean"] = front_mean
+    df["hist_l3f_rear_mean"] = rear_mean
+
+    df.sort_values(["race_date_dt", "race_id", "horse_no"], inplace=True)
+
+
+def _build_field_strength_features(df: pd.DataFrame) -> None:
+    """フィールド強度特徴量を構築（Phase8）
+
+    各レース内の他馬の過去走上がり3F平均から、フィールドの強さを推定。
+    自馬のhist_l3f_mean3が「フィールド平均と比べてどうか」を特徴量化。
+    リーケージ防止: hist_l3f_mean3は既にshift(1)済み（過去走のみ）。
+    """
+    # hist_l3f_mean3が既に構築済みであることが前提
+    field_l3f_mean = np.full(len(df), np.nan)
+    field_finish_mean = np.full(len(df), np.nan)
+    horse_l3f_vs_field = np.full(len(df), np.nan)
+
+    for _, group in df.groupby("race_id"):
+        indices = group.index.tolist()
+        # 各馬の hist_l3f_mean3 を取得（過去走ベースなのでリーケージなし）
+        l3f_vals = group["hist_l3f_mean3"].values
+        fin_vals = group["hist_finish_mean3"].values
+
+        for i, idx in enumerate(indices):
+            # 自馬を除いた他馬の平均
+            other_l3f = [v for j, v in enumerate(l3f_vals) if j != i and not np.isnan(v)]
+            other_fin = [v for j, v in enumerate(fin_vals) if j != i and not np.isnan(v)]
+
+            if other_l3f:
+                fld_avg = np.mean(other_l3f)
+                field_l3f_mean[idx] = fld_avg
+                self_l3f = l3f_vals[i]
+                if not np.isnan(self_l3f):
+                    # 負=自分が速い(強い), 正=自分が遅い(弱い)
+                    horse_l3f_vs_field[idx] = self_l3f - fld_avg
+            if other_fin:
+                field_finish_mean[idx] = np.mean(other_fin)
+
+    df["field_hist_l3f_mean"] = field_l3f_mean
+    df["field_hist_finish_mean"] = field_finish_mean
+    df["horse_l3f_vs_field"] = horse_l3f_vs_field
+
+
+def _build_course_geometry_features(df: pd.DataFrame) -> None:
+    """コース形状特徴量をcourse_masterから付与
+
+    上がり3F=ラスト600mだが、98%以上のコースでは直線距離<600mのため
+    4角前からの計測になる。直線距離・コーナー形態・坂の有無が上がりに直結。
+    残り600m地点データ（l3f_corners, l3f_elevation, l3f_hill_start等）も付与。
+    """
+    cmap = _get_course_master_map()
+
+    n = len(df)
+    straight_m_arr = np.full(n, np.nan)
+    corner_count_arr = np.full(n, np.nan)
+    corner_type_enc_arr = np.full(n, 1.0)  # デフォルト=小回り
+    slope_type_enc_arr = np.full(n, 0.0)   # デフォルト=坂なし
+    first_corner_m_arr = np.full(n, np.nan)
+    # 上がり3Fのうちコーナー区間の距離(m)
+    l3f_corner_m_arr = np.full(n, np.nan)
+    # 直線距離 / レース距離の比率
+    straight_ratio_arr = np.full(n, np.nan)
+    # 残り600m地点データ（新規）
+    l3f_corners_arr = np.full(n, np.nan)       # コーナー数
+    l3f_elevation_arr = np.full(n, 0.0)        # 高低差(m)
+    l3f_hill_start_arr = np.full(n, 0.0)       # 坂開始地点(m)
+    l3f_straight_pct_arr = np.full(n, np.nan)  # 直線比率
+
+    for i, idx in enumerate(df.index):
+        key = df.at[idx, "course_id"]
+        cm = cmap.get(key)
+        if cm is None:
+            continue
+        straight_m_arr[i] = cm.straight_m
+        corner_count_arr[i] = cm.corner_count
+        corner_type_enc_arr[i] = _encode_corner_type(cm.corner_type)
+        slope_type_enc_arr[i] = _encode_slope_type(cm.slope_type)
+        first_corner_m_arr[i] = cm.first_corner_m
+        l3f_corner_m_arr[i] = cm.l3f_corner_m
+        straight_ratio_arr[i] = cm.straight_m / max(cm.distance, 1)
+        # 残り600m地点データ
+        l3f_corners_arr[i] = cm.l3f_corners
+        l3f_elevation_arr[i] = cm.l3f_elevation
+        l3f_hill_start_arr[i] = cm.l3f_hill_start
+        l3f_straight_pct_arr[i] = cm.l3f_straight_pct
+
+    df["straight_m"] = straight_m_arr
+    df["corner_count"] = corner_count_arr
+    df["corner_type_enc"] = corner_type_enc_arr
+    df["slope_type_enc"] = slope_type_enc_arr
+    df["first_corner_m"] = first_corner_m_arr
+    df["l3f_corner_m"] = l3f_corner_m_arr
+    df["straight_ratio"] = straight_ratio_arr
+    # 残り600m地点データ（新規）
+    df["l3f_corners"] = l3f_corners_arr
+    df["l3f_elevation"] = l3f_elevation_arr
+    df["l3f_hill_start"] = l3f_hill_start_arr
+    df["l3f_straight_pct"] = l3f_straight_pct_arr
+
+
 # ============================================================
 # 3. 特徴量カラム定義
 # ============================================================
@@ -427,6 +613,20 @@ FEATURE_COLUMNS = [
     "jockey_avg_l3f", "jockey_course_avg_l3f", "jockey_ride_count",
     # ペース文脈
     "pace_n_front", "pace_front_ratio", "horse_style_est",
+    # 脚質別上がり3F（Phase4追加）
+    "hist_l3f_front_mean", "hist_l3f_rear_mean",
+    # コース形状（Phase5追加）
+    "straight_m", "corner_count", "corner_type_enc", "slope_type_enc",
+    "first_corner_m", "l3f_corner_m", "straight_ratio",
+    # フィールド強度（Phase8追加）
+    "field_hist_l3f_mean", "field_hist_finish_mean", "horse_l3f_vs_field",
+]
+
+# 残り600m地点データ（Phase6）— モデル再学習時に有効化
+# 学習時のbuild_feature_tableでは構築されるが、推論時のFEATURE_COLUMNSには
+# モデル再学習後に追加する（既存モデルとのカラム数不一致を防止）
+FEATURE_COLUMNS_NEXT = FEATURE_COLUMNS + [
+    "l3f_corners", "l3f_elevation", "l3f_hill_start", "l3f_straight_pct",
 ]
 
 
@@ -649,6 +849,16 @@ class Last3FPredictor:
         self.model = load_model()
         self.meta = load_meta()
         if self.model is not None:
+            # 特徴量数整合チェック
+            n_model = self.model.num_feature()
+            n_code = len(FEATURE_COLUMNS)
+            if n_model != n_code:
+                logger.warning(
+                    "上がり3Fモデル特徴量不整合: モデル=%d, コード=%d → 再学習必要 (retrain_all.py --l3f)",
+                    n_model, n_code,
+                )
+                self.model = None
+                return False
             self._loaded = True
             self._load_jockey_cache()
             return True
@@ -811,6 +1021,41 @@ class Last3FPredictor:
         f["pace_n_front"] = pc.get("n_front", np.nan)
         f["pace_front_ratio"] = pc.get("front_ratio", np.nan)
         f["horse_style_est"] = f["hist_pos_mean5"]
+
+        # 脚質別上がり3F: 先行型(相対位置<=0.3)と後方型(>=0.5)で分離
+        l3f_front = [r.last_3f_sec for r in l3f_runs
+                     if r.relative_position is not None and r.relative_position <= 0.3]
+        l3f_rear = [r.last_3f_sec for r in l3f_runs
+                    if r.relative_position is not None and r.relative_position >= 0.5]
+        f["hist_l3f_front_mean"] = np.mean(l3f_front[:5]) if l3f_front else np.nan
+        f["hist_l3f_rear_mean"] = np.mean(l3f_rear[:5]) if l3f_rear else np.nan
+
+        # フィールド強度（Phase8追加）
+        # pace_contextにフィールド全馬の過去走l3f平均が入っている
+        pc_field = pace_context or {}
+        f["field_hist_l3f_mean"] = pc_field.get("field_hist_l3f_mean", np.nan)
+        f["field_hist_finish_mean"] = pc_field.get("field_hist_finish_mean", np.nan)
+        # 自馬の過去走l3f平均 vs フィールド平均
+        _fld_l3f = f["field_hist_l3f_mean"]
+        _self_l3f = f["hist_l3f_mean3"]
+        if not np.isnan(_fld_l3f) and not np.isnan(_self_l3f):
+            f["horse_l3f_vs_field"] = _self_l3f - _fld_l3f
+        else:
+            f["horse_l3f_vs_field"] = np.nan
+
+        # コース形状（Phase5追加）
+        f["straight_m"] = course.straight_m
+        f["corner_count"] = course.corner_count
+        f["corner_type_enc"] = _encode_corner_type(course.corner_type)
+        f["slope_type_enc"] = _encode_slope_type(course.slope_type)
+        f["first_corner_m"] = course.first_corner_m
+        f["l3f_corner_m"] = getattr(course, "l3f_corner_m", max(0, 600 - course.straight_m))
+        f["straight_ratio"] = course.straight_m / max(course.distance, 1)
+        # 残り600m地点データ（Phase6追加）
+        f["l3f_corners"] = getattr(course, "l3f_corners", 1)
+        f["l3f_elevation"] = getattr(course, "l3f_elevation", 0.0)
+        f["l3f_hill_start"] = getattr(course, "l3f_hill_start", 0)
+        f["l3f_straight_pct"] = getattr(course, "l3f_straight_pct", min(1.0, course.straight_m / 600))
 
         return f
 

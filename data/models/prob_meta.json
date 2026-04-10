@@ -1,23 +1,23 @@
 {
-  "created_at": "20260320_210205",
+  "created_at": "20260410_065843",
   "metrics": {
     "win": {
-      "auc": 0.7843,
-      "logloss": 0.2654,
-      "brier": 0.0747,
-      "best_iteration": 5000
+      "auc": 0.7775,
+      "logloss": 0.2665,
+      "brier": 0.0749,
+      "best_iteration": 4999
     },
     "top2": {
-      "auc": 0.7786,
-      "logloss": 0.4009,
-      "brier": 0.1255,
+      "auc": 0.7745,
+      "logloss": 0.4035,
+      "brier": 0.1264,
       "best_iteration": 5000
     },
     "top3": {
-      "auc": 0.7723,
-      "logloss": 0.4894,
-      "brier": 0.1609,
-      "best_iteration": 5000
+      "auc": 0.7678,
+      "logloss": 0.493,
+      "brier": 0.1623,
+      "best_iteration": 4999
     }
   },
   "train_samples": 670271,
@@ -25,6 +25,6 @@
   "valid_samples": 15370,
   "valid_races": 1387,
   "split_date": "2026-02-13",
-  "top1_win_hit": 0.3237,
-  "top1_place_hit": 0.6698
+  "top1_win_hit": 0.3288,
+  "top1_place_hit": 0.6611
 }

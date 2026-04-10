@@ -40,6 +40,9 @@ from data.masters.venue_master import is_banei
 VENUE_SIM_THRESHOLD = 0.35
 DIRECTION_DISCOUNT = 0.75
 SIMILARITY_POWER = 2.0
+# Step7: 距離考慮 + 時間減衰パラメータ
+VENUE_SIM_DIST_THRESHOLDS = [(200, 1.0), (400, 0.7)]  # (差m, 係数), それ以上は0.4
+VENUE_SIM_HALF_LIFE_DAYS = 365  # 半減期365日
 
 
 def load_all_races(start_date: str = None, end_date: str = None) -> list:
@@ -123,6 +126,16 @@ def build_dataset(
     history = _build_horse_history(all_races)
     print(f"  ユニーク馬数: {len(history)}")
 
+    # 調教特徴量抽出器をロード
+    training_extractor = None
+    try:
+        from src.ml.training_features import TrainingFeatureExtractor
+        training_extractor = TrainingFeatureExtractor()
+        training_extractor.load_all()
+    except Exception:
+        import logging
+        logging.getLogger(__name__).warning("調教特徴量ロード失敗（スキップ）", exc_info=True)
+
     rows = []
     sorted_races = sorted(all_races, key=lambda r: r.get("date", ""))
 
@@ -134,6 +147,19 @@ def build_dataset(
             continue
 
         race_features = _extract_race_features(race)
+        race_id = race.get("race_id", "")
+
+        # 調教特徴量をレース単位で一括取得（レース内相対値計算のため）
+        train_feats_map = {}
+        if training_extractor:
+            horse_names = [
+                h.get("horse_name", "") for h in race.get("horses", [])
+                if h.get("horse_name")
+            ]
+            if horse_names:
+                train_feats_map = training_extractor.get_race_training_features(
+                    race_id, horse_names, race_date
+                )
 
         for h in race.get("horses", []):
             if h.get("finish_pos") is None:
@@ -145,11 +171,15 @@ def build_dataset(
                 continue
 
             horse_features = _extract_horse_features(h, race)
-            past_features = _extract_past_run_features(past, race)
+            past_features = _extract_past_run_features(past, race, h)
             label = _extract_label(h)
 
-            row = {**race_features, **horse_features, **past_features, **label}
-            row["race_id"] = race.get("race_id", "")
+            # 調教特徴量
+            hname = h.get("horse_name", "")
+            train_feats = train_feats_map.get(hname, {})
+
+            row = {**race_features, **horse_features, **past_features, **train_feats, **label}
+            row["race_id"] = race_id
             row["date"] = race_date
             row["horse_id"] = hid
             rows.append(row)
@@ -217,6 +247,21 @@ def _extract_race_features(race: dict) -> dict:
         base["venue_corner_type"] = None
         base["venue_direction"] = None
 
+    # first_corner_m: コース別の初角距離（実距離m）を特徴量として追加
+    _fcm = 0
+    try:
+        from data.masters.course_master import get_all_courses
+        _vc = race.get("venue_code", "")
+        _sf = race.get("surface", "")
+        _dist = race.get("distance", 0)
+        _cid = f"{_vc}_{_sf}_{_dist}"
+        _cm = get_all_courses().get(_cid)
+        if _cm and _cm.first_corner_m > 0:
+            _fcm = _cm.first_corner_m
+    except Exception:
+        pass
+    base["first_corner_m"] = _fcm
+
     return base
 
 
@@ -254,7 +299,7 @@ def _get_past_runs_before(history: list, current_date: str) -> list:
     return [(d, r, h) for d, r, h in history if d < current_date]
 
 
-def _extract_past_run_features(past: list, current_race: dict) -> dict:
+def _extract_past_run_features(past: list, current_race: dict, horse: dict = None) -> dict:
     """過去走から集計した特徴量"""
     if not past:
         return _empty_past_features()
@@ -265,7 +310,6 @@ def _extract_past_run_features(past: list, current_race: dict) -> dict:
 
     # 基本集計
     finish_positions = [h.get("finish_pos") for _, _, h in recent if h.get("finish_pos")]
-    times = [h.get("finish_time_sec") for _, _, h in recent if h.get("finish_time_sec")]
     last3fs = [h.get("last_3f_sec") for _, _, h in recent if h.get("last_3f_sec")]
     corners = []
     for _, _, h in recent:
@@ -290,6 +334,35 @@ def _extract_past_run_features(past: list, current_race: dict) -> dict:
 
     # 平均4角位置
     avg_pos4c = np.mean(corners) if corners else None
+
+    # 距離ロス（コーナーロス）特徴量
+    _SEC_PER_RANK_TURF = 0.08   # 芝M相当
+    _SEC_PER_RANK_DIRT = 0.30   # ダートM相当
+    _outer_ratios = []
+    _corner_loss_secs = []
+    _pos_spreads = []
+    for _, r, h in recent:
+        pc = h.get("positions_corners", [])
+        fc = r.get("field_count", 0)
+        if not pc or not isinstance(pc, list) or not fc or fc <= 1:
+            continue
+        valid_c = [c for c in pc if isinstance(c, (int, float)) and c > 0]
+        if not valid_c:
+            continue
+        avg_rel = sum(c / fc for c in valid_c) / len(valid_c)
+        _outer_ratios.append(avg_rel)
+        # 推定ロス秒
+        surf = r.get("surface", "")
+        spr = _SEC_PER_RANK_DIRT if surf == "ダート" else _SEC_PER_RANK_TURF
+        loss = (avg_rel - 0.5) * len(valid_c) * spr * fc
+        _corner_loss_secs.append(loss)
+        # 変動幅
+        _pos_spreads.append(max(valid_c) - min(valid_c))
+    past_avg_outer_ratio = np.mean(_outer_ratios) if _outer_ratios else None
+    past_outer_ratio_last = _outer_ratios[-1] if _outer_ratios else None
+    past_corner_loss_sec_avg = np.mean(_corner_loss_secs) if _corner_loss_secs else None
+    past_corner_loss_sec_last = _corner_loss_secs[-1] if _corner_loss_secs else None
+    past_pos_spread = np.mean(_pos_spreads) if _pos_spreads else None
 
     # 間隔日数（直近走からの日数）
     last_date_str = past[-1][0]
@@ -361,6 +434,12 @@ def _extract_past_run_features(past: list, current_race: dict) -> dict:
         "past_avg_last3f": avg_last3f,
         "past_best_last3f": best_last3f,
         "past_avg_pos4c": avg_pos4c,
+        # 距離ロス（コーナーロス）特徴量
+        "past_avg_outer_ratio": past_avg_outer_ratio,
+        "past_outer_ratio_last": past_outer_ratio_last,
+        "past_corner_loss_sec_avg": past_corner_loss_sec_avg,
+        "past_corner_loss_sec_last": past_corner_loss_sec_last,
+        "past_pos_spread": past_pos_spread,
         "days_since_last": days_since,
         "same_surface_place_rate": same_surface_rate,
         "same_surface_runs": same_surface_runs,
@@ -402,7 +481,7 @@ def _extract_past_run_features(past: list, current_race: dict) -> dict:
         # ---- Phase 5 追加: ばんえい固有特徴量強化 ----
 
         # 斤量×水分量の交互作用項（非線形関係の捕捉）
-        cur_wt = current_race.get("weight_kg") or horse_data.get("weight_kg")
+        cur_wt = current_race.get("weight_kg") or (horse or {}).get("weight_kg")
         cur_wc = current_race.get("water_content")
         if cur_wt and cur_wc is not None:
             result["weight_kg_x_water"] = cur_wt * cur_wc
@@ -410,7 +489,7 @@ def _extract_past_run_features(past: list, current_race: dict) -> dict:
             result["weight_kg_x_water"] = None
 
         # 斤量帯カテゴリ（5段階: 0=~580, 1=580-620, 2=620-660, 3=660-700, 4=700+）
-        wk = cur_wt or horse_data.get("weight_kg")
+        wk = cur_wt or (horse or {}).get("weight_kg")
         if wk:
             if wk < 580: result["weight_kg_band"] = 0
             elif wk < 620: result["weight_kg_band"] = 1
@@ -423,7 +502,6 @@ def _extract_past_run_features(past: list, current_race: dict) -> dict:
         # 直近3走の出走間隔平均（ばんえいは連闘が多い）
         race_dates = [d for d, _, _ in recent[:3]]
         if len(race_dates) >= 2:
-            from datetime import datetime
             intervals = []
             for i in range(len(race_dates) - 1):
                 try:
@@ -472,6 +550,8 @@ def _extract_venue_similarity_features(past: list, current_race: dict) -> dict:
 
     target_venue = current_race.get("venue", "")
     target_surface = current_race.get("surface", "")
+    target_distance = current_race.get("distance", 0)
+    current_date = current_race.get("date", "")
     if not target_venue or not past:
         return empty
 
@@ -495,7 +575,7 @@ def _extract_venue_similarity_features(past: list, current_race: dict) -> dict:
     same_dir_top3 = 0
     same_dir_n = 0
 
-    for _, r, h in past:
+    for run_date, r, h in past:
         if r.get("surface") != target_surface:
             continue
         fp = h.get("finish_pos")
@@ -520,7 +600,28 @@ def _extract_venue_similarity_features(past: list, current_race: dict) -> dict:
         else:
             dir_factor = DIRECTION_DISCOUNT
 
-        weight = (sim ** SIMILARITY_POWER) * dir_factor
+        # Step7: 距離類似度（±200m=1.0, ±400m=0.7, それ以上=0.4）
+        run_dist = r.get("distance", 0)
+        dist_diff = abs(run_dist - target_distance) if run_dist and target_distance else 0
+        dist_factor = 0.4  # デフォルト
+        for threshold, factor in VENUE_SIM_DIST_THRESHOLDS:
+            if dist_diff <= threshold:
+                dist_factor = factor
+                break
+
+        # Step7: 時間減衰（半減期365日）
+        recency_factor = 1.0
+        if current_date and run_date and current_date > run_date:
+            try:
+                from datetime import datetime as _dt
+                days_ago = (_dt.strptime(current_date, "%Y-%m-%d")
+                            - _dt.strptime(run_date, "%Y-%m-%d")).days
+                if days_ago > 0:
+                    recency_factor = 0.5 ** (days_ago / VENUE_SIM_HALF_LIFE_DAYS)
+            except Exception:
+                pass
+
+        weight = (sim ** SIMILARITY_POWER) * dir_factor * dist_factor * recency_factor
 
         w_place_sum += weight * (1 if fp <= 3 else 0)
         w_win_sum += weight * (1 if fp == 1 else 0)
@@ -552,6 +653,12 @@ def _empty_past_features() -> dict:
         "past_avg_last3f": None,
         "past_best_last3f": None,
         "past_avg_pos4c": None,
+        # 距離ロス（コーナーロス）特徴量
+        "past_avg_outer_ratio": None,
+        "past_outer_ratio_last": None,
+        "past_corner_loss_sec_avg": None,
+        "past_corner_loss_sec_last": None,
+        "past_pos_spread": None,
         "days_since_last": None,
         "same_surface_place_rate": None,
         "same_surface_runs": 0,
@@ -592,9 +699,9 @@ def _days_between(d1: str, d2: str) -> Optional[int]:
 FEATURE_COLS = [
     # レース条件
     "surface", "distance", "condition", "field_count", "is_jra",
-    # コース構造4因子 + 回り方向
+    # コース構造4因子 + 回り方向 + 初角実距離
     "venue_straight_m", "venue_slope", "venue_first_corner",
-    "venue_corner_type", "venue_direction",
+    "venue_corner_type", "venue_direction", "first_corner_m",
     # 馬個体
     "sex", "age", "gate_no", "weight_kg", "horse_weight", "weight_change",
     "gate_relative",
@@ -603,6 +710,12 @@ FEATURE_COLS = [
     "past_avg_finish", "past_best_finish",
     "past_avg_last3f", "past_best_last3f",
     "past_avg_pos4c",
+    # 距離ロス（コーナーロス）特徴量
+    "past_avg_outer_ratio",
+    "past_outer_ratio_last",
+    "past_corner_loss_sec_avg",
+    "past_corner_loss_sec_last",
+    "past_pos_spread",
     "days_since_last",
     "same_surface_place_rate", "same_surface_runs",
     "near_dist_place_rate", "near_dist_runs",
@@ -614,6 +727,19 @@ FEATURE_COLS = [
     "venue_sim_place_rate", "venue_sim_win_rate", "venue_sim_avg_finish",
     "venue_sim_runs", "venue_sim_n_venues",
     "same_dir_place_rate", "same_dir_runs",
+    # 調教特徴量 [24本]
+    "train_final_4f", "train_final_3f_self_best_ratio",
+    "train_final_3f_trend", "train_final_3f_rank_in_race",
+    "train_final_3f_dev", "train_final_1f_dev", "train_final_1f_trend",
+    "train_first1f_pace",
+    "train_intensity_max", "train_3f_per_intensity",
+    "train_efficiency_self_diff", "train_narinori_3f",
+    "train_3f_trainer_dev", "train_1f_trainer_dev",
+    "train_trainer_intensity_diff",
+    "train_volume_self_diff", "train_intensity_pattern", "train_course_primary",
+    "train_partner_margin", "train_partner_win_rate",
+    "train_stable_mark", "train_comment_sentiment",
+    "train_state_score", "train_readiness_index",
 ]
 
 # ばんえい専用特徴量カラム（使えない特徴量を除外 + 固有特徴量を追加）

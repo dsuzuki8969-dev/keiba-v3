@@ -396,7 +396,7 @@ class ProbabilityPredictor:
         if not features:
             return {}
 
-        # 後方互換: 旧モデル (54 特徴量) はsire特徴量なしで動作
+        # 後方互換: モデルの特徴量数とFEATURE_COLUMNSの整合チェック
         feat_cols = FEATURE_COLUMNS
         if self._models:
             sample_model = next(iter(self._models.values()))
@@ -404,6 +404,14 @@ class ProbabilityPredictor:
                 n = sample_model.num_feature()
                 if n < len(feat_cols):
                     feat_cols = feat_cols[:n]
+                elif n > len(feat_cols):
+                    # モデルが現在のFEATURE_COLUMNSより多い特徴量で学習されている
+                    # → 再学習が必要。predict_disable_shape_checkは使わない
+                    logger.warning(
+                        "三連率モデル特徴量不整合: モデル=%d, コード=%d → 再学習必要 (retrain_all.py --prob)",
+                        n, len(feat_cols),
+                    )
+                    return {}
 
         X = np.array(
             [[float(f.get(c)) if f.get(c) is not None else float("nan")
