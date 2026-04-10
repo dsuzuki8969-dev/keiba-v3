@@ -35,8 +35,8 @@ SHRINKAGE_THRESHOLD_JRA = 3000
 SHRINKAGE_THRESHOLD_NAR = 5000
 
 # 動的alpha の範囲
-ALPHA_MODEL_MIN = 0.60   # 拮抗レース時のモデル重み（H6: 0.50→0.60 グリッドサーチ最適化）
-ALPHA_MODEL_MAX = 0.80   # 一強レース時のモデル重み（H6: 0.70→0.80 グリッドサーチ最適化）
+ALPHA_MODEL_MIN = 0.95   # 人気統計の影響を5%以下に抑制（旧0.85）
+ALPHA_MODEL_MAX = 0.98   # 一強レース時のモデル重み（旧0.88）
 CONFIDENCE_GAP = 0.15    # この勝率差でモデル最大信頼
 
 # 頭数区分
@@ -218,11 +218,17 @@ def blend_probabilities(
     - Phase 2-2: model_level >= 3 のとき ALPHA_MODEL_MAX を引き上げ
     """
     from config.settings import (
+        DISABLE_POPULARITY_BLEND,
         PIPELINE_V2_ENABLED,
         ALPHA_MODEL_MAX_HIGH,
         ALPHA_MODEL_HIGH_THRESHOLD,
         CONFIDENCE_GAP_V2,
     )
+
+    if DISABLE_POPULARITY_BLEND:
+        logger.debug("人気統計ブレンド無効化: MLの予測をそのまま使用")
+        return
+
     org = "JRA" if is_jra else "NAR"
 
     # モデル確信度の計算（1位-2位の勝率差 + 上位3馬のエントロピー）
@@ -312,6 +318,10 @@ def blend_probabilities_dict(
 
     HorseEvaluation ではなく dict を直接操作する。
     """
+    from config.settings import DISABLE_POPULARITY_BLEND
+    if DISABLE_POPULARITY_BLEND:
+        return
+
     org = "JRA" if is_jra else "NAR"
 
     # モデル確信度
@@ -395,20 +405,26 @@ def _apply_ml_composite_adj(horses: List[dict]) -> None:
             existing_adj = h.get("ml_composite_adj", 0)
             h["_composite_base"] = h.get("composite", 50.0) - existing_adj
         h["ml_composite_adj"] = ml_adj
-        h["composite"] = max(30.0, min(70.0, h["_composite_base"] + ml_adj))
+        h["composite"] = max(20.0, min(100.0, h["_composite_base"] + ml_adj))
 
 
 def reassign_marks_dict(horses: List[dict]) -> None:
     """dict版の印再割り当て（リアルタイムオッズ更新用）
 
-    composite 降順で ◉/◎/○/▲/△/★ を付与。
+    formatter.py の assign_marks と同じロジック（wpガード＋ML合意）を適用。
+    pred.jsonの印をそのまま使う場合はこの関数を呼ばない（dashboard.pyで制御）。
     ☆(穴馬)・×(危険馬)は維持。
-    注: compositeはpred.jsonの値をそのまま使用（エンジンで正しく計算済み）。
-    _apply_ml_composite_adjは呼ばない（dashboardではwin_probが人気統計ブレンド後のため
-    エンジンのStep 5.6時点と異なる値になり、二重適用や不整合の原因になる）。
     """
+    TEKIPAN_GAP = 4.0
+    # wpガード閾値（formatter.pyと統一）
+    _MIN_WP_HONMEI = 0.05  # ◎: wp >= 5%（未満ならwp1位に切替）
+    _MIN_WP_TAIKOU = 0.02  # ○: wp >= 2%
+    _MIN_WP_TANNUKE = 0.01  # ▲: wp >= 1%
+    _MIN_WP_RENDASHI = 0.005  # △: wp >= 0.5%
+    # ★: wp下限なし
+
     MARK_SEQUENCE = ["○", "▲", "△", "★"]
-    TEKIPAN_GAP = 4.0  # 1位-2位のcomposite差がこれ以上なら◉（H3: 3.0→4.0に厳格化）
+    WP_FLOORS = {"○": _MIN_WP_TAIKOU, "▲": _MIN_WP_TANNUKE, "△": _MIN_WP_RENDASHI, "★": 0}
 
     # 既存の☆/×をメモ（×は現在のオッズ条件を再検証）
     special_marks = {}
@@ -417,7 +433,6 @@ def reassign_marks_dict(horses: List[dict]) -> None:
         if m == "☆":
             special_marks[h.get("horse_no")] = m
         elif m == "×":
-            # ×印はオッズ10倍未満 & 3人気以内の場合のみ維持
             _odds = h.get("odds") or h.get("predicted_tansho_odds") or 999
             _pop = h.get("popularity") or 99
             if _odds < 10.0 and _pop <= 3:
@@ -436,21 +451,56 @@ def reassign_marks_dict(horses: List[dict]) -> None:
         if hno in special_marks:
             h["mark"] = special_marks[hno]
 
-    # composite順に印を付与（☆/×が既についている馬はスキップ）
-    mark_idx = 0
-    for i, h in enumerate(sorted_h):
-        if h.get("mark"):
-            continue
-        if mark_idx == 0:
-            # 1位: ◉ or ◎ — ◉はgap≥4.0 AND win_prob≥30%
-            c1 = h.get("composite", 0)
-            c2 = sorted_h[1].get("composite", 0) if len(sorted_h) > 1 else 0
-            wp = h.get("win_prob", 0)
-            is_tekipan = (c1 - c2) >= TEKIPAN_GAP and wp >= 0.30
-            h["mark"] = "◉" if is_tekipan else "◎"
-            mark_idx += 1
-        elif mark_idx <= len(MARK_SEQUENCE):
-            h["mark"] = MARK_SEQUENCE[mark_idx - 1]
-            mark_idx += 1
-        else:
+    # ---- Step 0: ML合意チェック + wpガード（formatter.pyと統一）----
+    # composite1位とwp1位を比較
+    _active = [h for h in sorted_h if not h.get("mark")]
+    if not _active:
+        return
+
+    comp_top = _active[0]
+    wp_top = max(_active, key=lambda h: h.get("win_prob", 0))
+    comp_top_wp = comp_top.get("win_prob", 0)
+
+    # composite1位のwp < 5% かつ wp1位が別の馬 → wp1位に◎を付与
+    if comp_top_wp < _MIN_WP_HONMEI and comp_top.get("horse_no") != wp_top.get("horse_no"):
+        honmei_horse = wp_top
+    else:
+        honmei_horse = comp_top
+        # composite僅差 + wp大幅乖離 → wp1位を優先
+        if comp_top.get("horse_no") != wp_top.get("horse_no"):
+            c2 = _active[1].get("composite", 0) if len(_active) >= 2 else 0
+            gap = comp_top.get("composite", 0) - c2
+            wp_ratio = (wp_top.get("win_prob", 0)) / max(0.01, comp_top_wp)
+            if gap <= 2.0 and wp_ratio >= 1.5:
+                honmei_horse = wp_top
+
+    # ◉/◎判定
+    c1 = honmei_horse.get("composite", 0)
+    c2 = sorted_h[1].get("composite", 0) if len(sorted_h) > 1 else 0
+    gap = c1 - c2
+    if gap < 0:
+        gap = sorted_h[0].get("composite", 0) - c2 if len(sorted_h) > 1 else 0
+    is_tekipan = gap >= TEKIPAN_GAP and (honmei_horse.get("win_prob", 0)) >= 0.30
+    honmei_horse["mark"] = "◉" if is_tekipan else "◎"
+
+    # ---- Step 1: ○▲△★ — composite順でwpガード付き ----
+    for mark_str in MARK_SEQUENCE:
+        wp_floor = WP_FLOORS.get(mark_str, 0)
+        for h in sorted_h:
+            if h.get("mark"):
+                continue
+            if wp_floor > 0 and h.get("win_prob", 0) < wp_floor:
+                continue  # wpガード: 不足の馬はスキップ
+            h["mark"] = mark_str
             break
+
+    # ---- Step 2: 5印完備保証 ----
+    assigned_marks = {h.get("mark") for h in sorted_h if h.get("mark")}
+    for req_mark in MARK_SEQUENCE:
+        if req_mark in assigned_marks:
+            continue
+        for h in sorted_h:
+            if not h.get("mark"):
+                h["mark"] = req_mark
+                assigned_marks.add(req_mark)
+                break

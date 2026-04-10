@@ -162,15 +162,74 @@ def init_schema() -> None:
     conn.executescript(_SCHEMA_SQL)
     # 既存DBへの列追加・インデックス追加（ALTER TABLE/CREATE INDEX は IF NOT EXISTS 非対応なので try/except）
     for ddl in [
+        # 既存マイグレーション
         "ALTER TABLE race_log ADD COLUMN win_odds REAL DEFAULT NULL",
         "ALTER TABLE race_log ADD COLUMN running_style TEXT DEFAULT NULL",
         "ALTER TABLE race_log ADD COLUMN sire_name TEXT DEFAULT ''",
         "ALTER TABLE race_log ADD COLUMN bms_name TEXT DEFAULT ''",
         "ALTER TABLE race_log ADD COLUMN condition TEXT DEFAULT ''",
+        # Phase 1: race_log完全化（30カラム追加）
+        # 馬レベル（走行データ）
+        "ALTER TABLE race_log ADD COLUMN horse_id TEXT DEFAULT ''",
+        "ALTER TABLE race_log ADD COLUMN horse_name TEXT DEFAULT ''",
+        "ALTER TABLE race_log ADD COLUMN gate_no INTEGER DEFAULT 0",
+        "ALTER TABLE race_log ADD COLUMN sex TEXT DEFAULT ''",
+        "ALTER TABLE race_log ADD COLUMN age INTEGER DEFAULT 0",
+        "ALTER TABLE race_log ADD COLUMN weight_kg REAL DEFAULT 0",
+        "ALTER TABLE race_log ADD COLUMN odds REAL",
+        "ALTER TABLE race_log ADD COLUMN tansho_odds REAL",
+        "ALTER TABLE race_log ADD COLUMN popularity INTEGER",
+        "ALTER TABLE race_log ADD COLUMN horse_weight INTEGER",
+        "ALTER TABLE race_log ADD COLUMN weight_change INTEGER",
+        "ALTER TABLE race_log ADD COLUMN position_4c INTEGER DEFAULT 0",
+        "ALTER TABLE race_log ADD COLUMN positions_corners TEXT DEFAULT ''",
+        "ALTER TABLE race_log ADD COLUMN finish_time_sec REAL DEFAULT 0",
+        "ALTER TABLE race_log ADD COLUMN last_3f_sec REAL DEFAULT 0",
+        "ALTER TABLE race_log ADD COLUMN first_3f_sec REAL",
+        "ALTER TABLE race_log ADD COLUMN margin_ahead REAL DEFAULT 0",
+        "ALTER TABLE race_log ADD COLUMN margin_behind REAL DEFAULT 0",
+        "ALTER TABLE race_log ADD COLUMN status TEXT",
+        # レースレベル
+        "ALTER TABLE race_log ADD COLUMN course_id TEXT DEFAULT ''",
+        "ALTER TABLE race_log ADD COLUMN grade TEXT DEFAULT ''",
+        "ALTER TABLE race_log ADD COLUMN race_name TEXT DEFAULT ''",
+        "ALTER TABLE race_log ADD COLUMN weather TEXT DEFAULT ''",
+        "ALTER TABLE race_log ADD COLUMN direction TEXT DEFAULT ''",
+        "ALTER TABLE race_log ADD COLUMN race_first_3f REAL",
+        "ALTER TABLE race_log ADD COLUMN race_pace TEXT DEFAULT ''",
+        # 計算値・メタ
+        "ALTER TABLE race_log ADD COLUMN pace TEXT",
+        "ALTER TABLE race_log ADD COLUMN is_generation INTEGER DEFAULT 0",
+        "ALTER TABLE race_log ADD COLUMN race_level_dev REAL",
+        "ALTER TABLE race_log ADD COLUMN source TEXT DEFAULT ''",
+        # training_recordsテーブル
+        """CREATE TABLE IF NOT EXISTS training_records (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            race_id TEXT NOT NULL,
+            horse_name TEXT NOT NULL,
+            horse_id TEXT DEFAULT '',
+            date TEXT DEFAULT '',
+            course TEXT DEFAULT '',
+            splits_json TEXT DEFAULT '{}',
+            rider TEXT DEFAULT '',
+            track_condition TEXT DEFAULT '',
+            lap_count TEXT DEFAULT '',
+            intensity_label TEXT DEFAULT '',
+            sigma_from_mean REAL DEFAULT 0,
+            comment TEXT DEFAULT '',
+            stable_comment TEXT DEFAULT '',
+            source TEXT DEFAULT 'keibabook',
+            UNIQUE(race_id, horse_name, date, course)
+        )""",
+        # インデックス
         "CREATE INDEX IF NOT EXISTS idx_racelog_sire ON race_log(sire_name)",
         "CREATE INDEX IF NOT EXISTS idx_racelog_bms  ON race_log(bms_name)",
         "CREATE INDEX IF NOT EXISTS idx_racelog_venue   ON race_log(venue_code)",
         "CREATE INDEX IF NOT EXISTS idx_racelog_surface ON race_log(surface)",
+        "CREATE INDEX IF NOT EXISTS idx_racelog_horseid ON race_log(horse_id)",
+        "CREATE INDEX IF NOT EXISTS idx_racelog_finish  ON race_log(finish_pos)",
+        "CREATE INDEX IF NOT EXISTS idx_training_raceid ON training_records(race_id)",
+        "CREATE INDEX IF NOT EXISTS idx_training_horse  ON training_records(horse_name)",
         "CREATE INDEX IF NOT EXISTS idx_personnel_type  ON personnel(person_type)",
         "CREATE INDEX IF NOT EXISTS idx_pred_race_id    ON predictions(race_id)",
         "CREATE INDEX IF NOT EXISTS idx_result_race_id  ON race_results(race_id)",
@@ -738,8 +797,8 @@ def get_course_last3f_sigma(target_date: str = None) -> dict:
 
 def get_gate_bias_from_race_log(target_date: str = None) -> dict:
     """
-    race_log から venue_code × surface 別の枠番（gate_no）複勝率を集計し、
-    枠順バイアスDBを自動構築する（案F-5）。
+    race_log から venue_code × surface 別（+ 距離別精密版）の枠番（gate_no）
+    複勝率を集計し、枠順バイアスDBを自動構築する（案F-5）。
 
     既存の gate_bias_db を上書きするのではなく、
     race_log ベースのデータとしてエンジンで合成して使用する。
@@ -749,8 +808,10 @@ def get_gate_bias_from_race_log(target_date: str = None) -> dict:
                      指定時は基準日の1年前〜前日のデータのみ使用。
 
     Returns:
-        {"venue_surface": {gate_no: bias_score}}
-        例: {"01_芝": {1: 2.1, 2: 1.3, ..., 8: -1.8}}
+        {"venue_surface": {gate_no: bias_score},
+         "venue_surface_distance": {gate_no: bias_score}}  # 距離別精密版
+        例: {"01_芝": {1: 2.1, ..., 8: -1.8},
+             "44_ダート_1600": {1: 1.5, ..., 8: -0.8}}
     """
     conn = get_db()
 
@@ -769,10 +830,11 @@ def get_gate_bias_from_race_log(target_date: str = None) -> dict:
         params = [target_date, cutoff]
 
     try:
+        # 距離別も含めて一括取得（distance付きGROUP BY）
         rows = conn.execute(
             f"""
             SELECT
-                venue_code, surface, gate_no,
+                venue_code, surface, distance, gate_no,
                 COUNT(*) AS total,
                 SUM(CASE WHEN finish_pos <= 3 THEN 1.0 ELSE 0.0 END) AS place3
             FROM race_log
@@ -780,7 +842,7 @@ def get_gate_bias_from_race_log(target_date: str = None) -> dict:
               AND finish_pos IS NOT NULL AND finish_pos > 0
               AND field_count >= 8
               {date_clause}
-            GROUP BY venue_code, surface, gate_no
+            GROUP BY venue_code, surface, distance, gate_no
             HAVING total >= 15
             """,
             params,
@@ -788,34 +850,54 @@ def get_gate_bias_from_race_log(target_date: str = None) -> dict:
     except Exception:
         return {}
 
-    # venue_surface ごとに集計
     from collections import defaultdict
+
+    # venue_surface ごとに集計（従来互換）
     venue_data: dict = defaultdict(lambda: defaultdict(lambda: {"total": 0, "place3": 0}))
+    # venue_surface_distance ごとに集計（距離別精密版）
+    dist_data: dict = defaultdict(lambda: defaultdict(lambda: {"total": 0, "place3": 0}))
+
     for r in rows:
         key = f"{r['venue_code']}_{r['surface']}"
+        dist_key = f"{r['venue_code']}_{r['surface']}_{r['distance']}"
         gate = int(r["gate_no"])
         venue_data[key][gate]["total"] += r["total"]
         venue_data[key][gate]["place3"] += r["place3"]
+        dist_data[dist_key][gate]["total"] += r["total"]
+        dist_data[dist_key][gate]["place3"] += r["place3"]
 
-    result = {}
-    for key, gates in venue_data.items():
-        # 全枠の複勝率平均を算出
-        all_totals = sum(g["total"] for g in gates.values())
-        all_place3 = sum(g["place3"] for g in gates.values())
+    def _calc_bias(gates_dict: dict) -> dict:
+        """枠別データから偏差値スケールのバイアス値を算出"""
+        all_totals = sum(g["total"] for g in gates_dict.values())
+        all_place3 = sum(g["place3"] for g in gates_dict.values())
         avg_rate = all_place3 / all_totals if all_totals > 0 else 1 / 3
 
         gate_bias = {}
-        for gate_no, stats in gates.items():
+        for gate_no, stats in gates_dict.items():
             if stats["total"] < 15:
                 continue
             rate = stats["place3"] / stats["total"]
-            # 偏差値スケールへ: 平均からの差を ±5 にスケール
             diff = rate - avg_rate
             bias = max(-5.0, min(5.0, diff * 20.0))
             gate_bias[gate_no] = round(bias, 2)
+        return gate_bias
 
+    result = {}
+
+    # 従来の venue_surface キー
+    for key, gates in venue_data.items():
+        gate_bias = _calc_bias(gates)
         if gate_bias:
             result[key] = gate_bias
+
+    # 距離別精密版（サンプル数30以上の枠が4つ以上ある距離のみ）
+    _MIN_DIST_SAMPLES = 30
+    for dist_key, gates in dist_data.items():
+        qualified_gates = {g: s for g, s in gates.items() if s["total"] >= _MIN_DIST_SAMPLES}
+        if len(qualified_gates) >= 4:
+            gate_bias = _calc_bias(qualified_gates)
+            if gate_bias:
+                result[dist_key] = gate_bias
 
     return result
 
@@ -1276,6 +1358,196 @@ def _strip_venue_prefix(name: str) -> str:
     return name
 
 
+def _l3f_corners_backfill(conn) -> None:
+    """
+    race_logの last_3f_sec=0 または positions_corners が空/1要素のレースを
+    HTMLキャッシュから自動補完する。
+    populate_race_log_from_predictions() の末尾で自動呼出しされる。
+    """
+    import os as _os, re as _re
+
+    # 補完対象のrace_idを取得（last_3f=0 または corners不足）
+    need_l3f = conn.execute(
+        "SELECT DISTINCT race_id FROM race_log "
+        "WHERE (last_3f_sec IS NULL OR last_3f_sec = 0) AND finish_pos < 90"
+    ).fetchall()
+    need_corners = conn.execute(
+        "SELECT DISTINCT race_id FROM race_log "
+        "WHERE (positions_corners IS NULL OR positions_corners = '' OR positions_corners = '[]' "
+        "  OR (positions_corners NOT LIKE '%,%' AND positions_corners != '')) "
+        "AND finish_pos < 90"
+    ).fetchall()
+
+    target_ids = set()
+    l3f_ids = {r[0] for r in need_l3f}
+    corner_ids = {r[0] for r in need_corners}
+    target_ids = l3f_ids | corner_ids
+
+    if not target_ids:
+        return
+
+    cache_dir = _os.path.join(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))), "data", "cache")
+    if not _os.path.isdir(cache_dir):
+        return
+
+    try:
+        import lz4.frame
+    except ImportError:
+        return
+
+    try:
+        from bs4 import BeautifulSoup
+    except ImportError:
+        return
+
+    print(f"[race_log投入] HTMLキャッシュ補完: last_3f対象={len(l3f_ids):,}, corners対象={len(corner_ids):,}", flush=True)
+
+    l3f_updated = 0
+    corners_updated = 0
+
+    for race_id in target_ids:
+        # HTMLキャッシュ読み込み
+        html = None
+        for prefix in ["nar.netkeiba.com_race_result.html_race_id=",
+                        "race.netkeiba.com_race_result.html_race_id="]:
+            key = f"{prefix}{race_id}"
+            for ext in [".html.lz4", ".html"]:
+                path = _os.path.join(cache_dir, f"{key}{ext}")
+                if _os.path.exists(path):
+                    try:
+                        if ext == ".html.lz4":
+                            with open(path, "rb") as f:
+                                html = lz4.frame.decompress(f.read()).decode("utf-8", errors="replace")
+                        else:
+                            with open(path, "r", encoding="utf-8", errors="replace") as f:
+                                html = f.read()
+                        break
+                    except Exception:
+                        pass
+            if html:
+                break
+
+        if not html:
+            continue
+
+        soup = BeautifulSoup(html, "html.parser")
+
+        # ── last_3f_sec 抽出 ──
+        l3f_map = {}
+        if race_id in l3f_ids:
+            table = soup.select_one("table.race_table_01") or soup.select_one("table.RaceTable01")
+            if table:
+                for row in table.select("tbody tr"):
+                    cells = row.find_all("td")
+                    if len(cells) < 5:
+                        continue
+                    ft = cells[0].get_text(strip=True)
+                    if not ft.isdigit():
+                        continue
+                    hno_t = cells[2].get_text(strip=True)
+                    if not hno_t.isdigit():
+                        continue
+                    hno = int(hno_t)
+                    for ci in range(7, min(len(cells), 14)):
+                        t = cells[ci].get_text(strip=True)
+                        if _re.match(r"^\d{2}\.\d$", t):
+                            val = float(t)
+                            if 28.0 <= val <= 50.0:
+                                l3f_map[hno] = val
+                                break
+
+        # ── positions_corners 抽出 ──
+        corner_orders = {}
+        if race_id in corner_ids:
+            ctable = soup.select_one("table.Corner_Num")
+            if ctable:
+                for tr in ctable.select("tr"):
+                    cells_c = tr.find_all(["th", "td"])
+                    if len(cells_c) < 2:
+                        continue
+                    m = _re.search(r"(\d)", cells_c[0].get_text(strip=True))
+                    if not m:
+                        continue
+                    ci = int(m.group(1))
+                    raw = cells_c[1].get_text()
+                    raw = _re.sub(r'\s*=\s*(\d+)\s*$', '', raw)  # 末尾除外馬のみ除去
+                    raw = raw.replace("（", "(").replace("）", ")")
+                    raw = raw.replace("=", ",")  # 大差セパレータ→カンマ
+                    horse_pos = {}
+                    pos = 1
+                    i = 0
+                    while i < len(raw):
+                        ch = raw[i]
+                        if ch == '(':
+                            end = raw.find(')', i)
+                            if end < 0:
+                                end = len(raw)
+                            group_text = raw[i+1:end]
+                            group_nos = [int(x.strip()) for x in _re.split(r'[,\-]', group_text) if x.strip().isdigit()]
+                            for hno in group_nos:
+                                horse_pos[hno] = pos
+                            pos += len(group_nos)
+                            i = end + 1
+                        elif ch.isdigit():
+                            j = i
+                            while j < len(raw) and raw[j].isdigit():
+                                j += 1
+                            hno = int(raw[i:j])
+                            horse_pos[hno] = pos
+                            pos += 1
+                            i = j
+                        else:
+                            i += 1
+                    corner_orders[ci] = horse_pos
+
+        # ── DB更新 ──
+        if not l3f_map and not corner_orders:
+            continue
+
+        horses = conn.execute(
+            "SELECT horse_no, last_3f_sec, positions_corners FROM race_log WHERE race_id = ?",
+            (race_id,)
+        ).fetchall()
+
+        for h in horses:
+            hno = h[0]
+            if not hno:
+                continue
+
+            # last_3f
+            if hno in l3f_map and (not h[1] or h[1] <= 0):
+                conn.execute(
+                    "UPDATE race_log SET last_3f_sec = ? WHERE race_id = ? AND horse_no = ?",
+                    (l3f_map[hno], race_id, hno)
+                )
+                l3f_updated += 1
+
+            # corners
+            if corner_orders:
+                positions = []
+                for ci_key in sorted(corner_orders.keys()):
+                    pm = corner_orders[ci_key]
+                    if hno in pm:
+                        positions.append(pm[hno])
+                if positions and any(p > 0 for p in positions):
+                    old_raw = h[2] or ""
+                    try:
+                        old = json.loads(old_raw) if old_raw.startswith("[") else []
+                    except Exception:
+                        old = []
+                    if len(positions) > len(old) or len(old) <= 1:
+                        conn.execute(
+                            "UPDATE race_log SET positions_corners = ?, position_4c = ? "
+                            "WHERE race_id = ? AND horse_no = ?",
+                            (json.dumps(positions), positions[-1], race_id, hno)
+                        )
+                        corners_updated += 1
+
+    if l3f_updated > 0 or corners_updated > 0:
+        conn.commit()
+        print(f"[race_log投入] HTMLキャッシュ補完完了: last_3f={l3f_updated:,}件, corners={corners_updated:,}件", flush=True)
+
+
 def populate_race_log_from_predictions() -> int:
     """
     predictions × race_results を SQL JOIN して race_log テーブルを投入する。
@@ -1290,17 +1562,18 @@ def populate_race_log_from_predictions() -> int:
     # 既に race_log に存在する race_id を取得
     existing = {r[0] for r in conn.execute("SELECT DISTINCT race_id FROM race_log").fetchall()}
 
-    # JOIN対象のrace_id数をカウント（重いJOINクエリを回避する早期チェック）
-    joinable_count = conn.execute(
-        """SELECT COUNT(DISTINCT p.race_id)
+    # JOIN対象のrace_idセットを取得（重いJOINクエリを回避する早期チェック）
+    joinable_ids = {r[0] for r in conn.execute(
+        """SELECT DISTINCT p.race_id
            FROM predictions p
            INNER JOIN race_results r ON p.race_id = r.race_id
            WHERE r.order_json IS NOT NULL AND r.order_json != '[]' AND r.order_json != 'null'"""
-    ).fetchone()[0]
+    ).fetchall()}
 
-    # 全race_idが既に投入済みならJOINクエリとバックフィルをスキップ
-    if joinable_count <= len(existing):
-        print(f"[race_log投入] 新規なし (既存={len(existing):,}, 対象={joinable_count:,}) → スキップ", flush=True)
+    # 新規race_idが無ければスキップ（既存race_idとの差分で判定）
+    new_ids = joinable_ids - existing
+    if not new_ids:
+        print(f"[race_log投入] 新規なし (既存={len(existing):,}, JOIN対象={len(joinable_ids):,}) → スキップ", flush=True)
         return 0
 
     # predictions × race_results を SQL JOIN で一括取得（Python での dict 結合を排除）
@@ -1353,9 +1626,37 @@ def populate_race_log_from_predictions() -> int:
                         "trainer_name": _strip_venue_prefix(h.get("trainer", "") or ""),
                         "sire_name":    h.get("sire", "") or "",
                         "bms_name":     h.get("maternal_grandsire", "") or "",
+                        "horse_id":     h.get("horse_id", "") or "",
                     }
 
             orders = json.loads(pred["order_json"])
+
+            # margin_ahead/behind を finish_time_sec から事前計算
+            _time_entries = []
+            for _e in orders:
+                _hno = _e.get("horse_no")
+                _fp = _e.get("finish")
+                _ts = 0.0
+                try:
+                    _ts_raw = _e.get("time_sec")
+                    if _ts_raw is not None:
+                        _ts = float(_ts_raw)
+                except (ValueError, TypeError):
+                    pass
+                if _hno is not None and _fp is not None and int(_fp) < 90 and _ts > 0:
+                    _time_entries.append((int(_hno), int(_fp), _ts))
+            _time_entries.sort(key=lambda x: x[1])  # 着順ソート
+            _winner_time = _time_entries[0][2] if _time_entries else 0
+            _margin_map = {}
+            for _idx, (_hno, _fp, _ft) in enumerate(_time_entries):
+                _ma = round(_ft - _winner_time, 3) if _winner_time > 0 else 0.0
+                _mb = 0.0
+                if _idx + 1 < len(_time_entries):
+                    _next_t = _time_entries[_idx + 1][2]
+                    if _next_t > _ft:
+                        _mb = round(_next_t - _ft, 3)
+                _margin_map[_hno] = (_ma, _mb)
+
             for entry in orders:
                 horse_no  = entry.get("horse_no")
                 finish    = entry.get("finish")
@@ -1374,6 +1675,36 @@ def populate_race_log_from_predictions() -> int:
                 except (ValueError, TypeError):
                     win_odds = None
 
+                # order_json から通過順・タイム・着差を取得
+                _corners_json = ""
+                _p4c = 0
+                _raw_corners = entry.get("corners")
+                if _raw_corners and isinstance(_raw_corners, list) and len(_raw_corners) > 0:
+                    _cv = _raw_corners[0]
+                    if isinstance(_cv, int) and _cv > 0:
+                        # netkeibaの通過順数値をパース
+                        _s = str(_cv)
+                        if all(c in "123456789" for c in _s) and 2 <= len(_s) <= 4:
+                            _parsed_c = [int(c) for c in _s]
+                            _corners_json = json.dumps(_parsed_c)
+                            _p4c = _parsed_c[-1]
+                _ft_sec = 0.0
+                try:
+                    _ts = entry.get("time_sec")
+                    if _ts is not None:
+                        _ft_sec = float(_ts)
+                except (ValueError, TypeError):
+                    pass
+                _l3f = 0.0
+                try:
+                    _l3f_raw = entry.get("last_3f")
+                    if _l3f_raw is not None:
+                        _l3f = float(_l3f_raw)
+                except (ValueError, TypeError):
+                    pass
+                _horse_id = hinfo.get("horse_id", "") or ""
+                _margins = _margin_map.get(horse_no, (0.0, 0.0))
+
                 txn.execute(
                     """
                     INSERT OR IGNORE INTO race_log
@@ -1381,8 +1712,11 @@ def populate_race_log_from_predictions() -> int:
                        horse_no, finish_pos,
                        jockey_id, jockey_name, trainer_id, trainer_name,
                        field_count, is_jra, win_odds,
-                       sire_name, bms_name)
-                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                       sire_name, bms_name,
+                       positions_corners, position_4c,
+                       finish_time_sec, last_3f_sec, horse_id,
+                       margin_ahead, margin_behind)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                     """,
                     (race_date, race_id, venue_code, surface, distance,
                      horse_no, finish,
@@ -1392,7 +1726,10 @@ def populate_race_log_from_predictions() -> int:
                      hinfo.get("trainer_name", ""),
                      field_count, is_jra, win_odds,
                      hinfo.get("sire_name", ""),
-                     hinfo.get("bms_name", "")),
+                     hinfo.get("bms_name", ""),
+                     _corners_json, _p4c,
+                     _ft_sec, _l3f, _horse_id,
+                     _margins[0], _margins[1]),
                 )
                 inserted += 1
 
@@ -1487,7 +1824,6 @@ def populate_race_log_from_predictions() -> int:
     ).fetchone()[0]
     if cond_null > 0:
         import glob as _glob
-        import os as _os
         _pred_dir = _os.path.join(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))), "data", "predictions")
         pred_jsons = sorted(_glob.glob(_os.path.join(_pred_dir, "*_pred.json")))
         if pred_jsons:
@@ -1524,6 +1860,11 @@ def populate_race_log_from_predictions() -> int:
                         _f.write("done")
                 except Exception:
                     pass
+
+    # ── last_3f_sec / positions_corners のHTMLキャッシュ補完 ──
+    # race_logに last_3f_sec=0 または positions_corners が空/1要素のレースを
+    # HTMLキャッシュから自動補完する（今後データ欠損を防ぐ堅牢な処理）
+    _l3f_corners_backfill(conn)
 
     elapsed = _time.time() - t0
     print(f"[race_log投入] 完了 ({elapsed:.1f}秒) 新規={inserted:,}件挿入, スキップ={skipped:,}件", flush=True)
@@ -1907,6 +2248,47 @@ def compute_personnel_stats_from_race_log(year_filter: str = None) -> dict:
         flush=True,
     )
 
+    # ── 名前正規化用の定数（tryブロック外で定義、マージ関数からも参照）──
+    _mark_pat = _re.compile(r'^[☆△▲▼◎○◇★●]+')
+    _LOC_PREFIXES = (
+        "美浦", "栗東", "北海道",
+        "大井", "船橋", "川崎", "浦和",
+        "笠松", "名古屋", "愛知",
+        "園田", "姫路", "兵庫",
+        "佐賀", "高知", "金沢",
+        "盛岡", "水沢", "岩手",
+        "門別", "帯広",
+        "地方", "海外",
+    )
+
+    def _clean_name(n: str) -> str:
+        s = _mark_pat.sub("", n).strip()
+        # 所属サフィックス除去: （兵庫）（大井）等
+        s = _re.sub(r'[（(][^)）]*[)）]$', '', s).strip()
+        # 所属プレフィックス除去
+        for pf in _LOC_PREFIXES:
+            if s.startswith(pf) and len(s) > len(pf):
+                rest = s[len(pf):]
+                if rest.startswith(" "):
+                    rest = rest.lstrip()
+                s = rest
+                break
+        return s
+
+    def _best_name(name_counts: dict) -> str:
+        """マーカー・所属地名除去後に最多出現のフルネームを選ぶ"""
+        cleaned = {}
+        for n, c in name_counts.items():
+            if not n or _horse_weight_pat.match(n.strip()):
+                continue
+            cn = _clean_name(n)
+            if not cn:
+                continue
+            cleaned[cn] = cleaned.get(cn, 0) + c
+        if not cleaned:
+            return ""
+        return max(cleaned, key=lambda n: (len(n), cleaned[n]))
+
     # ── personnel DB から名前・所属を補完 ─────────────────────────────
     try:
         _pers = get_personnel_all()
@@ -1927,44 +2309,6 @@ def compute_personnel_stats_from_race_log(year_filter: str = None) -> dict:
         except Exception:
             _ml_tname = {}
             _ml_jname = {}
-
-        _mark_pat = _re.compile(r'^[☆△▲▼◎○◇★●]+')
-        # netkeiba の一部データでは trainer_name / jockey_name に所属地名がプレフィクスされている
-        _LOC_PREFIXES = (
-            "美浦", "栗東", "北海道",          # JRA / 広域
-            "大井", "船橋", "川崎", "浦和",     # 南関東
-            "笠松", "名古屋", "愛知",           # 東海
-            "園田", "姫路",                     # 兵庫
-            "佐賀", "高知", "金沢",             # 地方
-            "盛岡", "水沢", "岩手",             # 岩手
-            "門別", "帯広",                     # 北海道
-            "地方", "海外",                     # 汎用プレフィクス (スペース区切りあり)
-        )
-        def _clean_name(n: str) -> str:
-            s = _mark_pat.sub("", n).strip()
-            for pf in _LOC_PREFIXES:
-                if s.startswith(pf) and len(s) > len(pf):
-                    rest = s[len(pf):]
-                    # "地方 伊藤強" のようにスペース区切りの場合も除去
-                    if rest.startswith(" "):
-                        rest = rest.lstrip()
-                    s = rest
-                    break
-            return s
-        def _best_name(name_counts: dict) -> str:
-            """マーカー・所属地名除去後に最多出現のフルネームを選ぶ"""
-            cleaned = {}
-            for n, c in name_counts.items():
-                if not n or _horse_weight_pat.match(n.strip()):
-                    continue
-                cn = _clean_name(n)
-                if not cn:
-                    continue
-                # 同じクリーン名は出現数を合算
-                cleaned[cn] = cleaned.get(cn, 0) + c
-            if not cleaned:
-                return ""
-            return max(cleaned, key=lambda n: (len(n), cleaned[n]))
 
         def _resolve_name(pdb_raw, best, ml_name, current, pid):
             """マーカー除去済みの最長名を選択"""
@@ -1994,6 +2338,103 @@ def compute_personnel_stats_from_race_log(year_filter: str = None) -> dict:
     except Exception:
         _jloc = {}
         _tloc = {}
+
+    # ── 同一人物の複数ID統合（土方颯太=05667,a0576,31349 等）──────────
+    def _normalize_for_merge(name: str) -> str:
+        """マージ用の正規化: マーク・所属・括弧を全除去"""
+        s = _re.sub(r'^[☆△▲▼◎○◇★●]+', '', name).strip()
+        # 所属サフィックス除去: （兵庫）（大井）等
+        s = _re.sub(r'[（(][^)）]*[)）]$', '', s).strip()
+        # 所属プレフィックス除去
+        for pf in _LOC_PREFIXES:
+            if s.startswith(pf) and len(s) > len(pf):
+                rest = s[len(pf):].lstrip()
+                s = rest
+                break
+        return s
+
+    def _merge_duplicate_persons(persons: dict) -> dict:
+        """同じ正規化名を持つ複数IDの人物を統合する。
+        完全一致 + 前方一致（土方颯太↔土方颯, 吉村智洋↔吉村智）の両方で検出。"""
+        # 正規化名 → [pid, ...] のマッピング（完全一致）
+        name_to_pids = defaultdict(list)
+        pid_to_norm = {}
+        for pid, pdata in persons.items():
+            norm = _normalize_for_merge(pdata.get("name", "") or pid)
+            if norm and len(norm) >= 2:
+                name_to_pids[norm].append(pid)
+                pid_to_norm[pid] = norm
+
+        # 前方一致マージ: 「土方颯」と「土方颯太」を統合
+        # 短い名前が長い名前の先頭に含まれている場合
+        sorted_names = sorted(name_to_pids.keys(), key=len)
+        merged_names = {}  # 短い名前 → 長い名前（正典）へのマッピング
+        for i, short in enumerate(sorted_names):
+            if short in merged_names:
+                continue
+            for long in sorted_names[i+1:]:
+                if long in merged_names:
+                    continue
+                # 短い名前が長い名前の先頭に一致（2文字以上共有）
+                if long.startswith(short) and len(short) >= 2:
+                    # 長い方に統合
+                    name_to_pids[long].extend(name_to_pids[short])
+                    merged_names[short] = long
+
+        # マージ対象から短い名前を除去
+        for short in merged_names:
+            if short in name_to_pids:
+                del name_to_pids[short]
+
+        merged_count = 0
+        for norm_name, pids in name_to_pids.items():
+            if len(pids) <= 1:
+                continue
+            # 最多騎乗のIDを正典IDとする
+            pids.sort(key=lambda p: persons[p]["total"], reverse=True)
+            canonical_pid = pids[0]
+            canonical = persons[canonical_pid]
+
+            for dup_pid in pids[1:]:
+                dup = persons[dup_pid]
+                # 数値フィールドを合算
+                for k in ("total", "win", "place2", "place3", "win_odds_sum"):
+                    canonical[k] = canonical.get(k, 0) + dup.get(k, 0)
+                # name_counts を合算
+                for n, c in dup.get("name_counts", {}).items():
+                    canonical.setdefault("name_counts", {})[n] = canonical["name_counts"].get(n, 0) + c
+                # jra/nar を合算
+                for jn in ("jra", "nar"):
+                    for k in ("total", "win", "place2", "place3"):
+                        canonical[jn][k] = canonical[jn].get(k, 0) + dup[jn].get(k, 0)
+                # by_* を合算
+                for by_key in ("by_surface", "jra_by_surface", "nar_by_surface",
+                               "by_smile", "jra_by_smile", "nar_by_smile",
+                               "by_venue", "by_running_style"):
+                    for sk, sv in dup.get(by_key, {}).items():
+                        target = canonical.setdefault(by_key, defaultdict(_empty_stat))[sk]
+                        for k in ("total", "win", "place2", "place3"):
+                            target[k] = target.get(k, 0) + sv.get(k, 0)
+                # 重複IDを削除
+                del persons[dup_pid]
+                merged_count += 1
+
+        if merged_count > 0:
+            print(f"[DB集計] 同一人物ID統合: {merged_count}件マージ", flush=True)
+        return persons
+
+    jockeys  = _merge_duplicate_persons(jockeys)
+    trainers = _merge_duplicate_persons(trainers)
+
+    # 統合後に名前を再解決
+    for jid, js in jockeys.items():
+        best = _best_name(js.get("name_counts", {})) if "_best_name" in dir() else js.get("name", "")
+        if best:
+            js["name"] = best
+    for tid, ts in trainers.items():
+        best = _best_name(ts.get("name_counts", {})) if "_best_name" in dir() else ts.get("name", "")
+        if best:
+            ts["name"] = best
 
     def _finalize_stat(st: dict) -> dict:
         t = st.get("total", 0)

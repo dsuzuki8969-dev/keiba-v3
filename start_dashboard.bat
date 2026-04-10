@@ -1,4 +1,5 @@
 @echo off
+chcp 65001 > nul
 cd /d "c:\Users\dsuzu\keiba\keiba-v3"
 echo [D-AI競馬予想] ダッシュボード起動中...
 

@@ -1,25 +1,15 @@
 @echo off
 chcp 65001 > nul
-cd /d "%~dp0.."
+cd /d "c:\Users\dsuzu\keiba\keiba-v3"
+set PYTHONUNBUFFERED=1
+set KEIBA_HOST=0.0.0.0
+set KEIBA_PORT=5051
 
-REM ダッシュボードサーバー(port 5051)が既に起動中か確認
-netstat -ano | findstr ":5051" | findstr "LISTENING" > nul 2>&1
-if %errorlevel% == 0 (
-    echo ダッシュボードは既に起動中です。ブラウザで開きます...
-    start http://localhost:5051
+REM ポート重複チェック
+netstat -an | find "0.0.0.0:5051" | find "LISTENING" > nul 2>&1
+if %errorlevel% equ 0 (
+    echo %date% %time% [SKIP] ポート5051は既に使用中 >> "data\logs\dashboard.log"
     exit /b 0
 )
 
-REM 起動していなければサーバーをバックグラウンドで起動
-echo ダッシュボードサーバーを起動中...
-start "D-AI競馬ダッシュボード" /min python src\dashboard.py
-
-REM サーバーが応答するまで待機
-:WAIT
-timeout /t 2 /nobreak > nul
-netstat -ano | findstr ":5051" | findstr "LISTENING" > nul 2>&1
-if %errorlevel% neq 0 goto WAIT
-
-REM ブラウザで開く
-echo 起動完了。ブラウザを開きます...
-start http://localhost:5051
+python src/dashboard.py >> "data\logs\dashboard.log" 2>&1

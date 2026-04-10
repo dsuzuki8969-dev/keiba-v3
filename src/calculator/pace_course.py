@@ -24,15 +24,32 @@ from src.models import (
 )
 
 
+# course_id → direction のマッピング（"両"方向venue内の個別コース方向判定用）
+# 例: "44_ダート_1650" → "左", "44_ダート_1600" → "右"
+_COURSE_DIRECTION_MAP: Dict[str, str] = {}
+
+
+def _ensure_course_direction_map():
+    """ALL_COURSESからcourse_id→directionマップを遅延構築"""
+    if _COURSE_DIRECTION_MAP:
+        return
+    try:
+        from data.masters.course_master import ALL_COURSES
+        for c in ALL_COURSES:
+            _COURSE_DIRECTION_MAP[c.course_id] = c.direction
+    except Exception:
+        pass
+
+
 # ============================================================
 # F-0: フィールド脚質分布の制約付き分類
 # ============================================================
 
 # 脚質分布の制約テーブル: (逃げ最小, 逃げ最大, 先行率, 差し率, 追込上限率)
 _STYLE_DIST_CONSTRAINTS = {
-    "small":  (1, 1, 0.25, 0.35, 0.25),   # ≤8頭
-    "medium": (1, 2, 0.25, 0.30, 0.25),   # 9-12頭
-    "large":  (1, 2, 0.25, 0.30, 0.25),   # 13-18頭
+    "small":  (1, 2, 0.25, 0.35, 0.25),   # ≤8頭（max_nige: 1→2に拡大）
+    "medium": (1, 3, 0.25, 0.30, 0.25),   # 9-12頭（max_nige: 2→3に拡大）
+    "large":  (1, 3, 0.25, 0.30, 0.25),   # 13-18頭（max_nige: 2→3に拡大）
 }
 
 
@@ -51,11 +68,13 @@ def _calc_raw_position_score(
 ) -> float:
     """各馬の「生の位置スコア」を算出（0.0=最前方, 1.0=最後方）
 
-    優先度:
-    1. 同距離帯(±200m)・同馬場の過去走で cornerデータあり
-    2. cornerデータがある直近5走
-    3. 全直近5走
-    4. デフォルト 0.45
+    前走の実際の通過順を最重視し、傾向値で補完する。
+    馬柱の通過順と展開チャートの一致を優先。
+
+    計算方式:
+    - 前走cornerデータあり → 前走70% + 傾向30%
+    - 前走cornerデータなし → 傾向値100%
+    - 過去走なし → 騎手傾向 or デフォルト
     """
     runs = horse.past_runs
     if not runs:
@@ -64,72 +83,85 @@ def _calc_raw_position_score(
             jockey_pos = jockey_cache.get(horse.jockey)
             if jockey_pos is not None:
                 return jockey_pos
-        return 0.50  # 中立値（0.45は前寄りすぎ）
+        return 0.50
 
     dist = course.distance
     surf = course.surface
 
-    # 優先1: 同距離帯・同馬場でcornerデータがある走（直近10走内）
-    same_cond_positions = []
-    for r in runs[:10]:
-        if r.positions_corners and r.relative_position is not None:
-            if r.surface == surf and abs(r.distance - dist) <= 200:
-                same_cond_positions.append(r.relative_position)
-    if len(same_cond_positions) >= 2:
-        base_score = statistics.mean(same_cond_positions)
+    # ---- 前走の実際の通過順（最重視）----
+    # race_logから正しい通過順をフォールバック取得
+    latest_pos = None
+    _run0 = runs[0]
+    if _run0.positions_corners and len(_run0.positions_corners) >= 2 and _run0.relative_position is not None:
+        # 2コーナー以上のデータがあれば信頼できる
+        latest_pos = _run0.relative_position
+    elif _run0.position_4c and _run0.field_count and _run0.field_count >= 4:
+        # 1要素 or positions_cornersなし → position_4cから相対位置
+        latest_pos = _run0.position_4c / _run0.field_count
+
+    # ---- 傾向値（同条件 or 直近走の平均）----
+    trend_score = None
+    # 同距離帯・同馬場でcornerデータがある走（直近10走内）
+    same_cond = [r.relative_position for r in runs[:10]
+                 if r.positions_corners and r.relative_position is not None
+                 and r.surface == surf and abs(r.distance - dist) <= 200]
+    if len(same_cond) >= 2:
+        trend_score = statistics.mean(same_cond)
     else:
-        # 優先2: cornerデータがある直近5走
-        corner_positions = [r.relative_position for r in runs[:5]
-                           if r.relative_position is not None and r.positions_corners]
-        if corner_positions:
-            base_score = statistics.mean(corner_positions)
+        # cornerデータがある直近5走
+        corner_pos = [r.relative_position for r in runs[:5]
+                      if r.relative_position is not None and r.positions_corners]
+        if corner_pos:
+            trend_score = statistics.mean(corner_pos)
         else:
-            # 優先3: 全直近5走
-            all_positions = [r.relative_position for r in runs[:5]
-                            if r.relative_position is not None]
-            if all_positions:
-                base_score = statistics.mean(all_positions)
-            else:
-                return 0.45
+            all_pos = [r.relative_position for r in runs[:5]
+                       if r.relative_position is not None]
+            if all_pos:
+                trend_score = statistics.mean(all_pos)
+
+    # ---- ブレンド: 前走70% + 傾向30% ----
+    # 直近の脚質を最重視（前走で中団にいた馬を逃げにしない）
+    if latest_pos is not None and trend_score is not None:
+        base_score = latest_pos * 0.70 + trend_score * 0.30
+    elif latest_pos is not None:
+        base_score = latest_pos
+    elif trend_score is not None:
+        base_score = trend_score
+    else:
+        return 0.45
 
     # ---- 条件変化による補正 ----
     adj = 0.0
 
     # 距離変更補正
-    if runs:
-        prev_dist = runs[0].distance
-        dist_diff = dist - prev_dist
-        if dist_diff <= -200:
-            adj -= 0.05  # 距離短縮 → 前に行きやすい
-        elif dist_diff >= 200:
-            adj += 0.05  # 距離延長 → 後方になりやすい
+    prev_dist = runs[0].distance
+    dist_diff = dist - prev_dist
+    if dist_diff <= -200:
+        adj -= 0.04  # 距離短縮 → 前に行きやすい
+    elif dist_diff >= 200:
+        adj += 0.04  # 距離延長 → 後方になりやすい
 
-    # クラス変動補正（grade encode: 高い方が上位クラス）
-    if runs:
-        _grade_order = {"新馬": 0, "未勝利": 1, "1勝": 2, "2勝": 3, "3勝": 4,
-                        "OP": 5, "L": 5, "G3": 6, "G2": 7, "G1": 8,
-                        "C3": 0, "C2": 1, "C1": 2, "B3": 3, "B2": 4, "B1": 5, "A2": 6, "A1": 7}
-        cur_grade = getattr(course, "grade", "") or ""
-        prev_grade = runs[0].grade or ""
-        cur_g = _grade_order.get(cur_grade, 3)
-        prev_g = _grade_order.get(prev_grade, 3)
-        if cur_g > prev_g:
-            adj += 0.03  # クラス上昇 → 前に出にくい
-        elif cur_g < prev_g:
-            adj -= 0.03  # クラス下降 → 前に出やすい
+    # クラス変動補正
+    _grade_order = {"新馬": 0, "未勝利": 1, "1勝": 2, "2勝": 3, "3勝": 4,
+                    "OP": 5, "L": 5, "G3": 6, "G2": 7, "G1": 8,
+                    "C3": 0, "C2": 1, "C1": 2, "B3": 3, "B2": 4, "B1": 5, "A2": 6, "A1": 7}
+    cur_grade = getattr(course, "grade", "") or ""
+    prev_grade = runs[0].grade or ""
+    cur_g = _grade_order.get(cur_grade, 3)
+    prev_g = _grade_order.get(prev_grade, 3)
+    if cur_g > prev_g:
+        adj += 0.02  # クラス上昇 → 前に出にくい
+    elif cur_g < prev_g:
+        adj -= 0.02  # クラス下降 → 前に出やすい
 
     # 騎手の位置取り傾向による補正
     if jockey_cache and horse.is_jockey_change and runs:
         new_jockey_pos = jockey_cache.get(horse.jockey_id)
-        # 前走騎手のIDを過去走から取得
         prev_jockey_id = runs[0].jockey_id if runs[0].jockey_id else None
-        if prev_jockey_id:
-            old_jockey_pos = jockey_cache.get(prev_jockey_id)
-        else:
-            old_jockey_pos = None
+        old_jockey_pos = jockey_cache.get(prev_jockey_id) if prev_jockey_id else None
         if new_jockey_pos is not None and old_jockey_pos is not None:
             diff = (new_jockey_pos - old_jockey_pos) * 0.5
-            adj += max(-0.15, min(0.15, diff))  # ±0.15制限
+            adj += max(-0.10, min(0.10, diff))
 
     return max(0.0, min(1.0, base_score + adj))
 
@@ -182,13 +214,18 @@ def classify_field_styles(
     n_sashi = max(1, math.ceil(n * sashi_rate))
     n_oikomi_max = max(0, math.floor(n * oikomi_max_rate))
 
-    # 逃げ馬数の決定: 最前方は必ず逃げ。2番目もスコアが近ければ逃げ
+    # 逃げ馬数の決定: 最前方は必ず逃げ。スコアが近い馬も逃げ認定
     n_nige = min_nige
     if n >= 2 and max_nige >= 2:
         top_score = scores[0][1]
         second_score = scores[1][1] if len(scores) > 1 else 999
-        if second_score - top_score <= 0.05:
+        if second_score - top_score <= 0.10:
             n_nige = 2
+            # 3頭目もスコアが近ければ3頭逃げ
+            if n >= 3 and max_nige >= 3 and len(scores) > 2:
+                third_score = scores[2][1]
+                if third_score - top_score <= 0.12:
+                    n_nige = 3
 
     # 残りを割り当て
     remaining = n - n_nige
@@ -208,13 +245,19 @@ def classify_field_styles(
     chuudan_half = max(1, (sashi_count + 1) // 2) if sashi_count >= 2 else 0
 
     for idx, (hno, raw_score) in enumerate(scores):
-        if idx < n_nige:
+        if idx < n_nige and raw_score < 0.45:
+            # 生スコア0.45未満のみ逃げ（前走で前方に位置取った実績がある馬）
             style = RunningStyle.NIGASHI
-        elif idx < n_nige + senkou_half:
+        elif idx < n_nige:
+            # スコアが高い場合は逃げではなく先行
             style = RunningStyle.SENKOU
-        elif idx < n_nige + allocated_senkou:
+        elif idx < n_nige + senkou_half and raw_score < 0.60:
+            # 先行は生スコア0.60未満のみ（前走で明確に後方の馬を先行にしない）
+            style = RunningStyle.SENKOU
+        elif idx < n_nige + allocated_senkou and raw_score < 0.60:
             style = RunningStyle.KOUI
-        elif idx < n_nige + allocated_senkou + chuudan_half:
+        elif idx < n_nige + allocated_senkou + chuudan_half or raw_score < 0.50:
+            # 生スコア0.50未満でも割り当て枠外なら中団
             style = RunningStyle.CHUUDAN
         elif idx < n - n_oikomi:
             style = RunningStyle.SASHIKOMI
@@ -247,18 +290,12 @@ def normalize_field_positions(
     # 理想分布: 等間隔に配置（0.05〜0.90範囲）
     ideal = [0.05 + (0.85 * i / (n - 1)) for i in range(n)]
 
-    # 生の値70% + 理想分布30%の加重平均
+    # 生の値90% + 理想分布10%の加重平均（実データ重視）
     result: Dict[int, float] = {}
     for idx, (hno, raw_val) in enumerate(sorted_items):
-        blended = raw_val * 0.70 + ideal[idx] * 0.30
-        # 先頭馬のクランプ
-        if idx == 0:
-            blended = max(0.05, min(0.15, blended))
-        # 最後方馬のクランプ
-        elif idx == n - 1:
-            blended = max(0.80, min(0.95, blended))
-        else:
-            blended = max(0.05, min(0.95, blended))
+        blended = raw_val * 0.90 + ideal[idx] * 0.10
+        # 範囲クリップのみ（先頭・最後方の固定クランプは廃止）
+        blended = max(0.05, min(0.95, blended))
         result[hno] = blended
 
     return result
@@ -272,7 +309,7 @@ def normalize_field_positions(
 class PacePredictor:
     """
     ペーススコア = 基礎点 + コース傾向補正 + 逃げ馬実効スコア補正 + 先行密度補正
-    5段階(HH/HM/MM/MS/SS)
+    3段階(H/M/S)
 
     案A: course_pace_tendency（DB実績）で基礎点を補正
     案B: _calc_escape_strength() で逃げ馬の「実際に逃げられるか」を評価
@@ -367,11 +404,22 @@ class PacePredictor:
         elif front_ratio <= 0.15:
             base -= 3
 
-        # コース形状補正
+        # コース形状補正（直線距離別段階補正）
         if course.straight_m >= 400:
             base -= 2  # 長い直線→スロー化傾向
+        elif course.straight_m <= 300:
+            base += 4  # 短直線（大井1600m=286m, 川崎=231m等）→ハイペース化
         if course.corner_type == "小回り":
-            base += 3  # 小回りはペース上がりやすい
+            base += 2  # 小回りはペース上がりやすい
+
+        # 初角距離補正: 短い→先行争い激化→ハイペース / 長い→隊列整う→スロー
+        if course.first_corner_m > 0:
+            if course.first_corner_m <= 150:
+                base += 3  # 超短（笠松1600m=40m, 浦和1600m=110m等）
+            elif course.first_corner_m <= 200:
+                base += 1  # 短め（大井1000m=200m等）
+            elif course.first_corner_m >= 500:
+                base -= 2  # 長い（東京芝1600m=542m, 京都芝1800m=912m等）→スロー化
 
         # 逃げ馬の過去前半3Fが速い→ハイペース寄り
         first_3f_list = []
@@ -424,15 +472,11 @@ class PacePredictor:
         return gate_factor * 0.35 + past_escape_rate * 0.50 + recent_bonus
 
     def _score_to_type(self, score: float) -> PaceType:
-        if score >= 62:
-            return PaceType.HH
         if score >= 56:
-            return PaceType.HM
+            return PaceType.H
         if score >= 44:
-            return PaceType.MM
-        if score >= 38:
-            return PaceType.MS
-        return PaceType.SS
+            return PaceType.M
+        return PaceType.S
 
     def _classify_style(self, runs: List[PastRun]) -> RunningStyle:
         """F-2: 全コーナー通過順位があればそれを使用、なければ4角相対位置から脚質分類"""
@@ -527,11 +571,10 @@ class StyleClassifier:
         basic = self._pos_to_style(avg_pos)
         last3f_type = self._classify_last3f(runs, surface=surface)
 
-        # 適応脚質: ±0.15以内のポジションで好走しているスタイル
+        # 適応脚質: 過去走の位置取りから多様な脚質パターンを抽出
         adaptive = set()
         for r in runs[:5]:
-            # F4: relative_position の Null安全処理
-            if r.finish_pos <= 3 and r.relative_position is not None:
+            if r.relative_position is not None:
                 adaptive.add(self._pos_to_style(r.relative_position))
         if not adaptive:
             adaptive.add(basic)
@@ -584,7 +627,7 @@ class StyleClassifier:
 
 class Last3FEvaluator:
     """
-    ペース別上がり3F実績テーブル(5段階)
+    ペース別上がり3F実績テーブル(3段階)
     タイムと順位の両方保持。
     ML モデル (Last3FPredictor) がロード済みなら優先的に使用する。
     """
@@ -596,6 +639,16 @@ class Last3FEvaluator:
         """
         self.db = pace_last3f_db
         self.ml_predictor = ml_predictor
+
+    def _get_course_master(self, course_id: str):
+        """course_idからCourseMasterを取得（遅延ロード）"""
+        if not hasattr(self, "_course_master_map"):
+            try:
+                from data.masters.course_master import ALL_COURSES
+                self._course_master_map = {c.course_id: c for c in ALL_COURSES}
+            except Exception:
+                self._course_master_map = {}
+        return self._course_master_map.get(course_id)
 
     def get_baseline(self, course_id: str, pace_type: PaceType) -> Optional[float]:
         """ペース別・コース別の基準上がり3Fを返す"""
@@ -622,8 +675,10 @@ class Last3FEvaluator:
             ml_pred = self.ml_predictor.predict(horse, race_info, pace_context)
             if ml_pred is not None:
                 is_dirt_ml = "ダート" in course_id
-                # ML予測もコース種別の現実的範囲にクランプ（芝:32-40秒、ダート:35-42秒）
-                lo_ml, hi_ml = (35.0, 42.0) if is_dirt_ml else (32.0, 40.0)
+                # ML予測もコース種別の現実的範囲にクランプ
+                # ダート: 35-46秒（90%ile=42.4, 95%ile=43.3。旧42.0→全馬同値バグ修正）
+                # 芝:    32-42秒（旧40.0→少し緩和）
+                lo_ml, hi_ml = (35.0, 46.0) if is_dirt_ml else (32.0, 42.0)
                 return max(lo_ml, min(hi_ml, ml_pred))
 
         # ルールベース: 過去のペース別実績から推定
@@ -636,11 +691,9 @@ class Last3FEvaluator:
 
         # ペース補正 (ハイペースほど上がりが遅くなる)
         pace_correction = {
-            PaceType.HH: 0.8,
-            PaceType.HM: 0.4,
-            PaceType.MM: 0.0,
-            PaceType.MS: -0.4,
-            PaceType.SS: -0.8,
+            PaceType.H: 0.6,
+            PaceType.M: 0.0,
+            PaceType.S: -0.6,
         }.get(pace_type, 0.0)
 
         is_dirt = "ダート" in course_id
@@ -657,8 +710,24 @@ class Last3FEvaluator:
             type_correction *= 0.6
             pace_correction *= 0.6
         estimated = base_last3f + type_correction + pace_correction
-        # 現実的な範囲に収める（芝: 32-40秒、ダート: 35-42秒）
-        lo, hi = (35.0, 42.0) if is_dirt else (32.0, 40.0)
+
+        # コース形状補正: 急坂コースは上がりが遅くなる
+        _cm = self._get_course_master(course_id)
+        if _cm:
+            if _cm.l3f_elevation >= 1.5:
+                estimated += 0.3  # 急坂（東京・中京・阪神）→上がり遅め
+            elif _cm.l3f_elevation >= 0.8:
+                estimated += 0.15  # 中程度の坂（福島・函館・小倉）
+            elif _cm.l3f_elevation <= -0.3:
+                estimated -= 0.2  # 下り基調（京都）→上がり速め
+            # 小回り・コーナー多いコースは上がりが遅くなる
+            if _cm.l3f_corners >= 2:
+                estimated += 0.2  # 2コーナー以上→コーナーロスで上がり遅め
+
+        # Phase 14: 系統的バイアス補正（検証で+1.1秒の過大予測を確認）
+        estimated -= 1.0
+        # 現実的な範囲に収める（芝: 32-42秒、ダート: 35-46秒）
+        lo, hi = (35.0, 46.0) if is_dirt else (32.0, 42.0)
         return max(lo, min(hi, estimated))
 
 
@@ -676,37 +745,39 @@ class PaceDeviationCalculator:
 
     POSITION_SEC_PER_RANK = 0.12  # 位置取り1頭差のタイム差(秒) 暫定・フォールバック
 
-    # 案F-2: 面×ペース別・位置取り秒差テーブル
+    # 案F-2: 面×距離帯×ペース別・位置取り秒差テーブル
     # 2026-03-22 実データ検証: data/ml 58254レース 296226ペアから統計
     # 芝は位置差がタイム差にほとんど影響しない（中央値≒0）
     # ダートは位置差がタイム差に大きく影響（中央値0.2-0.3秒）
+    # 2026-04-03 距離帯別に拡張: 芝sprint(0.066) vs middle(0.108)で1.6倍の差
+    POSITION_SEC_BY_SURFACE_DIST_PACE = {
+        # 芝: 短距離ほど位置差の影響が小さい
+        ("芝", "sprint"): {PaceType.H: 0.066, PaceType.M: 0.070, PaceType.S: 0.075},
+        ("芝", "mile"):   {PaceType.H: 0.072, PaceType.M: 0.077, PaceType.S: 0.085},
+        ("芝", "middle"): {PaceType.H: 0.095, PaceType.M: 0.108, PaceType.S: 0.115},
+        ("芝", "long"):   {PaceType.H: 0.100, PaceType.M: 0.115, PaceType.S: 0.126},
+        # ダート: 全距離帯で位置差の影響が大きい
+        ("ダート", "sprint"): {PaceType.H: 0.333, PaceType.M: 0.310, PaceType.S: 0.295},
+        ("ダート", "mile"):   {PaceType.H: 0.365, PaceType.M: 0.362, PaceType.S: 0.340},
+        ("ダート", "middle"): {PaceType.H: 0.300, PaceType.M: 0.280, PaceType.S: 0.270},
+        ("ダート", "long"):   {PaceType.H: 0.290, PaceType.M: 0.275, PaceType.S: 0.265},
+    }
+    # 面別フォールバック（距離不明時）
     POSITION_SEC_BY_PACE_TURF = {
-        PaceType.HH: 0.07,   # 芝H: 実測mean=0.066
-        PaceType.HM: 0.08,
-        PaceType.MM: 0.08,   # 芝M: 実測mean=0.077-0.108
-        PaceType.MS: 0.10,
-        PaceType.SS: 0.10,   # 芝S: 実測mean=0.105-0.126
+        PaceType.H: 0.075, PaceType.M: 0.08, PaceType.S: 0.10,
     }
     POSITION_SEC_BY_PACE_DIRT = {
-        PaceType.HH: 0.33,   # ダートH: 実測mean=0.333
-        PaceType.HM: 0.34,
-        PaceType.MM: 0.30,   # ダートM: 実測mean=0.280-0.362
-        PaceType.MS: 0.28,
-        PaceType.SS: 0.33,   # ダートS: 実測mean=0.329
+        PaceType.H: 0.335, PaceType.M: 0.30, PaceType.S: 0.305,
     }
-    # 後方互換用フォールバック（芝とダートの中間値）
+    # 後方互換用フォールバック（面不明時）
     POSITION_SEC_BY_PACE = {
-        PaceType.HH: 0.20,
-        PaceType.HM: 0.18,
-        PaceType.MM: 0.15,
-        PaceType.MS: 0.14,
-        PaceType.SS: 0.15,
+        PaceType.H: 0.19, PaceType.M: 0.15, PaceType.S: 0.145,
     }
 
     # 案F-4: コース別 base_score 変換係数のデフォルト
-    BASE_SCORE_COEFF_DEFAULT = 5.0
-    BASE_SCORE_COEFF_MIN = 3.5
-    BASE_SCORE_COEFF_MAX = 7.0
+    BASE_SCORE_COEFF_DEFAULT = 7.5    # 100スケール対応: 旧5.0→7.5
+    BASE_SCORE_COEFF_MIN = 5.0        # 旧3.5→5.0
+    BASE_SCORE_COEFF_MAX = 10.5       # 旧7.0→10.5
 
     def __init__(
         self,
@@ -732,6 +803,7 @@ class PaceDeviationCalculator:
         pace_context: Optional[Dict] = None,
         field_baseline_override: Optional[float] = None,
         override_position: Optional[float] = None,
+        override_pos_1c: Optional[float] = None,
     ) -> PaceDeviation:
         """
         PaceDeviationを算出する
@@ -757,7 +829,11 @@ class PaceDeviationCalculator:
             if self.position_predictor and self.position_predictor.is_available and race_info is not None:
                 est_position = self.position_predictor.predict(horse, race_info, pace_context)
             if est_position is None:
-                est_position = self._estimate_position(basic_style, pace_type)
+                est_position = self._estimate_position(basic_style, pace_type, course, horse=horse)
+
+        # 1角→4角 通過順トレンド（Phase 5/6 で使用）
+        # 正=下降(後退中), 負=上昇(前進中), ±0.08
+        _pos_trend = self._calc_pos_trend_delta(horse) if horse is not None else 0.0
 
         # 推定上がり3F (MLモデルがあればMLを優先)
         est_last3f = last3f_evaluator.estimate_last3f(
@@ -770,6 +846,31 @@ class PaceDeviationCalculator:
             field_avg_last3f=field_baseline_override,
             pace_context=pace_context,
         )
+
+        # Phase 6: est_last3f 軌跡補正（1角→4角の実軌跡に基づく）
+        # 実データ回帰分析(64万件): ダート trend+0.1 → +0.179秒、芝 trend+0.1 → +0.059秒
+        # trajectory: 正=1角前方→4角後方(下降=上がり遅い)、負=上昇(上がり速い)
+        _is_dirt_l3f = "ダート" in course.course_id
+        _trajectory_1c_4c = 0.0
+        if override_pos_1c is not None and est_position is not None:
+            # 1角→4角の相対位置変化（正=後退, 負=前進）
+            _trajectory_1c_4c = est_position - override_pos_1c
+        elif _pos_trend != 0.0:
+            # フォールバック: 過去走トレンド
+            _trajectory_1c_4c = _pos_trend
+
+        if _trajectory_1c_4c != 0.0:
+            # ダート: 回帰係数1.79/0.1 → 実効係数 1.8
+            # 芝:   回帰係数0.59/0.1 → 実効係数 0.6
+            _l3f_coeff = 1.8 if _is_dirt_l3f else 0.6
+            _l3f_trajectory_adj = _trajectory_1c_4c * _l3f_coeff
+            # クランプ: ダート最大±1.80秒、芝最大±0.60秒
+            # Phase 9B: 9位落ちでも3位落ちと同じ補正だった問題を解消
+            _l3f_max = 1.80 if _is_dirt_l3f else 0.60
+            _l3f_trajectory_adj = max(-_l3f_max, min(_l3f_max, _l3f_trajectory_adj))
+            est_last3f += _l3f_trajectory_adj
+            _lo_l3f, _hi_l3f = (35.0, 46.0) if _is_dirt_l3f else (32.0, 42.0)
+            est_last3f = max(_lo_l3f, min(_hi_l3f, est_last3f))
         _baseline_db = last3f_evaluator.get_baseline(course.course_id, pace_type)
         if _baseline_db is not None:
             baseline_last3f = _baseline_db
@@ -780,11 +881,18 @@ class PaceDeviationCalculator:
             # フォールバック: ダートは芝より上がり3Fが遅い
             baseline_last3f = 40.5 if "ダート" in course.course_id else 36.0
 
-        # 位置取り秒差（面×ペース別の実データ検証値を使用）
+        # 位置取り秒差（面×距離帯×ペース別の実データ検証値を使用）
         fc = max(1, field_count or 16)
         pos_rank = int(est_position * fc)
         is_dirt_course = "ダート" in course.course_id
-        _sec_table = self.POSITION_SEC_BY_PACE_DIRT if is_dirt_course else self.POSITION_SEC_BY_PACE_TURF
+        _surface = "ダート" if is_dirt_course else "芝"
+        _dist = getattr(course, "distance", 0) or 0
+        _dist_cat = "sprint" if _dist <= 1200 else "mile" if _dist <= 1600 else "middle" if _dist <= 2200 else "long"
+        _sec_key = (_surface, _dist_cat)
+        _sec_table = self.POSITION_SEC_BY_SURFACE_DIST_PACE.get(_sec_key)
+        if _sec_table is None:
+            # 距離帯不明: 面別フォールバック
+            _sec_table = self.POSITION_SEC_BY_PACE_DIRT if is_dirt_course else self.POSITION_SEC_BY_PACE_TURF
         sec_per_rank = _sec_table.get(pace_type, self.POSITION_SEC_PER_RANK)
         # コース別較正値があればそれを優先
         if course.course_id in self.position_sec_per_rank_db:
@@ -795,12 +903,21 @@ class PaceDeviationCalculator:
         # ダートのスローペースで外枠（gate_no >= 5）は砂被りで位置取りが悪化
         _gate_no = getattr(horse, "gate_no", None)
         if (course.surface == "ダート"
-                and pace_type in (PaceType.MS, PaceType.SS)
+                and pace_type == PaceType.S
                 and _gate_no is not None and _gate_no >= 5):
             position_sec += 0.02  # 外枠砂被り
 
-        # 推定ゴール差
-        goal_diff = (baseline_last3f - est_last3f) - position_sec
+        # Phase 5: 1角→4角 軌跡ペナルティ
+        # 下降馬(正): goal_diff減少 → base_score低下
+        # 上昇馬(負): goal_diff増加 → base_score上昇
+        # sec_per_rank でスケーリング（ダートで強く、芝で控えめに効く）
+        _traj_for_penalty = _trajectory_1c_4c if _trajectory_1c_4c != 0.0 else _pos_trend
+        _trajectory_penalty = _traj_for_penalty * sec_per_rank * 12.0
+        # Phase 9B: ±0.35→±0.80 に拡大（大幅下降馬を正しく補正）
+        _trajectory_penalty = max(-0.80, min(0.80, _trajectory_penalty))
+
+        # 推定ゴール差（軌跡補正込み）
+        goal_diff = (baseline_last3f - est_last3f) - position_sec - _trajectory_penalty
 
         # 案F-4: コース別の上がり3F σ から変換係数を動的決定
         # σ小（差がつきにくい）→ 係数大（感度UP）
@@ -831,7 +948,11 @@ class PaceDeviationCalculator:
         else:
             last3f_cv = 0.0
         last3f_eval = self._calc_last3f_score(last3f_type, pace_type, last3f_cv=last3f_cv)
-        pos_balance = self._calc_position_balance(est_position, last3f_type, pace_type)
+        # 通過順トレンド値を position_balance にも反映（_pos_trend は上方で計算済み）
+        pos_balance = self._calc_position_balance(
+            est_position, last3f_type, pace_type, course,
+            pos_trend_delta=_pos_trend,
+        )
         course_style_bias = self._calc_course_style_bias(course, basic_style)
 
         # 表示用running_styleはest_position（ML予測 or ルールベース推定）から導出
@@ -851,8 +972,49 @@ class PaceDeviationCalculator:
         )
         return result
 
-    def _estimate_position(self, style: RunningStyle, pace: PaceType) -> float:
-        """推定4角相対位置 (0.0=先頭, 1.0=最後方)"""
+    def _calc_pos_trend_delta(self, horse) -> float:
+        """直近3走の4角通過順トレンドから位置取り補正値を算出。
+
+        Returns:
+            -0.08 ~ +0.08 の補正値
+            上昇中（後方→前方）= 負 = 前寄りに補正
+            下降中（前方→後方）= 正 = 後ろ寄りに補正
+        """
+        runs = getattr(horse, "past_runs", None)
+        if not runs:
+            return 0.0
+
+        # 直近3走の4角相対位置を取得
+        positions = []
+        for r in runs[:3]:
+            rp = getattr(r, "relative_position", None)
+            if rp is not None:
+                positions.append(rp)
+
+        if len(positions) < 2:
+            return 0.0
+
+        # 線形トレンド: positions[0]=最新, positions[-1]=最古
+        # 最新が古い走より前方 → 上昇トレンド（負の delta）
+        # 最新が古い走より後方 → 下降トレンド（正の delta）
+        avg_old = sum(positions[1:]) / len(positions[1:])
+        trend = positions[0] - avg_old  # 正=後退中, 負=前進中
+
+        # ±0.08 にクランプ
+        return max(-0.08, min(0.08, trend * 0.5))
+
+    def _estimate_position(self, style: RunningStyle, pace: PaceType,
+                            course: Optional[CourseMaster] = None,
+                            horse=None) -> float:
+        """推定4角相対位置 (0.0=先頭, 1.0=最後方)
+
+        コース構造と通過順トレンドを反映:
+        - 初角距離が短い → 先行争い激化 → 隊列が前詰まり（全体が前寄り）
+        - 初角距離が長い → 隊列が伸びやすい（脚質差が出やすい）
+        - コーナー多い/短直線 → 4角で前に取りつく動きが出る
+        - 下り坂区間 → ペースが上がり前後差が圧縮
+        - 通過順トレンド → 直近走で前進中なら前寄り、後退中なら後ろ寄りに補正
+        """
         base = {
             RunningStyle.NIGASHI: 0.05,
             RunningStyle.SENKOU: 0.20,
@@ -865,11 +1027,45 @@ class PaceDeviationCalculator:
 
         # ペース補正
         pace_corr = {
-            PaceType.HH: -0.05,  # ハイペースは前が消耗→差し馬有利だが位置取り自体は変わらない
-            PaceType.SS: +0.05,  # スローは前残り
+            PaceType.H: -0.05,
+            PaceType.S: +0.05,
         }.get(pace, 0.0)
 
-        return max(0.0, min(1.0, base + pace_corr))
+        # コース構造補正
+        course_corr = 0.0
+        if course is not None:
+            # 初角距離補正: 短い→全体が前詰まり / 長い→隊列が伸びる
+            fcm = getattr(course, "first_corner_m", 0)
+            if fcm > 0:
+                if fcm <= 150:
+                    # 超短初角（浦和110m, 笠松40m等）→ 全体が前に圧縮
+                    course_corr -= 0.05
+                elif fcm >= 500:
+                    # 長い初角（東京542m, 京都外912m等）→ 隊列が伸びる
+                    course_corr += 0.03
+
+            # 残り600mのコーナー数: 多い→4角で前に取りつく動き
+            l3f_corners = getattr(course, "l3f_corners", 1)
+            if l3f_corners >= 2:
+                # 3角から仕掛けが始まる→中団〜後方の馬が前に押し上げる
+                if style in (RunningStyle.CHUUDAN, RunningStyle.SASHIKOMI):
+                    course_corr -= 0.03  # やや前寄りに取りつく
+            elif l3f_corners == 0:
+                # 直線のみ→位置取りの概念が薄い
+                course_corr = 0.0
+
+            # 下り坂区間（京都内回り）→ 下りでペースが上がり前後差が圧縮
+            l3f_elev = getattr(course, "l3f_elevation", 0.0)
+            if l3f_elev <= -0.3:
+                course_corr -= 0.02  # 全体が前寄りに圧縮
+
+        raw = base + pace_corr + course_corr
+
+        # 通過順トレンド補正（horse情報がある場合のみ）
+        if horse is not None:
+            raw += self._calc_pos_trend_delta(horse)
+
+        return max(0.0, min(1.0, raw))
 
     def _calc_last3f_score(self, last3f_type: str, pace: PaceType,
                            last3f_cv: float = 0.0) -> float:
@@ -887,10 +1083,10 @@ class PaceDeviationCalculator:
         }.get(last3f_type, 0)
 
         # ペース×末脚タイプの相性
-        if pace in (PaceType.HH, PaceType.HM) and last3f_type == "爆発末脚":
-            type_score = min(8, type_score + 2)
-        if pace in (PaceType.SS, PaceType.MS) and last3f_type == "末脚非依存型":
-            type_score = min(3, type_score + 3)  # スローなら前有利
+        if pace == PaceType.H and last3f_type == "爆発末脚":
+            type_score = min(12, type_score + 3)
+        if pace == PaceType.S and last3f_type == "末脚非依存型":
+            type_score = min(5, type_score + 4)  # スローなら前有利
 
         # 案F-3: 末脚安定性補正 (-2〜+2)
         # CV < 0.03: 非常に安定 → +2
@@ -910,22 +1106,24 @@ class PaceDeviationCalculator:
                 stability_bonus = -2.0
             type_score += stability_bonus
 
-        return max(-8, min(8, float(type_score)))
+        return max(-12, min(12, float(type_score)))
 
-    def _calc_position_balance(self, pos: float, last3f_type: str, pace: PaceType) -> float:
+    def _calc_position_balance(self, pos: float, last3f_type: str, pace: PaceType,
+                                course: Optional[CourseMaster] = None,
+                                pos_trend_delta: float = 0.0) -> float:
         """❷位置取り×末脚バランス (-8〜+8)
 
-        案F-1: 3値（-5/0/+6）から連続スコアへ
-        - ペース強度 × 後方位置 × 末脚適性の積でスコア計算
-        - 中間値が適切に評価されるよう改善
+        コース構造と通過順トレンドを反映:
+        - 短直線(l3f_straight_pct低)→ハイペース×後方の恩恵が減る(届かない)
+        - 長直線(l3f_straight_pct高)→ハイペース×後方の恩恵が増す(届く)
+        - 急坂→前が止まりやすく差し有利度UP
+        - 通過順トレンド→上昇中(前に行けている)=やや有利 / 下降中=やや不利
         """
-        # ペース強度: HH=2.0, HM=1.5, MM=1.0, MS=0.5, SS=0.0
+        # ペース強度: H=2.0, M=1.0, S=0.0
         pace_strength = {
-            PaceType.HH: 2.0,
-            PaceType.HM: 1.5,
-            PaceType.MM: 1.0,
-            PaceType.MS: 0.5,
-            PaceType.SS: 0.0,
+            PaceType.H: 2.0,
+            PaceType.M: 1.0,
+            PaceType.S: 0.0,
         }.get(pace, 1.0)
 
         # 末脚適性スコア（ハイペース向き末脚ほど高い）
@@ -936,55 +1134,152 @@ class PaceDeviationCalculator:
             "末脚非依存型": -0.4,
         }.get(last3f_type, 0.0)
 
+        # コース構造による補正係数
+        # 直線比率: 長直線→差し追込の恩恵UP / 短直線→恩恵DOWN
+        l3f_pct = 0.55  # デフォルト（中程度）
+        l3f_elev = 0.0
+        if course is not None:
+            l3f_pct = getattr(course, "l3f_straight_pct", 0.55)
+            l3f_elev = getattr(course, "l3f_elevation", 0.0)
+
+        # 直線比率による差し追込の到達可能性倍率 (0.5〜1.3)
+        # pct=0.33(浦和)→0.6倍, pct=0.55(中山)→1.0倍, pct=0.88(東京)→1.3倍
+        reach_mult = 0.6 + (l3f_pct - 0.33) * (0.7 / 0.55)
+        reach_mult = max(0.5, min(1.3, reach_mult))
+
+        # 急坂による前崩れ補正 (0.0〜0.3)
+        hill_bonus = 0.0
+        if l3f_elev >= 1.5:
+            hill_bonus = 0.3  # 急坂で前が止まりやすい→差し追い込み有利度UP
+        elif l3f_elev >= 0.8:
+            hill_bonus = 0.15
+
+        # 通過順トレンド補正（全分岐共通）: 上昇中(負)=やや有利 / 下降中(正)=やや不利
+        _trend_adj = -pos_trend_delta * 18.0  # ±0.08 * 18 = ±1.44pt
+
         # ── ハイペース × 後方待機 × 末脚型 ──
-        # pos=0.5以上かつ爆発末脚のHHが最高点（元の+6に相当）
         if pace_strength >= 1.5 and last3f_fitness > 0:
-            # 後方度合い（0.5〜1.0 を 0〜1 にスケール）
             rear_factor = max(0.0, (pos - 0.3) / 0.7)
+            # reach_mult: 短直線では差し効果が薄い / 長直線では増幅
+            # hill_bonus: 急坂で前が止まる分、差し追込の恩恵が上乗せ
             score = pace_strength * last3f_fitness * rear_factor * 4.0
-            # 最大 +8 にクリップ
-            return max(-8.0, min(8.0, score))
+            score *= reach_mult
+            score += hill_bonus * rear_factor * pace_strength * 2.0
+            score += _trend_adj
+            return max(-12.0, min(12.0, score))
 
         # ── スロー × 追い込み（不利）: 前方分岐より先に評価 ──
         if pace_strength <= 1.0 and pos >= 0.65 and last3f_fitness < 0:
-            rear_penalty = (pos - 0.65) / 0.35  # 0.65〜1.0 → 0〜1
-            score = -rear_penalty * 5.0 * (1.0 - pace_strength)
-            return max(-8.0, min(8.0, score))
+            rear_penalty = (pos - 0.65) / 0.35
+            # 短直線ではさらに不利（届かない）
+            penalty_mult = 1.0 + (1.0 - reach_mult) * 0.5
+            score = -rear_penalty * 5.0 * (1.0 - pace_strength) * penalty_mult
+            score += _trend_adj
+            return max(-12.0, min(12.0, score))
 
         # ── スロー × 前方待機（逃げ・先行有利）──
         if pace_strength <= 0.5:
-            # 前方度合い（0〜0.4 を 1〜0 にスケール）
             front_factor = max(0.0, (0.4 - pos) / 0.4)
-            # 末脚非依存型は前残りが得意 → ボーナス（前にいる場合のみ）
             style_bonus = 0.5 if last3f_fitness < 0 and pos <= 0.4 else 0.0
-            score = (front_factor + style_bonus) * 5.0
-            return max(-8.0, min(8.0, score))
+            # 短直線ではスロー前残りの恩恵が大きい
+            front_mult = 1.0 + (1.0 - l3f_pct) * 0.5  # pct低い→前残り有利度UP
+            score = (front_factor + style_bonus) * 5.0 * front_mult
+            # 下り坂コース（京都）はさらに前残りやすい
+            if l3f_elev <= -0.3:
+                score += front_factor * 1.5
+            score += _trend_adj
+            return max(-12.0, min(12.0, score))
 
         # ── その他（中間ペース・中位置取り）──
-        # MM で後方追込型は軽微なボーナス
-        if pace == PaceType.MM and pos >= 0.5 and last3f_fitness > 0.5:
-            return min(3.0, last3f_fitness * 2.0)
+        if pace == PaceType.M and pos >= 0.5 and last3f_fitness > 0.5:
+            score = min(5.0, last3f_fitness * 3.0 * reach_mult)
+            score += _trend_adj
+            return max(-12.0, min(12.0, score))
+
+        # どの分岐にも該当しない場合: トレンド補正のみ
+        if abs(_trend_adj) > 0.01:
+            return max(-12.0, min(12.0, _trend_adj))
 
         return 0.0
 
     def _calc_course_style_bias(self, course: CourseMaster, style: RunningStyle) -> float:
-        """❹コース脚質バイアス (-5〜+5)"""
+        """❹コース脚質バイアス (-5〜+5)
+
+        残り600m地点データを活用:
+        - l3f_corners: コーナー多い→前有利（差しが物理的に届かない）
+        - l3f_straight_pct: 直線比率高い→差し有利（加速スペースがある）
+        - l3f_elevation: 急坂→逃げ先行不利（スタミナ消耗で止まる）
+        - l3f_corner_m: コーナー区間が長い→内枠前有利
+        """
         score = 0.0
-        # 直線長い = 差し有利
-        if (
-            course.straight_m >= 420 and style in (RunningStyle.SASHIKOMI, RunningStyle.OIKOMI)
-        ) or (course.straight_m <= 300 and style in (RunningStyle.NIGASHI, RunningStyle.SENKOU)):
+        is_front = style in (RunningStyle.NIGASHI, RunningStyle.SENKOU)
+        is_rear = style in (RunningStyle.SASHIKOMI, RunningStyle.OIKOMI)
+
+        # ── 残り600mの直線比率による脚質バイアス ──
+        l3f_pct = getattr(course, "l3f_straight_pct", min(1.0, course.straight_m / 600))
+
+        if l3f_pct >= 0.75 and is_rear:
+            # 直線が残り600mの75%以上（東京526m=88%, 新潟外659m=100%等）
+            # → 差し追込が十分届く
             score += 3.0
+        elif l3f_pct >= 0.75 and is_front:
+            # 長直線で前残りは不利
+            score -= 1.0
+        elif l3f_pct <= 0.40 and is_front:
+            # 直線比率40%以下（浦和200m=33%, 笠松201m=34%等）
+            # → 前有利。コーナーで差がつかない
+            score += 3.0
+        elif l3f_pct <= 0.40 and is_rear:
+            # 超短直線で差し届かない
+            score -= 3.0
+        elif l3f_pct <= 0.55 and is_front:
+            # 中程度の短直線（中山310m=52%, 京都内328m=55%等）→やや前有利
+            score += 1.5
+        elif l3f_pct <= 0.55 and is_rear:
+            score -= 1.0
 
-        # 急坂 = 前残り困難
-        if course.slope_type == "急坂" and style in (RunningStyle.NIGASHI, RunningStyle.SENKOU):
-            score -= 2.0
+        # ── 残り600mのコーナー数 ──
+        l3f_corners = getattr(course, "l3f_corners", 1)
+        if l3f_corners >= 2:
+            # 2コーナー以上（3角→4角）通過 → 差し追込は物理的に不利
+            if is_front:
+                score += 1.5  # コーナーワークで前有利
+            elif is_rear:
+                score -= 1.5  # 外を回す距離ロスが大きい
+        elif l3f_corners == 0:
+            # 直線のみ → 脚質差が出にくい、純粋なスピード勝負
+            pass
 
-        # 小回り = 前有利
-        if course.corner_type == "小回り" and style in (RunningStyle.NIGASHI, RunningStyle.SENKOU):
-            score += 2.0
+        # ── 坂の影響（残り600m区間の高低差） ──
+        l3f_elev = getattr(course, "l3f_elevation", 0.0)
+        if l3f_elev >= 1.5:
+            # 急坂（東京2.0m, 阪神1.5m）→ 逃げ先行はスタミナ消耗で止まりやすい
+            if is_front:
+                score -= 2.5
+            elif is_rear:
+                score += 1.5  # 坂で前が止まる分、差し有利
+        elif l3f_elev >= 0.8:
+            # 中程度の坂（福島1.0m, 函館0.8m）
+            if is_front:
+                score -= 1.5
+            elif is_rear:
+                score += 0.5
+        elif l3f_elev <= -0.3:
+            # 下り基調（京都内回り）→ 下り坂で勢いがつき前残りやすい
+            if is_front:
+                score += 1.0
+            elif is_rear:
+                score -= 0.5
 
-        return max(-5.0, min(5.0, score))
+        # ── コーナー形態の補正 ──
+        if course.corner_type == "小回り" and is_front:
+            score += 1.0  # 小回りは器用な先行有利
+        elif course.corner_type == "スパイラル" and is_rear:
+            score += 1.0  # スパイラルカーブ出口でバラけ差し有利
+        elif course.corner_type == "大回り" and is_rear:
+            score += 0.5  # 大回りはスピード維持して追込可能
+
+        return max(-8.0, min(8.0, score))
 
 
 # ============================================================
@@ -1042,7 +1337,7 @@ class CourseAptitudeCalculator:
         )
 
     def _calc_course_record(self, runs: List[PastRun], course_id: str) -> float:
-        """❶コース実績 (-5〜+5): 完全一致 + 距離帯補間（案G-1/G-2）"""
+        """❶コース実績 (-8〜+8): 完全一致 + 距離帯補間（案G-1/G-2、100スケール対応）"""
         same_runs = [r for r in runs if r.course_id == course_id]
 
         # 案G-2: 完全一致がない場合、同競馬場×同馬場×近距離で補間
@@ -1084,15 +1379,15 @@ class CourseAptitudeCalculator:
                         w_rate   = w_place3 / w_total if w_total > 0 else 0.0
                         n_near   = len(near_runs)
                         if w_rate >= 0.6:
-                            raw = 3.0   # 近距離高実績（満点より抑える）
+                            raw = 5.0   # 近距離高実績（満点より抑える）
                         elif w_rate >= 0.4:
-                            raw = 1.5
+                            raw = 2.5
                         elif w_rate >= 0.2:
-                            raw = 0.5
+                            raw = 0.8
                         elif w_rate >= 0.05:
-                            raw = -0.5
+                            raw = -0.8
                         else:
-                            raw = -2.0
+                            raw = -3.0
                         # 近距離補間は信頼度を抑える（最大70%）
                         rel = min(0.7, 0.3 + n_near * 0.1)
                         return round(raw * rel, 2)
@@ -1106,15 +1401,15 @@ class CourseAptitudeCalculator:
         place3_rate = place3 / n
 
         if place3_rate >= 0.7:
-            raw = 5.0
+            raw = 8.0
         elif place3_rate >= 0.5:
-            raw = 3.0
+            raw = 5.0
         elif place3_rate >= 0.3:
-            raw = 1.0
+            raw = 1.5
         elif place3_rate >= 0.1:
-            raw = -1.0
+            raw = -1.5
         else:
-            raw = -3.0
+            raw = -5.0
 
         # 案G-1: サンプル数による信頼度スケーリング
         # 1走: 40%, 2走: 55%, 3走: 70%, 4走: 85%, 5走以上: 100%
@@ -1133,7 +1428,8 @@ class CourseAptitudeCalculator:
 
         回り方向（左/右）は馬体の利き脚に関わる固有適性のため、
         逆回り場の実績は _DIRECTION_DISCOUNT (0.65) で割り引く。
-        「両」（大井等）はどちらにもペナルティなし。
+        「両」方向のvenueでは個別コースの方向で判定
+        （例: 大井1650m左 vs 大井1600m右 → 逆回り割引を適用）。
 
         重み = similarity^2 × direction_factor:
           同一場・同回り (sim=1.00, dir=1.0)  → weight 1.00
@@ -1143,6 +1439,8 @@ class CourseAptitudeCalculator:
         Returns: (score, contrib_level)
         """
         from data.masters.venue_similarity import get_all_profiles, get_venue_similarity
+
+        _ensure_course_direction_map()
 
         if not runs:
             return 0.0, ""
@@ -1172,6 +1470,17 @@ class CourseAptitudeCalculator:
 
             run_profile = profiles.get(run_venue)
             run_direction = run_profile.direction if run_profile else "両"
+
+            # "両"方向のvenueでは個別コースの方向で判定
+            # （例: 大井1650m左 vs 大井1600m右 → 逆回り割引を適用）
+            if run_direction == "両" and hasattr(r, "course_id") and r.course_id:
+                _cdir = _COURSE_DIRECTION_MAP.get(r.course_id)
+                if _cdir:
+                    run_direction = _cdir
+            if target_direction == "両":
+                # target自体が"両"のvenueの場合はtargetの個別方向を使用
+                pass  # target.direction はCourseMaster由来で個別方向が入る
+
             if target_direction == run_direction or "両" in (target_direction, run_direction):
                 dir_factor = 1.0
             else:
@@ -1227,7 +1536,7 @@ class CourseAptitudeCalculator:
         elif n_venues == 2:
             scale *= 0.80   # Pair: 信頼度80%
 
-        score = max(-5.0, min(5.0, raw * scale))
+        score = max(-8.0, min(8.0, raw * scale))
 
         return round(score, 2), level
 
@@ -1245,7 +1554,7 @@ class CourseAptitudeCalculator:
         rec = jockey.course_records.get(course_id)
         if rec and rec.get("sample_n", 0) >= 10:
             dev = rec.get("all_dev", 50.0)
-            return max(-3.0, min(3.0, (dev - 50.0) / 5.0 * 1.5))
+            return max(-5.0, min(5.0, (dev - 50.0) / 5.0 * 2.5))
 
         # 優先度2: 類似コースプール（サンプル5以上）
         # 案G-5: 類似度×log(サンプル数+1)の加重平均（旧: 類似度のみ）
@@ -1271,7 +1580,7 @@ class CourseAptitudeCalculator:
             return 0.0
 
         avg = weighted_sum / total_weight
-        return max(-3.0, min(3.0, avg / 5.0))
+        return max(-5.0, min(5.0, avg / 3.0))
 
 
 # ============================================================
@@ -1302,10 +1611,12 @@ def calc_gate_bias(
         return 0.0
 
     # データ駆動: 枠番別DBがあれば gate_no で検索
+    # 距離別精密版を優先、なければ従来の venue_surface にフォールバック
     # DB 値が 0.0 の場合はサンプル不足とみなしてルールベースにフォールスルー
     if gate_bias_db:
-        key = f"{course.venue_code}_{course.surface}"
-        venue_biases = gate_bias_db.get(key, {})
+        dist_key = f"{course.venue_code}_{course.surface}_{course.distance}"
+        base_key = f"{course.venue_code}_{course.surface}"
+        venue_biases = gate_bias_db.get(dist_key) or gate_bias_db.get(base_key, {})
         g = gate_no if gate_no and 1 <= gate_no <= 8 else None
         if g is not None and g in venue_biases and venue_biases[g] != 0.0:
             return venue_biases[g]
@@ -1367,4 +1678,4 @@ def calc_style_bias_for_course(
     avg_rate = stats.get("average", 0.33)
 
     diff = group_rate - avg_rate
-    return max(-5.0, min(5.0, diff * 15.0))  # ±5ptにスケール
+    return max(-8.0, min(8.0, diff * 24.0))  # ±8ptにスケール（100スケール対応）

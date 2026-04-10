@@ -13,7 +13,7 @@ from datetime import datetime, timedelta
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from flask import Flask, Response, jsonify, redirect, render_template, render_template_string, request, send_from_directory
+from flask import Flask, Response, jsonify, redirect, render_template, request, send_from_directory
 
 from src.log import get_logger
 
@@ -60,7 +60,7 @@ _odds_state = {"running": False, "done": False, "error": None, "updated_at": Non
                "count": 0, "total": 0, "current": 0, "current_race": "", "started_at": 0}
 _odds_cancel = False  # flag to cancel odds update loop
 # ── オッズ自動取得スケジューラー ──
-_ODDS_SCHEDULE_HOURS = [5, 7, 9, 11, 13, 15, 17, 19, 21, 23]
+_ODDS_SCHEDULE_HOURS = [5, 8, 11, 14, 17, 20]
 _odds_scheduler_running = False
 _odds_last_auto_fetch = None   # datetime of last auto-fetch
 # ── 予想自動生成スケジューラー ──
@@ -68,7 +68,7 @@ _PREDICT_SCHEDULE_HOUR = 17   # 前日17:00に翌日の予想を生成
 _predict_scheduler_running = False
 _predict_last_auto_run = None  # datetime of last auto-run
 # ── 結果照合+DB更新 自動スケジューラー ──
-_RESULTS_SCHEDULE_HOUR = 22   # 当日22:00に結果照合+DB更新
+_RESULTS_SCHEDULE_HOUR = 23   # 当日23:00に結果照合+DB更新
 _results_scheduler_running = False
 _results_last_auto_run = None  # datetime of last auto-run
 _results_state = {"running": False, "done": False, "cancel": False, "progress": "", "error": None}
@@ -77,7 +77,7 @@ _db_update_state = {"running": False, "done": False, "cancel": False, "progress"
 # ── キャッシュ: 日付→(timestamp, データ) ──
 _predictions_cache: dict = {}
 _home_info_cache: dict = {}
-_CACHE_TTL = 1800  # 秒（予想データ: 30分）
+_CACHE_TTL = 1800  # 秒（予想データ: 30分、ただしpred.json更新時は自動無効化）
 _WEATHER_CACHE_TTL = 1800  # 秒（天気データ: 30分）
 
 # 競馬場コード → 緯度・経度（天気API用）
@@ -189,55 +189,60 @@ def _get_todays_venues(date_str: str) -> list:
         # ばんえい安全策（NAR公式が帯広を返さなかった場合のみ発動）
         if not any(rid[4:6] == "65" for rid in ids):
             try:
-                import glob as _glob_banei
+                from src.scraper.netkeiba import NAR_URL
                 year = date_str[:4]
                 mmdd = date_str[5:7] + date_str[8:10]
-                # キャッシュにばんえいHTMLが存在すればID生成
-                banei_pattern = os.path.join(
-                    client.cache_dir, f"*race_id={year}65{mmdd}*"
+                # nar.netkeiba.comで1R目を試行（キャッシュ or ネットワーク）
+                probe_id = f"{year}65{mmdd}01"
+                probe_soup = client.get(
+                    f"{NAR_URL}/race/shutuba.html",
+                    params={"race_id": probe_id}
                 )
-                cached = _glob_banei.glob(banei_pattern)
-                if cached:
-                    race_nos = set()
-                    for path in cached:
-                        m = re.search(rf"{year}65{mmdd}(\d{{2}})", os.path.basename(path))
-                        if m:
-                            race_nos.add(int(m.group(1)))
-                    max_race = max(race_nos) if race_nos else 12
-                    banei_ids = [f"{year}65{mmdd}{rno:02d}" for rno in range(1, max_race + 1)]
+                horse_links = probe_soup.select("a[href*='/horse/']") if probe_soup else []
+                if len(horse_links) >= 3:
+                    # 出走馬が確認できた場合のみ開催とみなす
+                    banei_ids = [f"{year}65{mmdd}{rno:02d}" for rno in range(1, 13)]
                     for rid in banei_ids:
                         if rid not in existing:
                             ids.append(rid)
                             existing.add(rid)
-                    logger.info("ばんえいキャッシュ補完: %dR", max_race)
-                else:
-                    # nar.netkeiba.comで1R目を試行
-                    from src.scraper.netkeiba import NAR_URL
-                    probe_id = f"{year}65{mmdd}01"
-                    probe_soup = client.get(
-                        f"{NAR_URL}/race/shutuba.html",
-                        params={"race_id": probe_id}
-                    )
-                    if probe_soup and probe_soup.select("table"):
-                        banei_ids = [f"{year}65{mmdd}{rno:02d}" for rno in range(1, 13)]
-                        for rid in banei_ids:
-                            if rid not in existing:
-                                ids.append(rid)
-                                existing.add(rid)
-                        logger.info("ばんえいプローブ補完: 12R")
+                    logger.info("ばんえいプローブ補完: 12R")
             except Exception as e:
                 logger.debug("ばんえい補完失敗: %s", e)
 
-        seen = set()
+        # 岩手安全策（水沢・盛岡がまだ含まれていない場合のみ発動）
+        for iwate_vc, iwate_name in [("36", "水沢"), ("35", "盛岡")]:
+            if not any(rid[4:6] == iwate_vc for rid in ids):
+                try:
+                    from src.scraper.netkeiba import NAR_URL as _NAR_URL
+                    _year = date_str[:4]
+                    _mmdd = date_str[5:7] + date_str[8:10]
+                    probe_id = f"{_year}{iwate_vc}{_mmdd}01"
+                    probe_soup = client.get(
+                        f"{_NAR_URL}/race/shutuba.html",
+                        params={"race_id": probe_id}
+                    )
+                    horse_links = probe_soup.select("a[href*='/horse/']") if probe_soup else []
+                    if len(horse_links) >= 3:
+                        iwate_ids = [f"{_year}{iwate_vc}{_mmdd}{rno:02d}" for rno in range(1, 13)]
+                        for rid in iwate_ids:
+                            if rid not in existing:
+                                ids.append(rid)
+                                existing.add(rid)
+                        logger.info("岩手プローブ補完(%s): 12R", iwate_name)
+                except Exception as e:
+                    logger.debug("岩手補完失敗(%s): %s", iwate_name, e)
+
+        seen_names = set()
         result = []
         for rid in ids:
             vc = get_venue_code_from_race_id(rid)
-            if not vc or vc in seen:
+            if not vc:
                 continue
             name = get_venue_name(vc)
-            if not name:
+            if not name or name in seen_names:
                 continue
-            seen.add(vc)
+            seen_names.add(name)
             result.append({"code": vc, "name": name})
         if result:
             return result
@@ -647,6 +652,7 @@ def _scan_today_predictions(date_str: str) -> dict:
     _pred_conf = {}  # {(venue, race_no): confidence}
     _pred_horses = {}  # {(venue, race_no): [horse_dict, ...]}
     _pred_tickets = {}  # {(venue, race_no): [ticket_dict, ...]}
+    _pred_is_jra = {}  # {(venue, race_no): bool}
     pred_json_path = os.path.join(PROJECT_ROOT, "data", "predictions", f"{date_key}_pred.json")
     if os.path.isfile(pred_json_path):
         try:
@@ -662,8 +668,26 @@ def _scan_today_predictions(date_str: str) -> dict:
                     continue
                 key = (venue, rno)
                 _pred_conf[key] = pr.get("confidence", "")
-                _pred_horses[key] = pr.get("horses", [])
+                _horses = pr.get("horses", [])
+                # 取消馬処理 + 印再割り当て（個別ページと同じロジック）
+                _has_any_odds = any(h.get("odds") is not None for h in _horses)
+                if _has_any_odds:
+                    for _hd in _horses:
+                        if _hd.get("odds") is None and _hd.get("popularity") is None and not _hd.get("is_scratched"):
+                            _hd["is_scratched"] = True
+                            _hd["win_prob"] = 0.0
+                            _hd["place2_prob"] = 0.0
+                            _hd["place3_prob"] = 0.0
+                            _hd["mark"] = ""
+                        # 取消解除: オッズが復帰した馬はis_scratchedを解除
+                        elif _hd.get("is_scratched") and _hd.get("odds") is not None and _hd.get("popularity") is not None:
+                            _hd["is_scratched"] = False
+                # 印はpred.json（formatter.py assign_marks）の値をそのまま使用
+                # reassign_marks_dictはwpガード等がなく不整合の原因になるため廃止
+                # 取消馬のみ印をクリア（既にis_scratched処理で対応済み）
+                _pred_horses[key] = _horses
                 _pred_tickets[key] = pr.get("tickets", [])
+                _pred_is_jra[key] = pr.get("is_jra", False)
         except Exception:
             pass
 
@@ -766,18 +790,25 @@ def _scan_today_predictions(date_str: str) -> dict:
         races[venue].sort(key=lambda x: x["race_no"])
     order = sorted(races.keys(), key=lambda v: (_VENUE_PRIO_MAP.get(v, 999), v))
 
-    # Fallback: HTMLがなければ pred JSON から読む
-    if not races:
+    # pred JSON から不足レースを補完（HTMLがない会場・レースを追加）
+    if True:
         pred_json_path = os.path.join(PROJECT_ROOT, "data", "predictions", f"{date_key}_pred.json")
         if os.path.isfile(pred_json_path):
             try:
                 with open(pred_json_path, "r", encoding="utf-8") as pf:
                     pred_data = json.load(pf)
+                # HTML既読レースを記録（重複防止）
+                _existing = set()
+                for _v, _rlist in races.items():
+                    for _r in _rlist:
+                        _existing.add((_v, _r["race_no"]))
                 for pr in pred_data.get("races", []):
                     venue = pr.get("venue", "")
                     if not venue or venue == "None" or venue.startswith("地方"):
                         continue
                     race_no = pr.get("race_no", 0)
+                    if (venue, race_no) in _existing:
+                        continue  # HTML版が既にあるのでスキップ
                     honmei = None
                     for h in pr.get("horses", []):
                         if h.get("mark") in ("◉", "◎"):
@@ -832,7 +863,81 @@ def _scan_today_predictions(date_str: str) -> dict:
             except Exception:
                 pass
 
-    return {"races": races, "order": order}
+    # ── 厳選穴馬: 回帰ベース妙味スコアで評価 ──
+    from config import settings as _s
+    ana_horses: list = []
+    for venue_name in list(races.keys()):
+        for r in races[venue_name]:
+            rno = r["race_no"]
+            horses = _pred_horses.get((venue_name, rno), [])
+            is_jra = _pred_is_jra.get((venue_name, rno), False)
+
+            for h in horses:
+                mk = h.get("mark", "")
+                odds_val = h.get("odds", 0) or 0
+                ts = h.get("tokusen_score", 0) or 0
+                ana_sc = h.get("ana_score", 0) or 0
+                comp = h.get("composite", 0) or 0
+                course = h.get("course_total", 0) or 0
+                p3 = h.get("place3_prob", 0) or 0
+
+                # ☆印は無条件、それ以外は10倍以上の非本命馬
+                is_star = mk == "☆"
+                is_ana = mk not in ("◉", "◎", "○", "▲", "△", "×") and odds_val >= 10.0
+
+                if not (is_star or is_ana):
+                    continue
+
+                # 回帰ベース妙味スコア
+                miryoku = round(
+                    _s.MIRYOKU_W_TOKUSEN * ts
+                    + _s.MIRYOKU_W_COMPOSITE * (comp - 45) / 10
+                    + _s.MIRYOKU_W_COURSE * (course - 45) / 10
+                    + _s.MIRYOKU_W_ANA * ana_sc / 5
+                    + _s.MIRYOKU_W_PLACE3 * p3 * 10
+                    + _s.MIRYOKU_W_JRA * (1 if is_jra else 0),
+                    2)
+
+                # グレード判定
+                if miryoku >= _s.MIRYOKU_GRADE_SS:
+                    grade = "SS"
+                elif miryoku >= _s.MIRYOKU_GRADE_S:
+                    grade = "S"
+                elif miryoku >= _s.MIRYOKU_GRADE_A:
+                    grade = "A"
+                elif miryoku >= _s.MIRYOKU_GRADE_B:
+                    grade = "B"
+                elif miryoku >= _s.MIRYOKU_GRADE_C:
+                    grade = "C"
+                elif miryoku >= _s.MIRYOKU_GRADE_D:
+                    grade = "D"
+                else:
+                    grade = "E"
+
+                # C以上のみ表示対象
+                if grade in ("D", "E"):
+                    continue
+
+                ana_horses.append({
+                    "venue": venue_name,
+                    "race_no": rno,
+                    "race_name": r.get("name", f"{rno}R"),
+                    "post_time": r.get("post_time", ""),
+                    "horse_no": h.get("horse_no", 0),
+                    "horse_name": h.get("horse_name", ""),
+                    "mark": mk,
+                    "odds": odds_val,
+                    "popularity": h.get("popularity", 0),
+                    "composite": round(comp, 1),
+                    "place3_prob": round(p3 * 100, 1),
+                    "miryoku": miryoku,
+                    "miryoku_grade": grade,
+                    "is_star": is_star,
+                })
+    # 妙味スコア降順でソート
+    ana_horses.sort(key=lambda x: -x["miryoku"])
+
+    return {"races": races, "order": order, "ana_horses": ana_horses}
 
 
 def _get_db_state():
@@ -855,3304 +960,9 @@ def _get_db_state():
     return st
 
 
-BASE_HTML = """<!DOCTYPE html>
-<html lang="ja">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>D-AIkeiba - 統合ダッシュボード</title>
-  <style>
-    *{box-sizing:border-box;margin:0;padding:0}
-    :root{
-      --bg:#F8FAFC;--surface:#FFFFFF;
-      --primary:#059669;--primary-hover:#047857;--primary-light:#D1FAE5;
-      --text:#111827;--text-muted:#6B7280;--text-xs:#9CA3AF;
-      --border:#E5E7EB;--border-focus:#059669;
-      --shadow:0 1px 3px rgba(0,0,0,.08),0 1px 2px rgba(0,0,0,.05);
-      --shadow-md:0 4px 6px rgba(0,0,0,.07),0 2px 4px rgba(0,0,0,.05);
-      --shadow-lg:0 10px 15px rgba(0,0,0,.08),0 4px 6px rgba(0,0,0,.04);
-      --danger:#DC2626;--warning:#D97706;--info:#0369A1;
-      --radius:12px;--radius-sm:8px;--radius-xs:6px;
-    }
-    body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,'Hiragino Sans','Noto Sans JP',sans-serif;font-size:14px;line-height:1.6}
-    a{color:var(--primary);text-decoration:none}
-    a:hover{color:var(--primary-hover)}
-    .app-header{background:var(--surface);border-bottom:1px solid var(--border);padding:12px 20px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:200;box-shadow:var(--shadow)}
-    .app-header-title{font-size:18px;font-weight:700;color:var(--primary);display:flex;align-items:center;gap:8px}
-    .app-header-sub{font-size:12px;color:var(--text-muted)}
-    .tabs{display:flex;background:var(--surface);border-bottom:2px solid var(--border);position:sticky;top:57px;z-index:100;overflow-x:auto;-webkit-overflow-scrolling:touch}
-    .tabs::-webkit-scrollbar{display:none}
-    .tab{padding:14px 20px;font-size:14px;font-weight:500;color:var(--text-muted);border-bottom:2px solid transparent;margin-bottom:-2px;cursor:pointer;white-space:nowrap;transition:color .15s,border-color .15s;user-select:none;text-decoration:none;display:inline-block}
-    .tab:hover{color:var(--text)}
-    .tab.active{color:var(--primary);border-bottom-color:var(--primary);font-weight:600}
-    .tab-panel{display:none;padding:16px 20px;max-width:960px;margin:0 auto}
-    .tab-panel.active{display:block}
-    .wrap{max-width:960px;margin:0 auto;padding:0 20px}
-    .card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);box-shadow:var(--shadow);padding:16px;margin-bottom:12px}
-    .card h2,.card-title{font-size:13px;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em;margin-bottom:10px}
-    .card-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px}
-    .race-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);box-shadow:var(--shadow);padding:14px 16px;margin-bottom:8px;display:flex;align-items:center;gap:14px;cursor:pointer;transition:box-shadow .15s,transform .1s;text-decoration:none;color:inherit}
-    .race-card:hover{box-shadow:var(--shadow-md);transform:translateY(-1px)}
-    .race-card-time{min-width:52px;text-align:center}
-    .race-card-time .time{font-size:18px;font-weight:700;color:var(--text);line-height:1}
-    .race-card-time .rno{font-size:11px;color:var(--text-muted);margin-top:2px}
-    .race-card-info{flex:1;min-width:0}
-    .race-card-name{font-size:14px;font-weight:600;color:var(--text);margin-bottom:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-    .race-card-picks{font-size:13px;color:var(--text-muted)}
-    .race-card-right{display:flex;flex-direction:column;align-items:flex-end;gap:6px;min-width:90px}
-    .conf-bar{width:80px;height:5px;background:var(--border);border-radius:3px;overflow:hidden}
-    .conf-fill{height:100%;background:var(--primary);border-radius:3px;transition:width .3s}
-    .race-card-ev{font-size:12px;font-weight:600;color:var(--text-muted)}
-    .badge{display:inline-block;font-size:11px;font-weight:600;padding:2px 8px;border-radius:20px;line-height:1.6}
-    .badge-high{background:#D1FAE5;color:#065F46}
-    .badge-mid{background:#FEF3C7;color:#92400E}
-    .badge-low{background:#FEE2E2;color:#991B1B}
-    .badge-blue{background:#DBEAFE;color:#1E40AF}
-    .badge-gray{background:#F3F4F6;color:#6B7280}
-    .badge-jra{background:#DBEAFE;color:#1E40AF}
-    .badge-nar{background:#D1FAE5;color:#065F46}
-    .venue-tabs{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px}
-    .venue-tab{padding:6px 12px;border:1px solid var(--border);border-radius:20px;font-size:12px;font-weight:500;color:var(--text-muted);cursor:pointer;background:var(--surface);transition:all .15s}
-    .venue-tab:hover{border-color:var(--primary);color:var(--primary)}
-    .venue-tab.active{background:var(--primary);border-color:var(--primary);color:#fff}
-    .date-nav{display:flex;align-items:center;gap:8px;margin-bottom:16px;flex-wrap:wrap}
-    .date-nav-btn{padding:6px 10px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--surface);color:var(--text);cursor:pointer;font-size:14px;transition:all .15s}
-    .date-nav-btn:hover{border-color:var(--primary);color:var(--primary)}
-    .date-display{font-size:16px;font-weight:700;color:var(--text);padding:4px 8px}
-    input[type=date]{padding:6px 10px;border:1px solid var(--border);border-radius:var(--radius-sm);font-size:14px;color:var(--text);background:var(--surface)}
-    input[type=date]:focus{outline:none;border-color:var(--border-focus)}
-    .btn{display:inline-flex;align-items:center;gap:6px;padding:8px 16px;border-radius:var(--radius-sm);font-size:13px;font-weight:600;cursor:pointer;border:none;transition:all .15s;text-decoration:none}
-    .btn-primary{background:var(--primary);color:#fff}
-    .btn-primary:hover{background:var(--primary-hover)}
-    .btn-outline{background:var(--surface);color:var(--primary);border:1px solid var(--primary)}
-    .btn-outline:hover{background:var(--primary-light)}
-    .btn-sm{padding:5px 12px;font-size:12px}
-    .btn-ghost{background:transparent;color:var(--text-muted);border:1px solid var(--border)}
-    .btn-ghost:hover{color:var(--text);border-color:var(--text-muted)}
-    .btn-danger{background:var(--danger);color:#fff}
-    button.btn{font-family:inherit}
-    button.primary{background:var(--primary);color:#fff;padding:8px 16px;border:none;border-radius:var(--radius-sm);font-size:13px;font-weight:600;cursor:pointer;font-family:inherit}
-    button.primary:hover{background:var(--primary-hover)}
-    button.secondary{background:var(--primary-light);color:#065F46;padding:8px 16px;border:none;border-radius:var(--radius-sm);font-size:13px;font-weight:600;cursor:pointer;font-family:inherit}
-    button.secondary:hover{background:#A7F3D0}
-    button:disabled{opacity:0.6;cursor:not-allowed}
-    .progress{height:8px;background:var(--border);border-radius:4px;overflow:hidden;margin:8px 0}
-    .progress-fill{height:100%;background:var(--primary);border-radius:4px;transition:width .4s}
-    .progress-bar{height:8px;background:var(--border);border-radius:4px;overflow:hidden;margin-top:12px}
-    .stat-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin-bottom:16px}
-    .stat-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-sm);padding:14px;text-align:center;box-shadow:var(--shadow)}
-    .stat-value{font-size:24px;font-weight:700;color:var(--text);line-height:1}
-    .stat-label{font-size:11px;color:var(--text-muted);margin-top:4px;text-transform:uppercase;letter-spacing:.04em}
-    .stat-sub{font-size:12px;color:var(--text-muted);margin-top:2px}
-    .stat-pos{color:var(--primary)}
-    .stat-neg{color:var(--danger)}
-    table{width:100%;border-collapse:collapse;font-size:13px}
-    th{padding:8px 10px;text-align:left;font-size:11px;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em;border-bottom:2px solid var(--border)}
-    td{padding:9px 10px;border-bottom:1px solid var(--border);color:var(--text)}
-    tr:last-child td{border-bottom:none}
-    tr:hover td{background:#F9FAFB}
-    .num{text-align:right;font-variant-numeric:tabular-nums}
-    .subtabs{display:flex;gap:4px;margin-bottom:16px;border-bottom:1px solid var(--border);padding-bottom:0}
-    .subtab{padding:8px 16px;font-size:13px;font-weight:500;color:var(--text-muted);border-bottom:2px solid transparent;margin-bottom:-1px;cursor:pointer;transition:all .15s}
-    .subtab.active{color:var(--primary);border-bottom-color:var(--primary)}
-    .sub-tabs{display:flex;gap:4px;margin-bottom:16px;border-bottom:1px solid var(--border)}
-    .sub-tab{padding:8px 16px;font-size:13px;font-weight:500;color:var(--text-muted);border-bottom:2px solid transparent;margin-bottom:-1px;cursor:pointer;transition:all .15s;text-decoration:none;display:inline-block}
-    .sub-tab:hover{color:var(--text)}
-    .sub-tab.active{color:var(--primary);border-bottom-color:var(--primary)}
-    .filter-bar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:12px;padding:10px 12px;background:#F9FAFB;border-radius:var(--radius-sm);border:1px solid var(--border)}
-    .filter-group{display:flex;gap:4px}
-    .filter-btn{padding:4px 10px;border:1px solid var(--border);border-radius:20px;font-size:12px;background:var(--surface);color:var(--text-muted);cursor:pointer;transition:all .15s;font-family:inherit}
-    .filter-btn.active{background:var(--primary);border-color:var(--primary);color:#fff}
-    select.filter-select{padding:4px 8px;border:1px solid var(--border);border-radius:var(--radius-xs);font-size:12px;background:var(--surface);color:var(--text);cursor:pointer}
-    .search-input{padding:6px 12px;border:1px solid var(--border);border-radius:20px;font-size:13px;background:var(--surface);color:var(--text);flex:1;min-width:150px}
-    .search-input:focus{outline:none;border-color:var(--primary)}
-    .chart-wrap{position:relative;height:200px;margin:12px 0}
-    .modal-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:1000;align-items:center;justify-content:center}
-    .modal-overlay.open{display:flex}
-    .modal{background:var(--surface);border-radius:var(--radius);box-shadow:var(--shadow-lg);width:90%;max-width:640px;max-height:85vh;overflow-y:auto;padding:20px}
-    .modal-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:16px}
-    .modal-title{font-size:16px;font-weight:700}
-    .modal-close{background:none;border:none;font-size:20px;color:var(--text-muted);cursor:pointer;padding:4px}
-    .modal-close:hover{color:var(--text)}
-    .analysis-panel{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px;margin-top:12px}
-    .venue-check-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(80px,1fr));gap:6px;margin:10px 0}
-    .venue-check-item{display:flex;align-items:center;gap:4px;font-size:12px;cursor:pointer;padding:4px 6px;border-radius:var(--radius-xs);border:1px solid var(--border);background:var(--surface);transition:all .15s}
-    .venue-check-item:hover{border-color:var(--primary);background:var(--primary-light)}
-    .venue-check-item input{accent-color:var(--primary)}
-    .shimmer{background:linear-gradient(90deg,#f0f0f0 25%,#e0e0e0 50%,#f0f0f0 75%);background-size:200% 100%;animation:shimmer 1.5s infinite;border-radius:4px}
-    @keyframes shimmer{0%{background-position:200% 0}100%{background-position:-200% 0}}
-    .shimmer-line{height:14px;margin-bottom:8px}
-    .shimmer-card{height:80px;margin-bottom:8px;border-radius:var(--radius)}
-    .about-body{line-height:1.9;color:#374151}
-    .about-body h3{font-size:1rem;margin:22px 0 8px;color:#166534;border-bottom:1px solid #dcfce7;padding-bottom:4px}
-    .about-body h3:first-child{margin-top:0}
-    .about-body ul{margin:8px 0 12px;padding-left:22px}
-    .about-body li{margin-bottom:6px}
-    .about-body p{margin:8px 0}
-    .about-body table th,.about-body table td{vertical-align:top}
-    .fetch-mode-btn{padding:5px 14px;font-size:0.82rem;font-weight:600;border:1px solid var(--border);border-radius:20px;background:var(--surface);color:var(--text-muted);cursor:pointer;transition:.15s;font-family:inherit}
-    .fetch-mode-btn.active{background:var(--primary);color:#fff;border-color:var(--primary)}
-    .fetch-mode-btn:hover:not(.active){background:var(--primary-light)}
-    #fetch-date-log{font-family:monospace;background:#f8fafc;border-radius:6px;padding:6px 10px;border:1px solid var(--border)}
-    .result-date-row{display:flex;align-items:center;justify-content:space-between;background:#F9FAFB;border:1px solid var(--border);border-radius:var(--radius-sm);padding:10px 14px;flex-wrap:wrap;gap:8px;margin-bottom:6px}
-    .result-date-row .rd-date{font-weight:700;color:var(--text);min-width:90px}
-    .result-date-row .rd-stats{display:flex;gap:14px;font-size:0.85rem;color:var(--text);flex-wrap:wrap}
-    .result-date-row .rd-roi{font-weight:700;color:var(--primary)}
-    .result-date-row .rd-roi.loss{color:var(--danger)}
-    .result-date-row .rd-btn{font-size:0.8rem;padding:4px 10px}
-    .date-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
-    .date-row input[type="date"]{margin-bottom:0;flex:0 0 auto}
-    .btn-sm{padding:5px 12px;font-size:12px}
-    .venue-badge{font-size:0.7rem;padding:1px 6px;border-radius:4px;margin-left:4px;font-weight:600}
-    .venue-badge.jra{background:#DBEAFE;color:#1E40AF}
-    .venue-badge.nar{background:#D1FAE5;color:#065F46}
-    .select-btns{display:flex;gap:6px;margin-bottom:8px}
-    .progress-detail{background:#F9FAFB;border:1px solid var(--border);border-radius:var(--radius-sm);padding:14px 16px;margin-top:12px;display:none}
-    .progress-detail.show{display:block}
-    .prog-race{font-size:0.9rem;color:var(--primary);font-weight:600;margin-bottom:6px;min-height:1.2em}
-    .prog-bar-wrap{height:8px;background:var(--border);border-radius:4px;overflow:hidden;margin:6px 0}
-    .prog-bar-fill{height:100%;background:var(--primary);transition:width .4s;border-radius:4px}
-    .prog-meta{display:flex;gap:16px;font-size:0.82rem;color:var(--text-muted);margin-top:6px;flex-wrap:wrap}
-    .prog-log{font-size:0.82rem;color:var(--text-muted);margin-top:8px;padding:8px;background:var(--surface);border-radius:5px;border:1px solid var(--border);min-height:32px;word-break:break-all}
-    .loading-venues{color:var(--text-muted);font-style:italic;font-size:0.9rem;padding:8px 0}
-    .analyze-result-link{margin-top:12px;padding:12px 16px;background:var(--primary-light);border-radius:var(--radius-sm);border:1px solid #86efac;display:none}
-    .analyze-result-link.show{display:block}
-    .analyze-result-link a{color:var(--primary);font-weight:600;text-decoration:none}
-    .analyze-result-link a:hover{text-decoration:underline}
-    .status{font-size:0.9rem;color:var(--text-muted);margin-top:8px}
-    .error{color:var(--danger);margin-top:8px}
-    .empty{color:var(--text-muted);font-style:italic}
-    .muted{font-size:0.8rem;color:var(--text-muted);margin-left:6px}
-    .h-venue-tabs{display:flex;gap:0;background:var(--primary);border-radius:var(--radius-sm) var(--radius-sm) 0 0;overflow-x:auto;flex-wrap:nowrap;scrollbar-width:none}
-    .h-venue-tabs::-webkit-scrollbar{display:none}
-    .h-vtab{flex:0 0 auto;padding:10px 20px;font-size:13px;font-weight:700;border:none;background:transparent;color:#a7d4b5;cursor:pointer;border-bottom:3px solid transparent;transition:.15s;white-space:nowrap;font-family:inherit}
-    .h-vtab:hover{background:#047857;color:#fff}
-    .h-vtab.active{background:#fff;color:var(--primary);border-bottom:3px solid #D97706}
-    .h-vpanel{display:none;background:var(--surface);border:1px solid var(--border);border-top:none;border-radius:0 0 var(--radius-sm) var(--radius-sm);padding:14px}
-    .h-vpanel.active{display:block}
-    .vw-bar{font-size:12px;color:var(--text-muted);background:#F9FAFB;border:1px solid var(--border);border-radius:var(--radius-xs);padding:7px 14px;margin-bottom:14px;display:flex;align-items:center;gap:16px}
-    .vw-name{font-weight:700;color:var(--primary);font-size:13px}
-    .h-race-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:10px}
-    .h-race-card{display:block;text-decoration:none;color:inherit;border:1px solid var(--border);border-radius:var(--radius-sm);padding:10px 12px;background:#fafbfc;transition:.15s}
-    .h-race-card:hover{border-color:var(--primary);box-shadow:var(--shadow-md);transform:translateY(-2px);background:var(--surface)}
-    .h-rc-top{display:flex;align-items:center;gap:5px;margin-bottom:5px}
-    .h-rc-no{font-weight:700;font-size:17px;color:#0d2b5e;min-width:32px}
-    .h-rc-grade{font-size:10px;font-weight:700;padding:1px 5px;border-radius:3px}
-    .h-rc-G1{background:#c0392b;color:#fff}
-    .h-rc-G2{background:#2c6dbf;color:#fff}
-    .h-rc-G3{background:#27ae60;color:#fff}
-    .h-rc-L,.h-rc-OP{background:#e67e22;color:#fff}
-    .h-rc-nar{background:#5b21b6;color:#fff;font-size:9px}
-    .h-rc-name{font-size:11px;font-weight:700;color:var(--text);margin-bottom:5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-    .h-rc-meta{display:flex;gap:4px;font-size:11px;color:var(--text-muted);align-items:center;flex-wrap:wrap}
-    .h-rc-surf-芝{color:#1a7a3a;font-weight:700}
-    .h-rc-surf-ダ{color:#8b5e2a;font-weight:700}
-    .h-rc-surf-障{color:#7c3aed;font-weight:700}
-    .h-rc-time{font-size:11px;color:#2563eb;font-weight:600;margin-top:5px}
-    .h-rc-see{font-size:10px;color:var(--primary);font-weight:700;text-align:right;margin-top:4px}
-    .h-no-pred{color:var(--text-muted);font-style:italic;padding:24px;text-align:center;background:#F9FAFB;border-radius:var(--radius-sm);border:1px dashed var(--border)}
-    .h-rc-axis{display:flex;align-items:center;gap:4px;margin-top:6px;padding:5px 8px;border-radius:var(--radius-xs);background:#f0f4ff;border:1px solid #c5d3eb}
-    label{display:block;margin-bottom:4px;font-weight:500}
-    .stat{display:flex;gap:16px;flex-wrap:wrap}
-    .stat-item{background:var(--primary-light);padding:14px 18px;border-radius:var(--radius-sm);min-width:130px;border:1px solid #bbf7d0}
-    .stat-item strong{font-size:1.2rem;color:var(--primary);display:block}
-    .stat-item span{font-size:0.85rem;color:#065F46}
-    .clock{font-size:2rem;font-weight:700;color:var(--primary);margin:24px 0;font-variant-numeric:tabular-nums}
-    input[type="number"]{padding:8px;font-size:1rem;margin-bottom:12px;width:100%;max-width:200px;border:1px solid var(--border);border-radius:var(--radius-xs)}
-    .flex{display:flex}.items-center{align-items:center}.gap-2{gap:8px}.gap-3{gap:12px}.flex-1{flex:1}.justify-between{justify-content:space-between}.flex-wrap{flex-wrap:wrap}
-    .mt-2{margin-top:8px}.mt-3{margin-top:12px}.mb-2{margin-bottom:8px}.mb-3{margin-bottom:12px}
-    .text-sm{font-size:12px}.text-xs{font-size:11px}.text-muted{color:var(--text-muted)}.font-bold{font-weight:700}.font-semibold{font-weight:600}
-    .text-primary{color:var(--primary)}.text-danger{color:var(--danger)}.text-warning{color:var(--warning)}
-    .hidden{display:none}
-    @media(max-width:768px){
-      .tab{padding:12px 14px;font-size:13px}
-      .tab-panel{padding:12px}
-      .wrap{padding:0 12px}
-      .stat-grid{grid-template-columns:repeat(2,1fr)}
-      .race-card{flex-wrap:wrap}
-      .race-card-right{flex-direction:row;min-width:auto;width:100%}
-      .filter-bar{padding:8px}
-      .modal{width:95%;max-height:90vh}
-      .venue-check-grid{grid-template-columns:repeat(auto-fill,minmax(70px,1fr))}
-      .hide-mobile{display:none !important}
-    }
-    @media(max-width:480px){
-      .stat-value{font-size:20px}
-      .race-card-time .time{font-size:15px}
-      .tab{padding:10px 10px;font-size:12px}
-    }
-  </style>
-  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
-</head>
-<body>
-  <div class="app-header">
-    <div class="app-header-title">🏇 D-AI Keiba</div>
-    <div class="app-header-sub" id="server-time"></div>
-  </div>
+# レガシーHTMLテンプレートは削除済み（React SPAに移行完了）
+# 旧 BASE_HTML は 2026-04-03 に除去（3,330行のデッドコード）
 
-  <div class="tabs">
-    <a class="tab active" data-tab="today">🏇 今日</a>
-    <a class="tab" data-tab="results">📊 成績</a>
-    <a class="tab" data-tab="db">🔍 調べる</a>
-    <a class="tab" data-tab="about">🤖 D-AIについて</a>
-  </div>
-
-    <div id="panel-today" class="tab-panel active">
-      <!-- Date navigation -->
-      <div class="date-nav">
-        <button class="date-nav-btn" onclick="homeChangeDate(-1)">◀</button>
-        <span class="date-display" id="home-date-label">—</span>
-        <button class="date-nav-btn" onclick="homeChangeDate(+1)">▶</button>
-        <span style="font-size:0.85rem;color:var(--text-muted);margin-left:4px" id="home-race-count"></span>
-        <div style="display:flex;gap:6px;margin-left:8px;flex-wrap:wrap">
-          <button class="btn btn-outline btn-sm" onclick="homeDataUpdate('odds')" id="btn-home-update-odds">⚡ オッズ更新</button>
-          <button class="btn btn-ghost btn-sm" onclick="homeDataUpdate('results')" id="btn-home-update-results">📋 結果取得</button>
-          <button class="btn btn-ghost btn-sm" onclick="toggleAnalysisPanelNew()">⚙ 分析設定</button>
-        </div>
-      </div>
-
-      <!-- High confidence picks -->
-      <div id="home-high-conf-card" class="card" style="margin-bottom:12px;display:none">
-        <div class="card-title">⭐ 自信度SS・S レース <span id="high-conf-count" style="font-weight:400;text-transform:none"></span></div>
-        <div id="home-high-conf-list"></div>
-      </div>
-
-      <!-- Venue tabs + race panels (existing style preserved) -->
-      <div id="home-venue-tabs" class="h-venue-tabs"></div>
-      <div id="home-race-panels"></div>
-      <div id="home-no-pred" class="h-no-pred" style="display:none">この日の予想データがありません<br><span style="font-size:0.85rem">下の「分析設定」から分析を実行してください</span></div>
-
-      <!-- Analysis panel (collapsible) -->
-      <div id="analysis-panel-new" class="analysis-panel" style="display:none;margin-top:16px">
-        <div class="card-title">🏟 開催場を選択して分析実行</div>
-        <div class="venue-check-grid" id="venue-check-grid-new"></div>
-        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:10px">
-          <button class="btn btn-primary" id="btn-analyze-new" onclick="runAnalysisNew()">▶ 分析実行</button>
-          <button class="btn btn-ghost btn-sm" onclick="loadVenueCheckboxesNew()">🔄 開催場再読込</button>
-        </div>
-        <div id="analyze-progress-new" class="progress-detail" style="margin-top:10px">
-          <div class="prog-race" id="prog-race-new">準備中...</div>
-          <div class="prog-bar-wrap"><div class="prog-bar-fill" id="prog-fill-new" style="width:0%"></div></div>
-          <div class="prog-meta">
-            <span>進捗: <b id="prog-count-new">0/0</b> レース</span>
-            <span>経過: <b id="prog-elapsed-new">0秒</b></span>
-            <span>残り推定: <b id="prog-remain-new">—</b></span>
-          </div>
-          <div class="prog-log" id="prog-log-new">—</div>
-          <p class="error" id="analyze-err-new"></p>
-        </div>
-        <div class="analyze-result-link" id="analyze-result-new">
-          ✅ 分析完了！ →
-          <a id="analyze-result-link-new" href="#" target="_blank">全レース表示</a>
-          <span style="margin:0 6px;color:var(--text-muted)">｜</span>
-          <a id="analyze-simple-link-new" href="#" target="_blank">📤 配布用HTML</a>
-        </div>
-      </div>
-      <p id="home-update-status" style="font-size:0.85rem;color:var(--text-muted);margin-top:8px"></p>
-
-      <!-- Share URL section -->
-      <div id="home-share-card" class="card" style="margin-top:14px;display:none">
-        <div class="card-title">📤 配布用HTML <span id="share-size" style="font-weight:400;text-transform:none"></span></div>
-        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-          <input type="text" id="share-url-input" readonly
-            style="flex:1;min-width:220px;padding:9px 12px;border:1px solid var(--border);
-            border-radius:var(--radius-xs);font-size:12px;background:#f8f9fb;color:var(--text);font-family:monospace">
-          <button class="btn btn-primary btn-sm" onclick="copyShareUrl()" id="share-copy-btn">📋 コピー</button>
-          <a id="share-open-link" href="#" target="_blank" class="btn btn-outline btn-sm">🔗 開く</a>
-        </div>
-        <p style="font-size:11px;color:var(--text-muted);margin-top:8px">
-          ※ ファイルで送る場合: <code id="share-file-path" style="background:#f3f4f6;padding:1px 5px;border-radius:3px;font-size:11px"></code>
-        </p>
-      </div>
-      <div id="home-share-none" class="card" style="margin-top:14px;display:none;background:#fffbeb;border-color:#fbbf24">
-        <div class="card-title" style="color:#92400e">📤 配布用HTML</div>
-        <p style="font-size:12px;color:#92400e;margin-top:6px">この日の配布用HTMLがまだありません。「分析設定」から分析を実行すると自動生成されます。</p>
-      </div>
-    </div>
-
-    <!-- Hidden inputs for legacy JS compatibility -->
-    <div style="display:none">
-      <input type="date" id="analyze_date" value="{{ today }}">
-      <div id="venues-loading"></div>
-      <div id="venues-area">
-        <div id="venue-check-grid"></div>
-      </div>
-      <button id="btn_load_venues"></button>
-      <button id="btn_all_select"></button>
-      <button id="btn_all_clear"></button>
-      <button id="btn_analyze" disabled></button>
-      <div id="analyze-progress">
-        <div id="prog-race"></div>
-        <div id="prog-fill" style="width:0%"></div>
-        <b id="prog-count"></b>
-        <b id="prog-elapsed"></b>
-        <b id="prog-remain"></b>
-        <div id="prog-log"></div>
-        <p id="analyze-err"></p>
-      </div>
-      <div id="analyze-result">
-        <a id="analyze-result-link" href="#" target="_blank"></a>
-        <a id="analyze-simple-link" href="#" target="_blank"></a>
-      </div>
-    </div>
-
-    <!-- Hidden collect panel for legacy JS compatibility -->
-    <div style="display:none">
-      <strong id="stat-runs">—</strong>
-      <strong id="stat-date">—</strong>
-      <input type="date" id="start_date" value="{{ default_start }}">
-      <input type="date" id="end_date" value="{{ today }}">
-      <button id="btn_full"></button>
-      <button id="btn_resume"></button>
-      <button id="btn_append"></button>
-      <button id="btn_run" disabled></button>
-      <div id="collect-progress">
-        <div class="progress-fill" id="fill" style="width:0%"></div>
-        <p id="status"></p>
-        <p id="err"></p>
-      </div>
-    </div>
-
-    <div id="panel-results" class="tab-panel">
-
-      <!-- 年別サブタブ -->
-      <div class="sub-tabs">
-        <a href="#" class="sub-tab active" data-year="2026">2026年成績</a>
-      </div>
-
-      <!-- サマリー stat cards (new design) -->
-      <div class="stat-grid" style="margin-bottom:16px">
-        <div class="stat-card"><div class="stat-value" id="rs-honmei-tansho-roi">—</div><div class="stat-label">◎単勝回収率</div></div>
-        <div class="stat-card"><div class="stat-value" id="rs-roi">—</div><div class="stat-label">買い目回収率</div></div>
-        <div class="stat-card"><div class="stat-value" id="rs-honmei-win">—</div><div class="stat-label">◎勝率</div></div>
-        <div class="stat-card"><div class="stat-value" id="rs-honmei">—</div><div class="stat-label">◎複勝率</div></div>
-        <div class="stat-card"><div class="stat-value" id="rs-races">—</div><div class="stat-label">予想レース数</div></div>
-        <div class="stat-card"><div class="stat-value" id="rs-profit">—</div><div class="stat-label">収支（円）</div></div>
-      </div>
-
-      <div id="results-panel-content">
-        <!-- Legacy hidden IDs for JS compatibility -->
-        <div style="display:none">
-          <h2 id="rs-panel-title">2026年成績</h2>
-          <p id="rs-nodata"></p>
-          <div id="rs-stat-row">
-            <strong id="rs-hit-rate">—</strong>
-            <strong id="rs-honmei-place2">—</strong>
-          </div>
-        </div>
-
-        <!-- 印別・券種別（横並び） -->
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
-          <!-- 印別成績 -->
-          <div class="card">
-            <h2 style="margin-bottom:4px">印別成績</h2>
-            <p style="font-size:0.78rem;color:#64748b;margin:0 0 8px">印を付けた延べ頭数。小頭数レース（7頭以下）では△☆を省略するため◎より少なくなる。</p>
-            <table style="width:100%;border-collapse:collapse;font-size:0.85rem">
-              <thead><tr style="background:#eff6ff;color:#1e40af">
-                <th style="padding:7px 8px;border:1px solid #bfdbfe;text-align:center">印</th>
-                <th style="padding:7px 8px;border:1px solid #bfdbfe;text-align:right">延べ頭数</th>
-                <th style="padding:7px 8px;border:1px solid #bfdbfe;text-align:right">勝率</th>
-                <th style="padding:7px 8px;border:1px solid #bfdbfe;text-align:right">連対率</th>
-                <th style="padding:7px 8px;border:1px solid #bfdbfe;text-align:right">複勝率</th>
-                <th style="padding:7px 8px;border:1px solid #bfdbfe;text-align:right">単勝回収率</th>
-              </tr></thead>
-              <tbody id="results-mark-body"><tr><td colspan="6" style="text-align:center;padding:10px;color:#9ca3af">データなし</td></tr></tbody>
-            </table>
-          </div>
-          <!-- 券種別成績 -->
-          <div class="card">
-            <h2 style="margin-bottom:4px">券種別成績</h2>
-            <p style="font-size:0.78rem;color:#64748b;margin:0 0 8px">◎or◉から○▲△☆に流しで馬連4点、三連複で流しで6点の計10点×100円購入した際の成績。</p>
-            <table style="width:100%;border-collapse:collapse;font-size:0.85rem">
-              <thead><tr style="background:#fdf4ff;color:#7e22ce">
-                <th style="padding:7px 8px;border:1px solid #e9d5ff;text-align:center">券種</th>
-                <th style="padding:7px 8px;border:1px solid #e9d5ff;text-align:right">レース数</th>
-                <th style="padding:7px 8px;border:1px solid #e9d5ff;text-align:right">的中率</th>
-                <th style="padding:7px 8px;border:1px solid #e9d5ff;text-align:right">回収率</th>
-              </tr></thead>
-              <tbody id="results-ticket-body"><tr><td colspan="4" style="text-align:center;padding:10px;color:#9ca3af">データなし</td></tr></tbody>
-            </table>
-          </div>
-        </div>
-
-        <!-- 自信度×券種別 -->
-        <div class="card">
-          <h2 style="margin-bottom:10px">自信度×券種別成績</h2>
-          <table style="width:100%;border-collapse:collapse;font-size:0.85rem">
-            <thead><tr style="background:#dcfce7;color:#166534">
-              <th style="padding:7px 8px;border:1px solid #bbf7d0;text-align:center">自信度</th>
-              <th style="padding:7px 8px;border:1px solid #bbf7d0;text-align:center">券種</th>
-              <th style="padding:7px 8px;border:1px solid #bbf7d0;text-align:right">レース数</th>
-              <th style="padding:7px 8px;border:1px solid #bbf7d0;text-align:right">的中R</th>
-              <th style="padding:7px 8px;border:1px solid #bbf7d0;text-align:right">的中率</th>
-              <th style="padding:7px 8px;border:1px solid #bbf7d0;text-align:right">投資(円)</th>
-              <th style="padding:7px 8px;border:1px solid #bbf7d0;text-align:right">回収(円)</th>
-              <th style="padding:7px 8px;border:1px solid #bbf7d0;text-align:right">回収率</th>
-            </tr></thead>
-            <tbody id="results-conf-body"><tr><td colspan="8" style="text-align:center;padding:10px;color:#9ca3af">データなし</td></tr></tbody>
-          </table>
-        </div>
-
-        <!-- 穴馬・危険馬成績（横並び） -->
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
-          <!-- 穴馬成績 -->
-          <div class="card">
-            <h2 style="margin-bottom:10px">穴馬成績</h2>
-            <p style="font-size:0.78rem;color:#64748b;margin:0 0 8px">穴馬に選定された無印馬の実績（複勝100円想定）</p>
-            <table style="width:100%;border-collapse:collapse;font-size:0.85rem">
-              <thead><tr style="background:#fef3c7;color:#92400e">
-                <th style="padding:7px 8px;border:1px solid #fde68a;text-align:center">区分</th>
-                <th style="padding:7px 8px;border:1px solid #fde68a;text-align:right">頭数</th>
-                <th style="padding:7px 8px;border:1px solid #fde68a;text-align:right">馬券内率</th>
-                <th style="padding:7px 8px;border:1px solid #fde68a;text-align:right">複勝回収率</th>
-              </tr></thead>
-              <tbody id="results-ana-body"><tr><td colspan="4" style="text-align:center;padding:10px;color:#9ca3af">データなし</td></tr></tbody>
-            </table>
-          </div>
-          <!-- 危険馬成績 -->
-          <div class="card">
-            <h2 style="margin-bottom:10px">危険馬成績</h2>
-            <p style="font-size:0.78rem;color:#64748b;margin:0 0 8px">危険馬フラグが付いた馬の着外率（4着以下）</p>
-            <table style="width:100%;border-collapse:collapse;font-size:0.85rem">
-              <thead><tr style="background:#fee2e2;color:#991b1b">
-                <th style="padding:7px 8px;border:1px solid #fca5a5;text-align:center">区分</th>
-                <th style="padding:7px 8px;border:1px solid #fca5a5;text-align:right">頭数</th>
-                <th style="padding:7px 8px;border:1px solid #fca5a5;text-align:right">馬券外率</th>
-                <th style="padding:7px 8px;border:1px solid #fca5a5;text-align:right">馬券外頭数</th>
-              </tr></thead>
-              <tbody id="results-kiken-body"><tr><td colspan="4" style="text-align:center;padding:10px;color:#9ca3af">データなし</td></tr></tbody>
-            </table>
-          </div>
-        </div>
-
-        <!-- 日付別一覧 -->
-        <div class="card">
-          <h2 style="margin-bottom:10px">日付別成績</h2>
-          <div id="results-date-list" style="display:flex;flex-direction:column;gap:6px">
-            <p style="color:#9ca3af;font-style:italic;font-size:0.9rem">データなし</p>
-          </div>
-        </div>
-      </div>
-
-      <!-- ============================================ -->
-      <!-- 詳細分析セクション（全体/JRA/NAR タブ）      -->
-      <!-- ============================================ -->
-      <div class="card" style="margin-top:16px">
-        <h2 style="margin-bottom:12px">詳細分析（競馬場別・コース別・距離区分別）</h2>
-
-        <!-- 全体/JRA/NAR タブ -->
-        <div id="detail-cat-tabs" style="display:flex;gap:0;border-bottom:2px solid #e5e7eb;margin-bottom:16px">
-          <button class="det-tab active" data-cat="all"  style="padding:8px 20px;border:none;background:none;font-size:0.9rem;font-weight:600;cursor:pointer;border-bottom:3px solid #2563eb;color:#2563eb;margin-bottom:-2px">全体</button>
-          <button class="det-tab"        data-cat="jra"  style="padding:8px 20px;border:none;background:none;font-size:0.9rem;font-weight:600;cursor:pointer;color:#6b7280">中央競馬(JRA)</button>
-          <button class="det-tab"        data-cat="nar"  style="padding:8px 20px;border:none;background:none;font-size:0.9rem;font-weight:600;cursor:pointer;color:#6b7280">地方競馬(NAR)</button>
-        </div>
-
-        <!-- 各カテゴリのコンテンツ -->
-        <div id="det-content">
-          <div id="det-loading" style="text-align:center;padding:24px;color:#9ca3af">読み込み中...</div>
-
-          <!-- サマリー行 -->
-          <div id="det-summary" style="display:none;background:#f8fafc;border-radius:8px;padding:12px 16px;margin-bottom:16px;font-size:0.88rem;display:flex;gap:20px;flex-wrap:wrap">
-            <span>レース数: <strong id="det-races">—</strong></span>
-            <span>的中率: <strong id="det-hit-rate">—</strong></span>
-            <span>回収率: <strong id="det-roi">—</strong></span>
-            <span>馬連的中率: <strong id="det-u-hit">—</strong> / 回収率: <strong id="det-u-roi">—</strong></span>
-            <span>三連複的中率: <strong id="det-s-hit">—</strong> / 回収率: <strong id="det-s-roi">—</strong></span>
-          </div>
-
-          <!-- 競馬場別 / 芝ダート / 距離区分 を3カラム -->
-          <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-bottom:16px">
-
-            <!-- 競馬場別 -->
-            <div>
-              <div style="font-weight:700;font-size:0.88rem;color:#1e40af;margin-bottom:6px;padding:5px 8px;background:#eff6ff;border-radius:4px">競馬場別</div>
-              <table style="width:100%;border-collapse:collapse;font-size:0.78rem">
-                <thead><tr style="background:#f1f5f9;color:#475569">
-                  <th style="padding:5px 6px;border:1px solid #e2e8f0;text-align:left">競馬場</th>
-                  <th style="padding:5px 6px;border:1px solid #e2e8f0;text-align:right">R数</th>
-                  <th style="padding:5px 6px;border:1px solid #e2e8f0;text-align:right">馬連<br>的中</th>
-                  <th style="padding:5px 6px;border:1px solid #e2e8f0;text-align:right">馬連<br>回収</th>
-                  <th style="padding:5px 6px;border:1px solid #e2e8f0;text-align:right">三連複<br>的中</th>
-                  <th style="padding:5px 6px;border:1px solid #e2e8f0;text-align:right">三連複<br>回収</th>
-                </tr></thead>
-                <tbody id="det-venue-body"><tr><td colspan="6" style="text-align:center;padding:8px;color:#9ca3af">データなし</td></tr></tbody>
-              </table>
-            </div>
-
-            <!-- 芝/ダート -->
-            <div>
-              <div style="font-weight:700;font-size:0.88rem;color:#166534;margin-bottom:6px;padding:5px 8px;background:#dcfce7;border-radius:4px">コース種別（芝・ダート）</div>
-              <table style="width:100%;border-collapse:collapse;font-size:0.78rem">
-                <thead><tr style="background:#f1f5f9;color:#475569">
-                  <th style="padding:5px 6px;border:1px solid #e2e8f0;text-align:left">種別</th>
-                  <th style="padding:5px 6px;border:1px solid #e2e8f0;text-align:right">R数</th>
-                  <th style="padding:5px 6px;border:1px solid #e2e8f0;text-align:right">馬連<br>的中</th>
-                  <th style="padding:5px 6px;border:1px solid #e2e8f0;text-align:right">馬連<br>回収</th>
-                  <th style="padding:5px 6px;border:1px solid #e2e8f0;text-align:right">三連複<br>的中</th>
-                  <th style="padding:5px 6px;border:1px solid #e2e8f0;text-align:right">三連複<br>回収</th>
-                </tr></thead>
-                <tbody id="det-surface-body"><tr><td colspan="6" style="text-align:center;padding:8px;color:#9ca3af">データなし</td></tr></tbody>
-              </table>
-              <!-- 距離区分 -->
-              <div style="font-weight:700;font-size:0.88rem;color:#7e22ce;margin:12px 0 6px;padding:5px 8px;background:#fdf4ff;border-radius:4px">距離区分（SS/S/M/I/L/E）</div>
-              <table style="width:100%;border-collapse:collapse;font-size:0.78rem">
-                <thead><tr style="background:#f1f5f9;color:#475569">
-                  <th style="padding:5px 6px;border:1px solid #e2e8f0;text-align:left">区分</th>
-                  <th style="padding:5px 6px;border:1px solid #e2e8f0;text-align:right">R数</th>
-                  <th style="padding:5px 6px;border:1px solid #e2e8f0;text-align:right">馬連<br>的中</th>
-                  <th style="padding:5px 6px;border:1px solid #e2e8f0;text-align:right">馬連<br>回収</th>
-                  <th style="padding:5px 6px;border:1px solid #e2e8f0;text-align:right">三連複<br>的中</th>
-                  <th style="padding:5px 6px;border:1px solid #e2e8f0;text-align:right">三連複<br>回収</th>
-                </tr></thead>
-                <tbody id="det-dist-body"><tr><td colspan="6" style="text-align:center;padding:8px;color:#9ca3af">データなし</td></tr></tbody>
-              </table>
-            </div>
-
-            <!-- TOP10 高額配当 -->
-            <div>
-              <div style="font-weight:700;font-size:0.88rem;color:#92400e;margin-bottom:6px;padding:5px 8px;background:#fef3c7;border-radius:4px">高額配当 馬連 TOP10</div>
-              <div id="det-top10-umaren" style="font-size:0.76rem"></div>
-              <div style="font-weight:700;font-size:0.88rem;color:#7c3aed;margin:12px 0 6px;padding:5px 8px;background:#ede9fe;border-radius:4px">高額配当 三連複 TOP10</div>
-              <div id="det-top10-sanrenpuku" style="font-size:0.76rem"></div>
-            </div>
-
-          </div>
-        </div>
-      </div>
-
-      <!-- 配布用HTML一括生成エリア -->
-      <div class="card">
-        <h2>配布用HTML生成（印・買い目のみ）</h2>
-        <p style="font-size:0.82rem;color:#64748b;margin:0 0 10px">過去の予想データから、印と買い目だけの軽量HTMLを生成します。LINEなどでのシェア用です。</p>
-        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px">
-          <span style="font-size:0.82rem;color:#374151;font-weight:600">期間:</span>
-          <input type="date" id="simple-from-date" style="padding:8px;border:1px solid #bbf7d0;border-radius:6px;font-size:0.92rem;width:auto;margin:0">
-          <span style="font-size:0.9rem;color:#374151;font-weight:700">〜</span>
-          <input type="date" id="simple-to-date" style="padding:8px;border:1px solid #bbf7d0;border-radius:6px;font-size:0.92rem;width:auto;margin:0">
-          <button id="btn-simple-all" class="btn-sm" style="background:#f0fdf4;border:1px solid #86efac;color:#166534;border-radius:6px;padding:7px 12px;cursor:pointer;font-size:0.85rem;font-weight:600">全期間</button>
-          <button id="btn-gen-simple" class="primary btn-sm">配布用HTML生成</button>
-        </div>
-        <div id="simple-progress" style="display:none;margin-top:8px">
-          <div class="prog-bar-wrap"><div class="prog-bar-fill" id="simple-fill" style="width:0%"></div></div>
-          <p class="status" id="simple-status" style="font-size:0.85rem;margin-top:6px"></p>
-          <div id="simple-date-log" style="display:none;margin-top:8px;max-height:130px;overflow-y:auto"></div>
-        </div>
-        <p class="error" id="simple-err" style="margin-top:6px"></p>
-      </div>
-
-      <!-- 結果照合エリア -->
-      <div class="card">
-        <h2>結果照合（着順取得）</h2>
-        <p style="font-size:0.82rem;color:#64748b;margin:0 0 10px">予想した日付の着順をネットケイバから取得し、的中・収支を自動計算します。レース終了後に実行してください。</p>
-        <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:10px">
-          <span style="font-size:0.82rem;color:#374151;font-weight:600">照合モード:</span>
-          <button class="fetch-mode-btn active" id="fetch-mode-single" onclick="setFetchMode('single')">単一日付</button>
-          <button class="fetch-mode-btn hide-mobile" id="fetch-mode-range" onclick="setFetchMode('range')">期間指定</button>
-        </div>
-        <!-- 単一日付モード -->
-        <div id="fetch-single-area" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-          <select id="fetch-date-select" style="padding:8px;border:1px solid #bbf7d0;border-radius:6px;font-size:0.95rem">
-            <option value="">-- 日付を選択 --</option>
-          </select>
-          <button id="btn-fetch-results" class="primary btn-sm">着順を取得して照合</button>
-        </div>
-        <!-- 期間指定モード -->
-        <div id="fetch-range-area" style="display:none;gap:8px;align-items:center;flex-wrap:wrap">
-          <input type="date" id="fetch-from-date" style="padding:8px;border:1px solid #bbf7d0;border-radius:6px;font-size:0.92rem;width:auto;margin:0">
-          <span style="font-size:0.9rem;color:#374151;font-weight:700">〜</span>
-          <input type="date" id="fetch-to-date" style="padding:8px;border:1px solid #bbf7d0;border-radius:6px;font-size:0.92rem;width:auto;margin:0">
-          <button id="btn-fetch-unmatched" class="btn-sm" style="background:#f0fdf4;border:1px solid #86efac;color:#166534;border-radius:6px;padding:7px 12px;cursor:pointer;font-size:0.85rem;font-weight:600">未照合のみ</button>
-          <button id="btn-fetch-range" class="primary btn-sm">範囲一括照合</button>
-        </div>
-        <div id="fetch-progress" style="display:none;margin-top:12px">
-          <div class="prog-bar-wrap"><div class="prog-bar-fill" id="fetch-fill" style="width:0%"></div></div>
-          <p class="status" id="fetch-status" style="font-size:0.85rem;margin-top:6px"></p>
-          <div id="fetch-date-log" style="display:none;margin-top:8px;max-height:130px;overflow-y:auto"></div>
-        </div>
-        <p class="error" id="fetch-err" style="margin-top:6px"></p>
-      </div>
-
-      <!-- Chart: 累積回収率推移 -->
-      <div class="card" style="margin-top:16px">
-        <div class="card-title">累積回収率推移</div>
-        <div class="chart-wrap"><canvas id="roi-chart"></canvas></div>
-      </div>
-
-      <!-- Chart: 月別収支 -->
-      <div class="card" style="margin-top:12px">
-        <div class="card-title">月別収支（円）</div>
-        <div class="chart-wrap"><canvas id="monthly-chart"></canvas></div>
-      </div>
-    </div>
-
-    <!-- Hidden legacy panel-past IDs -->
-    <div style="display:none">
-      <input type="date" id="past-create-date">
-      <button id="btn-past-single"></button>
-      <input type="date" id="past-range-start">
-      <input type="date" id="past-range-end">
-      <button id="btn-past-range"></button>
-      <div id="past-create-status">
-        <span id="past-create-progress"></span>
-        <span id="past-create-elapsed"></span>
-      </div>
-      <input type="date" id="past-date-input">
-      <span id="past-loading"></span>
-      <div id="past-result"></div>
-    </div>
-
-    <!-- データベース パネル (redesigned) -->
-    <div id="panel-db" class="tab-panel">
-      <!-- Search bar -->
-      <div class="filter-bar" style="margin-bottom:12px">
-        <input type="text" class="search-input" id="db-search" placeholder="🔍 騎手・調教師名で検索..." oninput="onDbSearch()">
-      </div>
-
-      <!-- Subtabs -->
-      <div class="subtabs" id="db-subtabs">
-        <span class="subtab active" onclick="switchDbTab(this,'jockey')">騎手</span>
-        <span class="subtab" onclick="switchDbTab(this,'trainer')">調教師</span>
-        <span class="subtab" onclick="switchDbTab(this,'course')">コース</span>
-      </div>
-
-      <!-- Jockey panel -->
-      <div id="db-panel-jockey">
-        <div class="filter-bar">
-          <div class="filter-group">
-            <button class="filter-btn active" id="db-j-jn-all" onclick="dbSetJraNar('jockey','')">全体</button>
-            <button class="filter-btn" id="db-j-jn-jra" onclick="dbSetJraNar('jockey','JRA')">JRA</button>
-            <button class="filter-btn" id="db-j-jn-nar" onclick="dbSetJraNar('jockey','NAR')">NAR</button>
-          </div>
-          <div class="filter-group">
-            <button class="filter-btn active" id="db-j-sf-all" onclick="dbSetSurface('jockey','')">総合</button>
-            <button class="filter-btn" id="db-j-sf-t" onclick="dbSetSurface('jockey','芝')">芝</button>
-            <button class="filter-btn" id="db-j-sf-d" onclick="dbSetSurface('jockey','ダート')">ダート</button>
-          </div>
-          <div class="filter-group">
-            <button class="filter-btn active" id="db-j-sm-all" onclick="dbSetSmile('jockey','')">全</button>
-            <button class="filter-btn" id="db-j-sm-SS" onclick="dbSetSmile('jockey','SS')">SS</button>
-            <button class="filter-btn" id="db-j-sm-S" onclick="dbSetSmile('jockey','S')">S</button>
-            <button class="filter-btn" id="db-j-sm-M" onclick="dbSetSmile('jockey','M')">M</button>
-            <button class="filter-btn" id="db-j-sm-I" onclick="dbSetSmile('jockey','I')">I</button>
-            <button class="filter-btn" id="db-j-sm-L" onclick="dbSetSmile('jockey','L')">L</button>
-            <button class="filter-btn" id="db-j-sm-E" onclick="dbSetSmile('jockey','E')">E</button>
-          </div>
-          <select class="filter-select" id="db-jockey-sort" onchange="loadJockeyDB()">
-            <option value="total">出走数順</option>
-            <option value="wins">勝利数順</option>
-            <option value="win_rate">勝率順</option>
-            <option value="place2_rate">連対率順</option>
-            <option value="place3_rate">複勝率順</option>
-            <option value="roi">回収率順</option>
-            <option value="dev">偏差値順</option>
-          </select>
-        </div>
-        <div style="font-size:0.75rem;color:#f59e0b;background:#fffbeb;border:1px solid #fde68a;border-radius:4px;padding:4px 10px;margin-bottom:8px">
-          ⚠ 集計対象：予想レース結果（全馬・着外含む）。行クリックで詳細。
-        </div>
-        <div id="db-jockey-table" style="overflow-x:auto">
-          <p class="empty">読み込み中...</p>
-        </div>
-        <!-- legacy compat -->
-        <span id="db-jockey-filter-label" style="display:none"></span>
-        <input type="text" id="db-jockey-search" style="display:none">
-      </div>
-
-      <!-- Trainer panel -->
-      <div id="db-panel-trainer" style="display:none">
-        <div class="filter-bar">
-          <div class="filter-group">
-            <button class="filter-btn active" id="db-t-jn-all" onclick="dbSetJraNar('trainer','')">全体</button>
-            <button class="filter-btn" id="db-t-jn-jra" onclick="dbSetJraNar('trainer','JRA')">JRA</button>
-            <button class="filter-btn" id="db-t-jn-nar" onclick="dbSetJraNar('trainer','NAR')">NAR</button>
-          </div>
-          <div class="filter-group">
-            <button class="filter-btn active" id="db-t-sf-all" onclick="dbSetSurface('trainer','')">総合</button>
-            <button class="filter-btn" id="db-t-sf-t" onclick="dbSetSurface('trainer','芝')">芝</button>
-            <button class="filter-btn" id="db-t-sf-d" onclick="dbSetSurface('trainer','ダート')">ダート</button>
-          </div>
-          <div class="filter-group">
-            <button class="filter-btn active" id="db-t-sm-all" onclick="dbSetSmile('trainer','')">全</button>
-            <button class="filter-btn" id="db-t-sm-SS" onclick="dbSetSmile('trainer','SS')">SS</button>
-            <button class="filter-btn" id="db-t-sm-S" onclick="dbSetSmile('trainer','S')">S</button>
-            <button class="filter-btn" id="db-t-sm-M" onclick="dbSetSmile('trainer','M')">M</button>
-            <button class="filter-btn" id="db-t-sm-I" onclick="dbSetSmile('trainer','I')">I</button>
-            <button class="filter-btn" id="db-t-sm-L" onclick="dbSetSmile('trainer','L')">L</button>
-            <button class="filter-btn" id="db-t-sm-E" onclick="dbSetSmile('trainer','E')">E</button>
-          </div>
-          <select class="filter-select" id="db-trainer-sort" onchange="loadTrainerDB()">
-            <option value="total">出走数順</option>
-            <option value="wins">勝利数順</option>
-            <option value="win_rate">勝率順</option>
-            <option value="place2_rate">連対率順</option>
-            <option value="place3_rate">複勝率順</option>
-            <option value="roi">回収率順</option>
-            <option value="dev">偏差値順</option>
-          </select>
-        </div>
-        <div style="font-size:0.75rem;color:#f59e0b;background:#fffbeb;border:1px solid #fde68a;border-radius:4px;padding:4px 10px;margin-bottom:8px">
-          ⚠ 集計対象：予想レース結果（全馬・着外含む）。行クリックで詳細。
-        </div>
-        <div id="db-trainer-table" style="overflow-x:auto">
-          <p class="empty">読み込み中...</p>
-        </div>
-        <!-- legacy compat -->
-        <span id="db-trainer-filter-label" style="display:none"></span>
-        <input type="text" id="db-trainer-search" style="display:none">
-      </div>
-
-      <!-- 詳細モーダル -->
-      <div id="db-detail-modal" style="display:none;position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,0.45);overflow-y:auto">
-        <div style="background:#fff;max-width:720px;margin:40px auto;border-radius:var(--radius);padding:24px;position:relative;box-shadow:var(--shadow-lg)">
-          <button onclick="document.getElementById('db-detail-modal').style.display='none'"
-            style="position:absolute;top:12px;right:14px;background:none;border:none;font-size:1.3rem;cursor:pointer;color:var(--text-muted)">✕</button>
-          <h3 id="db-detail-title" style="margin:0 0 4px;color:var(--primary)"></h3>
-          <p id="db-detail-period" style="margin:0 0 12px;font-size:12px;color:var(--text-muted)"></p>
-          <div id="db-detail-summary" style="margin-bottom:16px"></div>
-          <div id="db-detail-devs" style="margin-bottom:16px"></div>
-          <div id="db-detail-venue" style="overflow-x:auto;margin-bottom:16px"></div>
-          <div id="db-detail-running-style" style="overflow-x:auto;margin-bottom:16px"></div>
-          <div id="db-detail-dist" style="overflow-x:auto"></div>
-        </div>
-      </div>
-
-      <!-- Course panel -->
-      <div id="db-panel-course" style="display:none">
-        <div class="filter-bar">
-          <div class="filter-group">
-            <button class="filter-btn active" id="btn-course-jra" onclick="courseSetRegion('JRA')">JRA（10場）</button>
-            <button class="filter-btn" id="btn-course-nar" onclick="courseSetRegion('NAR')">NAR（16場）</button>
-          </div>
-          <span id="course-region-label" style="font-size:0.8rem;color:var(--text-muted);align-self:center;margin-left:8px">競馬場を選択してください</span>
-        </div>
-        <div id="course-venue-cards" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px"></div>
-        <div id="course-course-list" style="margin-top:16px"></div>
-      </div>
-    </div>
-
-    <div id="panel-about" class="tab-panel">
-      <div class="card">
-        <div class="about-body">
-
-          <h3>処理パイプライン全体像</h3>
-          <p>D-AIは1レースあたり以下の10ステップを順番に実行する。オッズは Step 1〜7 には一切渡さない。オッズを参照するのは Step 8（乖離検出）と Step 9（期待値算出）のみ。これにより「市場の歪み」を検出することが設計上可能になっている。</p>
-          <table style="width:100%;border-collapse:collapse;font-size:0.83rem;margin:8px 0">
-            <thead><tr style="background:#dcfce7;color:#166534">
-              <th style="padding:6px 8px;border:1px solid #bbf7d0;white-space:nowrap">Step</th>
-              <th style="padding:6px 8px;border:1px solid #bbf7d0">処理</th>
-              <th style="padding:6px 8px;border:1px solid #bbf7d0">担当クラス / 関数</th>
-            </tr></thead>
-            <tbody>
-              <tr><td style="padding:6px 8px;border:1px solid #e2e8f0;text-align:center">1</td><td style="padding:6px 8px;border:1px solid #e2e8f0">ペース予測 (5段階 HH〜SS)</td><td style="padding:6px 8px;border:1px solid #e2e8f0;font-family:monospace;font-size:0.8rem">PacePredictor.predict_pace()</td></tr>
-              <tr><td style="padding:6px 8px;border:1px solid #e2e8f0;text-align:center">2</td><td style="padding:6px 8px;border:1px solid #e2e8f0">換算定数 k の動的校正</td><td style="padding:6px 8px;border:1px solid #e2e8f0;font-family:monospace;font-size:0.8rem">calibrate_conversion_constant()</td></tr>
-              <tr><td style="padding:6px 8px;border:1px solid #e2e8f0;text-align:center">3</td><td style="padding:6px 8px;border:1px solid #e2e8f0">各馬の能力偏差値 (A〜E章)</td><td style="padding:6px 8px;border:1px solid #e2e8f0;font-family:monospace;font-size:0.8rem">calc_ability_deviation()</td></tr>
-              <tr><td style="padding:6px 8px;border:1px solid #e2e8f0;text-align:center">4</td><td style="padding:6px 8px;border:1px solid #e2e8f0">展開偏差値 (F章) + ML位置取り</td><td style="padding:6px 8px;border:1px solid #e2e8f0;font-family:monospace;font-size:0.8rem">PaceDeviationCalculator.calc()</td></tr>
-              <tr><td style="padding:6px 8px;border:1px solid #e2e8f0;text-align:center">5</td><td style="padding:6px 8px;border:1px solid #e2e8f0">コース適性偏差値 (G章) + 枠順バイアス</td><td style="padding:6px 8px;border:1px solid #e2e8f0;font-family:monospace;font-size:0.8rem">CourseAptitudeCalculator.calc()</td></tr>
-              <tr><td style="padding:6px 8px;border:1px solid #e2e8f0;text-align:center">6</td><td style="padding:6px 8px;border:1px solid #e2e8f0">騎手・厩舎・調教評価 (H〜J章)</td><td style="padding:6px 8px;border:1px solid #e2e8f0;font-family:monospace;font-size:0.8rem">JockeyChangeEvaluator / calc_shobu_score()</td></tr>
-              <tr><td style="padding:6px 8px;border:1px solid #e2e8f0;text-align:center">7</td><td style="padding:6px 8px;border:1px solid #e2e8f0">総合偏差値 (D指数) 集計・場内正規化</td><td style="padding:6px 8px;border:1px solid #e2e8f0;font-family:monospace;font-size:0.8rem">get_composite_weights() / _normalize_field_deviations()</td></tr>
-              <tr><td style="padding:6px 8px;border:1px solid #e2e8f0;text-align:center">8</td><td style="padding:6px 8px;border:1px solid #e2e8f0">ML三連率推定 + 穴馬・危険馬検知 (I章)</td><td style="padding:6px 8px;border:1px solid #e2e8f0;font-family:monospace;font-size:0.8rem">ProbabilityPredictor / calc_ana_score()</td></tr>
-              <tr><td style="padding:6px 8px;border:1px solid #e2e8f0;text-align:center">9</td><td style="padding:6px 8px;border:1px solid #e2e8f0">印付け → 買い目生成 → 期待値算出</td><td style="padding:6px 8px;border:1px solid #e2e8f0;font-family:monospace;font-size:0.8rem">assign_marks() / generate_tickets() / calc_expected_value()</td></tr>
-              <tr><td style="padding:6px 8px;border:1px solid #e2e8f0;text-align:center">10</td><td style="padding:6px 8px;border:1px solid #e2e8f0">乖離検出・バリューベット + 資金配分</td><td style="padding:6px 8px;border:1px solid #e2e8f0;font-family:monospace;font-size:0.8rem">detect_value_bets() / allocate_stakes()</td></tr>
-            </tbody>
-          </table>
-
-          <h3>基準タイムDBと馬場補正（A〜B章）</h3>
-          <p>基準タイムの計算式は以下。対象は同コース1〜3着走のみ。信頼度は蓄積件数に依存し、30件以上でA、10〜29件でB、3〜9件でCとなる。3件未満の場合は同競馬場・同馬場種別の全距離データで回帰的に代替する。</p>
-          <div style="background:#f8fafc;padding:10px 14px;border-radius:6px;border-left:3px solid #16a34a;font-family:monospace;font-size:0.82rem;line-height:1.8">
-            dist_coeff = 1600 / distance_m<br>
-            score_total = 馬場条件スコア + クラススコア + 芝/ダスコア + 頭数スコア + 性別スコア + 季節スコア<br>
-            standard_time = mean(1〜3着タイム) − (mean(score_total) × dist_coeff)<br>
-            run_deviation = 50 + (standard_time − corrected_time) × dist_coeff × k
-          </div>
-          <p style="margin-top:8px">各補正スコアの実値：</p>
-          <table style="width:100%;border-collapse:collapse;font-size:0.82rem;margin:4px 0">
-            <thead><tr style="background:#f1f5f9"><th style="padding:5px 8px;border:1px solid #e2e8f0;text-align:left">カテゴリ</th><th style="padding:5px 8px;border:1px solid #e2e8f0;text-align:left">値</th></tr></thead>
-            <tbody>
-              <tr><td style="padding:5px 8px;border:1px solid #e2e8f0">馬場状態</td><td style="padding:5px 8px;border:1px solid #e2e8f0">良=0 / 稍重=−0.5 / 重=−1.0 / 不良=−1.5</td></tr>
-              <tr><td style="padding:5px 8px;border:1px solid #e2e8f0">クラス</td><td style="padding:5px 8px;border:1px solid #e2e8f0">G1=+6 / G2=+5 / G3=+4 / OP=+3 / 3勝=+2 / 2勝=+1 / 1勝=0 / 未勝利=−1 / 新馬=−2</td></tr>
-              <tr><td style="padding:5px 8px;border:1px solid #e2e8f0">芝/ダート</td><td style="padding:5px 8px;border:1px solid #e2e8f0">芝=0 / ダート=−0.5</td></tr>
-              <tr><td style="padding:5px 8px;border:1px solid #e2e8f0">頭数</td><td style="padding:5px 8px;border:1px solid #e2e8f0">〜11頭=0 / 12〜15頭=+0.1 / 16頭以上=+0.3</td></tr>
-              <tr><td style="padding:5px 8px;border:1px solid #e2e8f0">季節（月別）</td><td style="padding:5px 8px;border:1px solid #e2e8f0">4月=+0.8 / 6月=+0.7 / 10月=+0.6 / 7月=−0.6 / 12月=−0.6（実データ検証値）</td></tr>
-            </tbody>
-          </table>
-          <p style="margin-top:8px">馬場補正はCV値・含水率は使わず、実データ実測値（秒/200m）をテーブルで管理する。距離帯（short/mile/mid/long）と主催（JRA/NAR）の組み合わせ別に保持。代表値：</p>
-          <table style="width:100%;border-collapse:collapse;font-size:0.82rem;margin:4px 0">
-            <thead><tr style="background:#f1f5f9"><th style="padding:5px 8px;border:1px solid #e2e8f0">馬場</th><th style="padding:5px 8px;border:1px solid #e2e8f0">JRA芝 mile(補正 s/200m)</th><th style="padding:5px 8px;border:1px solid #e2e8f0">JRAダート mile</th></tr></thead>
-            <tbody>
-              <tr><td style="padding:5px 8px;border:1px solid #e2e8f0">稍重</td><td style="padding:5px 8px;border:1px solid #e2e8f0">+0.126（遅い）</td><td style="padding:5px 8px;border:1px solid #e2e8f0">−0.072（速い）</td></tr>
-              <tr><td style="padding:5px 8px;border:1px solid #e2e8f0">重</td><td style="padding:5px 8px;border:1px solid #e2e8f0">+0.262</td><td style="padding:5px 8px;border:1px solid #e2e8f0">−0.243</td></tr>
-              <tr><td style="padding:5px 8px;border:1px solid #e2e8f0">不良</td><td style="padding:5px 8px;border:1px solid #e2e8f0">+0.434</td><td style="padding:5px 8px;border:1px solid #e2e8f0">−0.229</td></tr>
-            </tbody>
-          </table>
-          <p style="margin-top:6px">競馬場別時計レベルも補正テーブルで持つ（東京芝=−0.073 s/200m で最速、新潟=+0.047 で最遅）。改修後コースのみ使う <code>filter_post_renovation_runs()</code> が適用されるため、京都改修前（〜2022年）のデータは除外される。</p>
-
-          <h3>加重平均偏差値とα可変ロジック（C〜E章）</h3>
-          <p>過去走の参照範囲：同系統（芝/ダ）かつ直近1年以内・最大5走。長期休養明け（直前走から90日以上）の場合は参照範囲を2年まで拡張し、算出した加重平均に対して以下の減衰をかける：</p>
-          <div style="background:#f8fafc;padding:8px 14px;border-radius:6px;border-left:3px solid #16a34a;font-family:monospace;font-size:0.82rem;line-height:1.8">
-            WA_WEIGHTS = [0.35, 0.25, 0.20, 0.12, 0.08]  # 最新走→5走前<br>
-            corrected_dev[i] = run_deviation[i] + chakusa_index[i] × CHAKUSA_INDEX_WEIGHT<br>
-            wa_dev = Σ(corrected_dev[i] × weight[i]) / Σweight[i]<br>
-            if is_long_break: wa_dev = 50 + (wa_dev − 50) × 0.5  # RACE_HISTORY_休養DECAY
-          </div>
-          <p style="margin-top:8px">最新走偏差値（max_dev）と加重平均偏差値（wa_dev）の差が大きい場合、α値を動的に調整してピーク方向にバイアスをかける：</p>
-          <div style="background:#f8fafc;padding:8px 14px;border-radius:6px;border-left:3px solid #16a34a;font-family:monospace;font-size:0.82rem;line-height:1.8">
-            divergence = |max_dev − wa_dev|<br>
-            if divergence &gt; threshold×2: α ± 0.15<br>
-            if is_declining: α −= ALPHA_DECLINE_PENALTY<br>
-            ability_score = wa_dev × (1 − α) + max_dev × α  # α ∈ [0.1, 0.9]
-          </div>
-          <p style="margin-top:8px">トレンド判定（E-1）は偏差値傾き（60%）と着順傾向（40%）の複合スコアで決まり、G1/G2直近1着に+4pt・3着以内に+2ptのボーナスが乗る。換算定数 k はレースごとに <code>calibrate_conversion_constant()</code> で動的校正（課題DBの蓄積が30件以上の場合のみ適用）。</p>
-
-          <h3>ペース予測と展開偏差値（F章）</h3>
-          <p>PacePredictorはベーススコア50（MM相当）から出発し、以下の加算で5段階に分類する：</p>
-          <table style="width:100%;border-collapse:collapse;font-size:0.82rem;margin:4px 0 8px">
-            <thead><tr style="background:#f1f5f9"><th style="padding:5px 8px;border:1px solid #e2e8f0">要因</th><th style="padding:5px 8px;border:1px solid #e2e8f0;text-align:center">調整値</th></tr></thead>
-            <tbody>
-              <tr><td style="padding:5px 8px;border:1px solid #e2e8f0">逃げ馬3頭以上</td><td style="padding:5px 8px;border:1px solid #e2e8f0;text-align:center">+8</td></tr>
-              <tr><td style="padding:5px 8px;border:1px solid #e2e8f0">逃げ馬2頭</td><td style="padding:5px 8px;border:1px solid #e2e8f0;text-align:center">+4</td></tr>
-              <tr><td style="padding:5px 8px;border:1px solid #e2e8f0">逃げ馬0頭</td><td style="padding:5px 8px;border:1px solid #e2e8f0;text-align:center">−4</td></tr>
-              <tr><td style="padding:5px 8px;border:1px solid #e2e8f0">先行馬密度≥50%</td><td style="padding:5px 8px;border:1px solid #e2e8f0;text-align:center">+5</td></tr>
-              <tr><td style="padding:5px 8px;border:1px solid #e2e8f0">先行馬密度≤15%</td><td style="padding:5px 8px;border:1px solid #e2e8f0;text-align:center">−3</td></tr>
-              <tr><td style="padding:5px 8px;border:1px solid #e2e8f0">直線≥400m（長い）</td><td style="padding:5px 8px;border:1px solid #e2e8f0;text-align:center">−2</td></tr>
-              <tr><td style="padding:5px 8px;border:1px solid #e2e8f0">小回りコース</td><td style="padding:5px 8px;border:1px solid #e2e8f0;text-align:center">+3</td></tr>
-              <tr><td style="padding:5px 8px;border:1px solid #e2e8f0">逃げ馬の過去前半3F平均&lt;35.5s</td><td style="padding:5px 8px;border:1px solid #e2e8f0;text-align:center">+2</td></tr>
-            </tbody>
-          </table>
-          <p>スコア閾値：HH≥62 / HM≥56 / MM≥44 / MS≥38 / SS&lt;38。脚質はコーナー通過順位（StyleClassifier）で分類、コーナーデータ不足時は4角相対位置（≤15%→逃げ、≤35%→先行、≤60%→差し）で代替。末脚タイプは上がり3Fを平均より0.5s速ければ爆発型、0.5s遅ければ末脚非依存型に分類し位置取り×末脚の9分類+マクリとする。展開偏差値の計算ではML位置取りモデル（PositionPredictor）による予測も利用する。枠順バイアスは gate_bias_db（枠別過去成績）から取得。</p>
-
-          <h3>騎手・厩舎・調教評価（H〜J章）</h3>
-          <p>乗り替わりは6パターンに分類し、展開偏差値と勝負気配スコアに加算する：</p>
-          <table style="width:100%;border-collapse:collapse;font-size:0.82rem;margin:4px 0 8px">
-            <thead><tr style="background:#f1f5f9"><th style="padding:5px 8px;border:1px solid #e2e8f0">パターン</th><th style="padding:5px 8px;border:1px solid #e2e8f0">判定基準</th><th style="padding:5px 8px;border:1px solid #e2e8f0;text-align:center">展開影響</th><th style="padding:5px 8px;border:1px solid #e2e8f0;text-align:center">勝負気配</th></tr></thead>
-            <tbody>
-              <tr><td style="padding:5px 8px;border:1px solid #e2e8f0">A: 戦略的強化</td><td style="padding:5px 8px;border:1px solid #e2e8f0">上位騎手（偏差値≥60）への乗替</td><td style="padding:5px 8px;border:1px solid #e2e8f0;text-align:center">+1.5</td><td style="padding:5px 8px;border:1px solid #e2e8f0;text-align:center">+2.0</td></tr>
-              <tr><td style="padding:5px 8px;border:1px solid #e2e8f0">B: 戦術的</td><td style="padding:5px 8px;border:1px solid #e2e8f0">コース得意騎手等</td><td style="padding:5px 8px;border:1px solid #e2e8f0;text-align:center">+0.5</td><td style="padding:5px 8px;border:1px solid #e2e8f0;text-align:center">−</td></tr>
-              <tr><td style="padding:5px 8px;border:1px solid #e2e8f0">C: ローテ都合</td><td style="padding:5px 8px;border:1px solid #e2e8f0">騎手スケジュール調整</td><td style="padding:5px 8px;border:1px solid #e2e8f0;text-align:center">0</td><td style="padding:5px 8px;border:1px solid #e2e8f0;text-align:center">−</td></tr>
-              <tr><td style="padding:5px 8px;border:1px solid #e2e8f0">D: 調教目的</td><td style="padding:5px 8px;border:1px solid #e2e8f0">若手・調教専任等</td><td style="padding:5px 8px;border:1px solid #e2e8f0;text-align:center">−0.5</td><td style="padding:5px 8px;border:1px solid #e2e8f0;text-align:center">−</td></tr>
-              <tr><td style="padding:5px 8px;border:1px solid #e2e8f0">E: 見切り</td><td style="padding:5px 8px;border:1px solid #e2e8f0">前走大敗後の降格乗替</td><td style="padding:5px 8px;border:1px solid #e2e8f0;text-align:center">−2.0</td><td style="padding:5px 8px;border:1px solid #e2e8f0;text-align:center">−</td></tr>
-              <tr><td style="padding:5px 8px;border:1px solid #e2e8f0">F: 事情不明</td><td style="padding:5px 8px;border:1px solid #e2e8f0">判定不可</td><td style="padding:5px 8px;border:1px solid #e2e8f0;text-align:center">0</td><td style="padding:5px 8px;border:1px solid #e2e8f0;text-align:center">−</td></tr>
-            </tbody>
-          </table>
-          <p>テン乗り（騎手×馬の初コンビ）には−1.0のペナルティを追加。勝負気配スコアは以下の合算：格上げ出走+1.5 / 厩舎短期好調+1.5 / 休み明け高回収率厩舎+1.5 / 休養日数帯×厩舎初戦型補正（<code>calc_break_adjustment()</code>）。スコア≥4で「勝負気配」フラグが立つ。</p>
-
-          <h3>総合偏差値（D指数）と競馬場別重み</h3>
-          <p>D指数は競馬場別の最適重みで3軸を合成し、体重変動補正とオッズ整合性スコアを加算する：</p>
-          <div style="background:#f8fafc;padding:8px 14px;border-radius:6px;border-left:3px solid #16a34a;font-family:monospace;font-size:0.82rem;line-height:1.8">
-            w = get_composite_weights(venue)  # 競馬場別の能力/展開/適性の重み<br>
-            base = ability × w["ability"] + pace × w["pace"] + course × w["course"]<br>
-            base += calc_weight_change_adjustment(weight_change, horse_weight)<br>
-            composite = base + odds_consistency_adj  # 市場オッズとの整合性補正
-          </div>
-          <p style="margin-top:8px">場内正規化（<code>_normalize_field_deviations()</code>）により展開・能力の各偏差値はレース内で 50 中心に補正される。印付け・買い目生成はこの正規化後の composite を使う。代表的な競馬場別重み：</p>
-          <table style="width:100%;border-collapse:collapse;font-size:0.82rem;margin:4px 0">
-            <thead><tr style="background:#dcfce7;color:#166534">
-              <th style="padding:6px 8px;border:1px solid #bbf7d0">競馬場</th>
-              <th style="padding:6px 8px;border:1px solid #bbf7d0;text-align:center">能力</th>
-              <th style="padding:6px 8px;border:1px solid #bbf7d0;text-align:center">展開</th>
-              <th style="padding:6px 8px;border:1px solid #bbf7d0;text-align:center">適性</th>
-              <th style="padding:6px 8px;border:1px solid #bbf7d0">特徴</th>
-            </tr></thead>
-            <tbody>
-              <tr><td style="padding:6px 8px;border:1px solid #e2e8f0">東京</td><td style="padding:6px 8px;text-align:center;border:1px solid #e2e8f0">61.4%</td><td style="padding:6px 8px;text-align:center;border:1px solid #e2e8f0">12.5%</td><td style="padding:6px 8px;text-align:center;border:1px solid #e2e8f0">26.0%</td><td style="padding:6px 8px;border:1px solid #e2e8f0">長い直線で展開影響少、純粋な能力差が出る</td></tr>
-              <tr><td style="padding:6px 8px;border:1px solid #e2e8f0">札幌</td><td style="padding:6px 8px;text-align:center;border:1px solid #e2e8f0">66.1%</td><td style="padding:6px 8px;text-align:center;border:1px solid #e2e8f0">14.3%</td><td style="padding:6px 8px;text-align:center;border:1px solid #e2e8f0">19.7%</td><td style="padding:6px 8px;border:1px solid #e2e8f0">洋芝・平坦で能力重視</td></tr>
-              <tr><td style="padding:6px 8px;border:1px solid #e2e8f0">高知</td><td style="padding:6px 8px;text-align:center;border:1px solid #e2e8f0">29.0%</td><td style="padding:6px 8px;text-align:center;border:1px solid #e2e8f0">16.7%</td><td style="padding:6px 8px;text-align:center;border:1px solid #e2e8f0">54.2%</td><td style="padding:6px 8px;border:1px solid #e2e8f0">コース適性が支配的（地方独特の馬場）</td></tr>
-            </tbody>
-          </table>
-
-          <h3>穴馬・危険馬検知（I章）</h3>
-          <p>穴馬スコアは三連率ギャップ（最大+6pt）＋13項目の加算式。8pt以上が穴A（能力込み）、5〜7ptが穴B。主な加点項目：</p>
-          <table style="width:100%;border-collapse:collapse;font-size:0.82rem;margin:4px 0">
-            <thead><tr style="background:#f1f5f9"><th style="padding:5px 8px;border:1px solid #e2e8f0">項目</th><th style="padding:5px 8px;border:1px solid #e2e8f0;text-align:center">加点</th></tr></thead>
-            <tbody>
-              <tr><td style="padding:5px 8px;border:1px solid #e2e8f0">MLルール複勝率乖離≥15% (ML&gt;ルール)</td><td style="padding:5px 8px;border:1px solid #e2e8f0;text-align:center">+2.0</td></tr>
-              <tr><td style="padding:5px 8px;border:1px solid #e2e8f0">MLルール複勝率乖離≥8%</td><td style="padding:5px 8px;border:1px solid #e2e8f0;text-align:center">+1.0</td></tr>
-              <tr><td style="padding:5px 8px;border:1px solid #e2e8f0">トレンド上昇（RAPID_UP / UP）</td><td style="padding:5px 8px;border:1px solid #e2e8f0;text-align:center">+1.5</td></tr>
-              <tr><td style="padding:5px 8px;border:1px solid #e2e8f0">展開上位25%以内</td><td style="padding:5px 8px;border:1px solid #e2e8f0;text-align:center">+1.5</td></tr>
-              <tr><td style="padding:5px 8px;border:1px solid #e2e8f0">勝負気配スコア≥4</td><td style="padding:5px 8px;border:1px solid #e2e8f0;text-align:center">+1.5</td></tr>
-              <tr><td style="padding:5px 8px;border:1px solid #e2e8f0">着差評価指数avg&gt;0.5</td><td style="padding:5px 8px;border:1px solid #e2e8f0;text-align:center">+1.0</td></tr>
-              <tr><td style="padding:5px 8px;border:1px solid #e2e8f0">騎手Aパターン乗替</td><td style="padding:5px 8px;border:1px solid #e2e8f0;text-align:center">+1.0</td></tr>
-              <tr><td style="padding:5px 8px;border:1px solid #e2e8f0">休み明け×厩舎初戦型 (回収率≥100%)</td><td style="padding:5px 8px;border:1px solid #e2e8f0;text-align:center">+1.0</td></tr>
-              <tr><td style="padding:5px 8px;border:1px solid #e2e8f0">コース初出走×類似コース高実績</td><td style="padding:5px 8px;border:1px solid #e2e8f0;text-align:center">+1.0</td></tr>
-            </tbody>
-          </table>
-          <p style="margin-top:6px">三連率ギャップは「理論複勝率 − (1/odds × 3.5)」で算出。市場が複勝率を過小評価している馬を炙り出す。危険馬スコアは逆の構造（過信人気×能力不足）で、危険馬と判定された馬には◎を打たない。</p>
-
-          <h3>MLモデル構成（LightGBM + LambdaRank）</h3>
-          <p>5種類のモデルを組み合わせてレース予測を行う。複勝予測モデル（LGBMPredictor）は <b>88次元特徴量</b> を使用し、<b>オッズ・人気を含まない</b>（市場の歪み検出のため意図的に除外）。JRAとNAR（地方）の両方に対応（<code>is_jra</code> フラグで識別）。Optuna（ベイズ最適化 50試行）でハイパーパラメータ最適化後、Platt Scalingで確率キャリブレーション済み。Walk-Forward CV 7フォールド評価: AUC=0.8064 / Top1率=71.6% / Top3率=95.3%。</p>
-          <table style="width:100%;border-collapse:collapse;font-size:0.82rem;margin:4px 0">
-            <thead><tr style="background:#dcfce7;color:#166534">
-              <th style="padding:6px 8px;border:1px solid #bbf7d0">モデル</th>
-              <th style="padding:6px 8px;border:1px solid #bbf7d0">出力</th>
-              <th style="padding:6px 8px;border:1px solid #bbf7d0">用途 / 性能</th>
-            </tr></thead>
-            <tbody>
-              <tr><td style="padding:6px 8px;border:1px solid #e2e8f0;font-family:monospace"><b>LGBMPredictor</b></td><td style="padding:6px 8px;border:1px solid #e2e8f0">複勝確率（Platt補正）</td><td style="padding:6px 8px;border:1px solid #e2e8f0"><b>メイン</b>: 88特徴量、30+サブモデル自動選択。AUC=0.8064 / Top3率=95.3%</td></tr>
-              <tr><td style="padding:6px 8px;border:1px solid #e2e8f0;font-family:monospace"><b>LGBMRanker</b></td><td style="padding:6px 8px;border:1px solid #e2e8f0">ランクスコア（LambdaRank）</td><td style="padding:6px 8px;border:1px solid #e2e8f0">LGBMPredictorに10%ウェイトでブレンド。NDCG@3=0.5976（三連複精度向上）</td></tr>
-              <tr><td style="padding:6px 8px;border:1px solid #e2e8f0;font-family:monospace">Last3FPredictor</td><td style="padding:6px 8px;border:1px solid #e2e8f0">上がり3F予測タイム</td><td style="padding:6px 8px;border:1px solid #e2e8f0">展開偏差値の末脚評価に使用（→ <code>ml_l3f_est</code> 特徴量として再利用）</td></tr>
-              <tr><td style="padding:6px 8px;border:1px solid #e2e8f0;font-family:monospace">PositionPredictor</td><td style="padding:6px 8px;border:1px solid #e2e8f0">レース内位置取り予測</td><td style="padding:6px 8px;border:1px solid #e2e8f0">展開偏差値計算に使用（→ <code>ml_pos_est</code> 特徴量として再利用）</td></tr>
-              <tr><td style="padding:6px 8px;border:1px solid #e2e8f0;font-family:monospace">ProbabilityPredictor</td><td style="padding:6px 8px;border:1px solid #e2e8f0">win / top2 / top3 確率</td><td style="padding:6px 8px;border:1px solid #e2e8f0">予想オッズ算出・穴馬乖離検出に使用</td></tr>
-            </tbody>
-          </table>
-          <p style="margin-top:6px">全モデルはプロセス起動時に1回のみロードし（モジュールレベルのキャッシュ）、コース・距離帯・JRA/NARで最適なサブモデルを自動選択する。</p>
-
-          <h3 style="margin-top:18px">LGBMPredictor: 88特徴量一覧と寄与度</h3>
-          <p style="margin:4px 0 10px">全サブモデル平均の情報利得（gain）ベース寄与度。<b>上位10特徴量で全体の約60%</b> を説明する。モデル再学習後も自動更新される。</p>
-          <div id="feat-imp-container">
-            <div style="text-align:center;padding:20px;color:#64748b">⌛ 特徴量データ読み込み中...</div>
-          </div>
-{% raw %}
-          <script>
-          (function(){
-            var _featData=[], _curCat='all';
-            var CAT_STYLE={
-              '能力':  {bg:'#dcfce7',tc:'#166534',bc:'#16a34a'},
-              '展開':  {bg:'#dbeafe',tc:'#1e40af',bc:'#2563eb'},
-              '騎手':  {bg:'#ffedd5',tc:'#c2410c',bc:'#ea580c'},
-              '調教師':{bg:'#ede9fe',tc:'#7c3aed',bc:'#7c3aed'},
-              'コース':{bg:'#f1f5f9',tc:'#475569',bc:'#64748b'},
-              '体型':  {bg:'#ccfbf1',tc:'#0f766e',bc:'#0d9488'},
-              '血統':  {bg:'#fef9c3',tc:'#713f12',bc:'#a16207'}
-            };
-            var CAT_DESC={
-              '能力':'過去走実績・フォーム・類似コース適性',
-              '展開':'位置取り・脚質・スピード指数',
-              '騎手':'騎手成績・乗り替わり評価',
-              '調教師':'調教師成績・騎手コンビ',
-              'コース':'レース条件・競馬場属性・枠バイアス',
-              '体型':'馬体重・年齢・斤量・休養',
-              '血統':'父馬・母父馬の産駒実績'
-            };
-            var FEAT_DESC={
-              'horse_form_zscore_in_race':'レース内フォームZスコア（直近走の偏差がこのレースで何σ優れているか）',
-              'venue_sim_rank_in_race':'レース内・類似コース適性ランク（0=最低〜1=最高）',
-              'prev_odds_1':'前走単勝オッズ（市場が評価した前走時点の能力水準）',
-              'venue_sim_place_rate':'類似コース（直線長・坂・コーナー形状が近い競馬場）での複勝率',
-              'ml_pos_est':'ML推定4角位置取り（0=先頭〜1=最後方）',
-              'horse_form_rank_in_race':'レース内・直近走偏差値ランク（0=最低〜1=最高）',
-              'field_count':'出走頭数（少頭数は堅め、多頭数は波乱含み）',
-              'jockey_place_zscore_in_race':'レース内・騎手複勝率Zスコア（このレースの騎手陣の中で何σ上か）',
-              'venue_sim_avg_finish':'類似コースでの平均着順（小さいほど好成績）',
-              'horse_place_rank_in_race':'レース内・通算複勝率ランク（0=最低〜1=最高）',
-              'horse_place_rate':'通算複勝率（全コース・全距離の3着以内率）',
-              'horse_last_finish':'直近1走着順（小さいほど直近で好走）',
-              'dev_run1':'直近1走の正規化着順（1.0=1着、0.0=最下位、頭数補正済）',
-              'venue_code':'競馬場コード（東京=05、中山=06など。コース別傾向を学習）',
-              'jockey_place_rate':'騎手の通算複勝率（全コース・全距離）',
-              'venue_sim_runs':'類似コースでの通算出走数（信頼度の指標）',
-              'jockey_place_rank_in_race':'レース内・騎手複勝率ランク（0=最低〜1=最高）',
-              'horse_runs':'通算出走数（経験値と安定性の指標）',
-              'horse_avg_finish':'通算平均着順（全過去走の単純平均）',
-              'dev_run2':'直近2走の正規化着順（頭数補正済）',
-              'jockey_place_rate_90d':'騎手の直近90日複勝率（現在の調子・状態）',
-              'horse_running_style':'脚質（直近5走4角平均相対位置: 0.0=逃げ〜1.0=追込）',
-              'ml_l3f_est':'ML推定上がり3Fタイム（秒）',
-              'prev_odds_2':'2走前の単勝オッズ',
-              'jockey_venue_wr':'騎手の当競馬場での通算勝率',
-              'jt_combo_wr':'この騎手×調教師コンビの過去勝率（相性・信頼度）',
-              'horse_days_since':'前走からの休養日数（間隔ローテとリフレッシュ度）',
-              'same_dir_place_rate':'同回り方向（右回り/左回り）での複勝率',
-              'trainer_place_rate':'調教師の通算複勝率（全コース・全距離）',
-              'horse_weight':'馬体重(kg)',
-              'gate_venue_wr':'この枠番×競馬場での過去複勝率（枠順バイアス）',
-              'relative_weight_kg':'レース内相対斤量（自馬斤量 − このレースの平均斤量）',
-              'trainer_place_rank_in_race':'レース内・調教師複勝率ランク（0=最低〜1=最高）',
-              'trend_position_slope':'直近3走の着順トレンド傾き（プラス=改善中）',
-              'trainer_runs':'調教師の通算出走数（信頼度の指標）',
-              'age':'年齢（2〜9歳以上）',
-              'trainer_place_rate_90d':'調教師の直近90日複勝率（現在の厩舎の調子）',
-              'speed_sec_per_m_est':'スピード指数（過去走破時計÷√距離の加重平均：絶対速度）',
-              'style_surface_wr':'この脚質×馬場種別での過去複勝率（脚質×馬場適性）',
-              'trainer_venue_wr':'調教師の当競馬場での通算勝率',
-              'jockey_runs':'騎手の通算出走数（信頼度の指標）',
-              'trainer_dist_wr':'調教師の該当距離帯（sprint/mile/middle/long）での勝率',
-              'weight_change':'馬体重変動(kg)（前走比: プラス=増量）',
-              'gate_style_wr':'この枠番×脚質での過去複勝率（枠順と脚質の組み合わせ適性）',
-              'jockey_win_rate':'騎手の通算勝率（全コース・全距離）',
-              'jockey_dist_wr':'騎手の該当距離帯での勝率',
-              'venue_sim_win_rate':'類似コースでの通算勝率',
-              'trainer_win_rate_90d':'調教師の直近90日勝率',
-              'jockey_win_rate_90d':'騎手の直近90日勝率',
-              'jockey_surface_wr':'騎手の当馬場種別（芝/ダート）での勝率',
-              'same_dir_runs':'同回り方向での通算出走数（サンプル数）',
-              'trainer_wp_ratio':'調教師の勝率÷複勝率（詰めの鋭さ・勝ちに来るかの指標）',
-              'jockey_wp_ratio':'騎手の勝率÷複勝率（追込型か安定型かを表す）',
-              'jt_combo_runs':'この騎手×調教師コンビの過去出走数（信頼度）',
-              'trainer_win_rate':'調教師の通算勝率（全コース・全距離）',
-              'distance':'距離(m)（スプリント1400以下〜長距離2200超）',
-              'trainer_surface_wr':'調教師の当馬場種別での勝率',
-              'horse_win_rate':'通算勝率（全コース・全距離）',
-              'horse_no':'馬番号（ゲート内での番号）',
-              'gate_no':'枠番（1〜8枠）',
-              'month':'開催月（1〜12月。季節性を学習）',
-              'horse_condition_match':'当日馬場状態（良/稍重/重/不良）での過去複勝率',
-              'grade_code':'グレードコード（0=新馬、1=未勝利、…8=G1）',
-              'class_change':'クラス変化（+1=昇格、0=同クラス、−1=降格）',
-              'kishu_pattern_code':'乗り替わりパターン（0=継続、1=強化A〜5=不明F）',
-              'is_jockey_change':'乗り替わりフラグ（1=乗替、0=継続）',
-              'venue_sim_n_venues':'類似コースでの実績を持つ競馬場の数（汎用性）',
-              'weight_kg':'斤量(kg)（55kg、57kgなど）',
-              'prev_grade_code':'前走グレードコード（0=新馬〜8=G1）',
-              'bms_win_rate':'母父馬産駒の通算勝率（母系血統の総合力）',
-              'sire_smile_wr':'父馬産駒の当距離帯（SMILE区分）での勝率',
-              'bms_place_rate':'母父馬産駒の複勝率',
-              'sire_win_rate':'父馬産駒の通算勝率（父系血統の総合力）',
-              'bms_surf_wr':'母父馬産駒の当馬場種別（芝/ダート）での勝率',
-              'venue_straight_m':'この競馬場の直線距離(m)（長いほど末脚有利）',
-              'sire_place_rate':'父馬産駒の複勝率',
-              'sire_surf_wr':'父馬産駒の当馬場種別での勝率（芝向き/ダート向き判別）',
-              'condition':'馬場状態（良=0/稍重=1/重=2/不良=3）',
-              'venue_first_corner':'スタートから最初のコーナーまでの距離割合',
-              'sex_code':'性別コード（牡=0、牝=1、セン=2）',
-              'is_jra':'JRA/NAR区分（1=JRA、0=NAR地方）',
-              'venue_direction':'回り方向コード（右回り/左回り）',
-              'venue_corner_type':'コーナー形状コード（急カーブ/緩カーブ）',
-              'is_long_break':'長期休養フラグ（90日以上の休養明け=1）',
-              'venue_slope':'坂高度(m)（中山最終直線・阪神坂など）',
-              'surface':'馬場種別（0=芝、1=ダート、2=障害）※サブモデルで固定のため寄与度低',
-              'trend_deviation_slope':'偏差値の直近3走傾き（trend_position_slopeの偏差値版）',
-              'chakusa_index_avg3':'直近3走の着差評価指数平均（勝ち馬との時計差を数値化）'
-            };
-
-            function buildUI(data) {
-              _featData = data;
-              var cats = {};
-              data.forEach(function(d) { cats[d.cat] = (cats[d.cat]||0)+1; });
-              var maxPct = data.length ? data[0].pct : 1;
-
-              var html = '<div style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:8px;align-items:center">';
-              html += '<span style="font-size:0.79rem;color:#64748b;margin-right:2px">カテゴリ:</span>';
-              html += '<button id="fc-btn-all" onclick="featFilter(this,\'all\')" style="font-size:0.73rem;padding:2px 8px;border:1px solid #94a3b8;border-radius:10px;cursor:pointer;background:#e2e8f0;font-weight:bold">全て('+data.length+')</button>';
-              Object.keys(CAT_STYLE).forEach(function(cat) {
-                if (!cats[cat]) return;
-                var cs = CAT_STYLE[cat];
-                html += '<button onclick="featFilter(this,\''+cat+'\')" title="'+CAT_DESC[cat]+'" style="font-size:0.73rem;padding:2px 8px;border:1px solid '+cs.bc+';border-radius:10px;cursor:pointer;background:'+cs.bg+';color:'+cs.tc+'">'+cat+'('+cats[cat]+')</button>';
-              });
-              html += '</div>';
-              html += '<input type="text" id="fc-search" oninput="featSearch()" placeholder="特徴量名・説明で検索 (例: jockey, 騎手, 類似コース)..." style="width:100%;box-sizing:border-box;padding:5px 8px;font-size:0.82rem;border:1px solid #cbd5e1;border-radius:4px;margin-bottom:6px">';
-              html += '<div style="max-height:540px;overflow-y:auto;border:1px solid #e2e8f0;border-radius:4px">';
-              html += '<table id="fc-table" style="width:100%;border-collapse:collapse;font-size:0.76rem">';
-              html += '<thead><tr style="background:#dcfce7;color:#166534;position:sticky;top:0;z-index:1">';
-              html += '<th style="padding:5px 6px;border:1px solid #bbf7d0;text-align:center">#</th>';
-              html += '<th style="padding:5px 6px;border:1px solid #bbf7d0;text-align:left;min-width:165px">特徴量名</th>';
-              html += '<th style="padding:5px 6px;border:1px solid #bbf7d0;text-align:left">意味・説明</th>';
-              html += '<th style="padding:5px 6px;border:1px solid #bbf7d0;text-align:center">カテゴリ</th>';
-              html += '<th style="padding:5px 6px;border:1px solid #bbf7d0;text-align:left;min-width:110px">寄与度</th>';
-              html += '</tr></thead><tbody id="fc-tbody"></tbody></table></div>';
-              document.getElementById('feat-imp-container').innerHTML = html;
-              renderRows(data, maxPct);
-            }
-
-            window.featFilter = function(btn, cat) {
-              _curCat = cat;
-              document.querySelectorAll('#feat-imp-container button').forEach(function(b) {
-                b.style.fontWeight = ''; b.style.boxShadow = '';
-              });
-              btn.style.fontWeight = 'bold'; btn.style.boxShadow = '0 0 0 2px #16a34a';
-              featSearch();
-            };
-
-            window.featSearch = function() {
-              var q = (document.getElementById('fc-search')||{value:''}).value.toLowerCase();
-              renderRows(_featData.filter(function(d) {
-                return (_curCat==='all' || d.cat===_curCat) &&
-                       (!q || d.name.toLowerCase().includes(q) || (FEAT_DESC[d.name]||'').toLowerCase().includes(q));
-              }), _featData.length ? _featData[0].pct : 1);
-            };
-
-            function renderRows(rows, maxPct) {
-              var tbodyEl = document.getElementById('fc-tbody');
-              if (!tbodyEl) return;
-              var html = '';
-              rows.forEach(function(d) {
-                var cs = CAT_STYLE[d.cat] || {bg:'#f1f5f9',tc:'#475569',bc:'#64748b'};
-                var barW = Math.max(1, Math.round(d.pct / maxPct * 100));
-                var desc = FEAT_DESC[d.name] || d.name;
-                var pctStr = d.pct >= 0.01 ? (d.pct.toFixed(2)+'%') : '&lt;0.01%';
-                html += '<tr data-cat="'+d.cat+'">';
-                html += '<td style="padding:3px 5px;border:1px solid #e2e8f0;text-align:center;color:#94a3b8;font-size:0.71rem">'+d.rank+'</td>';
-                html += '<td style="padding:3px 5px;border:1px solid #e2e8f0;font-family:monospace;font-size:0.69rem;white-space:nowrap">'+d.name+'</td>';
-                html += '<td style="padding:3px 5px;border:1px solid #e2e8f0;line-height:1.35">'+desc+'</td>';
-                html += '<td style="padding:3px 5px;border:1px solid #e2e8f0;text-align:center"><span style="font-size:0.68rem;padding:1px 5px;border-radius:9px;background:'+cs.bg+';color:'+cs.tc+';white-space:nowrap">'+d.cat+'</span></td>';
-                html += '<td style="padding:3px 5px;border:1px solid #e2e8f0"><div style="display:flex;align-items:center;gap:3px"><div style="width:76px;background:#e2e8f0;border-radius:2px;height:5px;flex-shrink:0"><div style="width:'+barW+'%;height:5px;background:'+cs.bc+';border-radius:2px"></div></div><span style="font-size:0.7rem;color:#475569;white-space:nowrap">'+pctStr+'</span></div></td>';
-                html += '</tr>';
-              });
-              tbodyEl.innerHTML = html;
-            }
-
-            function loadFeatImp() {
-              if (_featData.length) return;
-              fetch('/api/feature_importance').then(function(r){return r.json();}).then(function(data) {
-                if (data.error) {
-                  document.getElementById('feat-imp-container').innerHTML = '<p style="color:#dc2626;padding:12px">エラー: '+data.error+'</p>';
-                  return;
-                }
-                buildUI(data);
-              }).catch(function(e) {
-                document.getElementById('feat-imp-container').innerHTML = '<p style="color:#dc2626;padding:12px">読み込み失敗: '+e.message+'</p>';
-              });
-            }
-
-            // About タブクリック時に遅延ロード
-            document.querySelectorAll('.tab[data-tab="about"]').forEach(function(t) {
-              t.addEventListener('click', function(){ setTimeout(loadFeatImp, 100); });
-            });
-            // すでに About タブが表示されている場合は即ロード
-            setTimeout(function() {
-              var panel = document.getElementById('panel-about');
-              if (panel && panel.classList.contains('active')) loadFeatImp();
-            }, 300);
-          })();
-          </script>
-{% endraw %}
-
-          <h3>予想オッズと乖離検出（バリューベット）</h3>
-          <p>MLモデルの win 確率からオッズ未確定馬を含む全馬の予想オッズを算出し、実オッズとの乖離率を計算する：</p>
-          <div style="background:#f8fafc;padding:8px 14px;border-radius:6px;border-left:3px solid #16a34a;font-family:monospace;font-size:0.82rem;line-height:1.8">
-            predicted_odds = (1 / ml_win_prob) × payout_rate  # JRA単勝: 0.80<br>
-            divergence_ratio = real_odds / predicted_odds<br>
-            S: ratio ≥ 2.0（超妙味）/ A: ≥ 1.5（妙味大）/ B: ≥ 1.2（妙味あり）<br>
-            馬連予想オッズ = sqrt(pred_a × pred_b) × payout_rate(馬連: 0.775)<br>
-            三連複予想オッズ = geomean(pred_a, pred_b, pred_c) × payout_rate(三連複: 0.725)
-          </div>
-          <p style="margin-top:8px">前日モード（実オッズ未確定）では composite のsoftmax（temperature=3.5）から予想オッズを生成して暫定表示する。</p>
-
-          <h3>買い目生成・期待値・資金配分（第5章）</h3>
-          <p>馬連5点（◎軸 + ○▲△☆/穴）をベースに、本命の信頼度A以上かつ相手が着拾い型・安定型の場合ワイドを追加する。期待値は実測または推定オッズを使用：</p>
-          <div style="background:#f8fafc;padding:8px 14px;border-radius:6px;border-left:3px solid #16a34a;font-family:monospace;font-size:0.82rem;line-height:1.8">
-            umaren_odds = odds_a × odds_b / head_factor × 0.97  # head_factor: 8h=3.0〜16h=4.0<br>
-            wide_odds = umaren_odds × 0.35<br>
-            P(馬連) = place2_prob_a × place2_prob_b × (n / (n−1))  # 相関補正<br>
-            EV(%) = P × odds × 100<br>
-            分類: ≥300% → 勝負 / ≥200% → ◎買 / ≥150% → ○買 / ≥100% → 検討 / &lt;100% → 見送り
-          </div>
-          <p style="margin-top:8px">資金配分は印の重み（◎−○: 50% / ◎−▲: 30% / ◎−△: 15% / ◎−☆: 5%）にEV補正（最大1.3倍）をかけ、「見送り」判定分を残り点に再配分する。総賭け金は自信度別（SS/S/A/B/C）のデフォルト額またはカスタム額を使用。</p>
-
-          <h3>データソースとバックテスト</h3>
-          <p>JRA10場＋NAR14場（計24場）に対応。netkeibaから出走表・過去走・着順・払戻金を取得し、1.5秒/リクエストのレート制限を遵守。NAR出走表はJavaScript動的描画のため <code>nar.netkeiba.com</code> を優先使用（失敗時 <code>race.netkeiba.com</code> にフォールバック）。予想結果は JSON で保存し、レース後に自動照合。「結果分析」タブで通算/年別/印別/券種別/自信度別の回収率を確認できる。</p>
-
-        </div>
-      </div>
-    </div>
-
-  <script>
-    // ===== Tab switching (new 4-tab design) =====
-    document.querySelectorAll('.tab').forEach(t=>{
-      t.onclick=e=>{
-        e.preventDefault();
-        document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));
-        document.querySelectorAll('.tab-panel').forEach(x=>x.classList.remove('active'));
-        t.classList.add('active');
-        const tab = t.dataset.tab;
-        const panel = document.getElementById('panel-'+tab);
-        if(panel) panel.classList.add('active');
-        if(tab==='today'){ loadHomeRaces(); loadHighConfidence(); loadShareUrl(); }
-        else if(tab==='results'){ loadResultsSummary('all'); }
-        else if(tab==='db'){ loadJockeyDB(); }
-        else if(tab==='about'){
-          setTimeout(function(){ if(typeof loadFeatImp==='function') loadFeatImp(); },100);
-        }
-      };
-    });
-
-    // Server time in header
-    function updateClock(){
-      const n=new Date();
-      const st=document.getElementById('server-time');
-      if(st) st.textContent=n.toLocaleString('ja-JP',{year:'numeric',month:'2-digit',day:'2-digit',weekday:'short',hour:'2-digit',minute:'2-digit',second:'2-digit'});
-    }
-    setInterval(updateClock,1000);
-    updateClock();
-
-    // ===== Admin access control (old UI) =====
-    var _isAdmin = true;
-    (async function(){
-      try {
-        const r = await fetch('/api/auth_mode');
-        const d = await r.json();
-        _isAdmin = !!d.admin;
-      } catch(e) { _isAdmin = true; }
-      if (!_isAdmin) {
-        // Show badge
-        var clock = document.getElementById('server-time');
-        if (clock) {
-          var badge = document.createElement('span');
-          badge.textContent = '閲覧モード';
-          badge.style.cssText = 'display:inline-block;margin-left:10px;padding:2px 10px;background:#fbbf24;color:#78350f;border-radius:12px;font-size:11px;font-weight:700;vertical-align:middle';
-          clock.parentNode.insertBefore(badge, clock);
-        }
-        // Hide 結果取得 button on today tab
-        var btnRes = document.getElementById('btn-home-update-results');
-        if (btnRes) btnRes.style.display = 'none';
-        // Hide 結果照合 section in results tab (cards with 結果照合)
-        var cards = document.querySelectorAll('#panel-results .card');
-        cards.forEach(function(c) {
-          var h2 = c.querySelector('h2');
-          if (h2 && (h2.textContent.indexOf('結果照合') >= 0 || h2.textContent.indexOf('配布用HTML生成') >= 0)) {
-            c.style.display = 'none';
-          }
-        });
-      }
-    })();
-
-    // New: toggle analysis panel
-    function toggleAnalysisPanelNew(){
-      const p=document.getElementById('analysis-panel-new');
-      if(!p) return;
-      if(p.style.display==='none'||!p.style.display){
-        p.style.display='block';
-        loadVenueCheckboxesNew();
-      } else {
-        p.style.display='none';
-      }
-    }
-
-    async function loadVenueCheckboxesNew(){
-      const grid=document.getElementById('venue-check-grid-new');
-      if(!grid) return;
-      grid.innerHTML='<span style="font-size:12px;color:var(--text-muted)">読み込み中...</span>';
-      try{
-        const r=await fetch('/api/home_info?date='+_homeDate);
-        const j=await r.json();
-        if(!j.venues||!j.venues.length){grid.innerHTML='<span style="font-size:12px;color:var(--text-muted)">開催情報なし</span>';return;}
-        const JRA_CODES_SET2=new Set(['01','02','03','04','05','06','07','08','09','10']);
-        grid.innerHTML=j.venues.map(v=>{
-          const isJra=JRA_CODES_SET2.has(v.code);
-          return `<label class="venue-check-item">
-            <input type="checkbox" class="venue-cb-new" value="${v.code}" checked>
-            <span>${v.name}</span>
-            <span class="venue-badge ${isJra?'jra':'nar'}">${isJra?'中央':'地方'}</span>
-          </label>`;
-        }).join('');
-      }catch(e){
-        grid.innerHTML='<span style="font-size:12px;color:var(--danger)">取得エラー: '+e.message+'</span>';
-      }
-    }
-
-    async function runAnalysisNew(){
-      const checkedVenues=[...document.querySelectorAll('.venue-cb-new:checked')].map(cb=>cb.value);
-      if(!checkedVenues.length){alert('競馬場を1つ以上選択してください');return;}
-      const btn=document.getElementById('btn-analyze-new');
-      btn.disabled=true;
-      const prog=document.getElementById('analyze-progress-new');
-      const resultEl=document.getElementById('analyze-result-new');
-      prog.classList.add('show');
-      resultEl.classList.remove('show');
-      document.getElementById('analyze-err-new').textContent='';
-      document.getElementById('prog-fill-new').style.width='2%';
-      document.getElementById('prog-race-new').textContent='分析開始中...';
-      document.getElementById('prog-log-new').textContent='—';
-      const r=await fetch('/api/analyze',{method:'POST',headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({date:_homeDate,venues:checkedVenues})});
-      const j=await r.json();
-      if(!j.ok){
-        document.getElementById('analyze-err-new').textContent=j.error||'エラーが発生しました';
-        btn.disabled=false;return;
-      }
-      pollAnalyzeNew();
-    }
-
-    function pollAnalyzeNew(){
-      fetch('/api/analyze_status').then(r=>r.json()).then(j=>{
-        const done=j.done_races||0;const total=j.total_races||0;
-        const pct=total>0?Math.min(98,done/total*100):(j.running?5:100);
-        document.getElementById('prog-fill-new').style.width=pct+'%';
-        document.getElementById('prog-count-new').textContent=done+'/'+(total||'?');
-        const elapsed=j.elapsed_sec||0;
-        const fmt=s=>s<60?s+'秒':Math.floor(s/60)+'分'+(s%60)+'秒';
-        document.getElementById('prog-elapsed-new').textContent=fmt(elapsed);
-        const remain=(done>0&&total>0)?Math.round((elapsed/done)*(total-done)):null;
-        document.getElementById('prog-remain-new').textContent=remain!=null?fmt(remain):'—';
-        if(j.progress) document.getElementById('prog-race-new').textContent=j.progress;
-        if(j.current_race&&j.current_race!==j.progress) document.getElementById('prog-log-new').textContent=j.current_race;
-        if(j.done){
-          document.getElementById('prog-fill-new').style.width='100%';
-          document.getElementById('btn-analyze-new').disabled=false;
-          if(j.error){document.getElementById('analyze-err-new').textContent=j.error;}
-          else{
-            document.getElementById('prog-race-new').textContent='分析完了！';
-            const resultEl=document.getElementById('analyze-result-new');
-            resultEl.classList.add('show');
-            const dateKey=_homeDate.replace(/-/g,'');
-            document.getElementById('analyze-result-link-new').href='/output/'+dateKey+'_全レース.html';
-            document.getElementById('analyze-result-link-new').textContent='全レース（'+dateKey+'）';
-            document.getElementById('analyze-simple-link-new').href='/output/'+dateKey+'_配布用.html';
-            document.getElementById('analyze-simple-link-new').textContent='📤 配布用HTML（'+dateKey+'）';
-            loadHomeRaces(true);loadShareUrl();
-          }
-        }else{setTimeout(pollAnalyzeNew,1200);}
-      });
-    }
-
-    // New DB search and tab switcher
-    function onDbSearch(){
-      const q=(document.getElementById('db-search')||{}).value||'';
-      // sync to legacy search inputs
-      const js=document.getElementById('db-jockey-search');
-      const ts=document.getElementById('db-trainer-search');
-      if(js) js.value=q;
-      if(ts) ts.value=q;
-      // reload active panel
-      const activeSubtab=document.querySelector('#db-subtabs .subtab.active');
-      if(!activeSubtab) return;
-      const t=activeSubtab.textContent;
-      if(t.includes('騎手')) loadJockeyDB();
-      else if(t.includes('調教師')) loadTrainerDB();
-    }
-
-    function switchDbTab(el, tab){
-      document.querySelectorAll('#db-subtabs .subtab').forEach(s=>s.classList.remove('active'));
-      el.classList.add('active');
-      document.getElementById('db-panel-jockey').style.display=tab==='jockey'?'':'none';
-      document.getElementById('db-panel-trainer').style.display=tab==='trainer'?'':'none';
-      document.getElementById('db-panel-course').style.display=tab==='course'?'':'none';
-      if(tab==='jockey') loadJockeyDB();
-      else if(tab==='trainer') loadTrainerDB();
-    }
-
-    // ===== ローカル日付ヘルパー（JST対応: toISOStringはUTCなので使わない） =====
-    function _localDate(d){
-      const dt=d||new Date();
-      return dt.getFullYear()+'-'+String(dt.getMonth()+1).padStart(2,'0')+'-'+String(dt.getDate()).padStart(2,'0');
-    }
-
-    // ===== HOME タブ - ネット競馬風 =====
-    let _homeDate = _localDate();
-
-    function homeChangeDate(delta){
-      const d=new Date(_homeDate+'T00:00:00');
-      d.setDate(d.getDate()+delta);
-      _homeDate=_localDate(d);
-      // 日付変更時はキャッシュ消去
-      try{sessionStorage.removeItem('home_'+_homeDate);}catch(e){}
-      loadHomeRaces();
-      loadShareUrl();
-      loadHighConfidence();
-    }
-
-    async function loadHomeRaces(force=false){
-      // sessionStorageキャッシュ（ページ遷移から戻っても即表示）
-      const cacheKey='home_'+_homeDate;
-      if(!force){
-        try{
-          const cached=sessionStorage.getItem(cacheKey);
-          if(cached){
-            const c=JSON.parse(cached);
-            if(Date.now()-c.ts < 300000){  // 5分以内
-              _renderHome(c.pred, c.info);
-              return;
-            }
-          }
-        }catch(e){}
-      }
-      document.getElementById('home-date-label').textContent=_homeDate;
-      document.getElementById('home-race-panels').innerHTML='';
-      document.getElementById('home-no-pred').style.display='none';
-      document.getElementById('home-race-count').textContent='';
-      document.getElementById('home-venue-tabs').innerHTML='<span style="padding:10px 16px;display:block">読み込み中...</span>';
-      try{
-        const nc=force?'&nocache=1':'';
-        const [predRes,infoRes]=await Promise.all([
-          fetch('/api/today_predictions?date='+_homeDate+nc),
-          fetch('/api/home_info?date='+_homeDate)
-        ]);
-        const pred=await predRes.json();
-        const info=await infoRes.json();
-        // sessionStorageにキャッシュ保存
-        try{sessionStorage.setItem('home_'+_homeDate,JSON.stringify({ts:Date.now(),pred,info}));}catch(e){}
-        _renderHome(pred,info);
-      }catch(e){
-        document.getElementById('home-venue-tabs').innerHTML=`<span style="padding:10px 16px;display:block">エラー: ${e.message}</span>`;
-      }
-    }
-
-    function _renderHome(pred,info){
-      const tabBar=document.getElementById('home-venue-tabs');
-      const panels=document.getElementById('home-race-panels');
-      const noData=document.getElementById('home-no-pred');
-      const cntEl=document.getElementById('home-race-count');
-      document.getElementById('home-date-label').textContent=_homeDate;
-      const order=pred.order||Object.keys(pred.races||{});
-      if(!order.length){tabBar.innerHTML='';noData.style.display='block';return;}
-      cntEl.textContent=pred.total+'レース';
-      const wmap={};
-      (info.venues||[]).forEach(v=>{wmap[v.name]=info.weather[v.name]||{};});
-      tabBar.innerHTML=order.map((v,i)=>
-        `<button class="h-vtab${i===0?' active':''}" onclick="showHomeVenue(${i})">${v}</button>`
-      ).join('');
-      panels.innerHTML=order.map((venue,vi)=>{
-        const races=pred.races[venue]||[];
-        const w=wmap[venue]||{};
-        const wTxt=w.condition
-          ?`<span class="vw-name">${venue}</span><span>${w.condition}</span><span style="color:#2563eb">降水 ${w.precip_prob!=null?w.precip_prob+'%':'—'}</span>`
-          :`<span class="vw-name">${venue}</span>`;
-        const cards=races.map(r=>{
-          const gradeCls = r.grade && ['G1','G2','G3','L','OP'].includes(r.grade) ? `h-rc-${r.grade}` : (r.grade ? 'h-rc-nar' : '');
-          const gCls = r.grade ? `<span class="h-rc-grade ${gradeCls}">${r.grade}</span>` : '';
-          const surf=r.surface||'';
-          const surfD=surf==='ダート'?'ダ':surf;
-          const surfCls=surfD?`h-rc-surf-${surfD}`:'';
-          const confRaw = r.overall_confidence || 'C';
-          const conf = confRaw.replace(/\u207a/g, '+');  // ⁺ → +
-          const confColor=
-            conf==='SS'?'#16a34a':conf==='S'?'#1a6fa8':
-            conf==='A'?'#c0392b':
-            conf==='B'||conf==='C'?'#333':'#aaa';
-          const axisHtml=`<div class="h-rc-axis" style="margin-top:6px">
-            <span style="font-size:11px;color:#6b7280">馬券自信度</span>
-            <span style="font-size:16px;font-weight:900;color:${confColor};margin-left:6px">${confRaw}</span>
-          </div>`;
-          return `<a href="${r.url}" class="h-race-card">
-            <div class="h-rc-top">
-              <span class="h-rc-no">${r.race_no}R</span>${gCls}
-              ${r.post_time?`<span class="h-rc-time" style="margin-left:auto">${r.post_time}</span>`:''}
-            </div>
-            <div class="h-rc-name">${r.name||r.race_no+'R'}</div>
-            <div class="h-rc-meta">
-              ${surfD?`<span class="${surfCls}">${surfD}</span>`:''}
-              ${r.distance?`<span>${r.distance}m</span>`:''}
-              ${r.head_count?`<span>${r.head_count}頭</span>`:''}
-            </div>
-            ${axisHtml}
-            <div class="h-rc-see">予想を見る →</div>
-          </a>`;
-        }).join('');
-        return `<div class="h-vpanel${vi===0?' active':''}" data-vi="${vi}">
-          <div class="vw-bar">${wTxt}</div>
-          <div class="h-race-grid">${cards}</div>
-        </div>`;
-      }).join('');
-    }
-
-    function showHomeVenue(idx){
-      document.querySelectorAll('.h-vtab').forEach((t,i)=>t.classList.toggle('active',i===idx));
-      document.querySelectorAll('.h-vpanel').forEach((p,i)=>p.classList.toggle('active',i===idx));
-    }
-
-    async function loadShareUrl(){
-      const card     = document.getElementById('home-share-card');
-      const noneCard = document.getElementById('home-share-none');
-      const urlInput = document.getElementById('share-url-input');
-      const openLink = document.getElementById('share-open-link');
-      const sizeLbl  = document.getElementById('share-size');
-      const filePath = document.getElementById('share-file-path');
-      card.style.display='none'; noneCard.style.display='none';
-      try{
-        const r = await fetch('/api/share_url?date='+_homeDate);
-        const j = await r.json();
-        if(j.exists){
-          urlInput.value = j.url;
-          openLink.href  = j.url;
-          sizeLbl.textContent = j.size_kb.toLocaleString()+' KB';
-          filePath.textContent = 'output/'+j.filename;
-          card.style.display='block';
-        } else {
-          noneCard.style.display='block';
-        }
-      }catch(e){ noneCard.style.display='block'; }
-    }
-
-    function copyShareUrl(){
-      const input = document.getElementById('share-url-input');
-      navigator.clipboard.writeText(input.value).then(()=>{
-        const btn = document.getElementById('share-copy-btn');
-        const orig = btn.textContent;
-        btn.textContent='✅ コピー完了!';
-        btn.style.background='#1e8c4a';
-        setTimeout(()=>{ btn.textContent=orig; btn.style.background='#0d2b5e'; }, 2000);
-      }).catch(()=>{
-        input.select();
-        document.execCommand('copy');
-        alert('URLをコピーしました');
-      });
-    }
-
-    async function loadData(){
-      try{
-        const r=await fetch('/api/portfolio');
-        const j=await r.json();
-        const sr=document.getElementById('stat-runs');
-        const sd=document.getElementById('stat-date');
-        if(sr) sr.textContent=j.course_runs.toLocaleString();
-        if(sd) sd.textContent=j.last_date||'—';
-      }catch(e){ console.warn('loadData error',e); }
-    }
-
-    let _collectMode = 'full';
-
-    function setCollectMode(mode){
-      _collectMode = mode;
-      const today = _localDate();
-      if(mode === 'full'){
-        document.getElementById('start_date').value = '2024-01-01';
-        document.getElementById('end_date').value = today;
-      } else if(mode === 'resume'){
-        // 日付はそのまま（前回の続きはサーバー側で判断）
-        document.getElementById('end_date').value = today;
-      } else if(mode === 'append'){
-        const lastDate = document.getElementById('stat-date').textContent;
-        if(lastDate && lastDate !== '—'){
-          const d = new Date(lastDate);
-          d.setDate(d.getDate()+1);
-          document.getElementById('start_date').value = _localDate(d);
-        }
-        document.getElementById('end_date').value = today;
-      }
-      document.getElementById('btn_run').disabled = false;
-      document.getElementById('btn_run').textContent = '▶ 実行（' + {full:'全件収集',resume:'途中再開',append:'未収集分の追加'}[mode] + '）';
-    }
-
-    async function startCollect(){
-      const mode = _collectMode;
-      document.getElementById('btn_full').disabled=
-      document.getElementById('btn_resume').disabled=
-      document.getElementById('btn_append').disabled=
-      document.getElementById('btn_run').disabled=true;
-      document.getElementById('collect-progress').style.display='block';
-      const r=await fetch('/api/start',{method:'POST',headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({mode,start_date:document.getElementById('start_date').value,end_date:document.getElementById('end_date').value})});
-      const j=await r.json();
-      if(!j.ok){document.getElementById('err').textContent=j.error||'エラー';
-        document.getElementById('btn_full').disabled=document.getElementById('btn_resume').disabled=document.getElementById('btn_append').disabled=document.getElementById('btn_run').disabled=false;
-        return;}
-      pollCollect();
-    }
-
-    function pollCollect(){
-      fetch('/api/status').then(r=>r.json()).then(j=>{
-        if(j.running){
-          const total=j.total_days||1;
-          const pct=total?Math.min(100,j.day_index/total*100):0;
-          document.getElementById('fill').style.width=pct+'%';
-          const elapsed=j.elapsed_sec||0;
-          const elStr=elapsed<60?elapsed+'秒':Math.floor(elapsed/60)+'分'+(elapsed%60)+'秒';
-          const done=j.day_index||0;
-          const remain=done>0&&total>0?Math.round((elapsed/done)*(total-done)):null;
-          const remStr=remain!=null?(remain<60?remain+'秒':Math.floor(remain/60)+'分'+(remain%60)+'秒'):'—';
-          const statusText=j.status==='starting'?'準備中...':
-            j.status==='already_done'?'既に完了済み':
-            done+'/'+j.total_days+'日 ('+(j.total_runs||0)+'走) '+j.current_date
-            +'  経過:'+elStr+'  残り推定:'+remStr;
-          document.getElementById('status').textContent=statusText;
-          if(j.status!=='already_done')document.getElementById('err').textContent='';
-          setTimeout(pollCollect,1500);
-        }else{
-          document.getElementById('err').textContent=j.error||'';
-          document.getElementById('fill').style.width='100%';
-          document.getElementById('collect-progress').style.display='none';
-          document.getElementById('btn_full').disabled=
-          document.getElementById('btn_resume').disabled=
-          document.getElementById('btn_append').disabled=false;
-          document.getElementById('btn_run').disabled=true;
-          document.getElementById('btn_run').textContent='▶ 実行';
-          loadData();
-        }
-      });
-    }
-
-    document.getElementById('btn_full').onclick=()=>setCollectMode('full');
-    document.getElementById('btn_resume').onclick=()=>setCollectMode('resume');
-    document.getElementById('btn_append').onclick=()=>setCollectMode('append');
-    document.getElementById('btn_run').onclick=()=>startCollect();
-
-    // ===== レース予想タブ =====
-    const JRA_CODES_SET = new Set(['01','02','03','04','05','06','07','08','09','10']);
-
-    document.getElementById('btn_load_venues').onclick = async () => {
-      const dt = document.getElementById('analyze_date').value;
-      if (!dt) { alert('日付を入力してください'); return; }
-      const loadingEl = document.getElementById('venues-loading');
-      const areaEl = document.getElementById('venues-area');
-      const btnAnalyze = document.getElementById('btn_analyze');
-      loadingEl.textContent = '読み込み中...';
-      loadingEl.style.display = 'block';
-      areaEl.style.display = 'none';
-      btnAnalyze.disabled = true;
-      try {
-        const r = await fetch('/api/home_info?date=' + dt);
-        const j = await r.json();
-        const grid = document.getElementById('venue-check-grid');
-        grid.innerHTML = '';
-        if (!j.venues || j.venues.length === 0) {
-          loadingEl.textContent = 'この日の開催情報が見つかりませんでした。';
-          loadingEl.style.display = 'block';
-          btnAnalyze.disabled = true;
-          return;
-        }
-        j.venues.forEach(v => {
-          const isJra = JRA_CODES_SET.has(v.code);
-          const label = document.createElement('label');
-          label.className = 'venue-check-item ' + (isJra ? 'jra' : 'nar');
-          label.innerHTML = `<input type="checkbox" class="venue-cb" value="${v.code}" checked>
-            <span>${v.name}</span>
-            <span class="venue-badge ${isJra ? 'jra' : 'nar'}">${isJra ? '中央' : '地方'}</span>`;
-          grid.appendChild(label);
-        });
-        loadingEl.style.display = 'none';
-        areaEl.style.display = 'block';
-        btnAnalyze.disabled = false;
-      } catch(e) {
-        loadingEl.textContent = '取得エラー: ' + e.message;
-        loadingEl.style.display = 'block';
-        btnAnalyze.disabled = true;
-      }
-    };
-
-    document.getElementById('btn_all_select').onclick = () => {
-      document.querySelectorAll('.venue-cb').forEach(cb => cb.checked = true);
-    };
-    document.getElementById('btn_all_clear').onclick = () => {
-      document.querySelectorAll('.venue-cb').forEach(cb => cb.checked = false);
-    };
-
-    document.getElementById('btn_analyze').onclick = async () => {
-      const dt = document.getElementById('analyze_date').value;
-      const checkedVenues = [...document.querySelectorAll('.venue-cb:checked')].map(cb => cb.value);
-      if (checkedVenues.length === 0) { alert('競馬場を1つ以上選択してください'); return; }
-      document.getElementById('btn_analyze').disabled = true;
-      document.getElementById('btn_load_venues').disabled = true;
-      const prog = document.getElementById('analyze-progress');
-      const resultEl = document.getElementById('analyze-result');
-      prog.classList.add('show');
-      resultEl.classList.remove('show');
-      document.getElementById('analyze-err').textContent = '';
-      document.getElementById('prog-fill').style.width = '2%';
-      document.getElementById('prog-race').textContent = '分析開始中...';
-      document.getElementById('prog-log').textContent = '—';
-      const r = await fetch('/api/analyze', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({date: dt, venues: checkedVenues})
-      });
-      const j = await r.json();
-      if (!j.ok) {
-        // 「既に実行中」の場合はポーリングに切り替えて進捗を表示
-        if (j.error === '既に実行中です') {
-          pollAnalyze();
-          return;
-        }
-        document.getElementById('analyze-err').textContent = j.error || 'エラーが発生しました';
-        document.getElementById('btn_analyze').disabled = false;
-        document.getElementById('btn_load_venues').disabled = false;
-        return;
-      }
-      pollAnalyze();
-    };
-
-    function pollAnalyze() {
-      fetch('/api/analyze_status').then(r => r.json()).then(j => {
-        const done  = j.done_races  || 0;
-        const total = j.total_races || 0;
-        const pct   = total > 0 ? Math.min(98, done / total * 100) : (j.running ? 5 : 100);
-        document.getElementById('prog-fill').style.width = pct + '%';
-        document.getElementById('prog-count').textContent = done + '/' + (total || '?');
-        const elapsed = j.elapsed_sec || 0;
-        const fmt = s => s < 60 ? s + '秒' : Math.floor(s/60) + '分' + (s%60) + '秒';
-        document.getElementById('prog-elapsed').textContent = fmt(elapsed);
-        const remain = (done > 0 && total > 0) ? Math.round((elapsed / done) * (total - done)) : null;
-        document.getElementById('prog-remain').textContent = remain != null ? fmt(remain) : '—';
-        // メイン進捗テキスト
-        if (j.progress) document.getElementById('prog-race').textContent = j.progress;
-        // ログ欄: 最後の完了レース（progress と異なる場合のみ）
-        if (j.current_race && j.current_race !== j.progress) {
-          document.getElementById('prog-log').textContent = j.current_race;
-        }
-        if (j.done) {
-          document.getElementById('prog-fill').style.width = '100%';
-          document.getElementById('btn_analyze').disabled = false;
-          document.getElementById('btn_load_venues').disabled = false;
-          if (j.error) {
-            document.getElementById('analyze-err').textContent = j.error;
-          } else {
-            document.getElementById('prog-race').textContent = '分析完了！';
-            const resultEl = document.getElementById('analyze-result');
-            resultEl.classList.add('show');
-            const dt = document.getElementById('analyze_date').value;
-            if (dt) {
-              const dateKey = dt.replace(/-/g, '');
-              const link = document.getElementById('analyze-result-link');
-              link.href = '/output/' + dateKey + '_全レース.html';
-              link.textContent = '全レース（' + dateKey + '）';
-              const simpleLink = document.getElementById('analyze-simple-link');
-              simpleLink.href = '/output/' + dateKey + '_配布用.html';
-              simpleLink.textContent = '📤 配布用HTML（' + dateKey + '）';
-            }
-            loadData();
-            // 分析完了後は force=true でサーバー・クライアントキャッシュを両方バイパス
-            try { loadHomeRaces(true); loadShareUrl(); } catch(e){}
-          }
-        } else {
-          setTimeout(pollAnalyze, 1200);
-        }
-      });
-    }
-
-    loadHomeRaces();
-    loadShareUrl();
-    loadHighConfidence();
-    loadData();
-
-    // ページロード時に分析が既に実行中なら進捗ポーリングを自動再開
-    fetch('/api/analyze_status').then(r=>r.json()).then(j=>{
-      if (j.running) {
-        document.getElementById('analyze-progress').classList.add('show');
-        document.getElementById('btn_analyze').disabled = true;
-        document.getElementById('btn_load_venues').disabled = true;
-        pollAnalyze();
-      }
-    }).catch(()=>{});
-
-    // ===== 結果分析タブ - サブタブ切り替え =====
-    document.querySelectorAll('.sub-tab').forEach(t => {
-      t.onclick = e => {
-        e.preventDefault();
-        document.querySelectorAll('.sub-tab').forEach(x => x.classList.remove('active'));
-        t.classList.add('active');
-        loadResultsSummary(t.dataset.year);
-      };
-    });
-
-    let _allResultData = null;
-    let _datesFetched  = false;
-
-    let _allPredDates = [];  // 予想済み日付リスト（キャッシュ）
-
-    async function _ensurePredDates() {
-      if (_allPredDates.length > 0) return _allPredDates;
-      const dr = await fetch('/api/results/dates');
-      const dj = await dr.json();
-      _allPredDates = dj.dates || [];
-      return _allPredDates;
-    }
-
-    async function loadResultsSummary(yearFilter) {
-      try {
-        // 日付セレクト・日付ピッカーは初回のみ構築
-        if (!_datesFetched) {
-          _datesFetched = true;
-          const dates = await _ensurePredDates();
-          const sel = document.getElementById('fetch-date-select');
-          sel.innerHTML = '<option value="">-- 日付を選択 --</option>';
-          dates.forEach(d => {
-            const opt = document.createElement('option');
-            opt.value = d; opt.textContent = d;
-            sel.appendChild(opt);
-          });
-          // 期間ピッカーのデフォルト: 最古〜最新の予想日
-          if (dates.length > 0) {
-            const oldest = dates[dates.length - 1];
-            const newest = dates[0];
-            document.getElementById('fetch-from-date').value = oldest;
-            document.getElementById('fetch-to-date').value = newest;
-            // 配布用HTML生成の期間もデフォルト設定
-            document.getElementById('simple-from-date').value = oldest;
-            document.getElementById('simple-to-date').value = newest;
-          }
-        }
-
-        // 年フィルタ付きでAPIから取得
-        const yr = yearFilter || 'all';
-        const sr = await fetch(`/api/results/summary?year=${yr}`);
-        const sj = await sr.json();
-
-        const titleEl = document.getElementById('rs-panel-title');
-        titleEl.textContent = '2026年成績';
-
-        if (sj.error || !sj.total_races) {
-          document.getElementById('rs-nodata').style.display = 'block';
-          document.getElementById('rs-stat-row').style.display = 'none';
-          _renderResultStats(null, null);
-          return;
-        }
-        document.getElementById('rs-nodata').style.display = 'none';
-        document.getElementById('rs-stat-row').style.display = '';
-        _renderResultStats(sj, sj.by_date || []);
-        // 詳細分析・チャートも同時にロード（非同期、並行）
-        loadDetailedAnalysis(yr);
-        loadResultsCharts(yr);
-      } catch(e) {
-        console.error('結果サマリー取得エラー:', e);
-        document.getElementById('rs-nodata').style.display = 'block';
-        document.getElementById('rs-stat-row').style.display = 'none';
-        _renderResultStats(null, null);
-      }
-    }
-
-    function _renderResultStats(agg, byDate) {
-      const nd = !agg;
-      const _t = (id, v) => { document.getElementById(id).textContent = v; };
-      const _c = (id, ok) => { document.getElementById(id).style.color = ok ? '#16a34a' : '#dc2626'; };
-
-      _t('rs-races',      nd ? '—' : agg.total_races + ' R');
-      _t('rs-hit-rate',   nd ? '—' : agg.hit_rate.toFixed(1) + '%');
-      _t('rs-roi',        nd ? '—' : agg.roi.toFixed(1) + '%');
-      if (!nd) _c('rs-roi', agg.roi >= 100);
-      _t('rs-profit',     nd ? '—' : (agg.profit >= 0 ? '+' : '') + agg.profit.toLocaleString() + '円');
-      if (!nd) _c('rs-profit', agg.profit >= 0);
-      _t('rs-honmei-win',    nd ? '—' : (agg.honmei_win_rate ?? 0).toFixed(1) + '%');
-      _t('rs-honmei-place2', nd ? '—' : (agg.honmei_place2_rate ?? 0).toFixed(1) + '%');
-      _t('rs-honmei',        nd ? '—' : agg.honmei_rate.toFixed(1) + '%');
-      const htRoi = nd ? null : (agg.honmei_tansho_roi ?? null);
-      _t('rs-honmei-tansho-roi', htRoi != null ? htRoi.toFixed(1) + '%' : '—');
-      if (htRoi != null) _c('rs-honmei-tansho-roi', htRoi >= 100);
-
-      const td = (v, right, bold, color) =>
-        `<td style="padding:7px 8px;border:1px solid #e2e8f0;text-align:${right?'right':'center'}${bold?';font-weight:700':''}${color?';color:'+color:''}">${v}</td>`;
-
-      // 印別テーブル
-      const markOrder = ['◉','◎','○','▲','△','★','☆','×'];
-      const markData  = nd ? {} : (agg.by_mark || {});
-      const markBody  = document.getElementById('results-mark-body');
-      const markRows  = markOrder.filter(m => markData[m]);
-      // 各列の値を算出して順位・平均ベースで色分け
-      // 1位=緑, 2位=青, 3位=赤, 平均以上=黒, 平均以下=灰
-      const _markRateVals = {};
-      for (const m of markRows) {
-        const s = markData[m];
-        _markRateVals[m] = {
-          wr:  s.total > 0 ? s.win/s.total*100 : 0,
-          p2r: s.total > 0 && s.place2 != null ? s.place2/s.total*100 : 0,
-          pr:  s.total > 0 ? s.placed/s.total*100 : 0,
-        };
-      }
-      const _rankColor = (vals, key) => {
-        const sorted = [...vals].sort((a,b) => b[key] - a[key]);
-        const avg = sorted.reduce((s,v) => s + v[key], 0) / sorted.length;
-        const colors = {};
-        sorted.forEach((v, i) => {
-          const m = v._mark;
-          if (i === 0) colors[m] = '#16a34a';      // 1位: 緑
-          else if (i === 1) colors[m] = '#2563eb';  // 2位: 青
-          else if (i === 2) colors[m] = '#dc2626';  // 3位: 赤
-          else if (v[key] >= avg) colors[m] = '#1f2937'; // 平均以上: 黒
-          else colors[m] = '#9ca3af';               // 平均以下: 灰
-        });
-        return colors;
-      };
-      const _valsArr = markRows.map(m => ({_mark: m, ..._markRateVals[m]}));
-      const wrColors  = _rankColor(_valsArr, 'wr');
-      const p2rColors = _rankColor(_valsArr, 'p2r');
-      const prColors  = _rankColor(_valsArr, 'pr');
-
-      markBody.innerHTML = markRows.length > 0 ? markRows.map(m => {
-        const s = markData[m];
-        const v = _markRateVals[m];
-        const wr   = s.total > 0 ? v.wr.toFixed(1) + '%' : '—';
-        const p2r  = s.total > 0 ? v.p2r.toFixed(1) + '%' : '—';
-        const pr   = s.total > 0 ? v.pr.toFixed(1) + '%' : '—';
-        const roi  = s.tansho_stake > 0 ? (s.tansho_ret/s.tansho_stake*100).toFixed(1) + '%' : '—';
-        const roiCol = s.tansho_stake > 0 && s.tansho_ret/s.tansho_stake >= 1.0 ? '#16a34a' : (s.tansho_stake > 0 ? '#dc2626' : '');
-        return `<tr>${td(m,false,true)}${td(s.total,true)}${td(wr,true,false,wrColors[m])}${td(p2r,true,false,p2rColors[m])}${td(pr,true,false,prColors[m])}${td(roi,true,false,roiCol)}</tr>`;
-      }).join('') : '<tr><td colspan="6" style="text-align:center;padding:10px;color:#9ca3af">データなし</td></tr>';
-
-      // 券種別テーブル
-      const ticketData = nd ? {} : (agg.by_ticket_type || {});
-      const ticketBody = document.getElementById('results-ticket-body');
-      const ticketRows = Object.keys(ticketData);
-      ticketBody.innerHTML = ticketRows.length > 0 ? ticketRows.map(tt => {
-        const s = ticketData[tt];
-        const hr = s.total > 0 ? (s.hits/s.total*100).toFixed(1) + '%' : '—';
-        const roi = s.stake > 0 ? (s.ret/s.stake*100).toFixed(1) + '%' : '—';
-        const roiCol = s.stake > 0 && s.ret/s.stake >= 1 ? '#16a34a' : '#dc2626';
-        return `<tr>${td(tt,false,true)}${td(s.total,true)}${td(hr,true)}${td(roi,true,true,roiCol)}</tr>`;
-      }).join('') : '<tr><td colspan="4" style="text-align:center;padding:10px;color:#9ca3af">データなし</td></tr>';
-
-      // 自信度×券種別テーブル
-      const confOrder = ['SS','S','A','B','C','D','E'];
-      const ticketOrder = ['馬連','三連複'];
-      const ctData = nd ? {} : (agg.by_conf_ticket || {});
-      const confBody = document.getElementById('results-conf-body');
-      const ctRows = [];
-      for (const conf of confOrder) {
-        for (const tt of ticketOrder) {
-          const key = `${conf}_${tt}`;
-          const s = ctData[key];
-          if (!s || s.total === 0) continue;
-          const hr  = (s.hits/s.total*100).toFixed(1) + '%';
-          const roi = s.stake > 0 ? (s.ret/s.stake*100).toFixed(1) + '%' : '—';
-          const roiCol = s.stake > 0 && s.ret/s.stake >= 1 ? '#16a34a' : '#dc2626';
-          const hrCol  = parseFloat(hr) >= (tt === '馬連' ? 15 : 10) ? '#16a34a' : '';
-          ctRows.push(`<tr>
-            ${td(conf,false,true)} ${td(tt,false)}
-            ${td(s.total,true)} ${td(s.hits,true)}
-            ${td(hr,true,false,hrCol)}
-            ${td(s.stake.toLocaleString(),true)} ${td(s.ret.toLocaleString(),true)}
-            ${td(roi,true,true,roiCol)}
-          </tr>`);
-        }
-      }
-      confBody.innerHTML = ctRows.length > 0 ? ctRows.join('') : '<tr><td colspan="8" style="text-align:center;padding:10px;color:#9ca3af">データなし</td></tr>';
-
-      // 穴馬テーブル（馬券内率・複勝回収率）
-      const anaData = nd ? null : (agg.by_ana || null);
-      const anaBody = document.getElementById('results-ana-body');
-      if (anaData && anaData.total > 0) {
-        const aPr    = (anaData.place_rate  != null ? anaData.place_rate  : anaData.placed/anaData.total*100).toFixed(1) + '%';
-        const aFRoi  = anaData.fukusho_roi  != null ? anaData.fukusho_roi.toFixed(1) + '%' : '—';
-        const aPrCol  = parseFloat(aPr)   >= 30 ? '#16a34a' : '#b91c1c';
-        const aFRoiCol = parseFloat(aFRoi) >= 80 ? '#16a34a' : '#b91c1c';
-        anaBody.innerHTML = `<tr>
-          ${td('穴馬',false,true)}${td(anaData.total,true)}
-          ${td(aPr,true,false,aPrCol)}${td(aFRoi,true,false,aFRoiCol)}
-        </tr>`;
-      } else {
-        anaBody.innerHTML = '<tr><td colspan="4" style="text-align:center;padding:10px;color:#9ca3af">データなし</td></tr>';
-      }
-
-      // 危険馬テーブル（着外頭数付き）
-      const kikenData = nd ? null : (agg.by_kiken || null);
-      const kikenBody = document.getElementById('results-kiken-body');
-      if (kikenData && kikenData.total > 0) {
-        const kFr = (kikenData.fell_rate != null ? kikenData.fell_rate : kikenData.fell_through/kikenData.total*100).toFixed(1) + '%';
-        const kFrCol = parseFloat(kFr) >= 60 ? '#16a34a' : '#b91c1c';
-        kikenBody.innerHTML = `<tr>
-          ${td('危険馬',false,true)}${td(kikenData.total,true)}
-          ${td(kFr,true,false,kFrCol)}${td(kikenData.fell_through,true)}
-        </tr>`;
-      } else {
-        kikenBody.innerHTML = '<tr><td colspan="4" style="text-align:center;padding:10px;color:#9ca3af">データなし</td></tr>';
-      }
-
-      // 日付別一覧
-      const dateList = document.getElementById('results-date-list');
-      if (byDate && byDate.length > 0) {
-        dateList.innerHTML = byDate.map(r => {
-          const profit = r.profit || 0;
-          const roi = r.roi != null ? r.roi : 0;
-          const roiOk  = roi >= 100;
-          const roiStr = r.roi != null ? r.roi + '%' : '—';
-          return `<div class="result-date-row">
-            <span class="rd-date">${r.date}</span>
-            <div class="rd-stats">
-              <span>${r.total_races}R</span>
-              <span>的中 ${r.hit_tickets || 0}/${r.total_tickets || 0}</span>
-              <span>◎勝 ${(r.honmei_win_rate||0).toFixed(1)}%</span>
-              <span>◎複 ${(r.honmei_rate||0).toFixed(1)}%</span>
-              <span style="color:${profit>=0?'#16a34a':'#dc2626'}">${(profit>=0?'+':'')+profit.toLocaleString()}円</span>
-              <span class="rd-roi ${roiOk?'':'loss'}">回収 ${roiStr}</span>
-            </div>
-          </div>`;
-        }).join('');
-      } else {
-        dateList.innerHTML = '<p style="color:#9ca3af;font-style:italic;font-size:0.9rem">データなし</p>';
-      }
-    }
-
-    // ===== Chart.js ROI / Monthly charts =====
-    let _roiChart = null, _monthlyChart = null;
-
-    function initRoiChart(labels, umRoi, sanRoi) {
-      const canvas = document.getElementById('roi-chart');
-      if (!canvas) return;
-      if (_roiChart) { _roiChart.destroy(); _roiChart = null; }
-      if (!labels || labels.length === 0) return;
-      _roiChart = new Chart(canvas, {
-        type: 'line',
-        data: {
-          labels: labels,
-          datasets: [
-            {
-              label: '買い目回収率(%)',
-              data: umRoi,
-              borderColor: '#059669',
-              backgroundColor: 'rgba(5,150,105,.08)',
-              borderWidth: 2,
-              fill: true,
-              tension: 0.3,
-              pointRadius: labels.length > 60 ? 0 : 3,
-            },
-            {
-              label: '◎単勝回収率(%)',
-              data: sanRoi,
-              borderColor: '#D97706',
-              backgroundColor: 'rgba(217,119,6,.05)',
-              borderWidth: 2,
-              fill: false,
-              tension: 0.3,
-              pointRadius: labels.length > 60 ? 0 : 3,
-            }
-          ]
-        },
-        options: {
-          responsive: true,
-          maintainAspectRatio: false,
-          plugins: {
-            legend: { position: 'top', labels: { font: { size: 11 } } },
-            tooltip: { mode: 'index', intersect: false }
-          },
-          scales: {
-            x: { ticks: { font: { size: 10 }, maxTicksLimit: 12, maxRotation: 45 } },
-            y: {
-              ticks: { font: { size: 10 }, callback: v => v + '%' },
-              grid: { color: 'rgba(0,0,0,.06)' }
-            }
-          }
-        }
-      });
-    }
-
-    function initMonthlyChart(labels, values) {
-      const canvas = document.getElementById('monthly-chart');
-      if (!canvas) return;
-      if (_monthlyChart) { _monthlyChart.destroy(); _monthlyChart = null; }
-      if (!labels || labels.length === 0) return;
-      _monthlyChart = new Chart(canvas, {
-        type: 'bar',
-        data: {
-          labels: labels,
-          datasets: [{
-            label: '月別収支(円)',
-            data: values,
-            backgroundColor: values.map(v => v >= 0 ? 'rgba(5,150,105,.7)' : 'rgba(220,38,38,.7)'),
-            borderColor: values.map(v => v >= 0 ? '#059669' : '#DC2626'),
-            borderWidth: 1,
-            borderRadius: 4,
-          }]
-        },
-        options: {
-          responsive: true,
-          maintainAspectRatio: false,
-          plugins: {
-            legend: { display: false },
-            tooltip: { callbacks: { label: ctx => (ctx.raw >= 0 ? '+' : '') + ctx.raw.toLocaleString() + '円' } }
-          },
-          scales: {
-            x: { ticks: { font: { size: 10 } } },
-            y: { ticks: { font: { size: 10 }, callback: v => (v >= 0 ? '+' : '') + v.toLocaleString() } }
-          }
-        }
-      });
-    }
-
-    async function loadResultsCharts(yearFilter) {
-      try {
-        const yr = yearFilter || 'all';
-        const r = await fetch(`/api/results/trend?year=${yr}`);
-        if (!r.ok) return;
-        const d = await r.json();
-        if (d.error || !d.labels) return;
-        initRoiChart(d.labels, d.ticket_roi_cum, d.honmei_tansho_roi_cum);
-        initMonthlyChart(d.monthly_labels, d.monthly_profit);
-      } catch(e) {
-        console.warn('チャートデータ取得エラー:', e);
-      }
-    }
-
-    // ===== 詳細分析 (競馬場別/コース別/距離区分別) =====
-    let _detData = null;
-
-    async function loadDetailedAnalysis(yearFilter) {
-      const yr = yearFilter || 'all';
-      document.getElementById('det-loading').style.display = '';
-      document.getElementById('det-summary').style.display = 'none';
-      try {
-        const r = await fetch(`/api/results/detailed?year=${yr}`);
-        _detData = await r.json();
-      } catch(e) {
-        console.error('詳細分析取得エラー:', e);
-        document.getElementById('det-loading').textContent = '取得エラー';
-        return;
-      }
-      document.getElementById('det-loading').style.display = 'none';
-      // アクティブなカテゴリタブを確認して描画
-      const activeTab = document.querySelector('.det-tab.active');
-      renderDetailedCat(activeTab ? activeTab.dataset.cat : 'all');
-    }
-
-    function renderDetailedCat(cat) {
-      if (!_detData) return;
-      const d = _detData[cat];
-      if (!d) return;
-
-      // det-tab ボタンのスタイル更新
-      document.querySelectorAll('.det-tab').forEach(b => {
-        const isActive = b.dataset.cat === cat;
-        b.style.borderBottom  = isActive ? '3px solid #2563eb' : 'none';
-        b.style.color         = isActive ? '#2563eb' : '#6b7280';
-        b.style.marginBottom  = isActive ? '-2px' : '0';
-        b.classList.toggle('active', isActive);
-      });
-
-      // サマリー行
-      const s = d.stats;
-      const sumEl = document.getElementById('det-summary');
-      sumEl.style.display = 'flex';
-      document.getElementById('det-races').textContent    = (s.total_races || 0) + 'R';
-      document.getElementById('det-hit-rate').textContent = (s.hit_rate   || 0).toFixed(1) + '%';
-      const roiEl = document.getElementById('det-roi');
-      roiEl.textContent = (s.roi || 0).toFixed(1) + '%';
-      roiEl.style.color = (s.roi || 0) >= 100 ? '#16a34a' : '#dc2626';
-      document.getElementById('det-u-hit').textContent = s.umaren ? (s.umaren.hit_rate||0).toFixed(1)+'%' : '—';
-      document.getElementById('det-u-roi').textContent = s.umaren ? (s.umaren.roi||0).toFixed(1)+'%' : '—';
-      document.getElementById('det-s-hit').textContent = s.sanrenpuku ? (s.sanrenpuku.hit_rate||0).toFixed(1)+'%' : '—';
-      document.getElementById('det-s-roi').textContent = s.sanrenpuku ? (s.sanrenpuku.roi||0).toFixed(1)+'%' : '—';
-
-      function roiColor(v) { return v >= 100 ? '#16a34a' : (v >= 80 ? '#92400e' : '#dc2626'); }
-
-      // 共通テーブル行生成
-      function makeDetailRow(label, st) {
-        const u = st.umaren     || {};
-        const sn = st.sanrenpuku || {};
-        const uHit  = u.total > 0 ? (u.hit_rate||0).toFixed(0)+'%' : '—';
-        const uRoi  = u.stake > 0 ? (u.roi||0).toFixed(0)+'%'       : '—';
-        const snHit = sn.total > 0 ? (sn.hit_rate||0).toFixed(0)+'%' : '—';
-        const snRoi = sn.stake > 0 ? (sn.roi||0).toFixed(0)+'%'      : '—';
-        const uRoiC  = u.stake  > 0 ? roiColor(u.roi  || 0) : '';
-        const snRoiC = sn.stake > 0 ? roiColor(sn.roi || 0) : '';
-        return `<tr>
-          <td style="padding:4px 6px;border:1px solid #e2e8f0;font-size:0.75rem">${label}</td>
-          <td style="padding:4px 6px;border:1px solid #e2e8f0;text-align:right">${st.total_races||0}</td>
-          <td style="padding:4px 6px;border:1px solid #e2e8f0;text-align:right">${uHit}</td>
-          <td style="padding:4px 6px;border:1px solid #e2e8f0;text-align:right;font-weight:600;color:${uRoiC}">${uRoi}</td>
-          <td style="padding:4px 6px;border:1px solid #e2e8f0;text-align:right">${snHit}</td>
-          <td style="padding:4px 6px;border:1px solid #e2e8f0;text-align:right;font-weight:600;color:${snRoiC}">${snRoi}</td>
-        </tr>`;
-      }
-
-      // 競馬場別テーブル
-      const venueBody = document.getElementById('det-venue-body');
-      const venues = d.by_venue || {};
-      const venueKeys = Object.keys(venues).sort((a,b) => (venues[b].total_races||0) - (venues[a].total_races||0));
-      venueBody.innerHTML = venueKeys.length > 0
-        ? venueKeys.map(v => makeDetailRow(v, venues[v])).join('')
-        : '<tr><td colspan="6" style="text-align:center;padding:8px;color:#9ca3af">データなし</td></tr>';
-
-      // 芝/ダートテーブル
-      const surfaceBody = document.getElementById('det-surface-body');
-      const surfaces = d.by_surface || {};
-      const surfaceKeys = ['芝', 'ダート'].filter(k => surfaces[k]);
-      surfaceBody.innerHTML = surfaceKeys.length > 0
-        ? surfaceKeys.map(k => makeDetailRow(k, surfaces[k])).join('')
-        : '<tr><td colspan="6" style="text-align:center;padding:8px;color:#9ca3af">データなし</td></tr>';
-
-      // 距離区分テーブル
-      const distBody = document.getElementById('det-dist-body');
-      const dists = d.by_dist_zone || {};
-      const distOrder = ['SS','S','M','I','L','E'];
-      const distLabels = {SS:'SS(〜1000)',S:'S(1001-1400)',M:'M(1401-1800)',I:'I(1801-2200)',L:'L(2201-2600)',E:'E(2601+)'};
-      const distKeys = distOrder.filter(k => dists[k]);
-      distBody.innerHTML = distKeys.length > 0
-        ? distKeys.map(k => makeDetailRow(distLabels[k]||k, dists[k])).join('')
-        : '<tr><td colspan="6" style="text-align:center;padding:8px;color:#9ca3af">データなし</td></tr>';
-
-      // TOP10 高額配当
-      function renderTop10(list, elId, isUmaren) {
-        const el = document.getElementById(elId);
-        if (!list || list.length === 0) {
-          el.innerHTML = '<p style="color:#9ca3af;padding:4px">データなし</p>';
-          return;
-        }
-        // カテゴリフィルタ（all以外はis_jraで絞り込み）
-        let filtered = list;
-        if (cat === 'jra') filtered = list.filter(x => x.is_jra);
-        if (cat === 'nar') filtered = list.filter(x => !x.is_jra);
-        filtered = filtered.slice(0, 10);
-        if (filtered.length === 0) {
-          el.innerHTML = '<p style="color:#9ca3af;padding:4px">データなし</p>';
-          return;
-        }
-        el.innerHTML = filtered.map((x, i) => `
-          <div style="display:flex;gap:6px;align-items:baseline;padding:3px 0;border-bottom:1px solid #f3f4f6;flex-wrap:wrap">
-            <span style="color:#9ca3af;min-width:16px;font-size:0.72rem">${i+1}.</span>
-            <span style="font-weight:700;color:#92400e;min-width:68px">${x.payout.toLocaleString()}円</span>
-            <span style="color:#374151">${x.date} ${x.venue}${x.race_no}R</span>
-            <span style="color:#7c3aed;font-weight:600">${x.marks || x.combo}</span>
-            <span style="color:#6b7280;font-size:0.72rem">${x.race_name||''}</span>
-          </div>`).join('');
-      }
-      renderTop10(_detData.top10_umaren,     'det-top10-umaren',     true);
-      renderTop10(_detData.top10_sanrenpuku, 'det-top10-sanrenpuku', false);
-    }
-
-    // 詳細タブ ボタン クリックハンドラ
-    document.querySelectorAll('.det-tab').forEach(b => {
-      b.onclick = () => renderDetailedCat(b.dataset.cat);
-    });
-
-    // ===== 結果照合モード切り替え =====
-    function setFetchMode(mode) {
-      document.querySelectorAll('.fetch-mode-btn').forEach(b => b.classList.remove('active'));
-      document.getElementById('fetch-mode-' + mode).classList.add('active');
-      document.getElementById('fetch-single-area').style.display = mode === 'single' ? 'flex' : 'none';
-      document.getElementById('fetch-range-area').style.display = mode === 'range' ? 'flex' : 'none';
-      document.getElementById('fetch-err').textContent = '';
-      document.getElementById('fetch-progress').style.display = 'none';
-    }
-
-    // ===== 単一日付照合 =====
-    document.getElementById('btn-fetch-results').onclick = async () => {
-      const date = document.getElementById('fetch-date-select').value;
-      if (!date) { alert('日付を選択してください'); return; }
-      const btn = document.getElementById('btn-fetch-results');
-      btn.disabled = true;
-      document.getElementById('fetch-err').textContent = '';
-      document.getElementById('fetch-date-log').style.display = 'none';
-      document.getElementById('fetch-date-log').innerHTML = '';
-      try {
-        await _fetchOneDate(date, 0, 1);
-        document.getElementById('fetch-fill').style.width = '100%';
-        document.getElementById('fetch-status').textContent = '照合完了！成績を更新しました。';
-        const activeYear = document.querySelector('.sub-tab.active');
-        loadResultsSummary(activeYear ? activeYear.dataset.year : 'all');
-        setTimeout(() => { document.getElementById('fetch-progress').style.display = 'none'; }, 2000);
-      } catch(e) {
-        document.getElementById('fetch-err').textContent = e.message;
-        document.getElementById('fetch-progress').style.display = 'none';
-      } finally {
-        btn.disabled = false;
-      }
-    };
-
-    // ===== 期間一括照合 =====
-    document.getElementById('btn-fetch-range').onclick = async () => {
-      const from = document.getElementById('fetch-from-date').value;
-      const to   = document.getElementById('fetch-to-date').value;
-      if (!from || !to) { alert('開始日と終了日を入力してください'); return; }
-      if (from > to)    { alert('開始日は終了日以前にしてください'); return; }
-      const dates = (await _ensurePredDates()).filter(d => d >= from && d <= to);
-      if (dates.length === 0) {
-        document.getElementById('fetch-err').textContent = '指定範囲に予想データがありません';
-        return;
-      }
-      await _fetchDateList(dates);
-    };
-
-    // ===== 未照合のみ照合 =====
-    document.getElementById('btn-fetch-unmatched').onclick = async () => {
-      const from = document.getElementById('fetch-from-date').value;
-      const to   = document.getElementById('fetch-to-date').value;
-      document.getElementById('fetch-err').textContent = '';
-      try {
-        const ur = await fetch('/api/results/unmatched_dates');
-        const uj = await ur.json();
-        let unmatched = uj.dates || [];
-        if (from) unmatched = unmatched.filter(d => d >= from);
-        if (to)   unmatched = unmatched.filter(d => d <= to);
-        if (unmatched.length === 0) {
-          document.getElementById('fetch-progress').style.display = 'block';
-          document.getElementById('fetch-date-log').style.display = 'none';
-          document.getElementById('fetch-status').textContent = '指定範囲に未照合の日付はありません';
-          document.getElementById('fetch-fill').style.width = '100%';
-          setTimeout(() => { document.getElementById('fetch-progress').style.display = 'none'; }, 2000);
-          return;
-        }
-        await _fetchDateList(unmatched);
-      } catch(e) {
-        document.getElementById('fetch-err').textContent = e.message;
-      }
-    };
-
-    // ===== 配布用HTML生成 =====
-    document.getElementById('btn-simple-all').onclick = async () => {
-      const dates = await _ensurePredDates();
-      if (dates.length > 0) {
-        document.getElementById('simple-from-date').value = dates[dates.length - 1];
-        document.getElementById('simple-to-date').value   = dates[0];
-      }
-    };
-
-    document.getElementById('btn-gen-simple').onclick = async () => {
-      const from = document.getElementById('simple-from-date').value;
-      const to   = document.getElementById('simple-to-date').value;
-      document.getElementById('simple-err').textContent = '';
-      const dates = (await _ensurePredDates()).filter(d => (!from || d >= from) && (!to || d <= to));
-      if (dates.length === 0) {
-        document.getElementById('simple-err').textContent = '指定範囲に予想データがありません';
-        return;
-      }
-      const btn = document.getElementById('btn-gen-simple');
-      btn.disabled = true;
-      const prog  = document.getElementById('simple-progress');
-      const fill  = document.getElementById('simple-fill');
-      const stat  = document.getElementById('simple-status');
-      const log   = document.getElementById('simple-date-log');
-      prog.style.display = 'block';
-      log.style.display = 'block';
-      log.innerHTML = '';
-      let ok = 0, ng = 0;
-      for (let i = 0; i < dates.length; i++) {
-        const date = dates[i];
-        fill.style.width = Math.round((i / dates.length) * 100) + '%';
-        stat.textContent = `[${i+1}/${dates.length}] ${date} を生成中...`;
-        try {
-          const r = await fetch('/api/generate_simple_html', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({date})
-          });
-          const j = await r.json();
-          const line = document.createElement('div');
-          line.style.padding = '1px 0';
-          if (j.ok) {
-            ok++;
-            line.style.color = '#166534';
-            line.textContent = '✓ ' + date + ' → ' + (j.filename || '');
-          } else {
-            ng++;
-            line.style.color = '#991b1b';
-            line.textContent = '✗ ' + date + ': ' + (j.error || 'エラー');
-          }
-          log.appendChild(line);
-          log.scrollTop = log.scrollHeight;
-        } catch(e) {
-          ng++;
-          const line = document.createElement('div');
-          line.style.cssText = 'padding:1px 0;color:#991b1b';
-          line.textContent = '✗ ' + date + ': ' + e.message;
-          log.appendChild(line);
-        }
-      }
-      fill.style.width = '100%';
-      stat.textContent = `完了: ${ok}件生成${ng > 0 ? ' / ' + ng + '件失敗' : ''} (全${dates.length}件)`;
-      btn.disabled = false;
-    };
-
-    // ===== 共通: 1日分照合 =====
-    async function _fetchOneDate(date, idx, total) {
-      document.getElementById('fetch-progress').style.display = 'block';
-      const pct = Math.round(idx / total * 100);
-      document.getElementById('fetch-fill').style.width = pct + '%';
-      document.getElementById('fetch-status').textContent =
-        total > 1 ? `[${idx+1}/${total}] ${date} を照合中...` : `${date} の着順を取得中... (数分かかります)`;
-      const r = await fetch('/api/results/fetch', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({date})
-      });
-      return await r.json();
-    }
-
-    // ===== 共通: 複数日まとめて照合 =====
-    async function _fetchDateList(dates) {
-      const rangeBtn    = document.getElementById('btn-fetch-range');
-      const unmatchBtn  = document.getElementById('btn-fetch-unmatched');
-      rangeBtn.disabled = true;
-      unmatchBtn.disabled = true;
-      document.getElementById('fetch-err').textContent = '';
-      document.getElementById('fetch-progress').style.display = 'block';
-      const log = document.getElementById('fetch-date-log');
-      log.style.display = 'block';
-      log.innerHTML = '';
-      let ok = 0, ng = 0;
-      for (let i = 0; i < dates.length; i++) {
-        const date = dates[i];
-        try {
-          const j = await _fetchOneDate(date, i, dates.length);
-          const line = document.createElement('div');
-          line.style.padding = '1px 0';
-          if (j.ok) {
-            ok++;
-            line.style.color = '#166534';
-            line.textContent = '✓ ' + date;
-          } else {
-            ng++;
-            line.style.color = '#991b1b';
-            line.textContent = '✗ ' + date + ': ' + (j.error || 'エラー');
-          }
-          log.appendChild(line);
-          log.scrollTop = log.scrollHeight;
-        } catch(e) {
-          ng++;
-          const line = document.createElement('div');
-          line.style.cssText = 'padding:1px 0;color:#991b1b';
-          line.textContent = '✗ ' + date + ': ' + e.message;
-          log.appendChild(line);
-        }
-      }
-      document.getElementById('fetch-fill').style.width = '100%';
-      document.getElementById('fetch-status').textContent =
-        `完了: ${ok}日成功${ng > 0 ? ' / ' + ng + '日失敗' : ''} (全${dates.length}日)`;
-      rangeBtn.disabled = false;
-      unmatchBtn.disabled = false;
-      const activeYear = document.querySelector('.sub-tab.active');
-      loadResultsSummary(activeYear ? activeYear.dataset.year : 'all');
-    }
-
-    // ===== 過去の予想 =====
-    let _pastAnalyzeRunning = false;
-
-    async function pastRunSingle(){
-      const dateVal = document.getElementById('past-create-date').value;
-      if(!dateVal){ alert('日付を入力してください'); return; }
-      if(_pastAnalyzeRunning){ alert('現在分析が実行中です'); return; }
-      _pastAnalyzeRunning = true;
-      document.getElementById('btn-past-single').disabled = true;
-      document.getElementById('past-create-status').style.display = 'block';
-      await _pastRunDate(dateVal, 1, 1);
-      _pastAnalyzeRunning = false;
-      document.getElementById('btn-past-single').disabled = false;
-    }
-
-    async function pastRunRange(){
-      const start = document.getElementById('past-range-start').value;
-      const end   = document.getElementById('past-range-end').value;
-      if(!start||!end){ alert('開始日と終了日を入力してください'); return; }
-      if(_pastAnalyzeRunning){ alert('現在分析が実行中です'); return; }
-      const dates=[];
-      const d=new Date(start+'T00:00:00'), endD=new Date(end+'T00:00:00');
-      while(d<=endD){ dates.push(_localDate(d)); d.setDate(d.getDate()+1); }
-      if(!dates.length){ alert('有効な期間を指定してください'); return; }
-      if(dates.length>14){ alert(dates.length+'日分は範囲が大きすぎます（最大14日）'); return; }
-      _pastAnalyzeRunning = true;
-      document.getElementById('btn-past-range').disabled = true;
-      document.getElementById('past-create-status').style.display = 'block';
-      for(let i=0;i<dates.length;i++){
-        await _pastRunDate(dates[i], i+1, dates.length);
-      }
-      document.getElementById('past-create-progress').textContent = '✓ '+dates.length+'日分の分析完了';
-      document.getElementById('past-create-elapsed').textContent = '';
-      _pastAnalyzeRunning = false;
-      document.getElementById('btn-past-range').disabled = false;
-    }
-
-    async function _pastRunDate(dateVal, idx, total){
-      const progressEl = document.getElementById('past-create-progress');
-      const elapsedEl  = document.getElementById('past-create-elapsed');
-      progressEl.textContent = '['+idx+'/'+total+'] '+dateVal+' 開始中...';
-      elapsedEl.textContent = '';
-      try{
-        const r = await fetch('/api/analyze',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({date:dateVal})});
-        const j = await r.json();
-        if(!j.ok){ progressEl.textContent='['+idx+'/'+total+'] '+dateVal+' エラー: '+(j.error||'不明'); return; }
-        const startTs = Date.now();
-        await new Promise(resolve=>{
-          const poll=()=>{
-            fetch('/api/analyze_status').then(r=>r.json()).then(j2=>{
-              const elapsed=Math.round((Date.now()-startTs)/1000);
-              elapsedEl.textContent='('+elapsed+'秒)';
-              if(j2.done){
-                progressEl.textContent='['+idx+'/'+total+'] '+dateVal+(j2.error?' エラー':' ✓ 完了');
-                resolve();
-              } else {
-                progressEl.textContent='['+idx+'/'+total+'] '+dateVal+' '+(j2.progress||'分析中...');
-                setTimeout(poll,2000);
-              }
-            }).catch(()=>setTimeout(poll,3000));
-          };
-          poll();
-        });
-      }catch(e){ progressEl.textContent='エラー: '+e.message; }
-    }
-
-    async function loadPastPrediction(){
-      const dateVal = document.getElementById('past-date-input').value;
-      if(!dateVal){ alert('日付を入力してください'); return; }
-      document.getElementById('past-loading').style.display='inline';
-      const resultEl=document.getElementById('past-result');
-      resultEl.innerHTML='';
-      try{
-        const res = await fetch('/api/today_predictions?date='+dateVal);
-        const data = await res.json();
-        if(!data.total){
-          resultEl.innerHTML=`<div style="padding:16px;background:#fffbeb;border:1px solid #fde68a;border-radius:8px">
-            <p style="color:#92400e;margin:0 0 10px;font-weight:600">この日（${dateVal}）の予想データがありません</p>
-            <p style="color:#6b7280;font-size:0.85rem;margin:0">上の「分析作成」セクションで分析を実行してください。</p>
-          </div>`;
-          return;
-        }
-        const order=data.order||Object.keys(data.races||{});
-        // 競馬場タブ
-        let tabsHtml='<div style="display:flex;gap:2px;flex-wrap:wrap;border-bottom:2px solid #dcfce7;margin-bottom:12px">';
-        for(let i=0;i<order.length;i++){
-          const v=order[i], cnt=(data.races[v]||[]).length;
-          const isFirst=i===0;
-          const base='padding:8px 14px;text-decoration:none;border-radius:6px 6px 0 0;font-size:0.88rem;font-weight:600;cursor:pointer';
-          const active=isFirst?base+';background:#dcfce7;color:#166534;border:1px solid #bbf7d0;border-bottom:2px solid #fff;margin-bottom:-2px':base+';color:#4b5563';
-          tabsHtml+=`<a href="#" style="${active}" onclick="pastSwitchVenue(${i},event)" data-pastvidx="${i}">${v} <span style="font-size:0.75rem;color:#9ca3af;font-weight:400">${cnt}R</span></a>`;
-        }
-        tabsHtml+='</div>';
-        // レースカードパネル
-        let cardsHtml='';
-        for(let i=0;i<order.length;i++){
-          const v=order[i], races=data.races[v]||[];
-          cardsHtml+=`<div id="past-venue-panel-${i}" style="display:${i===0?'block':'none'}"><div style="display:grid;gap:5px">`;
-          for(const r of races){
-            const c=(r.overall_confidence||'').replace('\u207a','+');
-            const cBg=c==='SS'?'background:#f0fdf4;border:1.5px solid #86efac':c==='S'?'background:#eff6ff;border:1px solid #bfdbfe':c==='A'?'background:#fef2f2;border:1px solid #fecaca':'background:#fff;border:1px solid #e5e7eb';
-            const badge=c?`<span style="background:${c==='SS'?'linear-gradient(135deg,#16a34a,#15803d)':c==='S'?'#1a6fa8':c==='A'?'#c0392b':c==='B'||c==='C'?'#333':'#aaa'};color:#fff;padding:1px 8px;border-radius:10px;font-size:0.78rem;font-weight:700">${c}</span>`:'';
-            const _cd=(r.surface||'')+(r.distance?r.distance+'m':'');
-            cardsHtml+=`<a href="${r.url}" target="_blank" style="display:flex;align-items:center;gap:8px;padding:8px 12px;${cBg};border-radius:7px;text-decoration:none;color:inherit">
-              ${badge}
-              <span style="color:#0d2b5e;font-weight:700;min-width:28px">${r.race_no}R</span>
-              <span style="font-size:0.88rem;color:#1a1a2e;flex:1">${r.name||r.race_no+'R'}${_cd?`<span style="font-size:0.78rem;color:#9ca3af;margin-left:5px">${_cd}</span>`:''}</span>
-              ${r.honmei_name?`<span style="font-size:0.82rem;color:#374151;white-space:nowrap">${r.honmei_mark||'◎'} ${r.honmei_name}</span>`:''}
-            </a>`;
-          }
-          cardsHtml+='</div></div>';
-        }
-        resultEl.innerHTML=tabsHtml+cardsHtml;
-      }catch(e){
-        resultEl.innerHTML=`<p class="error">エラー: ${e.message}</p>`;
-      }finally{
-        document.getElementById('past-loading').style.display='none';
-      }
-    }
-
-    function pastSwitchVenue(idx, e){
-      e.preventDefault();
-      const base='padding:8px 14px;text-decoration:none;border-radius:6px 6px 0 0;font-size:0.88rem;font-weight:600;cursor:pointer';
-      document.querySelectorAll('[data-pastvidx]').forEach(el=>{
-        const i=parseInt(el.dataset.pastvidx);
-        el.style.cssText=i===idx?base+';background:#dcfce7;color:#166534;border:1px solid #bbf7d0;border-bottom:2px solid #fff;margin-bottom:-2px':base+';color:#4b5563';
-      });
-      document.querySelectorAll('[id^="past-venue-panel-"]').forEach(el=>{ el.style.display='none'; });
-      const t=document.getElementById('past-venue-panel-'+idx);
-      if(t) t.style.display='block';
-    }
-
-    // ===== HOME 注目レース（A以上ピックアップ） =====
-    async function loadHighConfidence(){
-      // _homeDate の日付で取得（日付ナビと連動）
-      const targetDate = _homeDate;
-      const today = _localDate();
-      try{
-        const el = document.getElementById('home-high-conf-list');
-        const cnt = document.getElementById('high-conf-count');
-        const card = document.getElementById('home-high-conf-card');
-        // 今日以外の日付はスキャン結果から取得
-        const predRes = await fetch('/api/today_predictions?date='+targetDate);
-        const predData = await predRes.json();
-        const order = predData.order||[];
-        if(!order.length){
-          if(card) card.style.display='none';
-          cnt.textContent='';
-          return;
-        }
-        // 自信度A以上をフィルタ
-        const confLevel = {'SS':6,'S+':5,'S':4,'A+':3,'A':2,'B+':1,'B':0,'C':0,'D':0,'E':0};
-        const getLevel = c=>(confLevel[c.replace('\u207a','+')]||0);
-        let highRaces=[];
-        for(const venue of order){
-          for(const r of (predData.races[venue]||[])){
-            const c=r.overall_confidence||'';
-            if(getLevel(c)>=2) highRaces.push({...r,venue});
-          }
-        }
-        if(!highRaces.length){
-          if(card) card.style.display='none';
-          cnt.textContent='';
-          return;
-        }
-        if(card) card.style.display='block';
-        cnt.textContent=highRaces.length+'件';
-        // 会場別にグループ化
-        const byVenue={};
-        for(const r of highRaces){
-          if(!byVenue[r.venue]) byVenue[r.venue]=[];
-          byVenue[r.venue].push(r);
-        }
-        // order順に会場を並べる（自信度別スタイリング）
-        const _confOrder={'SS':0,'S':1,'A':2,'B':3,'C':4,'D':5,'E':6};
-        const _confBadge=(c)=>{
-          if(c==='SS') return `<span style="background:linear-gradient(135deg,#16a34a,#15803d);color:#fff;padding:3px 10px;border-radius:12px;font-size:0.86rem;font-weight:800;white-space:nowrap;min-width:34px;text-align:center;box-shadow:0 2px 6px rgba(22,163,74,0.45);letter-spacing:0.5px">${c}</span>`;
-          if(c==='S') return `<span style="background:#1a6fa8;color:#fff;padding:2px 9px;border-radius:12px;font-size:0.82rem;font-weight:700;white-space:nowrap;min-width:30px;text-align:center;box-shadow:0 1px 3px rgba(26,111,168,0.3)">${c}</span>`;
-          if(c==='A') return `<span style="background:#c0392b;color:#fff;padding:2px 9px;border-radius:12px;font-size:0.82rem;font-weight:700;white-space:nowrap;min-width:30px;text-align:center">${c}</span>`;
-          if(c==='B'||c==='C') return `<span style="background:#333;color:#fff;padding:1px 8px;border-radius:12px;font-size:0.78rem;font-weight:700;white-space:nowrap;min-width:28px;text-align:center">${c}</span>`;
-          return `<span style="background:#aaa;color:#fff;padding:1px 8px;border-radius:12px;font-size:0.78rem;font-weight:700;white-space:nowrap;min-width:28px;text-align:center">${c||'—'}</span>`;
-        };
-        const _confCard=(c)=>{
-          if(c==='SS') return 'background:#f0fdf4;border:1.5px solid #86efac';
-          if(c==='S') return 'background:#eff6ff;border:1px solid #bfdbfe';
-          if(c==='A') return 'background:#fef2f2;border:1px solid #fecaca';
-          return 'background:#fff;border:1px solid #e5e7eb';
-        };
-        let html='';
-        for(const venue of order){
-          if(!byVenue[venue]) continue;
-          // 自信度降順 → レース番号順でソート
-          byVenue[venue].sort((a,b)=>{
-            const ca=_confOrder[(a.overall_confidence||'').replace('\u207a','+')] ?? 99;
-            const cb=_confOrder[(b.overall_confidence||'').replace('\u207a','+')] ?? 99;
-            return ca!==cb ? ca-cb : a.race_no-b.race_no;
-          });
-          html+=`<div style="margin-bottom:10px"><div style="font-weight:700;color:#166534;font-size:0.88rem;margin-bottom:4px;padding:3px 8px;background:#dcfce7;border-radius:4px;display:inline-block">${venue}</div>`;
-          html+='<div style="display:grid;gap:4px">';
-          for(const r of byVenue[venue]){
-            const c=(r.overall_confidence||'').replace('\u207a','+');
-            const _courseDist=(r.surface||'')+(r.distance?r.distance+'m':'');
-            html+=`<a href="${r.url}" target="_blank" style="display:flex;align-items:center;gap:8px;padding:7px 10px;${_confCard(c)};border-radius:6px;text-decoration:none;color:inherit">
-              ${_confBadge(c)}
-              <span style="color:#0d2b5e;font-weight:700;min-width:28px">${r.race_no}R</span>
-              <span style="font-size:0.88rem;color:#1a1a2e;flex:1">${r.name||r.race_no+'R'}${_courseDist?`<span style="font-size:0.78rem;color:#9ca3af;margin-left:5px">${_courseDist}</span>`:''}</span>
-              ${r.honmei_name?`<span style="font-size:0.82rem;color:#374151;white-space:nowrap">${r.honmei_mark||'◎'} ${r.honmei_name}</span>`:''}
-            </a>`;
-          }
-          html+='</div></div>';
-        }
-        el.innerHTML=html;
-      }catch(e){
-        document.getElementById('home-high-conf-list').innerHTML=`<p class="empty">データ取得失敗: ${e.message}</p>`;
-      }
-    }
-
-    // today タブ表示時にA以上ピックアップを読み込む
-    const _todayTabEl = document.querySelector('[data-tab="today"]');
-    if(_todayTabEl) _todayTabEl.addEventListener('click', loadHighConfidence);
-    // loadHighConfidence() is called during initialization
-
-    // ===== ⓪ HOME データ更新 =====
-    async function homeDataUpdate(mode){
-      const today = _localDate();
-      const statusEl = document.getElementById('home-update-status');
-      if(mode==='today'){
-        document.getElementById('btn-home-update-today').disabled=true;
-        statusEl.textContent='本日の予想を実行中…';
-        try{
-          const res=await fetch('/api/analyze',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({date:today})});
-          const d=await res.json();
-          statusEl.textContent=d.ok?'✓ 分析開始しました。下の分析設定パネルで進捗を確認してください。':'エラー: '+(d.error||'不明');
-        }catch(e){statusEl.textContent='エラー: '+e.message;}
-        finally{const b=document.getElementById('btn-home-update-today');if(b)b.disabled=false;}
-      } else if(mode==='odds'){
-        const selDate = document.getElementById('home-date-label')?.textContent||today;
-        // home-date-label は "2026-03-01" 形式
-        const dateVal = selDate.match(/\d{4}-\d{2}-\d{2}/) ? selDate.match(/\d{4}-\d{2}-\d{2}/)[0] : today;
-        document.getElementById('btn-home-update-odds').disabled=true;
-        statusEl.textContent=`${dateVal} のオッズを取得中…`;
-        try{
-          const res=await fetch('/api/odds_update',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({date:dateVal})});
-          const d=await res.json();
-          if(d.ok){
-            statusEl.textContent='オッズ取得中…';
-            const poll=setInterval(async()=>{
-              try{
-                const s=await(await fetch('/api/odds_update_status')).json();
-                if(s.done||!s.running){
-                  clearInterval(poll);
-                  if(s.error){statusEl.textContent='エラー: '+s.error;}
-                  else{statusEl.textContent='✓ '+(s.count||0)+'R分オッズ更新完了 '+(s.updated_at||'');}
-                  setTimeout(()=>loadHomeRaces(true),1000);
-                } else {
-                  statusEl.textContent='取得中…';
-                }
-              }catch(e){clearInterval(poll);}
-            },1500);
-          } else {
-            statusEl.textContent='エラー: '+(d.error||'不明');
-          }
-        }catch(e){statusEl.textContent='エラー: '+e.message;}
-        finally{document.getElementById('btn-home-update-odds').disabled=false;}
-      } else {
-        document.getElementById('btn-home-update-results').disabled=true;
-        statusEl.textContent='未照合の結果を取得中…';
-        try{
-          const r1=await fetch('/api/results/unmatched_dates');
-          const {dates}=await r1.json();
-          if(!dates.length){ statusEl.textContent='未照合の日付はありません'; return; }
-          statusEl.textContent=`${dates.length}日分を取得中…`;
-          let ok=0;
-          for(const d of dates){
-            await fetch('/api/results/fetch',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({date:d})});
-            ok++;
-            statusEl.textContent=`${ok}/${dates.length}日完了…`;
-          }
-          statusEl.textContent=`✓ ${ok}日分の結果を取得しました`;
-        }catch(e){statusEl.textContent='エラー: '+e.message;}
-        finally{document.getElementById('btn-home-update-results').disabled=false;}
-      }
-    }
-
-    // ===== ④ データベース =====
-    // サブタブ切り替え
-    document.querySelectorAll('.db-sub').forEach(t=>{
-      t.addEventListener('click', e=>{
-        e.preventDefault();
-        document.querySelectorAll('.db-sub').forEach(x=>{
-          x.style.background='transparent'; x.style.color='#4b5563'; x.style.fontWeight='normal';
-        });
-        t.style.background='#dcfce7'; t.style.color='#166534'; t.style.fontWeight='600';
-        ['jockey','trainer','course'].forEach(s=>{
-          document.getElementById('db-panel-'+s).style.display = s===t.dataset.dbsub ? 'block':'none';
-        });
-        // コースタブ初回表示時にJRAを自動ロード
-        if(t.dataset.dbsub === 'course'){
-          const cards = document.getElementById('course-venue-cards');
-          if(cards && cards.children.length === 0) courseSetRegion('JRA');
-        }
-      });
-    });
-
-    /* ── 成績集計テーブル共通 ── */
-    function _rateColor(rate){
-      if(rate>=20) return '#15803d';
-      if(rate>=10) return '#166534';
-      if(rate>=5)  return '#374151';
-      return '#9ca3af';
-    }
-
-    // DB フィルタ状態
-    const _dbFilter = {
-      jockey:  { jra_nar: '', surface: '', smile: '' },
-      trainer: { jra_nar: '', surface: '', smile: '' },
-    };
-
-    function _dbFilterLabel(ptype){
-      const f = _dbFilter[ptype];
-      const parts = [];
-      if(f.jra_nar) parts.push(f.jra_nar);
-      if(f.surface) parts.push(f.surface);
-      if(f.smile)   parts.push('距離:'+f.smile);
-      return parts.length ? parts.join(' / ') : '全体';
-    }
-
-    function _dbUpdateFilterButtons(ptype){
-      const f = _dbFilter[ptype];
-      const p = ptype==='jockey' ? 'j' : 't';
-      const activeStyle = 'padding:4px 12px;border-radius:20px;border:1px solid #166534;background:#166534;color:#fff;font-size:0.82rem;cursor:pointer';
-      const inactStyle  = 'padding:4px 12px;border-radius:20px;border:1px solid #d1d5db;background:#fff;color:#374151;font-size:0.82rem;cursor:pointer';
-      const actSmStyle  = 'padding:4px 10px;border-radius:20px;border:1px solid #166534;background:#166534;color:#fff;font-size:0.78rem;cursor:pointer';
-      const inSmStyle   = 'padding:4px 10px;border-radius:20px;border:1px solid #d1d5db;background:#fff;color:#374151;font-size:0.78rem;cursor:pointer';
-      // JRA/NAR
-      document.getElementById(`db-${p}-jn-all`).style.cssText = !f.jra_nar ? activeStyle : inactStyle;
-      document.getElementById(`db-${p}-jn-jra`).style.cssText = f.jra_nar==='JRA' ? activeStyle : inactStyle;
-      document.getElementById(`db-${p}-jn-nar`).style.cssText = f.jra_nar==='NAR' ? activeStyle : inactStyle;
-      // Surface
-      document.getElementById(`db-${p}-sf-all`).style.cssText = !f.surface ? activeStyle : inactStyle;
-      document.getElementById(`db-${p}-sf-t`).style.cssText   = f.surface==='芝' ? activeStyle : inactStyle;
-      document.getElementById(`db-${p}-sf-d`).style.cssText   = f.surface==='ダート' ? activeStyle : inactStyle;
-      // SMILE
-      for(const sm of ['all','SS','S','M','I','L','E']){
-        const val = sm==='all' ? '' : sm;
-        const el = document.getElementById(`db-${p}-sm-${sm}`);
-        if(el) el.style.cssText = f.smile===val ? actSmStyle : inSmStyle;
-      }
-      // フィルタラベル
-      const lbl = document.getElementById(`db-${ptype}-filter-label`);
-      if(lbl) lbl.textContent = _dbFilterLabel(ptype);
-    }
-
-    function dbSetJraNar(ptype, val){
-      _dbFilter[ptype].jra_nar = val;
-      _dbUpdateFilterButtons(ptype);
-      if(ptype==='jockey') loadJockeyDB(); else loadTrainerDB();
-    }
-    function dbSetSurface(ptype, val){
-      _dbFilter[ptype].surface = val;
-      _dbUpdateFilterButtons(ptype);
-      if(ptype==='jockey') loadJockeyDB(); else loadTrainerDB();
-    }
-    function dbSetSmile(ptype, val){
-      _dbFilter[ptype].smile = val;
-      _dbUpdateFilterButtons(ptype);
-      if(ptype==='jockey') loadJockeyDB(); else loadTrainerDB();
-    }
-
-    // 所属バッジ
-    const _locationBadge = (loc) => {
-      if(!loc) return '';
-      const colorMap = {
-        '美浦':'#1d4ed8','栗東':'#b45309',
-        '大井':'#0f766e','船橋':'#0f766e','川崎':'#0f766e','浦和':'#0f766e',
-        '門別':'#4338ca','盛岡':'#4338ca','水沢':'#4338ca',
-        '金沢':'#4338ca','笠松':'#4338ca','名古屋':'#4338ca',
-        '園田':'#4338ca','姫路':'#4338ca','高知':'#4338ca','佐賀':'#4338ca','帯広':'#4338ca','帯広(ばんえい)':'#4338ca',
-      };
-      const c = colorMap[loc]||'#6b7280';
-      return `<span style="background:${c};color:#fff;font-size:0.68rem;padding:1px 5px;border-radius:8px;margin-left:4px;vertical-align:middle;white-space:nowrap">${loc}</span>`;
-    };
-
-    function _buildAggTable(persons, label, ptype){
-      if(!persons.length) return '<p class="empty">データがありません（指定条件で実績なし）</p>';
-      // 複合偏差値計算（出走10以上を対象）
-      // 勝率40% + 複勝率30% + 回収率30% の加重Z-score + サンプルサイズ補正
-      const MIN_N = 10;
-      const validForDev = persons.filter(p => (p.total||0) >= MIN_N);
-      function _calcStats(arr, fn) {
-        if (!arr.length) return {mean:0, std:1};
-        const vals = arr.map(fn);
-        const mean = vals.reduce((s,v)=>s+v,0)/vals.length;
-        const variance = vals.reduce((s,v)=>s+(v-mean)**2,0)/vals.length;
-        return {mean, std: Math.sqrt(variance)||1};
-      }
-      const wrStats  = _calcStats(validForDev, p => +p.win_rate||0);
-      const p3Stats  = _calcStats(validForDev, p => +p.place3_rate||0);
-      const roiStats = _calcStats(validForDev.filter(p=>p.roi!=null), p => +p.roi||0);
-      function _calcDev(p) {
-        if ((p.total||0) < MIN_N) return null;
-        const wrZ  = ((+p.win_rate||0) - wrStats.mean) / wrStats.std;
-        const p3Z  = ((+p.place3_rate||0) - p3Stats.mean) / p3Stats.std;
-        const roiZ = p.roi != null ? ((+p.roi||0) - roiStats.mean) / roiStats.std : 0;
-        const roiW = p.roi != null ? 0.20 : 0;
-        const w1 = 0.30, w2 = 0.50, w3 = roiW;
-        const wSum = w1 + w2 + w3;
-        const composite = (w1*wrZ + w2*p3Z + w3*roiZ) / wSum;
-        // サンプルサイズ補正: 出走数が少ないほど50寄りに (30騎乗で信頼度80%, 100騎乗で98%)
-        const reliability = 1 - Math.exp(-p.total / 40);
-        return Math.round(50 + 10 * composite * reliability);
-      }
-      const _devColor = d => d >= 60 ? '#7c3aed' : d >= 55 ? '#1d4ed8' : d >= 45 ? '#374151' : '#9ca3af';
-      const rows = persons.map(p=>{
-        const wr  = p.win_rate    != null ? (+p.win_rate).toFixed(1)+'%'    : '—';
-        const p2r = p.place2_rate != null ? (+p.place2_rate).toFixed(1)+'%' : '—';
-        const p3r = p.place3_rate != null ? (+p.place3_rate).toFixed(1)+'%' : '—';
-        const roi = p.roi != null ? (+p.roi).toFixed(1)+'%' : '—';
-        const lose = p.total - (p.place3||0);
-        const record = `${p.win||0}-${(p.place2||0)-(p.win||0)}-${(p.place3||0)-(p.place2||0)}-${Math.max(0,lose)}`;
-        const dev = _calcDev(p);
-        const devStr = dev != null ? dev : '—';
-        const roiColor = p.roi != null ? (p.roi >= 100 ? '#059669' : p.roi >= 80 ? '#374151' : '#9ca3af') : '#9ca3af';
-        return `<tr style="cursor:pointer;transition:background 0.1s" onmouseover="this.style.background='#f0fdf4'" onmouseout="this.style.background=''" onclick="showPersonnelDetail('${ptype}','${p.id.replace(/'/g,"\\'")}','${p.name.replace(/'/g,"\\'")}',${dev!=null?dev:'null'})">
-          <td style="padding:5px 8px;font-weight:600;color:#166534">${p.name}${_locationBadge(p.location||'')}</td>
-          <td style="padding:5px 8px;text-align:center;color:#9ca3af;font-size:0.78rem">${p.id}</td>
-          <td style="padding:5px 8px;text-align:right;font-weight:600">${p.total}</td>
-          <td style="padding:5px 8px;text-align:right;font-size:0.8rem;color:#6b7280">${record}</td>
-          <td style="padding:5px 8px;text-align:right;color:${_rateColor(p.win_rate)};font-weight:600">${wr}</td>
-          <td style="padding:5px 8px;text-align:right;color:${_rateColor(p.place2_rate)}">${p2r}</td>
-          <td style="padding:5px 8px;text-align:right;color:${_rateColor(p.place3_rate)}">${p3r}</td>
-          <td style="padding:5px 8px;text-align:right;color:${roiColor}">${roi}</td>
-          <td style="padding:5px 8px;text-align:right;color:${_devColor(dev||50)};font-size:0.82rem">${devStr}</td>
-        </tr>`;
-      }).join('');
-      return `<table style="width:100%;border-collapse:collapse;font-size:0.86rem">
-        <thead><tr style="background:#f0fdf4;color:#374151;font-size:0.82rem">
-          <th style="padding:6px 8px;text-align:left">${label}名</th>
-          <th style="padding:6px 8px;text-align:center;color:#9ca3af">ID</th>
-          <th style="padding:6px 8px;text-align:right">出走</th>
-          <th style="padding:6px 8px;text-align:right;color:#6b7280">1着-2着-3着-着外</th>
-          <th style="padding:6px 8px;text-align:right">勝率</th>
-          <th style="padding:6px 8px;text-align:right">連対率</th>
-          <th style="padding:6px 8px;text-align:right">複勝率</th>
-          <th style="padding:6px 8px;text-align:right">回収率</th>
-          <th style="padding:6px 8px;text-align:right">偏差値</th>
-        </tr></thead>
-        <tbody>${rows}</tbody>
-      </table><p style="font-size:0.78rem;color:#9ca3af;margin-top:4px">${persons.length}件（全期間・行クリックで詳細）<span style="margin-left:8px">※回収率は単勝オッズデータ更新後に反映</span></p>`;
-    }
-
-    function _buildBreakdownTable(byMap, keyLabel, sortKeys){
-      if(!byMap || !Object.keys(byMap).length) return '<p class="empty">データなし</p>';
-      let entries;
-      if(sortKeys){
-        // 指定順でソート
-        const seen = new Set();
-        entries = [];
-        for(const k of sortKeys){ if(byMap[k]){entries.push([k,byMap[k]]);seen.add(k);} }
-        Object.entries(byMap).forEach(([k,v])=>{ if(!seen.has(k)) entries.push([k,v]); });
-      } else {
-        entries = Object.entries(byMap).sort((a,b)=>b[1].total-a[1].total);
-      }
-      const rows = entries.map(([key,st])=>{
-        const t   = st.total||0;
-        const wr  = t ? (st.win_rate!=null ? st.win_rate.toFixed(1) : (st.win/t*100).toFixed(1))+'%' : '—';
-        const p2r = t ? (st.place2_rate!=null ? st.place2_rate.toFixed(1) : ((st.place2||0)/t*100).toFixed(1))+'%' : '—';
-        const p3r = t ? (st.place3_rate!=null ? st.place3_rate.toFixed(1) : (st.place3/t*100).toFixed(1))+'%' : '—';
-        const lose = t - (st.place3||0);
-        return `<tr>
-          <td style="padding:4px 8px;font-weight:600">${key}</td>
-          <td style="padding:4px 8px;text-align:right">${t}</td>
-          <td style="padding:4px 8px;text-align:right;color:#6b7280;font-size:0.8rem">${st.win||0}-${(st.place2||0)-(st.win||0)}-${(st.place3||0)-(st.place2||0)}-${Math.max(0,lose)}</td>
-          <td style="padding:4px 8px;text-align:right;color:${_rateColor(parseFloat(wr))}">${wr}</td>
-          <td style="padding:4px 8px;text-align:right;color:${_rateColor(parseFloat(p2r))}">${p2r}</td>
-          <td style="padding:4px 8px;text-align:right;color:${_rateColor(parseFloat(p3r))}">${p3r}</td>
-        </tr>`;
-      }).join('');
-      return `<table style="width:100%;border-collapse:collapse;font-size:0.84rem">
-        <thead><tr style="background:#f8fafc;font-size:0.8rem">
-          <th style="padding:5px 8px;text-align:left">${keyLabel}</th>
-          <th style="padding:5px 8px;text-align:right">出走</th>
-          <th style="padding:5px 8px;text-align:right;color:#6b7280">1-2-3-着外</th>
-          <th style="padding:5px 8px;text-align:right">勝率</th>
-          <th style="padding:5px 8px;text-align:right">連対率</th>
-          <th style="padding:5px 8px;text-align:right">複勝率</th>
-        </tr></thead>
-        <tbody>${rows}</tbody>
-      </table>`;
-    }
-
-    async function showPersonnelDetail(ptype, pid, pname, devVal){
-      const modal = document.getElementById('db-detail-modal');
-      const title = document.getElementById('db-detail-title');
-      title.textContent = `${pname}（${ptype==='jockey'?'騎手':'調教師'}）詳細`;
-      document.getElementById('db-detail-summary').innerHTML = '<p style="color:#6b7280">読み込み中…</p>';
-      document.getElementById('db-detail-devs').innerHTML = '';
-      document.getElementById('db-detail-venue').innerHTML = '';
-      document.getElementById('db-detail-running-style').innerHTML = '';
-      document.getElementById('db-detail-dist').innerHTML = '';
-      modal.style.display = 'block';
-
-      try{
-        const r1 = await fetch(`/api/db/personnel_agg?type=${ptype}&id=${encodeURIComponent(pid)}`);
-        const agg = await r1.json();
-        if(agg.error){ document.getElementById('db-detail-summary').innerHTML=`<p class="error">${agg.error}</p>`; return; }
-
-        // 総合サマリー（回収率・偏差値付き）
-        const roiStr = agg.roi != null ? (+agg.roi).toFixed(1)+'%' : '—';
-        const roiColor = agg.roi != null ? (agg.roi >= 100 ? '#059669' : agg.roi >= 80 ? '#374151' : '#9ca3af') : '#9ca3af';
-        const devStr = devVal != null ? devVal : '—';
-        const devColor = devVal != null ? (devVal>=60?'#7c3aed':devVal>=55?'#1d4ed8':devVal>=45?'#374151':'#9ca3af') : '#9ca3af';
-        const locBadge = agg.location ? `<span style="background:${({'美浦':'#1d4ed8','栗東':'#b45309'}[agg.location]||'#0f766e')};color:#fff;font-size:0.72rem;padding:2px 7px;border-radius:10px;margin-left:6px">${agg.location}</span>` : '';
-
-        const _fmt=(st,label,showRoi)=>{
-          const t=st.total||0;
-          const lose=t-(st.place3||0);
-          const roiPart = showRoi && agg.roi!=null ? ` 回収率 <b style="color:${roiColor}">${roiStr}</b>` : '';
-          const devPart = showRoi && devVal!=null ? ` 偏差値 <b style="color:${devColor}">${devStr}</b>` : '';
-          return `<div style="background:#f8fafc;border-radius:6px;padding:8px 12px;font-size:0.86rem;margin-bottom:6px">
-            <b style="color:#166534">${label}</b>${showRoi?locBadge:''}: 出走 <b>${t}</b>
-            成績 <b>${st.win||0}-${(st.place2||0)-(st.win||0)}-${(st.place3||0)-(st.place2||0)}-${Math.max(0,lose)}</b>
-            勝率 <b style="color:${_rateColor(st.win_rate)}">${t?( +st.win_rate||0).toFixed(1)+'%':'—'}</b>
-            連対 <b>${t?(+st.place2_rate||0).toFixed(1)+'%':'—'}</b>
-            複勝 <b style="color:${_rateColor(st.place3_rate)}">${t?(+st.place3_rate||0).toFixed(1)+'%':'—'}</b>${roiPart}${devPart}
-          </div>`;
-        };
-        document.getElementById('db-detail-summary').innerHTML =
-          _fmt(agg, '全体', true) +
-          _fmt(agg.jra||{}, 'JRA', false) +
-          _fmt(agg.nar||{}, 'NAR', false);
-
-        // 競馬場別（コード→名前変換）
-        const byVenueNamed = {};
-        for(const [vc, vs] of Object.entries(agg.by_venue||{})){
-          byVenueNamed[VENUE_CODE_TO_NAME[vc]||vc] = vs;
-        }
-        const venueTable = _buildBreakdownTable(byVenueNamed, '競馬場');
-        document.getElementById('db-detail-venue').innerHTML =
-          `<h4 style="margin:0 0 6px;font-size:0.88rem;color:#374151">競馬場別</h4>${venueTable}`;
-
-        // 脚質別
-        const styleOrder=['逃げ','先行','好位','中団','差し','追込'];
-        const styleTable = _buildBreakdownTable(agg.by_running_style||{}, '脚質', styleOrder);
-        document.getElementById('db-detail-running-style').innerHTML =
-          `<h4 style="margin:8px 0 6px;font-size:0.88rem;color:#374151">脚質別成績</h4>${styleTable}`;
-
-        // SMILE別
-        const smileOrder=['芝SS','芝S','芝M','芝I','芝L','芝E','ダートSS','ダートS','ダートM','ダートI','ダートL','ダートE','障害SS','障害S','障害M','障害I','障害L','障害E'];
-        const smileTable = _buildBreakdownTable(agg.by_smile||{}, '距離区分', smileOrder);
-        document.getElementById('db-detail-dist').innerHTML =
-          `<h4 style="margin:8px 0 6px;font-size:0.88rem;color:#374151">馬場×距離区分別（SMILE）</h4>${smileTable}`;
-
-
-      }catch(e){
-        document.getElementById('db-detail-summary').innerHTML=`<p class="error">エラー: ${e.message}</p>`;
-      }
-    }
-
-    // 偏差値ソート用: 全件取得してクライアント側でソート
-    function _sortByDev(persons, limit){
-      const valid = persons.filter(p=>(p.total||0)>=10);
-      if(!valid.length) return persons.slice(0,limit);
-      const meanWR = valid.reduce((s,p)=>s+(+p.win_rate||0),0)/valid.length;
-      const varWR  = valid.length>1 ? valid.reduce((s,p)=>s+((+p.win_rate||0)-meanWR)**2,0)/valid.length : 1;
-      const stdWR  = Math.sqrt(varWR)||1;
-      const withDev = persons.map(p=>({
-        ...p,
-        _predev: (p.total||0)>=10 ? Math.round(10*((+p.win_rate||0)-meanWR)/stdWR+50) : null
-      }));
-      withDev.sort((a,b)=>{
-        if(a._predev!=null && b._predev!=null) return b._predev-a._predev;
-        if(a._predev!=null) return -1;
-        if(b._predev!=null) return 1;
-        return (b.total||0)-(a.total||0);
-      });
-      return withDev.slice(0,limit);
-    }
-
-    async function loadJockeyDB(){
-      const q    = document.getElementById('db-jockey-search').value.trim();
-      const sort = document.getElementById('db-jockey-sort').value;
-      const f    = _dbFilter.jockey;
-      const el   = document.getElementById('db-jockey-table');
-      el.innerHTML='<p class="empty">読み込み中…</p>';
-      try{
-        const serverSort = sort==='dev' ? 'win_rate' : sort;
-        const limit = sort==='dev' ? 500 : 200;
-        const qs=`type=jockey&q=${encodeURIComponent(q)}&sort=${serverSort}&limit=${limit}&jra_nar=${encodeURIComponent(f.jra_nar)}&surface=${encodeURIComponent(f.surface)}&smile=${encodeURIComponent(f.smile)}`;
-        const res=await fetch(`/api/db/personnel_agg?${qs}`);
-        const data=await res.json();
-        if(data.error){ el.innerHTML=`<p class="error">${data.error}</p>`; return; }
-        document.getElementById('db-jockey-filter-label').textContent = data.period ? `集計期間: ${data.period}` : '';
-        const persons = sort==='dev' ? _sortByDev(data.persons||[], 200) : (data.persons||[]);
-        el.innerHTML=_buildAggTable(persons,'騎手','jockey');
-      }catch(e){ el.innerHTML=`<p class="error">エラー: ${e.message}</p>`; }
-    }
-
-    async function loadTrainerDB(){
-      const q    = document.getElementById('db-trainer-search').value.trim();
-      const sort = document.getElementById('db-trainer-sort').value;
-      const f    = _dbFilter.trainer;
-      const el   = document.getElementById('db-trainer-table');
-      el.innerHTML='<p class="empty">読み込み中…</p>';
-      try{
-        const serverSort = sort==='dev' ? 'win_rate' : sort;
-        const limit = sort==='dev' ? 500 : 200;
-        const qs=`type=trainer&q=${encodeURIComponent(q)}&sort=${serverSort}&limit=${limit}&jra_nar=${encodeURIComponent(f.jra_nar)}&surface=${encodeURIComponent(f.surface)}&smile=${encodeURIComponent(f.smile)}`;
-        const res=await fetch(`/api/db/personnel_agg?${qs}`);
-        const data=await res.json();
-        if(data.error){ el.innerHTML=`<p class="error">${data.error}</p>`; return; }
-        document.getElementById('db-trainer-filter-label').textContent = data.period ? `集計期間: ${data.period}` : '';
-        const persons = sort==='dev' ? _sortByDev(data.persons||[], 200) : (data.persons||[]);
-        el.innerHTML=_buildAggTable(persons,'調教師','trainer');
-      }catch(e){ el.innerHTML=`<p class="error">エラー: ${e.message}</p>`; }
-    }
-
-    const VENUE_CODE_TO_NAME={'03':'札幌','04':'函館','01':'福島','02':'新潟','05':'東京','06':'中山','07':'中京','08':'京都','09':'阪神','10':'小倉','30':'門別','35':'盛岡','36':'水沢','42':'浦和','43':'船橋','44':'大井','45':'川崎','46':'金沢','47':'笠松','48':'名古屋','49':'園田','50':'園田','51':'姫路','52':'帯広','54':'高知','55':'佐賀','65':'帯広(ばんえい)'};
-
-    async function loadCourseDB(){
-      const surf=document.getElementById('db-course-surface').value;
-      const venue=document.getElementById('db-course-venue').value.trim();
-      const el=document.getElementById('db-course-list');
-      el.innerHTML='<p class="empty">読み込み中…</p>';
-      try{
-        const qs=[surf?'surface='+encodeURIComponent(surf):'',venue?'venue='+encodeURIComponent(venue):''].filter(Boolean).join('&');
-        const res=await fetch('/api/db/course'+(qs?'?'+qs:''));
-        const data=await res.json();
-        const keys=data.keys||[];
-        if(!keys.length){ el.innerHTML='<p class="empty">該当コースがありません</p>'; return; }
-        el.innerHTML=`<p style="font-size:0.88rem;color:#374151;margin-bottom:8px">${data.total_keys}件のコース（クリックで詳細）:</p>
-          <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:6px">
-            ${keys.map(k=>{
-              const parts=k.split('_');
-              const vn=VENUE_CODE_TO_NAME[parts[0]]||parts[0];
-              const sf=parts[1]||'';
-              const ds=parts[2]||'';
-              return `<div onclick="showCourseDetail('${k}')" style="padding:8px 10px;background:#fff;border:1px solid #bbf7d0;border-radius:6px;cursor:pointer;font-size:0.85rem;display:flex;justify-content:space-between;align-items:center;transition:background 0.15s" onmouseover="this.style.background='#f0fdf4'" onmouseout="this.style.background='#fff'">
-                <span><b>${vn}</b> <span style="color:#6b7280">${sf}</span> ${ds}m</span>
-                <span style="color:#9ca3af;font-size:0.75rem">›</span>
-              </div>`;
-            }).join('')}
-          </div>`;
-      }catch(e){ el.innerHTML=`<p class="error">エラー: ${e.message}</p>`; }
-    }
-
-    // ===== コースタブ 静的データ =====
-    const _COURSE_VENUE_INFO = {
-      // JRA
-      '03':{ name:'札幌', region:'JRA', surface:'芝・ダート', desc:'右回り大回り。北海道の洋芝コース。坂なし、直線266m。坂のない平坦コースで先行馬やスタミナよりもスピードが活きる。洋芝の影響でタイムは遅め。' },
-      '04':{ name:'函館', region:'JRA', surface:'芝・ダート', desc:'右回り小回り。北海道の洋芝コース。直線262mとJRA最短クラス。コーナーきつく先行・逃げ馬が圧倒的有利。内枠が有利な傾向。' },
-      '01':{ name:'福島', region:'JRA', surface:'芝・ダート', desc:'右回り小回り。直線292m。コーナーが小さく先行有利。内枠有利。スタミナよりスピードタイプが活躍。' },
-      '02':{ name:'新潟', region:'JRA', surface:'芝・ダート', desc:'右回り外回り・直線コースあり。外回り芝は直線659mとJRA最長。差し・追込も十分通用。直線1000mコースはスプリンターの祭典。' },
-      '05':{ name:'東京', region:'JRA', surface:'芝・ダート', desc:'左回り大回り。芝直線525.9m。日本最高峰の競走が集まる。長い直線で差し・追込が有効。坂はゴール前の急坂のみ。外枠でも差し馬なら対応可。' },
-      '06':{ name:'中山', region:'JRA', surface:'芝・ダート', desc:'右回り内回り。直線310m。ゴール前の急坂（2m）が特徴。スタミナとパワーが必要。内回りは小回りで先行有利。外回りは差しも決まりやすい。' },
-      '07':{ name:'中京', region:'JRA', surface:'芝・ダート', desc:'左回り大回り。芝直線412.5m。坂あり。バランス型のコース。先行〜差しが通用。ダート1800mは深砂でパワー型が有利。' },
-      '08':{ name:'京都', region:'JRA', surface:'芝・ダート', desc:'右回り内外回り。直線329m（内回り）・404m（外回り）。3〜4コーナーの下り坂が特徴。展開次第で逃げ・差しどちらも可。' },
-      '09':{ name:'阪神', region:'JRA', surface:'芝・ダート', desc:'右回り内外回り。芝直線473m（外回り）。急坂（1.15m）あり。スタミナ・パワーが重要。外回りは差し馬も活躍。内回りは先行有利。' },
-      '10':{ name:'小倉', region:'JRA', surface:'芝・ダート', desc:'右回り。直線293m。先行有利傾向が強い。フルゲートが多くコーナーで差を広げにくいため逃げ・先行有利。洋芝気味で高速決着は少ない。' },
-      // NAR
-      '30':{ name:'門別', region:'NAR', surface:'ダート', desc:'右回り。直線330m。北海道の地方競馬。砂ダートのみ。先行有利。3〜4歳の若駒中心でホッカイドウ競馬の主要場。' },
-      '35':{ name:'盛岡', region:'NAR', surface:'芝・ダート', desc:'右回り。直線300m（芝）・330m（ダート）。地方競馬で芝コースを持つ数少ない競馬場。芝とダートの2本立て。先行〜差しが通用。' },
-      '36':{ name:'水沢', region:'NAR', surface:'ダート', desc:'右回り。直線220m。岩手競馬第2の競馬場。小回りで先行有利。コーナーがきつくスタミナも要求される。' },
-      '42':{ name:'浦和', region:'NAR', surface:'ダート', desc:'右回り。直線220m。南関東最小の競馬場。小回りで先行馬が極端に有利。内枠有利傾向が強い。' },
-      '43':{ name:'船橋', region:'NAR', surface:'ダート', desc:'右回り。直線308m。南関東の主要場。南関東では差し馬も決まりやすい中程度の直線。' },
-      '44':{ name:'大井', region:'NAR', surface:'ダート', desc:'右回り内外回り。直線386m（内回り）〜400m（外回り）。南関東最大の競馬場。帝王賞・東京大賞典など重賞多数。差しも十分通用。' },
-      '45':{ name:'川崎', region:'NAR', surface:'ダート', desc:'右回り。直線300m。南関東の主要場。平坦コースで先行〜差しが通用。川崎記念などGⅡ級重賞開催。' },
-      '46':{ name:'金沢', region:'NAR', surface:'ダート', desc:'右回り。直線236m。北陸の地方競馬場。小回りで先行馬が有利。砂が深く時計がかかりやすい。' },
-      '47':{ name:'笠松', region:'NAR', surface:'ダート', desc:'右回り。直線235m。東海地方の地方競馬。小回りで先行有利。かつてはオグリキャップが活躍した名門場。' },
-      '48':{ name:'名古屋', region:'NAR', surface:'ダート', desc:'右回り。直線240m。東海地方最大の競馬場。先行有利傾向。名古屋グランプリなどダート重賞開催。' },
-      '49':{ name:'園田', region:'NAR', surface:'ダート', desc:'右回り。直線215m。関西最大の地方競馬場。コーナーが小さく先行が圧倒的有利。小回りのため外枠は不利。' },
-      '51':{ name:'姫路', region:'NAR', surface:'ダート', desc:'右回り。直線218m。園田競馬場の姉妹競馬場。レイアウトが類似し先行有利。' },
-      '54':{ name:'高知', region:'NAR', surface:'ダート', desc:'右回り。直線200m。四国唯一の地方競馬場。直線が短く先行有利が顕著。砂が深い独特の馬場。' },
-      '55':{ name:'佐賀', region:'NAR', surface:'ダート', desc:'右回り。直線295m。九州の地方競馬場。九州地方唯一の競馬場。先行有利傾向。' },
-      '50':{ name:'園田', region:'NAR', surface:'ダート', desc:'右回り。直線215m。関西最大の地方競馬場。コーナーが小さく先行が圧倒的有利。小回りのため外枠は不利。' },
-      '65':{ name:'帯広(ばんえい)', region:'NAR', surface:'ばんえい', desc:'直線200m。ばんえい競馬（帯広）。重量物を引いて200mの坂コースを走る独自の競馬形式。' },
-    };
-    const _JRA_CODES=['03','04','01','02','05','06','07','08','09','10'];
-    const _NAR_CODES=['30','35','36','42','43','44','45','46','47','48','49','50','51','54','55','65'];
-
-    let _courseRegion='JRA';
-    let _courseVenueData = {};  // {course_key: {records_count, surface}} from api
-
-    async function courseSetRegion(region){
-      _courseRegion = region;
-      document.getElementById('btn-course-jra').style.cssText=
-        region==='JRA' ? 'padding:6px 20px;border-radius:20px;border:1px solid #166534;background:#166534;color:#fff;font-weight:600;cursor:pointer;font-size:0.9rem'
-                       : 'padding:6px 20px;border-radius:20px;border:1px solid #d1d5db;background:#fff;color:#374151;font-weight:600;cursor:pointer;font-size:0.9rem';
-      document.getElementById('btn-course-nar').style.cssText=
-        region==='NAR' ? 'padding:6px 20px;border-radius:20px;border:1px solid #0f766e;background:#0f766e;color:#fff;font-weight:600;cursor:pointer;font-size:0.9rem'
-                       : 'padding:6px 20px;border-radius:20px;border:1px solid #d1d5db;background:#fff;color:#374151;font-weight:600;cursor:pointer;font-size:0.9rem';
-      const codes = region==='JRA' ? _JRA_CODES : _NAR_CODES;
-      const label = document.getElementById('course-region-label');
-      label.textContent='コースデータ読み込み中…';
-      // コースDBキーを取得
-      try{
-        const res = await fetch('/api/db/course');
-        const data = await res.json();
-        _courseVenueData = {};
-        for(const k of (data.keys||[])){
-          const vc = k.split('_')[0];
-          if(!_courseVenueData[vc]) _courseVenueData[vc]=[];
-          _courseVenueData[vc].push(k);
-        }
-      }catch(e){ label.textContent='データ取得失敗'; return; }
-
-      label.textContent=`${region} ${codes.length}場`;
-      const grid = document.getElementById('course-venue-cards');
-      grid.innerHTML = codes.map(vc=>{
-        const info = _COURSE_VENUE_INFO[vc]||{name:vc,desc:'',surface:''};
-        const keys = _courseVenueData[vc]||[];
-        const hasCourse = keys.length > 0;
-        return `<div style="border:1px solid ${hasCourse?'#bbf7d0':'#e5e7eb'};border-radius:8px;padding:12px;background:${hasCourse?'#fff':'#f9fafb'}">
-          <div style="font-weight:700;font-size:1rem;color:${hasCourse?'#166534':'#9ca3af'};margin-bottom:4px">
-            ${info.name}
-            <span style="font-size:0.72rem;color:#9ca3af;font-weight:400;margin-left:6px">${info.surface||''}</span>
-          </div>
-          <div style="font-size:0.78rem;color:#6b7280;line-height:1.5;margin-bottom:8px">${info.desc||''}</div>
-          ${hasCourse
-            ? `<div style="display:flex;flex-wrap:wrap;gap:4px">
-                ${keys.sort((a,b)=>{
-                  const [,sa,da]=[...a.split('_')], [,sb,db]=[...b.split('_')];
-                  if(sa!==sb) return sa<sb?-1:1;
-                  return parseInt(da)-parseInt(db);
-                }).map(k=>{
-                  const [,sf,ds]=k.split('_');
-                  const sfCol=sf==='芝'?'#166534':'#92400e';
-                  return `<button onclick="showCourseDetail('${k}')" style="padding:3px 8px;border-radius:12px;border:1px solid ${sfCol};color:${sfCol};background:#fff;font-size:0.75rem;cursor:pointer;transition:background 0.15s" onmouseover="this.style.background='#f0fdf4'" onmouseout="this.style.background='#fff'">
-                    ${sf} ${ds}m
-                  </button>`;
-                }).join('')}
-              </div>`
-            : `<span style="font-size:0.75rem;color:#b45309">統計未収集<br><span style="color:#9ca3af;font-size:0.7rem">収集ツールで取得後に表示</span></span>`
-          }
-        </div>`;
-      }).join('');
-      document.getElementById('course-course-list').innerHTML='';
-    }
-
-    async function showCourseDetail(courseKey){
-      const modal=document.getElementById('db-detail-modal');
-      const parts=courseKey.split('_');
-      const vc=parts[0], sf=parts[1]||'', ds=parts[2]||'';
-      const vn=VENUE_CODE_TO_NAME[vc]||vc;
-      // コース詳細タイトル
-      document.getElementById('db-detail-title').textContent=`${vn} ${sf} ${ds}m コース詳細`;
-      document.getElementById('db-detail-summary').innerHTML='<p style="color:#6b7280">読み込み中…</p>';
-      document.getElementById('db-detail-devs').innerHTML='';
-      document.getElementById('db-detail-venue').innerHTML='';
-      document.getElementById('db-detail-running-style').innerHTML='';
-      document.getElementById('db-detail-dist').innerHTML='';
-      modal.style.display='block';
-      try{
-        const res=await fetch(`/api/db/course_stats?key=${encodeURIComponent(courseKey)}`);
-        const d=await res.json();
-        if(d.error){ document.getElementById('db-detail-summary').innerHTML=`<p class="error">${d.error}</p>`; return; }
-
-        // ── 基本情報 ──
-        const recStr=d.record?`<b style="color:#dc2626">${d.record.time_str}</b> (${d.record.grade||''} ${d.record.date||''})`:' —';
-        document.getElementById('db-detail-summary').innerHTML=`
-          <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:8px;margin-bottom:8px;font-size:0.88rem">
-            <div style="background:#f8fafc;border-radius:6px;padding:8px 10px"><span style="color:#6b7280">総データ数</span><br><b>${d.count}件</b></div>
-            <div style="background:#fef2f2;border-radius:6px;padding:8px 10px"><span style="color:#6b7280">レコードタイム</span><br>${recStr}</div>
-            <div style="background:#f0fdf4;border-radius:6px;padding:8px 10px"><span style="color:#6b7280">ペース区分</span><br><b>${(d.pace_avg||{}).pace_type||'—'}</b></div>
-            <div style="background:#eff6ff;border-radius:6px;padding:8px 10px"><span style="color:#6b7280">前半3F平均</span><br><b>${(d.pace_avg||{}).first_3f!=null?(+d.pace_avg.first_3f).toFixed(2)+'秒':'—'}</b></div>
-            <div style="background:#eff6ff;border-radius:6px;padding:8px 10px"><span style="color:#6b7280">上り3F平均</span><br><b>${(d.pace_avg||{}).last_3f!=null?(+d.pace_avg.last_3f).toFixed(2)+'秒':'—'}</b></div>
-          </div>`;
-
-        // ── クラス別平均走破タイム ──
-        let classHtml='<p class="empty">データなし</p>';
-        if(d.class_avg && Object.keys(d.class_avg).length){
-          const rows=Object.entries(d.class_avg).map(([cls,v])=>
-            `<tr><td style="padding:4px 8px;font-weight:600">${cls}</td>
-             <td style="padding:4px 8px;text-align:right"><b style="color:#166534">${v.avg_str}</b></td>
-             <td style="padding:4px 8px;text-align:right;color:#9ca3af">${v.n}件</td></tr>`
-          ).join('');
-          classHtml=`<table style="width:100%;border-collapse:collapse;font-size:0.83rem">
-            <thead><tr style="background:#f0fdf4"><th style="padding:4px 8px;text-align:left">クラス</th><th style="padding:4px 8px;text-align:right">平均走破タイム</th><th style="padding:4px 8px;text-align:right">件数</th></tr></thead>
-            <tbody>${rows}</tbody></table>`;
-        }
-        document.getElementById('db-detail-devs').innerHTML=
-          `<h4 style="margin:0 0 6px;font-size:0.88rem;color:#374151">クラス別平均走破タイム（1〜3着馬）</h4>${classHtml}`;
-
-        // ── 成績(X-X-X-X) ヘルパー ──
-        const _fmtRec=(w,p2,p3,total)=>{
-          const other=Math.max(0,total-p3);
-          return `<span style="font-family:monospace">${w}-${p2-w}-${p3-p2}-${other}</span>`;
-        };
-        const _fmtRoi=(roi)=>{
-          const c=roi>=100?'#166534':roi>=80?'#92400e':'#9ca3af';
-          return `<span style="color:${c}">${roi}%</span>`;
-        };
-
-        // ── 枠順成績 ──
-        let gateHtml='<p class="empty">データなし（3出走未満）</p>';
-        if(d.gate_bias && Object.keys(d.gate_bias).length){
-          const rows=Object.entries(d.gate_bias).map(([g,v])=>
-            `<tr>
-             <td style="padding:3px 6px;text-align:center;font-weight:600">${g}枠</td>
-             <td style="padding:3px 6px;text-align:right">${v.runs}</td>
-             <td style="padding:3px 6px;text-align:center">${_fmtRec(v.win,v.place2,v.place3,v.runs)}</td>
-             <td style="padding:3px 6px;text-align:right;color:${_rateColor(v.win_rate)};font-weight:600">${v.win_rate}%</td>
-             <td style="padding:3px 6px;text-align:right;color:${_rateColor(v.place2_rate)}">${v.place2_rate}%</td>
-             <td style="padding:3px 6px;text-align:right;color:${_rateColor(v.place3_rate)}">${v.place3_rate}%</td>
-             <td style="padding:3px 6px;text-align:right">${_fmtRoi(v.roi)}</td></tr>`
-          ).join('');
-          gateHtml=`<table style="width:100%;border-collapse:collapse;font-size:0.8rem">
-            <thead><tr style="background:#dcfce7"><th style="padding:3px 6px">枠</th><th style="padding:3px 6px;text-align:right">出走</th><th style="padding:3px 6px;text-align:center">成績</th><th style="padding:3px 6px;text-align:right">勝率</th><th style="padding:3px 6px;text-align:right">連対率</th><th style="padding:3px 6px;text-align:right">複勝率</th><th style="padding:3px 6px;text-align:right">単回収</th></tr></thead>
-            <tbody>${rows}</tbody></table>`;
-        }
-        document.getElementById('db-detail-venue').innerHTML=
-          `<h4 style="margin:0 0 6px;font-size:0.88rem;color:#374151">枠順別成績（3出走以上）</h4>${gateHtml}`;
-
-        // ── 脚質別成績 ──
-        let styleHtml='<p class="empty">データなし</p>';
-        const styleData=d.running_style||{};
-        const styleKeys=['逃げ','先行','好位','中団','差し','追込'];
-        const stylesAny=styleKeys.some(s=>styleData[s]&&styleData[s].total>0);
-        if(stylesAny){
-          const rows=styleKeys.map(s=>{
-            const st=styleData[s]||{total:0,win:0,place2:0,place3:0,win_rate:0,place2_rate:0,place3_rate:0,roi:0};
-            return `<tr>
-              <td style="padding:3px 6px;font-weight:600">${s}</td>
-              <td style="padding:3px 6px;text-align:right">${st.total}</td>
-              <td style="padding:3px 6px;text-align:center">${_fmtRec(st.win,st.place2,st.place3,st.total)}</td>
-              <td style="padding:3px 6px;text-align:right;color:${_rateColor(st.win_rate)};font-weight:600">${st.win_rate}%</td>
-              <td style="padding:3px 6px;text-align:right;color:${_rateColor(st.place2_rate)}">${st.place2_rate}%</td>
-              <td style="padding:3px 6px;text-align:right;color:${_rateColor(st.place3_rate)}">${st.place3_rate}%</td>
-              <td style="padding:3px 6px;text-align:right">${_fmtRoi(st.roi)}</td></tr>`;
-          }).join('');
-          styleHtml=`<table style="width:100%;border-collapse:collapse;font-size:0.8rem">
-            <thead><tr style="background:#dcfce7"><th style="padding:3px 6px">脚質</th><th style="padding:3px 6px;text-align:right">出走</th><th style="padding:3px 6px;text-align:center">成績</th><th style="padding:3px 6px;text-align:right">勝率</th><th style="padding:3px 6px;text-align:right">連対率</th><th style="padding:3px 6px;text-align:right">複勝率</th><th style="padding:3px 6px;text-align:right">単回収</th></tr></thead>
-            <tbody>${rows}</tbody></table>`;
-        }
-        document.getElementById('db-detail-running-style').innerHTML=
-          `<h4 style="margin:0 0 6px;font-size:0.88rem;color:#374151">脚質別成績（4角位置ベース）</h4>${styleHtml}`;
-
-        // ── TOP5 騎手・調教師 ──
-        const topPeriod = d.top_period||'過去1年';
-        const fmtTop=(arr,label)=>{
-          if(!arr||!arr.length) return `<div style="flex:1;min-width:260px"><div style="font-size:0.82rem;font-weight:600;color:#374151;margin-bottom:4px">${label}（${topPeriod} 勝利数）</div><p style="color:#9ca3af;font-size:0.8rem">データなし</p></div>`;
-          const rows=arr.map((p,i)=>
-            `<tr>
-             <td style="padding:3px 5px;color:#9ca3af">${i+1}</td>
-             <td style="padding:3px 5px;font-weight:600;max-width:80px;overflow:hidden;white-space:nowrap">${p.name||p.id||'—'}</td>
-             <td style="padding:3px 5px;text-align:right">${p.total}</td>
-             <td style="padding:3px 5px;text-align:center;font-size:0.75rem">${_fmtRec(p.wins,p.place2,p.place3,p.total)}</td>
-             <td style="padding:3px 5px;text-align:right;color:${_rateColor(p.win_rate)};font-weight:600">${p.win_rate}%</td>
-             <td style="padding:3px 5px;text-align:right;color:${_rateColor(p.place2_rate)}">${p.place2_rate}%</td>
-             <td style="padding:3px 5px;text-align:right;color:${_rateColor(p.place3_rate)}">${p.place3_rate}%</td>
-             <td style="padding:3px 5px;text-align:right">${_fmtRoi(p.roi)}</td></tr>`
-          ).join('');
-          return `<div style="flex:1;min-width:260px;overflow-x:auto">
-            <div style="font-size:0.82rem;font-weight:600;color:#374151;margin-bottom:4px">${label}（${topPeriod} 勝利数）</div>
-            <table style="width:100%;border-collapse:collapse;font-size:0.78rem;white-space:nowrap">
-              <thead><tr style="background:#f8fafc"><th style="padding:3px 5px">#</th><th style="padding:3px 5px">名前</th><th style="padding:3px 5px;text-align:right">出走</th><th style="padding:3px 5px;text-align:center">成績</th><th style="padding:3px 5px;text-align:right">勝率</th><th style="padding:3px 5px;text-align:right">連対率</th><th style="padding:3px 5px;text-align:right">複勝率</th><th style="padding:3px 5px;text-align:right">単回収</th></tr></thead>
-              <tbody>${rows}</tbody></table>
-          </div>`;
-        };
-        document.getElementById('db-detail-dist').innerHTML=`
-          <div style="display:flex;gap:16px;flex-wrap:wrap">
-            ${fmtTop(d.top_jockeys,'TOP5 騎手')}
-            ${fmtTop(d.top_trainers,'TOP5 調教師')}
-          </div>`;
-
-      }catch(e){ document.getElementById('db-detail-summary').innerHTML=`<p class="error">${e.message}</p>`; }
-    }
-
-    // ② 過去の予想の日付初期化（起動時）
-    (function(){
-      const today=_localDate();
-      const yd=new Date(today+'T00:00:00'); yd.setDate(yd.getDate()-1);
-      const yesterday=_localDate(yd);
-      const inp=document.getElementById('past-date-input');
-      if(inp&&!inp.value) inp.value=yesterday;
-      const cd=document.getElementById('past-create-date');
-      if(cd&&!cd.value) cd.value=yesterday;
-      const rs=document.getElementById('past-range-start');
-      const re=document.getElementById('past-range-end');
-      if(rs&&!rs.value) rs.value=yesterday;
-      if(re&&!re.value) re.value=yesterday;
-    })();
-  </script>
-</body>
-</html>
-"""
 
 
 def _check_auth(req) -> bool:
@@ -4403,23 +1213,17 @@ def create_app():
         resp.headers["Expires"] = "0"
         return resp
 
-    def _render_old_index():
-        _today = datetime.now().strftime("%Y-%m-%d")
-        _default_start = (datetime.now() - timedelta(days=365)).strftime("%Y-%m-%d")
-        html = render_template_string(BASE_HTML, default_start=_default_start, today=_today)
-        resp = Response(html, mimetype="text/html; charset=utf-8")
-        resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
-        resp.headers["Pragma"] = "no-cache"
-        resp.headers["Expires"] = "0"
-        return resp
-
     # --- React SPA (メインUI) ---
     _react_build_dir = os.path.join(PROJECT_ROOT, "frontend", "dist")
 
     @app.route("/")
     def index():
-        """React SPAをルートで配信"""
-        return send_from_directory(_react_build_dir, "index.html")
+        """React SPAをルートで配信（キャッシュ無効化）"""
+        resp = send_from_directory(_react_build_dir, "index.html")
+        resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+        resp.headers["Pragma"] = "no-cache"
+        resp.headers["Expires"] = "0"
+        return resp
 
     @app.route("/assets/<path:path>")
     def serve_react_assets(path):
@@ -4465,11 +1269,21 @@ def create_app():
 
     @app.route("/api/today_predictions")
     def api_today_predictions():
-        """指定日の生成済み個別レースHTMLを会場別に返す（60秒キャッシュ付き）"""
+        """指定日の生成済み個別レースHTMLを会場別に返す（30分キャッシュ、pred.json更新時は自動無効化）"""
         date = request.args.get("date", datetime.now().strftime("%Y-%m-%d"))
         nocache = request.args.get("nocache", "0") == "1"
         now = time.time()
         cached = _predictions_cache.get(date)
+        # pred.json の更新時刻をチェック（外部から生成された場合のキャッシュ無効化）
+        if cached and not nocache:
+            date_key = date.replace("-", "")
+            _pf = os.path.join(PROJECT_ROOT, "data", "predictions", f"{date_key}_pred.json")
+            try:
+                _mt = os.path.getmtime(_pf)
+                if _mt > cached[0]:
+                    cached = None  # pred.json がキャッシュより新しい → 再読込
+            except OSError:
+                pass
         if not nocache and cached and (now - cached[0]) < _CACHE_TTL:
             result = cached[1]
         else:
@@ -4487,7 +1301,8 @@ def create_app():
             except Exception:
                 pass
         return jsonify(date=date, races=result["races"], order=result["order"],
-                       total=total, odds_updated_at=odds_ts)
+                       total=total, odds_updated_at=odds_ts,
+                       ana_horses=result.get("ana_horses", []))
 
     @app.route("/api/race_prediction")
     def api_race_prediction():
@@ -4536,13 +1351,43 @@ def create_app():
                             except Exception:
                                 pass
                     # ML予測確率をcompositeに反映し、印を再割り当て（発走10分前以降は印固定）
-                    # reassign_marks_dict内部で_apply_ml_composite_adjも呼ばれるため個別呼び出し不要
+                    # 出走取消馬の処理（オッズ確定後に検出可能）
                     _race_horses = race.get("horses", [])
+                    _has_any_odds = any(h.get("odds") is not None for h in _race_horses)
+                    if _has_any_odds:
+                        _scratched_changed = False
+                        for _hd in _race_horses:
+                            if _hd.get("odds") is None and _hd.get("popularity") is None and not _hd.get("is_scratched"):
+                                _hd["is_scratched"] = True
+                                _hd["win_prob"] = 0.0
+                                _hd["place2_prob"] = 0.0
+                                _hd["place3_prob"] = 0.0
+                                _hd["mark"] = ""
+                                _hd["predicted_corners"] = ""
+                                _hd["running_style"] = ""
+                                # 評価データ（ability_total等）は保持
+                                _scratched_changed = True
+                            # 取消解除: オッズが復帰した馬はis_scratchedを解除
+                            elif _hd.get("is_scratched") and _hd.get("odds") is not None and _hd.get("popularity") is not None:
+                                _hd["is_scratched"] = False
+                                _scratched_changed = True
+                        if _scratched_changed:
+                            # 確率再配分
+                            _active = [h for h in _race_horses if not h.get("is_scratched")]
+                            for _pk, _ts in [("win_prob", 1.0), ("place2_prob", 2.0), ("place3_prob", 3.0)]:
+                                _asum = sum(h.get(_pk, 0) for h in _active)
+                                if _asum > 0:
+                                    for h in _active:
+                                        h[_pk] = round(min(1.0, h[_pk] / _asum * _ts), 4)
+
+                    # reassign_marks_dict内部で_apply_ml_composite_adjも呼ばれるため個別呼び出し不要
                     if _race_horses and any(h.get("win_prob") for h in _race_horses):
                         try:
                             from src.calculator.popularity_blend import reassign_marks_dict
                             if not _is_marks_frozen(race):
-                                reassign_marks_dict(_race_horses)
+                                # 取消馬を除外して印再割り振り
+                                _active_for_marks = [h for h in _race_horses if not h.get("is_scratched")]
+                                reassign_marks_dict(_active_for_marks)
                             else:
                                 logger.debug("印固定中（発走%d分前以内）: %s", MARK_FREEZE_MINUTES, race.get("race_id"))
                         except Exception:
@@ -4973,6 +1818,7 @@ def create_app():
         _analyzer_state["total_races"] = 0
         _analyzer_state["elapsed_sec"] = 0
         _analyzer_state["start_time"] = time.time()
+        _analyzer_state["postprocessing"] = False
 
         def _run():
             global _analyzer_state
@@ -5043,6 +1889,18 @@ def create_app():
                     m_phase = _re_phase.match(s)
                     if m_phase:
                         _analyzer_state["progress"] = s
+                        # [3/3] 統合HTML出力中 → 後処理フェーズを通知
+                        if "統合HTML" in s or "出力中" in s:
+                            _analyzer_state["postprocessing"] = True
+                        continue
+                    # [完了] 行 → 後処理終了
+                    if s.startswith("[完了]"):
+                        _analyzer_state["progress"] = s
+                        _analyzer_state["postprocessing"] = False
+                        continue
+                    # 統合HTML進捗行: "       統合HTML: 5/34"
+                    if "統合HTML:" in s:
+                        _analyzer_state["progress"] = s.strip()
                         continue
                     # レース進捗行: (1/36 3%) 202642022701 ... 浦和1R OK
                     m_prog = _re_prog.search(s)
@@ -5111,249 +1969,32 @@ def create_app():
 
     # ── オッズ取得共通ロジック（手動/自動共通）──
     def _run_odds_update(date_key, source="manual"):
+        """オッズ一括更新（コアロジックは scheduler_tasks.py に委譲）"""
         global _odds_state, _odds_cancel
         import time as _tm
-        pred_file = os.path.join(PROJECT_ROOT, "data", "predictions", f"{date_key}_pred.json")
+        from src.scheduler_tasks import run_odds_update as _core_odds_update
+
         _odds_state = {"running": True, "done": False, "error": None, "updated_at": None,
                        "count": 0, "total": 0, "current": 0, "current_race": "",
                        "started_at": _tm.time(), "source": source}
         _odds_cancel = False
+
+        cancel_event = threading.Event()
+
+        def _progress(current, total, label):
+            if _odds_cancel:
+                cancel_event.set()
+            _odds_state["current"] = current
+            _odds_state["total"] = total
+            _odds_state["current_race"] = label
+            _odds_state["count"] = current
+
         try:
-            official = _get_official_odds_scraper()
-
-            nk_scraper = None
-            def _get_nk_scraper():
-                nonlocal nk_scraper
-                if nk_scraper is None:
-                    from src.scraper.netkeiba import NetkeibaClient, OddsScraper
-                    client = _get_auth_client() or NetkeibaClient(no_cache=True)
-                    nk_scraper = OddsScraper(client)
-                return nk_scraper
-
-            with open(pred_file, "r", encoding="utf-8") as pf:
-                pred = json.load(pf)
-
-            races = pred.get("races", [])
-            total_races = len(races)
-            _odds_state["total"] = total_races
-
-            live_odds: dict = {}
-            pred_modified = False
-            count = 0
-            weight_fetch_failed = False
-            for race_idx, race in enumerate(races):
-                if _odds_cancel:
-                    _odds_state.update(running=False, done=True,
-                                       error="ユーザーにより中断されました", count=count)
-                    if pred_modified:
-                        try:
-                            with open(pred_file, "w", encoding="utf-8") as wf:
-                                json.dump(pred, wf, ensure_ascii=False, indent=2)
-                        except Exception:
-                            pass
-                    return
-                race_id = race.get("race_id")
-                if not race_id:
-                    continue
-                venue_name = race.get("venue", "")
-                race_no_val = race.get("race_no", "")
-                _odds_state["current"] = race_idx + 1
-                _odds_state["current_race"] = f"{venue_name}{race_no_val}R"
-                _odds_state["count"] = count
-                try:
-                    result = {}
-                    _odds_source = ""
-                    # 1) 公式サイト（JRA/NAR）を優先
-                    if official:
-                        try:
-                            result = official.get_tansho(race_id)
-                            if result:
-                                _odds_source = "official"
-                                logger.info("公式オッズ取得: %s (%d頭)", race_id, len(result))
-                        except Exception as oe:
-                            logger.debug("公式オッズ失敗 %s: %s", race_id, oe)
-                    # 2) フォールバック: ネット競馬（公式取得失敗時のみ）
-                    if not result:
-                        try:
-                            result = _get_nk_scraper().get_tansho(race_id)
-                            if result:
-                                _odds_source = "netkeiba"
-                                logger.info("netkeiba オッズ取得: %s (%d頭)", race_id, len(result))
-                        except Exception:
-                            pass
-
-                    if result:
-                        live_odds[race_id] = {
-                            str(horse_no): [odds, rank]
-                            for horse_no, (odds, rank) in result.items()
-                        }
-                        for h in race.get("horses", []):
-                            hno = str(h.get("horse_no", ""))
-                            if hno in live_odds[race_id]:
-                                h["odds"] = live_odds[race_id][hno][0]
-                                h["popularity"] = live_odds[race_id][hno][1]
-                                _recalc_divergence(h)
-                                pred_modified = True
-                        # 実出走馬の人気を再計算（取消馬を除いたフィールド内で順位付け）
-                        _active_horses = [
-                            h for h in race.get("horses", [])
-                            if h.get("odds") is not None and h.get("odds", 0) > 0
-                        ]
-                        _active_horses.sort(key=lambda h: h.get("odds", 9999))
-                        for _rank, _h in enumerate(_active_horses, 1):
-                            _h["popularity"] = _rank
-                        count += 1
-                except Exception as e:
-                    logger.warning("odds fetch failed race_id=%s: %s", race_id, e)
-
-                # 三連複オッズ取得（netkeiba → 公式サイトフォールバック）
-                try:
-                    _san_map = {}
-                    try:
-                        _san_map = _get_nk_scraper().get_sanrenpuku_odds(race_id)
-                    except Exception:
-                        pass
-                    if not _san_map and official:
-                        try:
-                            _san_map = official.get_sanrenpuku_odds(race_id)
-                        except Exception:
-                            pass
-                    if _san_map:
-                        for t in race.get("tickets", []):
-                            if t.get("type") != "三連複":
-                                continue
-                            combo = t.get("combo", [])
-                            if len(combo) == 3:
-                                key = tuple(sorted(int(x) for x in combo))
-                                if key in _san_map:
-                                    t["odds"] = round(_san_map[key], 1)
-                                    prob = t.get("prob", 0)
-                                    if prob > 0:
-                                        t["ev"] = round(prob * _san_map[key] * 100, 1)
-                                    pred_modified = True
-                        logger.info("三連複オッズ一括更新: %s (%d組)", race_id, len(_san_map))
-                except Exception as _se:
-                    logger.debug("三連複オッズ一括取得失敗 %s: %s", race_id, _se)
-
-                # 馬体重・馬主を取得（公式サイト優先 → netkeiba フォールバック）
-                wt_fetched = False
-                if official:
-                    try:
-                        wt_data = official.get_weights(race_id)
-                        if wt_data:
-                            for h in race.get("horses", []):
-                                hno = h.get("horse_no")
-                                if hno and hno in wt_data:
-                                    info = wt_data[hno]
-                                    h["horse_weight"] = info["weight"]
-                                    h["weight_change"] = info["weight_change"]
-                                    h["weight_confirmed"] = True
-                                    owner = info.get("owner", "")
-                                    if owner and not h.get("owner"):
-                                        h["owner"] = owner
-                                    pred_modified = True
-                            wt_fetched = True
-                    except Exception as e:
-                        logger.debug("公式馬体重失敗 %s: %s", race_id, e)
-                if not wt_fetched and not weight_fetch_failed:
-                    try:
-                        weights = _get_nk_scraper().get_weights(race_id)
-                        if weights:
-                            for h in race.get("horses", []):
-                                hno = h.get("horse_no")
-                                if hno and hno in weights:
-                                    w, wc = weights[hno]
-                                    h["horse_weight"] = w
-                                    h["weight_change"] = wc
-                                    pred_modified = True
-                    except Exception as e:
-                        if "403" in str(e) or "Forbidden" in str(e):
-                            weight_fetch_failed = True
-                            logger.info("馬体重取得スキップ（netkeiba 403ブロック）")
-                        else:
-                            logger.debug("weight fetch skipped race_id=%s: %s", race_id, e)
-
-                # ばんえい: 馬場水分量を更新 + AI見解を再生成
-                if race.get("is_banei") and official:
-                    try:
-                        moisture = official.get_banei_moisture(race_id)
-                        if moisture is not None:
-                            old_wc = race.get("water_content")
-                            if old_wc != moisture:
-                                race["water_content"] = moisture
-                                pred_modified = True
-                                logger.info("ばんえい水分量更新: %s → %.1f%%", race_id, moisture)
-                    except Exception as _me:
-                        logger.debug("ばんえい水分量取得失敗 %s: %s", race_id, _me)
-                    # 水分量・馬体重が揃ったらAI見解を再生成
-                    try:
-                        from src.calculator.calibration import generate_banei_comment_dict
-                        new_comment = generate_banei_comment_dict(race)
-                        if new_comment and new_comment != race.get("pace_comment"):
-                            race["pace_comment"] = new_comment
-                            pred_modified = True
-                            logger.info("ばんえいAI見解再生成: %s", race_id)
-                    except Exception as _bce:
-                        logger.debug("ばんえいAI見解再生成失敗 %s: %s", race_id, _bce)
-
-            out_path = os.path.join(OUTPUT_DIR, f"{date_key}_live_odds.json")
-            with open(out_path, "w", encoding="utf-8") as of:
-                json.dump(live_odds, of, ensure_ascii=False)
-
-            # JRA レース結果CNAME を取得して保存（毎回更新）
-            if official:
-                for race in races:
-                    race_id = race.get("race_id")
-                    if race_id:
-                        try:
-                            rc = official.get_result_cname(race_id)
-                            if rc and rc != race.get("result_cname"):
-                                race["result_cname"] = rc
-                                pred_modified = True
-                        except Exception:
-                            pass
-
-            # 全レースの確率・印を人気別統計ブレンドで再計算
-            try:
-                from src.calculator.popularity_blend import (
-                    blend_probabilities_dict,
-                    load_popularity_stats,
-                    reassign_marks_dict,
-                )
-                _pop_stats = load_popularity_stats()
-                if _pop_stats:
-                    _frozen_count = 0
-                    for race in races:
-                        _horses = race.get("horses", [])
-                        if any(h.get("popularity") for h in _horses):
-                            blend_probabilities_dict(
-                                _horses, race.get("venue", ""),
-                                race.get("is_jra", True), len(_horses), _pop_stats,
-                            )
-                            if not _is_marks_frozen(race):
-                                reassign_marks_dict(_horses)
-                            else:
-                                _frozen_count += 1
-                    if _frozen_count:
-                        logger.info("一括オッズ更新: 確率再計算完了（印固定: %dR）", _frozen_count)
-                    else:
-                        logger.info("一括オッズ更新後の確率・印を再計算完了")
-            except Exception as _e:
-                logger.warning("一括確率再計算に失敗: %s", _e)
-
-            # pred.json にオッズ・馬体重 + タイムスタンプを書き戻し
+            count = _core_odds_update(date_key, cancel_event=cancel_event,
+                                      progress_callback=_progress)
             from datetime import datetime as _dt
-            ts = _dt.now().strftime("%Y-%m-%dT%H:%M:%S")
-            pred["odds_updated_at"] = ts
-            if pred_modified or True:  # タイムスタンプは常に書き込み
-                try:
-                    with open(pred_file, "w", encoding="utf-8") as wf:
-                        json.dump(pred, wf, ensure_ascii=False, indent=2)
-                except Exception as e:
-                    logger.warning("pred.json write-back failed: %s", e)
-
-            _odds_state.update(running=False, done=True, count=count,
-                               current=total_races, current_race="",
+            _odds_state.update(running=False, done=True, count=count or 0,
+                               current_race="",
                                updated_at=_dt.now().strftime("%H:%M:%S"))
             # キャッシュクリア
             _predictions_cache.pop(date_key[:4] + "-" + date_key[4:6] + "-" + date_key[6:8], None)
@@ -5432,7 +2073,7 @@ def create_app():
             "progress": f"[自動] {date_str} 予想生成中...",
             "current_race": "", "done_races": 0,
             "total_races": 0, "elapsed_sec": 0,
-            "start_time": time.time(),
+            "start_time": time.time(), "postprocessing": False,
         }
         try:
             _env = os.environ.copy()
@@ -5599,8 +2240,16 @@ def create_app():
             from src.scraper.netkeiba import NetkeibaClient
             client = NetkeibaClient(no_cache=True)
 
+            # 公式スクレイパーを優先的に使用（netkeiba不安定対策）
+            _official_scraper = None
+            try:
+                from src.scraper.official_odds import OfficialOddsScraper
+                _official_scraper = OfficialOddsScraper()
+            except Exception:
+                logger.debug("公式スクレイパー初期化失敗、netkeibaフォールバック")
+
             _results_state["progress"] = f"[自動] {date_str} の着順取得中..."
-            fetch_actual_results(date_str, client)
+            fetch_actual_results(date_str, client, official_scraper=_official_scraper)
 
             _results_state["progress"] = f"[自動] {date_str} を照合中..."
             result = compare_and_aggregate(date_str)
@@ -5635,7 +2284,7 @@ def create_app():
         _db_update_state = {
             "running": True, "done": False, "cancel": False,
             "progress": "[自動] DB更新中...", "error": None,
-            "start_time": time.time(), "step": 0, "total_steps": 3,
+            "start_time": time.time(), "step": 0, "total_steps": 4,
             "log": [],
         }
         try:
@@ -5665,10 +2314,23 @@ def create_app():
                 _db_update_state["log"].append(f"⚠ race_log更新失敗: {e}")
 
             _db_update_state["step"] = 3
-            _db_update_state["progress"] = "[自動] [3/3] 騎手・調教師キャッシュ再構築中..."
+            _db_update_state["progress"] = "[自動] [3/4] 騎手・調教師キャッシュ再構築中..."
             _db_update_state["log"].append("[自動] キャッシュ再構築開始")
             _personnel_stats_cache.clear()
             _db_update_state["log"].append("✓ キャッシュ再構築完了")
+
+            _db_update_state["step"] = 4
+            _db_update_state["progress"] = "[自動] [4/4] MLモデル更新中..."
+            _db_update_state["log"].append("[自動] MLモデル更新開始")
+            try:
+                # First1Cモデルのキャッシュクリア（次回analyze時に再ロード）
+                import src.engine as _eng
+                _eng._CACHE_1C_PREDICTOR = None
+                _eng._CACHE_1C_LOADED = False
+                _db_update_state["log"].append("✓ MLモデルキャッシュクリア完了")
+            except Exception as e:
+                logger.warning("[results-scheduler] MLモデル更新失敗: %s", e)
+                _db_update_state["log"].append(f"⚠ MLモデル更新失敗: {e}")
 
             _db_update_state["progress"] = "[自動完了] DB更新完了"
             logger.info("[results-scheduler] 自動DB更新完了")
@@ -5912,12 +2574,14 @@ def create_app():
 
     @app.route("/api/results/summary")
     def api_results_summary():
-        """通算成績を返す（year=all/2025/2026 等）"""
+        """通算成績を返す（year=all/2025/2026 等）。by_dateは巨大なため除外"""
         try:
             from src.results_tracker import aggregate_all
 
             year = request.args.get("year", "all")
-            return jsonify(aggregate_all(year_filter=year))
+            result = aggregate_all(year_filter=year)
+            # by_dateは2MB超→summaryには不要。trendで必要な列だけ別途返す
+            return jsonify({k: v for k, v in result.items() if k != "by_date"})
         except Exception as e:
             logger.warning("results summary failed: %s", e, exc_info=True)
             return jsonify(error=str(e))
@@ -5929,7 +2593,20 @@ def create_app():
             from src.results_tracker import aggregate_detailed
 
             year = request.args.get("year", "all")
-            return jsonify(aggregate_detailed(year_filter=year))
+            result = aggregate_detailed(year_filter=year)
+            # by_venueの各会場からフロントで未使用の巨大フィールドを除去（1.4MB→200KB）
+            _trim_keys = {"by_surface", "by_dist_zone"}
+            for cat_key in ("all", "jra", "nar"):
+                cat_data = result.get(cat_key)
+                if not isinstance(cat_data, dict):
+                    continue
+                by_venue = cat_data.get("by_venue")
+                if isinstance(by_venue, dict):
+                    for venue_data in by_venue.values():
+                        if isinstance(venue_data, dict):
+                            for tk in _trim_keys:
+                                venue_data.pop(tk, None)
+            return jsonify(result)
         except Exception as e:
             logger.warning("results detailed failed: %s", e, exc_info=True)
             return jsonify(error=str(e))
@@ -6015,7 +2692,7 @@ def create_app():
 
     @app.route("/api/results/fetch", methods=["POST"])
     def api_results_fetch():
-        """指定日の着順をnetkeiba から取得して照合"""
+        """指定日の着順を取得して照合（公式優先→netkeiba フォールバック）"""
         if not _is_admin(request):
             return jsonify(ok=False, error="この操作は管理者のみ実行できます"), 403
         data = request.get_json() or {}
@@ -6027,7 +2704,14 @@ def create_app():
             from src.scraper.netkeiba import NetkeibaClient
 
             client = NetkeibaClient(no_cache=True)
-            fetch_actual_results(date, client)
+            # 公式スクレイパーを優先使用
+            _off = None
+            try:
+                from src.scraper.official_odds import OfficialOddsScraper
+                _off = OfficialOddsScraper()
+            except Exception:
+                pass
+            fetch_actual_results(date, client, official_scraper=_off)
             result = compare_and_aggregate(date)
             return jsonify(ok=True, result=result)
         except Exception as e:
@@ -6060,6 +2744,13 @@ def create_app():
                 from src.results_tracker import compare_and_aggregate, fetch_actual_results
                 from src.scraper.netkeiba import NetkeibaClient
                 client = NetkeibaClient(no_cache=True)
+                # 公式スクレイパーを優先使用
+                _off = None
+                try:
+                    from src.scraper.official_odds import OfficialOddsScraper
+                    _off = OfficialOddsScraper()
+                except Exception:
+                    pass
                 ok = 0
                 for i, dt in enumerate(dates):
                     if _results_state.get("cancel"):
@@ -6067,7 +2758,7 @@ def create_app():
                         break
                     _results_state["current_date"] = dt
                     _results_state["progress"] = f"[{i+1}/{len(dates)}] {dt} の結果を取得中…"
-                    fetch_actual_results(dt, client)
+                    fetch_actual_results(dt, client, official_scraper=_off)
                     if _results_state.get("cancel"):
                         _results_state["error"] = f"中断しました（{ok}/{len(dates)}日完了）"
                         break
@@ -6128,57 +2819,31 @@ def create_app():
                             "log": []}
 
         def _run():
+            """DB更新（コアロジックは scheduler_tasks.py に委譲）"""
             global _db_update_state
             try:
-                _db_update_state["step"] = 1
-                _db_update_state["progress"] = "[1/3] コースDB更新中..."
-                _db_update_state["log"].append("コースDB更新開始")
-                from src.scraper.course_db_collector import collect_course_db_from_results
-                from src.scraper.netkeiba import NetkeibaClient, RaceListScraper
-                client = NetkeibaClient()
-                rls = RaceListScraper(client)
+                from src.scheduler_tasks import run_db_update as _core_db_update
                 sd = start_date or date
                 ed = end_date or date
-                if _db_update_state.get("cancel"):
-                    _db_update_state["error"] = "中断しました"
-                    return
-                collect_course_db_from_results(
-                    client, rls, sd, ed,
-                    COURSE_DB_PRELOAD_PATH,
-                    state_path=COURSE_DB_COLLECTOR_STATE_PATH,
-                )
-                _db_update_state["log"].append("✓ コースDB更新完了")
 
-                if _db_update_state.get("cancel"):
-                    _db_update_state["error"] = "中断しました"
-                    return
+                def _progress(step, total, msg):
+                    if _db_update_state.get("cancel"):
+                        raise InterruptedError("中断しました")
+                    _db_update_state["step"] = step
+                    _db_update_state["progress"] = f"[{step}/{total}] {msg}"
 
-                _db_update_state["step"] = 2
-                _db_update_state["progress"] = "[2/3] レース戦績DB更新中..."
-                _db_update_state["log"].append("レース戦績DB(race_log)更新開始")
-                try:
-                    from src.database import populate_race_log_from_predictions
-                    new_rows = populate_race_log_from_predictions()
-                    _db_update_state["log"].append(f"✓ race_log更新完了 (新規{new_rows:,}件)")
-                except Exception as e:
-                    logger.warning("race_log update failed: %s", e, exc_info=True)
-                    _db_update_state["log"].append(f"⚠ race_log更新失敗: {e}")
+                logs = _core_db_update(sd, progress_callback=_progress)
+                _db_update_state["log"].extend(logs)
 
-                if _db_update_state.get("cancel"):
-                    _db_update_state["error"] = "中断しました"
-                    return
-
-                _db_update_state["step"] = 3
-                _db_update_state["progress"] = "[3/3] 騎手・調教師キャッシュ再構築中..."
-                _db_update_state["log"].append("騎手・調教師キャッシュ再構築開始")
-                # 騎手・調教師キャッシュをクリア（次回アクセス時に再計算）
+                # 騎手・調教師キャッシュもクリア
                 try:
                     _personnel_stats_cache.clear()
                 except Exception:
-                    pass  # キャッシュ未初期化時は無視
-                _db_update_state["log"].append("✓ キャッシュ再構築完了")
+                    pass
 
                 _db_update_state["progress"] = "完了"
+            except InterruptedError:
+                _db_update_state["error"] = "中断しました"
             except Exception as e:
                 logger.warning("db update failed: %s", e, exc_info=True)
                 _db_update_state["error"] = str(e)
@@ -6406,118 +3071,6 @@ function dNavRefreshOdds(date){{
             if nav_end >= 0:
                 html = html[:old_nav_start] + html[nav_end + 6 :]
 
-        # 古い CSS を最新版に差し替え（再生成不要で即反映）
-        _OLD_CSS_MARKER = ".hds-row1{display:flex;align-items:center;gap:6px 8px;flex-wrap:wrap}"
-        _NEW_CSS_PATCH = (
-            ".hds-row1{display:flex;align-items:center;gap:3px 5px;flex-wrap:wrap}"
-        )
-        if _OLD_CSS_MARKER in html:
-            html = html.replace(_OLD_CSS_MARKER, _NEW_CSS_PATCH)
-            html = html.replace(
-                ".hds-row2{display:flex;align-items:center;gap:4px 10px;flex-wrap:wrap;padding-left:4px;margin-top:2px}",
-                ".hds-row2{display:flex;align-items:center;gap:3px 8px;flex-wrap:wrap;padding-left:4px;margin-top:3px}",
-            )
-        # 旧 nowrap パッチが適用済みの HTML も wrap に戻す
-        html = html.replace(
-            ".hds-row1{display:flex;align-items:center;gap:3px 5px;flex-wrap:nowrap;overflow-x:auto;scrollbar-width:none;white-space:nowrap}",
-            ".hds-row1{display:flex;align-items:center;gap:3px 5px;flex-wrap:wrap}",
-        )
-        html = html.replace(
-            ".hds-row2{display:flex;align-items:center;gap:3px 8px;flex-wrap:nowrap;padding-left:4px;margin-top:3px;white-space:nowrap}",
-            ".hds-row2{display:flex;align-items:center;gap:3px 8px;flex-wrap:wrap;padding-left:4px;margin-top:3px}",
-        )
-        # グレードバッジのサイズを拡大
-        html = html.replace(
-            ".hds-grade-item{display:inline-flex;align-items:center;gap:1px;font-size:11px}",
-            ".hds-grade-item{display:inline-flex;align-items:center;gap:2px;font-size:13px}",
-        )
-        html = html.replace(
-            ".hds-grade-label{font-size:9px;color:var(--muted)}",
-            ".hds-grade-label{font-size:11px;color:var(--muted);font-weight:600}",
-        )
-        html = html.replace(
-            ".hds-grades{display:flex;gap:5px;align-items:center}",
-            ".hds-grades{display:flex;gap:8px;align-items:center}",
-        )
-
-        # 勝率・連対率・複勝率カラーパッチ（旧HTMLのCSSデフォルト色を除去）
-        html = html.replace(
-            '.hds-wr-win{font-size:12px;font-weight:700;color:#1e40af}',
-            '.hds-wr-win{font-size:12px;font-weight:700}',
-        )
-        # 旧ティール色を除去（再生成で順位色が入る）
-        html = html.replace(
-            'class="hds-wr-win" style="color:#0f766e"',
-            'class="hds-wr-win"',
-        )
-
-        # 券種ラベル色分け + CSS色パッチ（既存HTMLに即反映）
-        _OLD_FTKT_TYPE = ".ftkt-type{font-weight:700;min-width:42px;color:var(--navy);font-size:13px}"
-        _NEW_FTKT_TYPE = (
-            ".ftkt-type{font-weight:700;min-width:42px;font-size:13px;color:#fff;padding:2px 8px;border-radius:4px;text-align:center}"
-            "\n.ftkt-type-tansho{background:#16a34a}"
-            "\n.ftkt-type-umaren{background:#1a6fa8}"
-            "\n.ftkt-type-sanren{background:#c0392b}"
-        )
-        if _OLD_FTKT_TYPE in html:
-            html = html.replace(_OLD_FTKT_TYPE, _NEW_FTKT_TYPE)
-        # 旧 ftkt-type クラスに券種別サブクラスを付与
-        html = html.replace(
-            '<span class="ftkt-type">馬連</span>',
-            '<span class="ftkt-type ftkt-type-umaren">馬連</span>',
-        )
-        html = html.replace(
-            '<span class="ftkt-type">三連複</span>',
-            '<span class="ftkt-type ftkt-type-sanren">三連複</span>',
-        )
-        html = html.replace(
-            '<span class="ftkt-type">単勝</span>',
-            '<span class="ftkt-type ftkt-type-tansho">単勝</span>',
-        )
-        # 自信度バッジCSS色パッチ（SS=緑, S=青, A=赤, B/C=黒, D/E=灰）
-        html = html.replace(
-            ".b-SS{background:#6a0dad;color:#fff}",
-            ".b-SS{background:#16a34a;color:#fff}",
-        )
-        html = html.replace(
-            ".b-S{background:var(--navy);color:#fff}",
-            ".b-S{background:#1a6fa8;color:#fff}",
-        )
-        html = html.replace(
-            ".b-A2{background:var(--blue);color:#fff}",
-            ".b-A2{background:#c0392b;color:#fff}",
-        )
-        html = html.replace(
-            ".b-B2{background:#5dade2;color:#fff}",
-            ".b-B2{background:#333;color:#fff}",
-        )
-        html = html.replace(
-            ".b-C2{background:var(--muted);color:#fff}",
-            ".b-C2{background:#333;color:#fff}",
-        )
-        # .b-E クラス追加（既存HTMLにない場合）
-        if ".b-E{" not in html and ".b-D{background:" in html:
-            html = html.replace(
-                ".b-D{background:#aaa;color:#fff}",
-                ".b-D{background:#aaa;color:#fff}.b-E{background:#aaa;color:#fff}",
-            )
-        # レース結果リンクを3ボタン化（旧フォーマット→新3ボタン、全箇所置換）
-        import re as _re3
-        _old_link_pat = _re3.compile(
-            r'<a href="(https://(?:race|nar)\.netkeiba\.com)/race/result\.html\?race_id=(\d+)"'
-            r'[^>]*>📋 レース結果・払戻</a>'
-        )
-        _bs = "display:inline-block;font-size:12px;font-weight:600;color:#fff;text-decoration:none;border-radius:4px;padding:3px 12px;margin-right:6px"
-        def _replace_link(m):
-            _lb = m.group(1)
-            _lid = m.group(2)
-            return (
-                f'<a href="{_lb}/odds/index.html?race_id={_lid}" target="_blank" rel="noopener" style="{_bs};background:#16a34a">オッズ取得</a>'
-                f'<a href="{_lb}/race/result.html?race_id={_lid}" target="_blank" rel="noopener" style="{_bs};background:#1a6fa8">レース結果</a>'
-                f'<a href="{_lb}/race/movie.html?race_id={_lid}" target="_blank" rel="noopener" style="{_bs};background:#c0392b">レース映像</a>'
-            )
-        html = _old_link_pat.sub(_replace_link, html)
-
         # ナビバー注入
         if 'class="d-nav-wrap"' not in html:
             nav_html = _build_nav_bar(filename)
@@ -6538,6 +3091,7 @@ function dNavRefreshOdds(date){{
                 )
                 _race_id = None
                 _is_jra = True
+                _pred = None
                 if os.path.isfile(_pred_file):
                     try:
                         with open(_pred_file, "r", encoding="utf-8") as _pf:
@@ -6549,14 +3103,37 @@ function dNavRefreshOdds(date){{
                                 break
                     except Exception:
                         pass
+                # pred.jsonからresult_cname/shutuba_cnameも取得（既に読み込み済みの_predを再利用）
+                _result_cname = None
+                _shutuba_cname = None
+                if _pred:
+                    for _r2 in _pred.get("races", []):
+                        if _r2.get("venue") == _vn and _r2.get("race_no") == _rn:
+                            _result_cname = _r2.get("result_cname")
+                            _shutuba_cname = _r2.get("shutuba_cname")
+                            break
                 if _race_id:
-                    _base = "https://race.netkeiba.com" if _is_jra else "https://nar.netkeiba.com"
                     _btn = "display:inline-block;font-size:12px;font-weight:600;color:#fff;text-decoration:none;border-radius:4px;padding:3px 12px;margin-right:6px"
+                    # JRA公式 vs NAR公式 vs netkeibaフォールバック
+                    if _is_jra:
+                        # JRA: 公式サイトリンク
+                        _result_url = f"https://www.jra.go.jp/JRADB/accessS.html?CNAME={_result_cname}" if _result_cname else "https://www.jra.go.jp/keiba/thisweek/seiseki/"
+                        _shutuba_url = f"https://www.jra.go.jp/JRADB/accessD.html?CNAME={_shutuba_cname}" if _shutuba_cname else "https://www.jra.go.jp/keiba/thisweek/syutsuba/"
+                        _odds_url = "https://www.jra.go.jp/keiba/thisweek/odds/"
+                        _movie_url = "https://www.jra.go.jp/keiba/thisweek/movie/"
+                    else:
+                        # NAR: 公式サイトリンク
+                        _nar_base = "https://nar.netkeiba.com"
+                        _result_url = f"{_nar_base}/race/result.html?race_id={_race_id}"
+                        _shutuba_url = f"{_nar_base}/race/shutuba.html?race_id={_race_id}"
+                        _odds_url = f"{_nar_base}/odds/index.html?race_id={_race_id}"
+                        _movie_url = f"{_nar_base}/race/movie.html?race_id={_race_id}"
                     _rlink = (
                         f'  <div style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap">'
-                        f'<a href="{_base}/odds/index.html?race_id={_race_id}" target="_blank" rel="noopener" style="{_btn};background:#16a34a">オッズ取得</a>'
-                        f'<a href="{_base}/race/result.html?race_id={_race_id}" target="_blank" rel="noopener" style="{_btn};background:#1a6fa8">レース結果</a>'
-                        f'<a href="{_base}/race/movie.html?race_id={_race_id}" target="_blank" rel="noopener" style="{_btn};background:#c0392b">レース映像</a>'
+                        f'<a href="{_odds_url}" target="_blank" rel="noopener" style="{_btn};background:#16a34a">オッズ</a>'
+                        f'<a href="{_shutuba_url}" target="_blank" rel="noopener" style="{_btn};background:#2563eb">出馬表</a>'
+                        f'<a href="{_result_url}" target="_blank" rel="noopener" style="{_btn};background:#1a6fa8">レース結果</a>'
+                        f'<a href="{_movie_url}" target="_blank" rel="noopener" style="{_btn};background:#c0392b">レース映像</a>'
                         f"</div>\n"
                     )
                     _inject_tgt = '\n</div>\n<div class="card">\n<div class="section-title">■ レース概要</div>'
@@ -6690,77 +3267,8 @@ function dNavRefreshOdds(date){{
                 except Exception:
                     pass
 
-        # 勝率/連対率/複勝率の順位色を動的適用（古いHTML + 新HTMLの両方に対応）
-        # 1位=緑, 2位=青, 3位=赤, 平均以上=黒, 平均以下=灰
-        _rate_color_js = """<script>
-(function(){
-  // 順位色を計算・適用（ユニーク値でランキング）
-  function applyColors(arr){
-    if(arr.length === 0) return;
-    var uniq = [];
-    var seen = {};
-    arr.forEach(function(x){
-      var k = Math.round(x.val * 100);
-      if(!seen[k]){seen[k]=true; uniq.push(x.val);}
-    });
-    uniq.sort(function(a,b){return b-a});
-    var avg = arr.reduce(function(s,x){return s+x.val},0) / arr.length;
-    arr.forEach(function(item){
-      var c;
-      if(uniq.length >= 1 && item.val >= uniq[0] - 0.001) c = '#16a34a';
-      else if(uniq.length >= 2 && item.val >= uniq[1] - 0.001) c = '#1a6fa8';
-      else if(uniq.length >= 3 && item.val >= uniq[2] - 0.001) c = '#c0392b';
-      else if(item.val >= avg) c = '#333';
-      else c = '#aaa';
-      item.el.style.color = c;
-    });
-  }
-  // --- hds-row2 カード（Level 3）---
-  var cg = {win:[], p2:[], p3:[]};
-  document.querySelectorAll('.hds-row2').forEach(function(row){
-    var labels = row.querySelectorAll('.hds-wr-label');
-    var vals = row.querySelectorAll('.hds-wr-win');
-    labels.forEach(function(lbl, i){
-      if(i >= vals.length) return;
-      var v = parseFloat(vals[i].textContent);
-      if(isNaN(v)) return;
-      var key = lbl.textContent.trim() === '勝' ? 'win' : lbl.textContent.trim() === '連' ? 'p2' : 'p3';
-      cg[key].push({el: vals[i], val: v});
-    });
-  });
-  applyColors(cg.win);
-  applyColors(cg.p2);
-  applyColors(cg.p3);
-  // --- テーブル（Level 6 確率表 / Level 2 全馬一覧）---
-  document.querySelectorAll('table thead tr').forEach(function(tr){
-    var ths = tr.querySelectorAll('th');
-    var colMap = {};
-    ths.forEach(function(th, i){
-      var t = th.textContent.trim();
-      if(t === '勝率') colMap.win = i;
-      if(t === '連対率') colMap.p2 = i;
-      if(t === '複勝率') colMap.p3 = i;
-    });
-    if(colMap.win === undefined) return;
-    var tbody = tr.closest('table').querySelector('tbody');
-    if(!tbody) return;
-    var tg = {win:[], p2:[], p3:[]};
-    tbody.querySelectorAll('tr').forEach(function(row){
-      var cells = row.querySelectorAll('td');
-      ['win','p2','p3'].forEach(function(key){
-        if(colMap[key] !== undefined && colMap[key] < cells.length){
-          var v = parseFloat(cells[colMap[key]].textContent);
-          if(!isNaN(v)) tg[key].push({el: cells[colMap[key]], val: v});
-        }
-      });
-    });
-    applyColors(tg.win);
-    applyColors(tg.p2);
-    applyColors(tg.p3);
-  });
-})();
-</script>"""
-        html = html.replace("</body>", _rate_color_js + "\n</body>", 1)
+        # 勝率/連対率/複勝率の色はcomposite順位連動でサーバーサイド適用済み
+        # （JS上書き不要）
 
         # フォーメーション買い目のプレーン番号をマーク付き表示に変換
         html = _patch_formation_combo_marks(html)
@@ -7071,16 +3579,13 @@ function dNavRefreshOdds(date){{
             avg_f3 = pace_avg["first_3f"]
             avg_l3 = pace_avg["last_3f"]
             ratio = avg_f3 / avg_l3 if avg_l3 else 1.0
-            if ratio >= 1.12:
-                pace_type = "HH（超ハイ）"
-            elif ratio >= 1.06:
-                pace_type = "HM（ハイ）"
-            elif ratio >= 1.0:
-                pace_type = "MM（ミドル）"
+            # ペース区分: 新3段階 (H/M/S)
+            if ratio >= 1.06:
+                pace_type = "H（ハイ）"
             elif ratio >= 0.94:
-                pace_type = "MS（スロー気味）"
+                pace_type = "M（ミドル）"
             else:
-                pace_type = "SS（スロー）"
+                pace_type = "S（スロー）"
             pace_avg["pace_type"] = pace_type
         else:
             pace_avg["pace_type"] = "—"
@@ -7383,16 +3888,13 @@ function dNavRefreshOdds(date){{
             l3v = cp.get("last_3f")
             if f3v and l3v and l3v > 0:
                 ratio_ = f3v / l3v
-                if ratio_ >= 1.12:
-                    class_avg[cls]["pace_type"] = "HH"
-                elif ratio_ >= 1.06:
-                    class_avg[cls]["pace_type"] = "HM"
-                elif ratio_ >= 1.0:
-                    class_avg[cls]["pace_type"] = "MM"
+                # ペース区分: 新3段階 (H/M/S)
+                if ratio_ >= 1.06:
+                    class_avg[cls]["pace_type"] = "H"
                 elif ratio_ >= 0.94:
-                    class_avg[cls]["pace_type"] = "MS"
+                    class_avg[cls]["pace_type"] = "M"
                 else:
-                    class_avg[cls]["pace_type"] = "SS"
+                    class_avg[cls]["pace_type"] = "S"
             else:
                 class_avg[cls]["pace_type"] = None
 
@@ -7478,6 +3980,21 @@ function dNavRefreshOdds(date){{
 
     # ── 騎手/調教師 成績集計（predictions × race_results）──
     _personnel_stats_cache: dict = {}
+    # 位置取りキャッシュ（騎手/調教師の前行き率・4角率・軌跡データ）
+    _position_cache: dict = {}  # {"jockey": {...}, "trainer": {...}}
+
+    def _load_position_cache() -> dict:
+        """ML位置取りキャッシュ（騎手/調教師）を読み込み"""
+        if _position_cache:
+            return _position_cache
+        import json as _json_pc
+        _ml_dir = os.path.join(os.path.dirname(__file__), "..", "data", "ml")
+        for kind, fname in [("jockey", "position_jockey_cache.json"), ("trainer", "position_trainer_cache.json")]:
+            fpath = os.path.join(_ml_dir, fname)
+            if os.path.exists(fpath):
+                with open(fpath, "r", encoding="utf-8") as _f:
+                    _position_cache[kind] = _json_pc.load(_f)
+        return _position_cache
 
     @app.route("/api/db/personnel_agg")
     def api_db_personnel_agg():
@@ -7590,6 +4107,21 @@ function dNavRefreshOdds(date){{
                 _p_detail = _personnel_stats_cache.get("_period", {})
             if _p_detail.get("min"):
                 st["period_str"] = f"{_p_detail['min']}〜{_p_detail['max']}"
+            # 位置取りデータを付加（詳細モード）
+            if person_type in ("jockey", "trainer"):
+                _pc = _load_position_cache().get(person_type, {})
+                if _pc:
+                    st["position_stats"] = {
+                        "nige_rate": _pc.get("nige_rate", {}).get(pid_detail),
+                        "mae_iki_rate": _pc.get("mae_iki_rate", {}).get(pid_detail),
+                        "ds_mae_iki_rate": _pc.get("ds_mae_iki_rate", {}).get(pid_detail),
+                        "pos_4c_nige_rate": _pc.get("4c_nige_rate", {}).get(pid_detail),
+                        "pos_4c_mae_iki_rate": _pc.get("4c_mae_iki_rate", {}).get(pid_detail),
+                        "pos_4c_ds_mae_iki_rate": _pc.get("4c_ds_mae_iki_rate", {}).get(pid_detail),
+                        "pos_delta": _pc.get("pos_delta", {}).get(pid_detail),
+                        "hold_rate": _pc.get("hold_rate", {}).get(pid_detail),
+                        "ds_pos_delta": _pc.get("ds_pos_delta", {}).get(pid_detail),
+                    }
             return jsonify(**st)
 
         # 一覧
@@ -7768,8 +4300,8 @@ function dNavRefreshOdds(date){{
         # 能力トレンド
         "trend_position_slope": ("着順トレンド", "直近着順の上昇/下降傾向"),
         "trend_deviation_slope": ("偏差値トレンド", "偏差値の上昇/下降傾向"),
-        "dev_run1": ("前走偏差値", "前走の能力偏差値"),
-        "dev_run2": ("前々走偏差値", "前々走の能力偏差値"),
+        "dev_run1_adj": ("前走偏差値", "前走の能力偏差値（グレード補正）"),
+        "dev_run2_adj": ("前々走偏差値", "前々走の能力偏差値（グレード補正）"),
         "chakusa_index_avg3": ("着差指数", "直近3走の着差指数平均"),
         # 展開・脚質
         "horse_running_style": ("脚質", "逃げ/先行/好位/中団/差し/追込"),
@@ -7797,12 +4329,219 @@ function dNavRefreshOdds(date){{
         "jt_combo_wr_30d": ("騎手×調教師勝率30日", "直近30日のコンビ勝率"),
         "jt_combo_place_rate_30d": ("騎手×調教師複勝率30日", "直近30日のコンビ複勝率"),
         "weight_kg_trend_3run": ("斤量トレンド", "直近3走の斤量変化傾向"),
+        # コース構造
+        "first_corner_m": ("初角実距離", "スタートから最初のコーナーまでの実距離"),
+        # 騎手×条件別（複合条件）
+        "jockey_surf_dist_wr": ("騎手×芝ダ×距離勝率", "芝/ダートと距離帯の組合せ勝率"),
+        "jockey_surf_dist_pr": ("騎手×芝ダ×距離複勝率", "芝/ダートと距離帯の組合せ複勝率"),
+        "jockey_sim_venue_wr": ("騎手×類似場勝率", "類似度加重の競馬場における勝率"),
+        "jockey_sim_venue_pr": ("騎手×類似場複勝率", "類似度加重の競馬場における複勝率"),
+        "jockey_sim_venue_dist_wr": ("騎手×類似場×距離勝率", "類似場・距離の組合せ勝率"),
+        "jockey_sim_venue_dist_pr": ("騎手×類似場×距離複勝率", "類似場・距離の組合せ複勝率"),
+        # 調教師×条件別（複合条件）
+        "trainer_surf_dist_wr": ("調教師×芝ダ×距離勝率", "芝/ダートと距離帯の組合せ勝率"),
+        "trainer_surf_dist_pr": ("調教師×芝ダ×距離複勝率", "芝/ダートと距離帯の組合せ複勝率"),
+        "trainer_sim_venue_wr": ("調教師×類似場勝率", "類似度加重の競馬場における勝率"),
+        "trainer_sim_venue_pr": ("調教師×類似場複勝率", "類似度加重の競馬場における複勝率"),
+        "trainer_sim_venue_dist_wr": ("調教師×類似場×距離勝率", "類似場・距離の組合せ勝率"),
+        "trainer_sim_venue_dist_pr": ("調教師×類似場×距離複勝率", "類似場・距離の組合せ複勝率"),
+        # コーナー別位置変化
+        "avg_pos_change_3to4c": ("3→4角前進量", "3角→4角の位置前進量の平均"),
+        "pos_change_3to4c_last": ("前走3→4角前進量", "前走の3角→4角位置前進量"),
+        "avg_pos_change_1to4c": ("1→4角総移動量", "1角→4角の総移動量の平均"),
+        "front_hold_rate": ("先頭維持率", "1角先頭30%時に4角でも維持できた率"),
+        # 距離ロス・コーナーロス
+        "past_avg_outer_ratio": ("平均外回り度", "直近5走の全コーナー平均相対位置"),
+        "past_outer_ratio_last": ("前走外回り度", "前走の全コーナー平均相対位置"),
+        "past_corner_loss_sec_avg": ("コーナーロス秒平均", "直近5走の推定コーナーロス秒平均"),
+        "past_corner_loss_sec_last": ("前走コーナーロス秒", "前走の推定コーナーロス秒"),
+        "past_pos_spread": ("コーナー間位置変動幅", "直近5走のコーナー間位置変動幅平均"),
+        # 着差指数再設計
+        "margin_norm_last": ("頭数補正着差(前走)", "前走の頭数補正着差"),
+        "margin_norm_avg3": ("頭数補正着差(直近3走)", "直近3走の頭数補正着差平均"),
+        # タイム指数（走破タイム補正）
+        "speed_index_last": ("タイム指数(前走)", "前走のタイム指数"),
+        "speed_index_avg3": ("タイム指数(直近3走)", "直近3走タイム指数平均"),
+        "speed_index_best3": ("タイム指数ベスト3", "直近3走タイム指数最高値"),
+        # ペース適性
+        "place_rate_fast_pace": ("ハイペース複勝率", "ハイペース時の複勝率"),
+        "place_rate_slow_pace": ("スローペース複勝率", "スローペース時の複勝率"),
+        "pace_pref_score": ("ペース得意度", "ハイペース複勝率−スローペース複勝率"),
+        "pace_count_fast": ("ハイペース出走数", "ハイペース出走数"),
+        "pace_count_slow": ("スローペース出走数", "スローペース出走数"),
+        "pace_norm_last": ("前走ペース指標", "前走のレースペース指標"),
+        "pace_norm_avg3": ("ペース指標(直近3走)", "直近3走のペース指標平均"),
+        # 展開予測（フィールド脚質構成）
+        "front_runner_count_in_race": ("逃げ先行馬数", "フィールド内の逃げ・先行馬数"),
+        "pace_pressure_index": ("ペース圧力指数", "逃げ・先行馬比率"),
+        "style_pace_affinity": ("脚質展開相性", "脚質×展開相性スコア"),
+        # ニック理論・血統
+        "sire_x_bms_place_rate": ("父×母父複勝率", "父×母父の組み合わせ複勝率"),
+        "sire_bms_wr": ("父×母父勝率", "父と母父の組み合わせ勝率"),
+        # 血統context_pr（統合版）
+        "sire_context_pr": ("父条件適性", "父の現レース条件に最適な複勝率"),
+        "bms_context_pr": ("母父条件適性", "母父の現レース条件に最適な複勝率"),
+        # 馬context_pr（統合版）
+        "horse_context_pr": ("馬条件適性", "馬の現条件に最適な複勝率"),
+        # グレード補正版タイム指数
+        "speed_index_adj_6m": ("タイム指数補正(半年)", "グレード補正済み半年タイム指数平均"),
+        "speed_index_adj_best3": ("タイム指数補正ベスト", "グレード補正済み直近3走ベスト"),
+        # 父馬×条件別
+        "sire_surf_dist_wr": ("父×芝ダ×距離勝率", "父の産駒の芝/ダート×距離帯勝率"),
+        "sire_surf_dist_pr": ("父×芝ダ×距離複勝率", "父の産駒の芝/ダート×距離帯複勝率"),
+        "sire_sim_venue_wr": ("父×類似場勝率", "父の産駒の類似度加重勝率"),
+        "sire_sim_venue_pr": ("父×類似場複勝率", "父の産駒の類似度加重複勝率"),
+        "sire_sim_venue_dist_wr": ("父×類似場×距離勝率", "父の産駒の類似場・距離勝率"),
+        "sire_sim_venue_dist_pr": ("父×類似場×距離複勝率", "父の産駒の類似場・距離複勝率"),
+        # 母父×条件別
+        "bms_surf_dist_wr": ("母父×芝ダ×距離勝率", "母父の産駒の芝/ダート×距離帯勝率"),
+        "bms_surf_dist_pr": ("母父×芝ダ×距離複勝率", "母父の産駒の芝/ダート×距離帯複勝率"),
+        "bms_sim_venue_wr": ("母父×類似場勝率", "母父の産駒の類似度加重勝率"),
+        "bms_sim_venue_pr": ("母父×類似場複勝率", "母父の産駒の類似度加重複勝率"),
+        "bms_sim_venue_dist_wr": ("母父×類似場×距離勝率", "母父の産駒の類似場・距離勝率"),
+        "bms_sim_venue_dist_pr": ("母父×類似場×距離複勝率", "母父の産駒の類似場・距離複勝率"),
+        # Phase 10B: 展開特徴量追加
+        "field_pace_variance": ("フィールド脚質分散", "フィールド内脚質の均等vsペース偏り"),
+        "early_position_est": ("序盤位置取り推定", "枠番×脚質からの序盤位置取り推定"),
+        "last3f_pace_diff": ("上がり差分", "上がり3F推定−位置推定の差分"),
+        "pace_horse_match": ("馬ペース相性", "馬のペース選好×予想ペースの一致度"),
+        # Phase 10B: 血統特徴量追加
+        "sire_credibility": ("父馬信頼度", "父馬の産駒成績信頼度"),
+        "bms_credibility": ("母父信頼度", "母父の産駒成績信頼度"),
+        "sire_surface_pref": ("父馬芝ダ適性差", "父馬の芝PR−ダートPRの差"),
+        "bms_surface_pref": ("母父芝ダ適性差", "母父の芝PR−ダートPRの差"),
+        "sire_dist_pref": ("父馬距離適性差", "父馬の短距離PR−長距離PRの差"),
+        "sire_recent_trend": ("父馬産駒トレンド", "父馬の直近産駒成績トレンド"),
+        # Phase 10B: 調教師特徴量追加
+        "trainer_class_trend": ("調教師クラス推移", "直近20走のクラスレベル推移"),
+        "trainer_rest_wr": ("調教師休養明け複勝率", "休養明け馬の複勝率"),
+        # Phase 11: タイム指数マルチウィンドウ
+        "speed_index_avg_1y": ("タイム指数(1年平均)", "過去1年のタイム指数平均"),
+        "speed_index_best_1y": ("タイム指数(1年ベスト)", "過去1年のタイム指数ベスト"),
+        "speed_index_avg_6m": ("タイム指数(半年平均)", "過去半年のタイム指数平均"),
+        "speed_index_trend": ("タイム指数トレンド", "過去1年のタイム指数傾き"),
+        # Phase 11: 馬の条件別複勝率
+        "horse_pr_2y": ("馬複勝率(2年)", "過去2年の複勝率"),
+        "horse_venue_pr": ("馬×場複勝率", "当競馬場での複勝率"),
+        "horse_dist_pr": ("馬×距離複勝率", "当距離帯の複勝率"),
+        "horse_smile_pr": ("馬×SMILE複勝率", "当SMILE区分の複勝率"),
+        "horse_style_pr": ("馬×脚質複勝率", "脚質帯での複勝率"),
+        "horse_gate_pr": ("馬×枠番複勝率", "枠番帯の複勝率"),
+        "horse_jockey_pr": ("馬×騎手複勝率", "当騎手との複勝率"),
+        # Phase 11: 騎手の条件別複勝率
+        "jockey_pr_2y": ("騎手複勝率(2年)", "過去2年の複勝率"),
+        "jockey_venue_pr": ("騎手×場複勝率", "当競馬場の複勝率"),
+        "jockey_dist_pr": ("騎手×距離複勝率", "当距離帯の複勝率"),
+        "jockey_smile_pr": ("騎手×SMILE複勝率", "当SMILE区分の複勝率"),
+        "jockey_cond_pr": ("騎手×馬場状態複勝率", "当馬場状態の複勝率"),
+        # Phase 11: 調教師の条件別複勝率
+        "trainer_pr_2y": ("調教師複勝率(2年)", "過去2年の複勝率"),
+        "trainer_venue_pr": ("調教師×場複勝率", "当競馬場の複勝率"),
+        "trainer_dist_pr": ("調教師×距離複勝率", "当距離帯の複勝率"),
+        "trainer_smile_pr": ("調教師×SMILE複勝率", "当SMILE区分の複勝率"),
+        "trainer_cond_pr": ("調教師×馬場状態複勝率", "当馬場状態の複勝率"),
+        # Phase 11: 父の条件別複勝率
+        "sire_smile_pr": ("父×SMILE複勝率", "SMILE区分の産駒複勝率"),
+        "sire_cond_pr": ("父×馬場状態複勝率", "馬場状態別の産駒複勝率"),
+        "sire_venue_pr": ("父×場複勝率", "当競馬場の産駒複勝率"),
+        # Phase 11: 母父の条件別複勝率
+        "bms_smile_pr": ("母父×SMILE複勝率", "SMILE区分の産駒複勝率"),
+        "bms_cond_pr": ("母父×馬場状態複勝率", "馬場状態別の産駒複勝率"),
+        "bms_venue_pr": ("母父×場複勝率", "当競馬場の産駒複勝率"),
+        "bms_dist_pr": ("母父×距離複勝率", "SMILE区分複勝率"),
+        # Phase 12: 条件別複勝率追加
+        "horse_cond_pr": ("馬×馬場状態複勝率", "馬の馬場状態別複勝率"),
+        "jockey_pace_pr": ("騎手×ペース複勝率", "騎手のペース別複勝率"),
+        "jockey_style_pr": ("騎手×脚質複勝率", "騎手の脚質別複勝率"),
+        "jockey_gate_pr": ("騎手×枠番複勝率", "騎手の枠番帯別複勝率"),
+        "jockey_horse_pr": ("騎手×馬複勝率", "騎手の騎乗馬別複勝率"),
+        "trainer_pace_pr": ("調教師×ペース複勝率", "調教師のペース別複勝率"),
+        "trainer_style_pr": ("調教師×脚質複勝率", "調教師の脚質別複勝率"),
+        "trainer_gate_pr": ("調教師×枠番複勝率", "調教師の枠番帯別複勝率"),
+        "trainer_horse_pr": ("調教師×馬複勝率", "調教師の騎乗馬別複勝率"),
+        "sire_pace_pr": ("父×ペース複勝率", "父のペース別産駒複勝率"),
+        "sire_style_pr": ("父×脚質複勝率", "父の脚質別産駒複勝率"),
+        "sire_gate_pr": ("父×枠番複勝率", "父の枠番帯別産駒複勝率"),
+        "sire_jockey_pr": ("父×騎手複勝率", "父×騎手の産駒複勝率"),
+        "sire_trainer_pr": ("父×調教師複勝率", "父×調教師の産駒複勝率"),
+        "bms_pace_pr": ("母父×ペース複勝率", "母父のペース別産駒複勝率"),
+        "bms_style_pr": ("母父×脚質複勝率", "母父の脚質別産駒複勝率"),
+        "bms_gate_pr": ("母父×枠番複勝率", "母父の枠番帯別産駒複勝率"),
+        "bms_jockey_pr": ("母父×騎手複勝率", "母父×騎手の産駒複勝率"),
+        "bms_trainer_pr": ("母父×調教師複勝率", "母父×調教師の産駒複勝率"),
+        # 前走オッズ
+        "prev_odds_1": ("前走オッズ", "前走の単勝オッズ"),
+        "prev_odds_2": ("前々走オッズ", "前々走の単勝オッズ"),
+        # ---- 調教特徴量 [24本] ----
+        # A: タイム系（自馬比較）
+        "train_final_4f": ("追切4Fタイム", "最終追い切りの4Fタイム(秒)"),
+        "train_final_3f_self_best_ratio": ("追切3F自馬ベスト比", "今回3Fの自馬過去ベストとの比率"),
+        "train_final_3f_trend": ("追切3Fトレンド", "直近3走+今回の3Fタイム傾き(負=改善)"),
+        "train_final_3f_rank_in_race": ("追切3F順位", "レース出走馬内での追切3F順位"),
+        "train_final_3f_dev": ("追切3F偏差値", "レース出走馬内での追切3F偏差値"),
+        "train_final_1f_dev": ("追切1F偏差値", "レース出走馬内での追切1F偏差値"),
+        "train_final_1f_trend": ("追切1Fトレンド", "直近3走+今回の1Fタイム傾き(負=改善)"),
+        # B: ラスト加速・余力系
+        "train_first1f_pace": ("追切入り1Fペース", "追切の入り1F区間タイム(4F-3F)"),
+        # C: 強さ効率系
+        "train_intensity_max": ("追切最大強さ", "全追い切り中の最大強度(0.5-3.0)"),
+        "train_3f_per_intensity": ("追切3F効率", "3Fタイム÷強さ(低い=強度の割に速い)"),
+        "train_efficiency_self_diff": ("追切効率自馬差", "3F効率の自馬過去平均との差"),
+        "train_narinori_3f": ("馬なり時3F", "馬なり追切時の3Fタイム(余力指標)"),
+        # D: 厩舎基準偏差系
+        "train_3f_trainer_dev": ("厩舎3F偏差値", "厩舎×コース基準での3F偏差値"),
+        "train_1f_trainer_dev": ("厩舎1F偏差値", "厩舎×コース基準での1F偏差値"),
+        "train_trainer_intensity_diff": ("厩舎強さ差", "追切強さの厩舎平均との差"),
+        # E: ボリューム・パターン系
+        "train_volume_self_diff": ("追切本数自馬差", "追切本数の自馬過去平均との差"),
+        "train_intensity_pattern": ("追切強さ推移", "追切の強さ推移パターン(0-3)"),
+        "train_course_primary": ("追切主コース", "主に使用した追切コース種別"),
+        # F: 併せ馬系
+        "train_partner_margin": ("併せ馬着差", "最終併せ馬の着差(先着+/遅れ-秒)"),
+        "train_partner_win_rate": ("併せ馬先着率", "全併せ馬での先着率"),
+        # G: コメント・評価系
+        "train_stable_mark": ("厩舎評価マーク", "厩舎コメント先頭の評価(◎3/○2/△1/無0)"),
+        "train_comment_sentiment": ("追切コメント感情", "ポジティブ・ネガティブの正味スコア"),
+        # H: 複合・状態推定系
+        "train_state_score": ("総合状態スコア", "タイム差・効率・厩舎偏差値の加重合成"),
+        "train_readiness_index": ("仕上がり指数", "本数・強さ推移・自馬比較の総合仕上がり度"),
     }
     _feature_imp_cache: list = []
 
     # ──────────────────────────────────────────────
     # 競馬場研究 API
     # ──────────────────────────────────────────────
+
+    # 競馬場別幅員テーブル（芝/ダート別）
+    _VENUE_WIDTH = {
+        # JRA 10場
+        "05": {"芝": "31-41m", "ダート": "25m"},     # 東京
+        "06": {"芝": "20-32m", "ダート": "20-25m"},   # 中山
+        "08": {"芝": "27-38m", "ダート": "25m"},      # 京都
+        "09": {"芝": "24-29m", "ダート": "22-25m"},   # 阪神
+        "07": {"芝": "25-30m", "ダート": "25m"},      # 中京
+        "02": {"芝": "20-25m", "ダート": "20m"},      # 新潟
+        "10": {"芝": "20-30m", "ダート": "20-24m"},   # 小倉
+        "01": {"芝": "20-27m", "ダート": "20-25m"},   # 福島
+        "04": {"芝": "20-29m", "ダート": "20m"},      # 函館
+        "03": {"芝": "25-27m", "ダート": "20m"},      # 札幌
+        # NAR 15場
+        "30": {"ダート": "25-28m"},                    # 門別
+        "65": {"ダート": "2m"},                        # 帯広（ばんえい）
+        "35": {"芝": "25m", "ダート": "25m"},          # 盛岡
+        "36": {"ダート": "20m"},                       # 水沢
+        "42": {"ダート": "16-21.5m"},                  # 浦和
+        "43": {"ダート": "20-25m"},                    # 船橋
+        "44": {"ダート": "23.6-28.6m"},                # 大井
+        "45": {"ダート": "25m"},                       # 川崎
+        "46": {"ダート": "20m"},                       # 金沢
+        "47": {"ダート": "20-25m"},                    # 笠松
+        "48": {"ダート": "30m"},                       # 名古屋
+        "50": {"ダート": "20-25m"},                    # 園田
+        "51": {"ダート": "20-25m"},                    # 姫路
+        "54": {"ダート": "22-27m"},                    # 高知
+        "55": {"ダート": "20-25m"},                    # 佐賀
+    }
 
     @app.route("/api/venue/profile")
     def api_venue_profile():
@@ -7845,6 +4584,7 @@ function dNavRefreshOdds(date){{
         similar = get_similar_venues(venue_name, n=5)
         weights = get_composite_weights(venue_name)
         courses = [c for c in ALL_COURSES if c.venue_code == code]
+        venue_widths = _VENUE_WIDTH.get(code, {})
         course_list = []
         for c in sorted(courses, key=lambda x: (x.surface, x.distance)):
             course_list.append({
@@ -7856,8 +4596,10 @@ function dNavRefreshOdds(date){{
                 "corner_count": c.corner_count,
                 "corner_type": c.corner_type,
                 "first_corner": c.first_corner,
+                "first_corner_m": c.first_corner_m,
                 "slope_type": c.slope_type,
                 "inside_outside": c.inside_outside,
+                "width_m": venue_widths.get(c.surface, ""),
             })
 
         sim_list = []
@@ -8154,6 +4896,35 @@ function dNavRefreshOdds(date){{
             return jsonify(result)
         except Exception as e:
             return jsonify(error=str(e))
+
+    # ── ヘルスチェックエンドポイント ──────────────────────────
+    _start_time = time.time()
+
+    @app.route("/api/health")
+    def api_health():
+        """ヘルスチェック: uptime, メモリ使用量, DB接続状態を返す"""
+        mem_mb = None
+        try:
+            import psutil
+            mem_mb = round(psutil.Process().memory_info().rss / 1024 / 1024, 1)
+        except ImportError:
+            pass
+        db_ok = False
+        try:
+            import sqlite3
+            conn = sqlite3.connect(os.path.join("data", "keiba.db"), timeout=2)
+            conn.execute("SELECT 1")
+            conn.close()
+            db_ok = True
+        except Exception:
+            pass
+        return jsonify({
+            "status": "ok",
+            "uptime_sec": round(time.time() - _start_time),
+            "memory_mb": mem_mb,
+            "db_connected": db_ok,
+            "pid": os.getpid(),
+        })
 
     return app
 

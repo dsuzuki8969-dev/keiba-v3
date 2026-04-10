@@ -242,18 +242,32 @@ class NetkeibaClient:
 
         def _validate_and_clean(content: str, file_path: str, desc: str) -> Optional[str]:
             """HTML検証。無効なら警告ログを出してファイルを削除し None を返す"""
-            if _is_valid_html(content):
-                return content
-            logger.warning(
-                "キャッシュ破損を検出（%s）: %s → 削除して再取得します",
-                desc,
-                file_path,
-            )
-            try:
-                os.remove(file_path)
-            except OSError:
-                pass
-            return None
+            if not _is_valid_html(content):
+                logger.warning(
+                    "キャッシュ破損を検出（%s）: %s → 削除して再取得します",
+                    desc,
+                    file_path,
+                )
+                try:
+                    os.remove(file_path)
+                except OSError:
+                    pass
+                return None
+            # result.html でレース結果が未確定（レース前にキャッシュされた出馬表）の場合は無効扱い
+            if "race_result.html" in file_path and "<tbody>" in content:
+                # <tbody> が空（結果テーブルにデータ行がない）→ レース前のページ
+                import re as _re_tbody
+                if _re_tbody.search(r"<tbody>\s*</tbody>", content):
+                    logger.info(
+                        "レース結果未確定キャッシュを検出: %s → 削除して再取得します",
+                        file_path,
+                    )
+                    try:
+                        os.remove(file_path)
+                    except OSError:
+                        pass
+                    return None
+            return content
 
         lz4_path = cache_path + ".lz4"
         if _HAS_LZ4 and os.path.exists(lz4_path):
@@ -383,6 +397,17 @@ class NetkeibaClient:
         if params:
             key += "_" + "_".join(f"{k}={v}" for k, v in sorted(params.items()))
         return key[:200]
+
+    def has_cache(self, url: str, params: dict = None) -> bool:
+        """指定URLのキャッシュが存在するか（TTL無視・存在のみ判定）"""
+        cache_key = self._cache_key(url, params)
+        cache_path = os.path.join(self.cache_dir, cache_key + ".html")
+        # lz4 圧縮版も確認
+        if os.path.exists(cache_path):
+            return True
+        if os.path.exists(cache_path + ".lz4"):
+            return True
+        return False
 
 
 # ============================================================
@@ -765,7 +790,7 @@ class RaceEntryParser:
                         straight_m=200 if _is_banei_course else 350,
                         corner_count=0 if _is_banei_course else 4,
                         corner_type="" if _is_banei_course else "大回り",
-                        first_corner="" if _is_banei_course else "平均",
+                        _first_corner="" if _is_banei_course else "平均",
                         slope_type="坂あり" if _is_banei_course else "坂なし",
                         inside_outside="なし" if _is_banei_course else inside_outside,
                         is_jra=False if _is_banei_course else True,
@@ -849,8 +874,9 @@ class RaceEntryParser:
                 if not horse_id:
                     continue
 
-                # 性齢・斤量・騎手・調教師・馬体重は db.netkeiba.com/horse で後補完
-                sex, age = "牡", 4
+                # 性齢・斤量・騎手・調教師・馬体重は shutuba.html or db.netkeiba.com/horse で後補完
+                # デフォルトは空値（補完失敗時に「不明」として検出可能にする）
+                sex, age = "", 0
                 weight_kg = 55.0
                 jockey_name, jockey_id = "", ""
                 trainer_name, trainer_id = "", ""
@@ -1559,18 +1585,29 @@ class HorseHistoryParser:
         else:
             pos_text = cells[21].get_text(strip=True) if len(cells) > 21 else ""
         corners = self._parse_corners(pos_text)
+        # コーナー通過順の妥当性チェック: 頭数を超える値は不正データ
+        if corners and max(corners) > field_count * 2:
+            corners = []
         pos_4c = corners[-1] if corners else self._parse_4c(pos_text)
+        if pos_4c > field_count * 2:
+            pos_4c = field_count // 2 + 1  # 中団デフォルト
         pace_text = cells[22].get_text(strip=True) if len(cells) > 22 else ""
         first_3f = self._parse_first3f(pace_text)
         last3f_text = cells[23].get_text(strip=True) if len(cells) > 23 else ""
-        last3f = float(last3f_text) if re.match(r"\d+\.?\d*", last3f_text) else (0.0 if _is_banei else 35.5)
+        last3f = 0.0 if _is_banei else 35.5  # デフォルト
+        if re.match(r"\d+\.?\d*", last3f_text):
+            _l3f_val = float(last3f_text)
+            if 25.0 <= _l3f_val <= 50.0:  # 上がり3Fの妥当範囲
+                last3f = _l3f_val
         # ペース: 戦績テーブルにはH/M/Sが無いため first_3f から推定
         pace = None
         if first_3f is not None:
             try:
                 from src.utils.pace_inference import infer_pace_from_first3f
 
-                pace = infer_pace_from_first3f(distance, surface, first_3f)
+                # course_idからvenue_code抽出（"44_ダート_1600"→"44"）
+                _vc = course_id.split("_")[0] if course_id else None
+                pace = infer_pace_from_first3f(distance, surface, first_3f, venue_code=_vc)
             except Exception:
                 logger.debug("pace inference failed", exc_info=True)
 

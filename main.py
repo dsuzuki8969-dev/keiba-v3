@@ -327,9 +327,13 @@ def run_date_analysis(
                 race_id, ri, hs = fut.result()
                 prefetched[race_id] = (ri, hs)
                 done += 1
-                if not quiet:
-                    status = f"{ri.venue}{ri.race_no}R ({len(hs)}頭)" if ri else "スキップ"
-                    print(f"   [{done}/{total}] {race_id} → {status}")
+                pct = 100 * done // total if total else 0
+                if ri:
+                    status = f"{ri.venue}{ri.race_no}R OK"
+                else:
+                    status = "[スキップ]"
+                # ダッシュボード進捗パーサーに合わせた形式で出力（quiet時も）
+                print(f"   ({done}/{total} {pct}%) {race_id}  {status}", flush=True)
     else:
         # ワーカー数=1: 従来通り1件ずつ取得
         total = len(race_ids)
@@ -353,6 +357,11 @@ def run_date_analysis(
     from src.models import PaceType as _PaceType
     if effective_workers > 1:
         print("\n[3/3] 各レース分析・HTML生成中...")
+
+    # race_log キャッシュを1回だけ構築（毎レース20秒の再構築を回避）
+    from src.scraper.personnel import _BatchNarRaceLogCache
+    _shared_nar_cache = _BatchNarRaceLogCache()
+
     ok_count, skip_count = 0, 0
     total = len(race_ids)
     for i, race_id in enumerate(race_ids):
@@ -373,66 +382,75 @@ def run_date_analysis(
             continue
         race_no = race_info.race_no
 
-        # 過去走をDBに追加（オンザフライ補充）
-        old_course_ids = set(course_db.keys())
-        course_db = build_course_db_from_past_runs(horses, course_db)
-        new_course_ids = set(course_db.keys()) - old_course_ids
-        # 変更されたコースのみ l3f_db を更新（全体再構築を回避）
-        for cid in (new_course_ids or set(course_db.keys())):
-            runs = course_db[cid]
-            is_dirt = "ダート" in cid
-            lo, hi = (34.0, 42.0) if is_dirt else (32.0, 40.0)
-            by_pace: dict = {}
-            for r in runs:
-                t = r.last_3f_sec
-                if not (lo <= t <= hi):
-                    continue
-                pk = r.pace.value if r.pace else _PaceType.MM.value
-                if pk not in by_pace:
-                    by_pace[pk] = []
-                by_pace[pk].append(t)
-            l3f_db[cid] = by_pace
+        try:
+            # 過去走をDBに追加（オンザフライ補充）
+            old_course_ids = set(course_db.keys())
+            course_db = build_course_db_from_past_runs(horses, course_db)
+            new_course_ids = set(course_db.keys()) - old_course_ids
+            # 変更されたコースのみ l3f_db を更新（全体再構築を回避）
+            for cid in (new_course_ids or set(course_db.keys())):
+                runs = course_db[cid]
+                is_dirt = "ダート" in cid
+                lo, hi = (34.0, 42.0) if is_dirt else (32.0, 40.0)
+                by_pace: dict = {}
+                for r in runs:
+                    t = r.last_3f_sec
+                    if not (lo <= t <= hi):
+                        continue
+                    pk = r.pace.value if r.pace else _PaceType.M.value
+                    if pk not in by_pace:
+                        by_pace[pk] = []
+                    by_pace[pk].append(t)
+                l3f_db[cid] = by_pace
 
-        # 騎手・厩舎（馬ごとに変わるため毎レース）
-        jockey_db, trainer_db = personnel_mgr.build_from_horses(horses, client, course_db=course_db)
-        enrich_personnel_with_condition_records(jockey_db, trainer_db, course_db)
+            # 騎手・厩舎（馬ごとに変わるため毎レース、race_logキャッシュは共有）
+            jockey_db, trainer_db = personnel_mgr.build_from_horses(
+                horses, client, course_db=course_db, nar_race_log_cache=_shared_nar_cache
+            )
+            enrich_personnel_with_condition_records(jockey_db, trainer_db, course_db)
 
-        # trainer_baseline は馬ごとの調教ベースライン（軽量・毎回マージのみ）
-        baseline_new = build_trainer_baseline_db(horses)
-        trainer_baseline_db = merge_trainer_baseline(baseline_new, trainer_baseline_db)
+            # trainer_baseline は馬ごとの調教ベースライン（軽量・毎回マージのみ）
+            baseline_new = build_trainer_baseline_db(horses)
+            trainer_baseline_db = merge_trainer_baseline(baseline_new, trainer_baseline_db)
 
-        engine = RaceAnalysisEngine(
-            course_db=course_db,
-            all_courses=all_courses,
-            jockey_db=jockey_db,
-            trainer_db=trainer_db,
-            trainer_baseline_db=trainer_baseline_db,
-            pace_last3f_db=l3f_db,
-            course_style_stats_db=course_style_db,  # ループ前に構築した静的DB
-            gate_bias_db=gate_bias_db_base,  # 同上
-            position_sec_per_rank_db=position_sec_db,  # 同上
-            is_jra=race_info.is_jra,
-        )
-        analysis = engine.analyze(race_info, horses, custom_stake=None)
-        analysis = enrich_course_aptitude_with_style_bias(engine, analysis)
+            engine = RaceAnalysisEngine(
+                course_db=course_db,
+                all_courses=all_courses,
+                jockey_db=jockey_db,
+                trainer_db=trainer_db,
+                trainer_baseline_db=trainer_baseline_db,
+                pace_last3f_db=l3f_db,
+                course_style_stats_db=course_style_db,  # ループ前に構築した静的DB
+                gate_bias_db=gate_bias_db_base,  # 同上
+                position_sec_per_rank_db=position_sec_db,  # 同上
+                is_jra=race_info.is_jra,
+            )
+            analysis = engine.analyze(race_info, horses, custom_stake=None)
+            analysis = enrich_course_aptitude_with_style_bias(engine, analysis)
 
-        if venue not in analyses_by_venue:
-            analyses_by_venue[venue] = {}
-        analyses_by_venue[venue][race_no] = analysis
+            if venue not in analyses_by_venue:
+                analyses_by_venue[venue] = {}
+            analyses_by_venue[venue][race_no] = analysis
 
-        # 個別レースHTML生成（--no_html 時はスキップ）
-        if formatter:
-            date_key = date.replace("-", "")
-            ind_fname = f"{date_key}_{venue}{race_no}R.html"
-            ind_fpath = os.path.join(output_dir, ind_fname)
-            os.makedirs(output_dir, exist_ok=True)
-            with open(ind_fpath, "w", encoding="utf-8") as _f:
-                _f.write(minify_html(formatter.render(analysis)))
+            # 個別レースHTML生成（--no_html 時はスキップ）
+            if formatter:
+                date_key = date.replace("-", "")
+                ind_fname = f"{date_key}_{venue}{race_no}R.html"
+                ind_fpath = os.path.join(output_dir, ind_fname)
+                os.makedirs(output_dir, exist_ok=True)
+                with open(ind_fpath, "w", encoding="utf-8") as _f:
+                    _f.write(minify_html(formatter.render(analysis)))
 
-        ok_count += 1
-        # 進捗行は quiet でも常に出力（ダッシュボードの進捗パース用）
-        pct = 100 * (i + 1) // total if total else 0
-        print(f"   ({i + 1}/{total} {pct}%) {venue}{race_no}R OK")
+            ok_count += 1
+            # 進捗行は quiet でも常に出力（ダッシュボードの進捗パース用）
+            pct = 100 * (i + 1) // total if total else 0
+            print(f"   ({i + 1}/{total} {pct}%) {venue}{race_no}R OK")
+        except Exception as _race_err:
+            # 個別レースの分析失敗は他のレースに影響させない
+            skip_count += 1
+            pct = 100 * (i + 1) // total if total else 0
+            print(f"   ({i + 1}/{total} {pct}%) {venue}{race_no}R [エラー: {_race_err}]")
+            logger.warning("レース分析失敗 %s %sR: %s", venue, race_no, _race_err, exc_info=True)
 
         # pred.json を段階的に保存（5レースごと）— 途中中断しても保持される
         if ok_count % 5 == 0 and analyses_by_venue:

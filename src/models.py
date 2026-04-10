@@ -50,13 +50,11 @@ class Trend(Enum):
 
 
 class PaceType(Enum):
-    """ペース5段階 (F-1)"""
+    """ペース3段階 (F-1) — Phase 14: 5段階→3段階に統合"""
 
-    HH = "HH"  # ハイハイ
-    HM = "HM"
-    MM = "MM"  # ミドルミドル
-    MS = "MS"
-    SS = "SS"  # スローショウ
+    H = "H"   # ハイペース
+    M = "M"   # ミドルペース
+    S = "S"   # スローペース
 
 
 class RunningStyle(Enum):
@@ -167,7 +165,7 @@ class KikenType(Enum):
 
 @dataclass
 class CourseMaster:
-    """コース情報 - 全24場223コース"""
+    """コース情報 - 全25場226コース"""
 
     venue: str  # 競馬場名
     venue_code: str  # 場コード
@@ -177,10 +175,79 @@ class CourseMaster:
     straight_m: int  # 直線距離(m)
     corner_count: int  # コーナー回数
     corner_type: str  # 大回り/小回り/スパイラル
-    first_corner: str  # スタート〜初角: 短い/平均/長い/直線のみ 等（距離がわかれば "405" 等も可）
+    _first_corner: str  # 旧定性ラベル（互換用。first_corner_mから自動算出）
     slope_type: str  # 坂なし/軽坂/急坂
     inside_outside: str  # 内/外/なし
     is_jra: bool = True  # JRA/地方フラグ
+    first_corner_m: int = 0  # スタート〜初角距離(m)。0=データなし/直線コース
+    # 残り600m（上がり3F）地点データ
+    l3f_corners: int = -1  # 残り600mで通過するコーナー数 (-1=自動計算)
+    l3f_elevation: float = 0.0  # 残り600m区間の純高低差(m, 正=上り坂あり)
+    l3f_hill_start: int = 0  # ゴール前何mから急坂開始 (0=坂なし)
+
+    def __post_init__(self):
+        """残り600mコーナー数の自動推定"""
+        if self.l3f_corners == -1:
+            if self.distance < 600:
+                self.l3f_corners = 0  # ばんえい等
+            elif self.straight_m >= 600:
+                self.l3f_corners = 0  # 直線のみ（新潟外1000m等）
+            elif self.corner_count == 0:
+                self.l3f_corners = 0  # 直線コース
+            else:
+                # 600m - 直線距離 = コーナー区間距離
+                corner_m = 600 - self.straight_m
+                # コーナー1つの弧長は概ね200-350m
+                # corner_m ≤ 300m → 4角だけで収まる(1コーナー)
+                # corner_m > 300m → 3角+4角を跨ぐ(2コーナー)
+                self.l3f_corners = 1 if corner_m <= 300 else 2
+
+    @property
+    def l3f_corner_m(self) -> int:
+        """残り600mのうちコーナー区間の距離(m)"""
+        if self.distance < 600:
+            return 0  # ばんえい等、600m未満のコースは対象外
+        return max(0, 600 - self.straight_m)
+
+    @property
+    def l3f_straight_pct(self) -> float:
+        """残り600mのうち直線の比率 (0.0-1.0)"""
+        if self.distance < 600:
+            return 1.0  # 距離600m未満は対象外
+        return min(1.0, self.straight_m / 600)
+
+    @property
+    def l3f_has_hill(self) -> bool:
+        """残り600m区間に坂があるか"""
+        return self.l3f_hill_start > 0
+
+    @property
+    def l3f_desc(self) -> str:
+        """残り600m地点の説明文（展開描写用）"""
+        if self.straight_m >= 600:
+            return "直線のみ"
+        if self.l3f_corners == 0:
+            return "直線のみ"
+        corner_m = 600 - self.straight_m
+        if self.l3f_corners >= 2:
+            desc = f"3角途中→4角→直線{self.straight_m}m"
+        else:
+            desc = f"4角途中→直線{self.straight_m}m"
+        if self.l3f_has_hill:
+            desc += f"（ゴール前{self.l3f_hill_start}mから坂）"
+        return desc
+
+    @property
+    def first_corner(self) -> str:
+        """初角距離ラベル: first_corner_mから自動算出"""
+        if self.first_corner_m <= 0:
+            return self._first_corner or "直線のみ"
+        if self.first_corner_m <= 200:
+            return "短い"
+        elif self.first_corner_m <= 400:
+            return "平均"
+        else:
+            return "長い"
 
     @property
     def course_id(self) -> str:
@@ -249,14 +316,20 @@ class PastRun:
     popularity_at_race: Optional[int] = None  # その走の人気順位
     race_id: str = ""  # netkeibaのレースID（結果ページリンク用）
     result_cname: str = ""  # JRA公式結果ページCNAME（JRA公式リンク用）
+    race_no: int = 0  # レース番号（前走リンク生成用）
     source: str = ""  # データ取得元 ("netkeiba"/"official"/"keibabook"/"rakuten")
 
     @property
     def relative_position(self) -> float:
         """相対位置 = 4角通過順位÷出走頭数 (F-2)。positions_cornersあれば4角相当を使用"""
+        pos = None
         if self.positions_corners:
-            pos = self.positions_corners[-1]  # 最後角＝4角相当
-        else:
+            # 通過順0はデータ欠損 → 最終角から順に有効値を探す
+            for _p in reversed(self.positions_corners):
+                if isinstance(_p, (int, float)) and _p > 0:
+                    pos = _p
+                    break
+        if pos is None:
             pos = self.position_4c
         if pos is None:
             return 0.5  # ばんえい等で通過順なし → 中団デフォルト
@@ -466,13 +539,13 @@ class CourseAptitude:
     """コース適性偏差値の内訳"""
 
     base_score: float = 50.0  # ベーススコア(計算層)
-    course_record: float = 0.0  # ❶コース実績(-5〜+5)
+    course_record: float = 0.0  # ❶コース実績(-8〜+8)
     course_record_n: int = 0  # コース実績のサンプル数（グレード信頼度加重用）
-    venue_aptitude: float = 0.0  # ❷競馬場適性(-5〜+5) 4因子類似度ベース
+    venue_aptitude: float = 0.0  # ❷競馬場適性(-5〜+5) 4因子類似度ベース（※別途拡大検討）
     venue_aptitude_n: int = 0  # 競馬場適性のサンプル数（グレード信頼度加重用）
     venue_contrib_level: str = ""  # Solo/Pair/Trio/Quartet+
-    jockey_course: float = 0.0  # ❸騎手コース影響(-3〜+3) H-2から
-    ai_adjustment: float = 0.0  # AI層調整(±8pt)
+    jockey_course: float = 0.0  # ❸騎手コース影響(-5〜+5) H-2から
+    ai_adjustment: float = 0.0  # AI層調整(±12pt)
     norm_adjustment: float = 0.0  # フィールド内正規化補正（実行時に設定）
 
     @property
@@ -505,12 +578,12 @@ class PaceDeviation:
     """展開偏差値の内訳"""
 
     base_score: float = 50.0  # ベーススコア(計算層)
-    last3f_eval: float = 0.0  # ❶末脚評価(-8〜+8)
-    position_balance: float = 0.0  # ❷位置取り×末脚バランス(-8〜+8)
-    gate_bias: float = 0.0  # ❸枠順バイアス(-5〜+5)
-    course_style_bias: float = 0.0  # ❹コース脚質バイアス(-5〜+5)
-    jockey_pace: float = 0.0  # ❺騎手展開影響(-4〜+4) H-3から
-    ai_adjustment: float = 0.0  # AI層調整(±12pt)
+    last3f_eval: float = 0.0  # ❶末脚評価(-12〜+12)
+    position_balance: float = 0.0  # ❷位置取り×末脚バランス(-12〜+12)
+    gate_bias: float = 0.0  # ❸枠順バイアス(-8〜+8)
+    course_style_bias: float = 0.0  # ❹コース脚質バイアス(-8〜+8)
+    jockey_pace: float = 0.0  # ❺騎手展開影響(-6〜+6) H-3から
+    ai_adjustment: float = 0.0  # AI層調整(±18pt)
     norm_adjustment: float = 0.0  # フィールド内正規化補正（実行時に設定）
 
     # 推定値
@@ -645,18 +718,27 @@ class HorseEvaluation:
 
     @property
     def composite(self) -> float:
-        """総合偏差値: 6因子加重平均 + 馬体重変動補正 + オッズ整合性"""
+        """総合偏差値: 7因子加重平均 + 調教好調ボーナス乗算 + 馬体重変動補正 + オッズ整合性"""
         from config.settings import DEVIATION, get_composite_weights
         from src.scraper.improvement_dbs import calc_weight_change_adjustment
 
         w = get_composite_weights(self.venue_name)
-        # 6因子加重平均（能力/展開/適性/騎手/調教師/血統）
+        # 調教偏差値 → 好調ボーナス係数（不調ペナルティなし）
+        # バックテスト検証済み: asym(up=0.006, dn=0.000) が複勝率+0.4pp/単ROI+0.8pp
         jdev = getattr(self, "_jockey_dev", None)
         tdev = getattr(self, "_trainer_dev", None)
         bdev = getattr(self, "_bloodline_dev", None)
+        trdev = getattr(self, "_training_dev", None)
+
+        # 調教好調ボーナス: 能力・展開に乗算（50超のみ、不調時は1.0=変化なし）
+        _TRAINING_ALPHA = 0.006
+        training_multiplier = 1.0
+        if trdev is not None and trdev > 50:
+            training_multiplier = 1.0 + (trdev - 50) * _TRAINING_ALPHA
+
         v = (
-            self.ability.total * w["ability"]
-            + self.pace.total * w["pace"]
+            self.ability.total * w["ability"] * training_multiplier
+            + self.pace.total * w["pace"] * training_multiplier
             + self.course.total * w["course"]
             + (jdev if jdev is not None else 50.0) * w.get("jockey", 0.10)
             + (tdev if tdev is not None else 50.0) * w.get("trainer", 0.05)

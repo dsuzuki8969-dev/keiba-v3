@@ -99,3 +99,8 @@ keiba.db
 nul
 temp_*.html
 cross_validate_*.txt
+
+# アドホック/一時スクリプト
+scripts/_*
+data/watchdog.log
+data/logs/

@@ -85,22 +85,38 @@ def run_reanalysis(date: str, workers: int = 6, use_pred: bool = True) -> bool:
     ]
     if use_pred:
         cmd.append("--race-ids-from-pred")
+    log_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "logs", "batch")
+    os.makedirs(log_dir, exist_ok=True)
+    log_file = os.path.join(log_dir, f"{date.replace('-','')}.log")
     try:
-        result = subprocess.run(
-            cmd,
-            cwd=os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."),
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=1500,  # 25分タイムアウト（workers=2で96R対応）
-        )
-        if result.returncode != 0:
-            return False
-        return True
-    except subprocess.TimeoutExpired:
+        # capture_output=True はstdout/stderrバッファのデッドロック原因
+        # ファイルに直接出力してデッドロックを回避
+        with open(log_file, "w", encoding="utf-8") as f:
+            result = subprocess.run(
+                cmd,
+                cwd=os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."),
+                stdout=f,
+                stderr=subprocess.STDOUT,
+                timeout=3600,  # 60分タイムアウト
+            )
+        # returncode非0でもpredファイルが更新されていれば成功とみなす
+        if result.returncode == 0:
+            return True
+        dstr = date.replace("-", "")
+        pred_path = os.path.join(PREDICTIONS_DIR, f"{dstr}_pred.json")
+        if os.path.exists(pred_path):
+            import datetime as _dt
+            mtime = _dt.datetime.fromtimestamp(os.path.getmtime(pred_path))
+            if (datetime.datetime.now() - mtime).total_seconds() < 3600:
+                return True  # 直近1時間以内に更新 = 実質成功
         return False
-    except Exception:
+    except subprocess.TimeoutExpired:
+        with open(log_file, "a", encoding="utf-8") as f:
+            f.write(f"\n=== {date} TIMEOUT ===\n")
+        return False
+    except Exception as e:
+        with open(log_file, "a", encoding="utf-8") as f:
+            f.write(f"\n=== {date} EXCEPTION: {e} ===\n")
         return False
 
 

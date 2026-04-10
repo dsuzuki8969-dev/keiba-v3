@@ -48,10 +48,11 @@ def sample_course() -> CourseMaster:
         straight_m=528,
         corner_count=3,
         corner_type="大回り",
-        first_corner="長い",
+        _first_corner="長い",
         slope_type="急坂",
         inside_outside="外",
         is_jra=True,
+        first_corner_m=542,
     )
 
 
@@ -78,7 +79,7 @@ def sample_past_run() -> PastRun:
         last_3f_sec=35.2,
         margin_behind=0.2,
         margin_ahead=0.5,
-        pace=PaceType.MM,
+        pace=PaceType.M,
     )
 
 
@@ -272,7 +273,7 @@ class Testコースマスタ作成:
             straight_m=400,
             corner_count=2,
             corner_type="大回り",
-            first_corner="短い",
+            _first_corner="短い",
             slope_type="軽坂",
             inside_outside="内",
         )
@@ -454,15 +455,15 @@ class TestLast3FDBBuilder:
                 last_3f_sec=35.0,
                 margin_behind=0.0,
                 margin_ahead=0.5,
-                pace=PaceType.MM,
+                pace=PaceType.M,
             ),
         ]
         course_db = {"05_芝_1600": runs}
         builder = Last3FDBBuilder()
         result = builder.build(course_db)
         assert "05_芝_1600" in result
-        assert "MM" in result["05_芝_1600"]
-        assert 35.0 in result["05_芝_1600"]["MM"]
+        assert "M" in result["05_芝_1600"]
+        assert 35.0 in result["05_芝_1600"]["M"]
 
 
 # ============================================================
@@ -598,9 +599,16 @@ class Test展開コメント生成:
         class SimpleEval:
             def __init__(self, horse_no, horse_name):
                 self.horse = type("H", (), {"horse_no": horse_no, "horse_name": horse_name})()
+                self.composite = 50.0
+                self.win_prob = 0.1
+                self.pace = type("P", (), {
+                    "estimated_position_4c": 0.5,
+                    "estimated_last3f": 35.0,
+                    "running_style": None,
+                })()
 
         comment, gate, style, reason = generate_pace_comment(
-            PaceType.MM,
+            PaceType.M,
             leaders=[5],
             front_horses=[5, 7],
             rear_horses=[1, 2, 3],

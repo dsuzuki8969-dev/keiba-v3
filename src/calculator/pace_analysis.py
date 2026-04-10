@@ -59,11 +59,9 @@ def _default_pace_times(
 
     # ペース補正（非対称: ハイペースは後半の消耗が大きい）
     pace_adj = {
-        PaceType.HH: (-1.5, 2.0),
-        PaceType.HM: (-0.7, 0.7),
-        PaceType.MM: (0.0, 0.0),
-        PaceType.MS: (0.7, -0.5),
-        PaceType.SS: (1.5, -1.0),
+        PaceType.H: (-1.1, 1.35),    # (HH+HM)/2
+        PaceType.M: (0.0, 0.0),
+        PaceType.S: (1.1, -0.75),    # (MS+SS)/2
     }.get(pace_type, (0.0, 0.0))
 
     return (base_front + pace_adj[0], base_last + pace_adj[1])
@@ -101,25 +99,21 @@ def estimate_pace_times_from_runs(
         return _default_pace_times(surface, distance, pace_type)
 
     # デフォルト値を馬場・距離から取得（片方のデータが無い場合のフォールバック）
-    default_front, default_last = _default_pace_times(surface, distance, PaceType.MM)
+    default_front, default_last = _default_pace_times(surface, distance, PaceType.M)
     front = statistics.mean(first_3f_list) if first_3f_list else default_front
     last = statistics.mean(last_3f_list) if last_3f_list else default_last
 
     # ペース補正
     pace_corr_front = {
-        PaceType.HH: -1.5,
-        PaceType.HM: -0.7,
-        PaceType.MM: 0,
-        PaceType.MS: 0.7,
-        PaceType.SS: 1.5,
+        PaceType.H: -1.1,    # (HH+HM)/2
+        PaceType.M: 0,
+        PaceType.S: 1.1,     # (MS+SS)/2
     }.get(pace_type, 0)
     # 非対称: ハイペースの後半消耗は大きい
     pace_corr_last = {
-        PaceType.HH: 2.0,
-        PaceType.HM: 0.7,
-        PaceType.MM: 0,
-        PaceType.MS: -0.5,
-        PaceType.SS: -1.0,
+        PaceType.H: 1.35,    # (HH+HM)/2
+        PaceType.M: 0,
+        PaceType.S: -0.75,   # (MS+SS)/2
     }.get(pace_type, 0)
 
     return (front + pace_corr_front, last + pace_corr_last)
@@ -140,22 +134,16 @@ def judge_favorable_style(
     ペース・コース・枠・並び・脚質構成から有利な脚質とその根拠を判定。
     Returns: (favorable_style, favorable_style_reason)
     """
-    pv = pace_type.value if pace_type else "MM"
+    pv = pace_type.value if pace_type else "M"
 
     # 1. ペースベースの基本判定
-    if pv == "HH":
+    if pv == "H":
         base_style = "差し・追い込み"
         base_reason = "ハイペース消耗戦で前が潰れる想定"
-    elif pv == "HM":
-        base_style = "差し・中団〜後方待機"
-        base_reason = "ハイ〜ミドルで逃げ馬にプレッシャー"
-    elif pv == "MM":
+    elif pv == "M":
         base_style = "先行〜差し"
         base_reason = "力通りの平均ペース"
-    elif pv == "MS":
-        base_style = "先行"
-        base_reason = "楽逃げ・前残りが有利"
-    else:  # SS
+    else:  # S
         base_style = "先行・逃げ"
         base_reason = "スローペースで前残り有効"
 
@@ -163,7 +151,7 @@ def judge_favorable_style(
     course_factors = []
     if course.straight_m >= 420:
         course_factors.append("長直線で末脚が生きる")
-        if pv in ("HH", "HM"):
+        if pv == "H":
             base_style = "差し・追い込み"
     elif course.straight_m <= 300:
         course_factors.append("短直線で前残り寄り")
@@ -172,7 +160,7 @@ def judge_favorable_style(
 
     if course.slope_type == "急坂":
         course_factors.append("急坂で先行消耗")
-        if "先行" in base_style and pv not in ("SS", "MS"):
+        if "先行" in base_style and pv != "S":
             if "差し" in base_style:
                 # "先行〜差し" → "差し" （重複を防ぐ）
                 base_style = "差し"
@@ -187,11 +175,11 @@ def judge_favorable_style(
 
     # 3. 枠・並び補正（内枠がスタートで前につけやすい）
     inner_count = sum(1 for _, w, _ in lineup[: len(lineup) // 2] if w <= 3)
-    if inner_count >= 2 and pv in ("SS", "MS"):
+    if inner_count >= 2 and pv == "S":
         course_factors.append("内枠馬が前取りしやすい")
 
     # 4. 脚質構成の矛盾チェック
-    if len(rear_horses) >= 4 and pv in ("SS", "MS"):
+    if len(rear_horses) >= 4 and pv == "S":
         course_factors.append(f"後方待機{len(rear_horses)}頭はスローでは届きにくい可能性")
 
     # 根拠統合

@@ -64,7 +64,7 @@ def _build_race_from_result_cache(data: dict, all_courses: dict, race_id: str) -
             straight_m=350,
             corner_count=4,
             corner_type="大回り",
-            first_corner="平均",
+            _first_corner="平均",
             slope_type="坂なし",
             inside_outside="なし",
             is_jra=venue_code in JRA_CODES,
@@ -619,7 +619,7 @@ class PremiumNetkeibaScraper:
         w.history = HorseHistoryParser(w.client)
         w.odds = OddsScraper(w.client)
         w.training = self.training  # keibabook クライアントは共有（別ドメイン）
-        w._official_odds = self._official_odds  # 公式スクレイパーも共有（別ドメイン）
+        w._official_odds = None  # 各ワーカーが独立インスタンスを遅延生成（並列化ボトルネック回避）
         w._official_only = self._official_only  # --official フラグも伝播
         return w
 
@@ -655,7 +655,7 @@ class PremiumNetkeibaScraper:
                     cached_date = getattr(race_info, "race_date", "")
                     td = target_date.replace("-", "").strip()
                     cd = cached_date.replace("-", "").strip() if cached_date else ""
-                    if td and cd and td != cd:
+                    if td and cd and td != cd and not prefer_cache:
                         logger.info(
                             "キャッシュ日付不整合 → 再取得: %s "
                             "(cached=%s, expected=%s)",
@@ -746,8 +746,19 @@ class PremiumNetkeibaScraper:
                     logger.info("キャッシュ/公式なし → netkeiba取得: %s", race_id)
                 race_info, horses, training_from_newspaper = self._fetch_from_netkeiba(race_id)
         else:
-            # 従来フロー: netkeiba → キャッシュ → 公式
-            race_info, horses, training_from_newspaper = self._fetch_from_netkeiba(race_id)
+            # 優先順位: 公式 → 競馬ブック → キャッシュ → netkeiba
+            # 1. 公式を最優先で試行
+            race_info, horses = self._fetch_from_official(race_id, fetch_history)
+            if race_info and not self._quiet:
+                logger.info("公式から取得: %s %d頭", race_info.race_name, len(horses))
+            # 2. 公式失敗→キャッシュresult.html（競馬ブックは出走表ベースで調教データ取得に使用）
+            if not race_info:
+                race_info, horses = self._build_from_cached_result(race_id)
+                if race_info and not self._quiet:
+                    logger.info("キャッシュresult.htmlから構築: %s %d頭", race_info.race_name, len(horses))
+            # 3. それでもなければnetkeiba
+            if not race_info:
+                race_info, horses, training_from_newspaper = self._fetch_from_netkeiba(race_id)
 
         if not race_info:
             return None, []
@@ -762,21 +773,44 @@ class PremiumNetkeibaScraper:
             # 当日/未来レースは _fetch_from_official が公式から取得済み。
             from concurrent.futures import ThreadPoolExecutor, as_completed
 
+            # キャッシュ済み馬を事前判定（HTTPリクエスト不要な馬を分離）
+            _cached_horses = []
+            _uncached_horses = []
+            for h in horses:
+                _result_url = f"{BASE_URL}/horse/result/{h.horse_id}/"
+                if self.client.has_cache(_result_url):
+                    _cached_horses.append(h)
+                else:
+                    _uncached_horses.append(h)
+            if _cached_horses and not self._quiet:
+                logger.debug("過去走キャッシュヒット: %d/%d頭（HTTP不要）",
+                             len(_cached_horses), len(horses))
+
             def _fetch_one(horse):
                 runs = self.history.parse(horse.horse_id, horse=horse)
                 return horse, runs
 
-            with ThreadPoolExecutor(max_workers=3) as pool:
-                futs = {pool.submit(_fetch_one, h): h for h in horses}
-                done_count = 0
-                for fut in as_completed(futs):
-                    done_count += 1
-                    horse, runs = fut.result()
-                    horse.past_runs = runs
-                    if runs:
-                        horse.prev_jockey = runs[0].jockey
-                    if not self._quiet:
-                        logger.debug("馬過去走 %d/%d: %s", done_count, len(horses), horse.horse_name)
+            # キャッシュ済み馬を先に処理（sleepなし高速）
+            done_count = 0
+            for h in _cached_horses:
+                runs = self.history.parse(h.horse_id, horse=h)
+                h.past_runs = runs
+                if runs:
+                    h.prev_jockey = runs[0].jockey
+                done_count += 1
+
+            # 未キャッシュ馬のみスレッドプールで並列取得
+            if _uncached_horses:
+                with ThreadPoolExecutor(max_workers=3) as pool:
+                    futs = {pool.submit(_fetch_one, h): h for h in _uncached_horses}
+                    for fut in as_completed(futs):
+                        done_count += 1
+                        horse, runs = fut.result()
+                        horse.past_runs = runs
+                        if runs:
+                            horse.prev_jockey = runs[0].jockey
+                        if not self._quiet:
+                            logger.debug("馬過去走 %d/%d: %s", done_count, len(horses), horse.horse_name)
 
         # ── 性齢フォールバック: 過去走取得後も性齢が不明な馬がいたら
         # shutuba.html から再取得を試みる ──
@@ -1102,6 +1136,25 @@ class PremiumNetkeibaScraper:
             except Exception as e:
                 logger.warning("NAR公式フォールバック失敗: %s", e)
 
+            # nar.netkeiba.com出馬表フォールバック（認証不要）
+            # keiba.go.jpが翌日分未公開でもnar.netkeiba.comは公開済みのことが多い
+            try:
+                logger.info("NAR公式未公開 → nar.netkeiba.com試行: %s", race_id)
+                race_info, horses, _ = self.entry.parse(race_id)
+                if race_info and horses:
+                    for h in horses:
+                        if not getattr(h, "source", ""):
+                            h.source = "nar_netkeiba"
+                    if fetch_history:
+                        self._fetch_netkeiba_history_for_horses(horses)
+                    logger.info(
+                        "nar.netkeiba.comフォールバック成功: %s %d頭",
+                        race_info.race_name, len(horses),
+                    )
+                    return race_info, horses
+            except Exception as e:
+                logger.warning("nar.netkeiba.comフォールバック失敗: %s", e)
+
         return None, []
 
     def _fetch_jra_history_for_horses(self, horses, official):
@@ -1187,31 +1240,47 @@ class PremiumNetkeibaScraper:
                     horse.horse_name, e,
                 )
 
-    def fetch_date(self, date: str):
-        netkeiba_ids = []
-        if not self._official_only:
-            netkeiba_ids = self.races.get_race_ids(date) or []
-
-        # ── 常にJRA/NAR公式も取得して補完（netkeibaの制限時にNARが欠落するのを防ぐ） ──
-        all_ids = list(netkeiba_ids)
-        existing = set(all_ids)
-
-        # JRA公式（netkeibaが空の場合のみ）
-        if not netkeiba_ids:
+    def _fetch_netkeiba_history_for_horses(self, horses):
+        """netkeiba horse_idベースで過去走取得（nar.netkeiba.comフォールバック用）"""
+        for i, horse in enumerate(horses):
+            if not horse.horse_id:
+                continue
             try:
-                from src.scraper.official_odds import OfficialOddsScraper
-                if self._official_odds is None:
-                    self._official_odds = OfficialOddsScraper()
-                jra_ids = self._official_odds.get_jra_race_list(target_date=date)
-                if jra_ids:
-                    new = [r for r in jra_ids if r not in existing]
-                    logger.info("JRA公式: %d レース（新規%d）", len(jra_ids), len(new))
-                    all_ids.extend(new)
-                    existing.update(new)
+                runs = self.history.parse(horse.horse_id, horse=horse)
+                if runs:
+                    horse.past_runs = runs
+                    horse.prev_jockey = runs[0].jockey
+                if not self._quiet:
+                    logger.debug(
+                        "netkeiba history %d/%d: %s %d走",
+                        i + 1, len(horses),
+                        horse.horse_name, len(horse.past_runs),
+                    )
             except Exception as e:
-                logger.warning("JRA公式レース一覧取得失敗: %s", e)
+                logger.debug(
+                    "netkeiba history failed for %s: %s",
+                    horse.horse_name, e,
+                )
 
-        # NAR公式（常に補完 — netkeibaが制限中でもNARレースを確保）
+    def fetch_date(self, date: str):
+        # ── 優先順位: 公式(JRA/NAR) → netkeiba ──
+        all_ids = []
+        existing = set()
+
+        # 1. JRA公式（最優先）
+        try:
+            from src.scraper.official_odds import OfficialOddsScraper
+            if self._official_odds is None:
+                self._official_odds = OfficialOddsScraper()
+            jra_ids = self._official_odds.get_jra_race_list(target_date=date)
+            if jra_ids:
+                logger.info("JRA公式: %d レース取得", len(jra_ids))
+                all_ids.extend(jra_ids)
+                existing.update(jra_ids)
+        except Exception as e:
+            logger.warning("JRA公式レース一覧取得失敗: %s", e)
+
+        # 2. NAR公式
         # ※ NAR公式(keiba.go.jp)はばんえいを含まない（帯広市独自開催のため）
         try:
             from src.scraper.official_nar import OfficialNARScraper
@@ -1220,13 +1289,22 @@ class PremiumNetkeibaScraper:
             if nar_ids:
                 new = [r for r in nar_ids if r not in existing]
                 if new:
-                    logger.info("NAR公式補完: %d レース追加", len(new))
+                    logger.info("NAR公式: %d レース取得", len(new))
                     all_ids.extend(new)
                     existing.update(new)
         except ImportError:
             logger.debug("NAR公式スクレイパー未実装")
         except Exception as e:
             logger.warning("NAR公式レース一覧取得失敗: %s", e)
+
+        # 3. netkeibaフォールバック（公式で取れなかった分を補完）
+        if not self._official_only:
+            netkeiba_ids = self.races.get_race_ids(date) or []
+            new = [r for r in netkeiba_ids if r not in existing]
+            if new:
+                logger.info("netkeiba補完: %d レース追加", len(new))
+                all_ids.extend(new)
+                existing.update(new)
 
         # ── ばんえい(帯広)補完 ──
         # NAR公式(keiba.go.jp)はばんえいを含まない。
@@ -1247,40 +1325,22 @@ class PremiumNetkeibaScraper:
         """ばんえい(帯広)のレースIDを補完取得
 
         NAR公式(keiba.go.jp)はばんえいを含まないため、
-        1. キャッシュにばんえいHTMLが存在すればID生成
-        2. なければnar.netkeiba.comで1Rを試行し、成功すれば12R分生成
+        nar.netkeiba.comで1R目をプローブし、出馬表が存在すれば開催日と判断。
+        ※キャッシュのみでの判定は誤検出の原因となるため行わない。
         """
-        import glob as _glob_banei
         year = date[:4]
         mmdd = date[5:7] + date[8:10]
 
-        # 方法1: キャッシュにばんえいレースが存在するか確認
-        cache_dir = self.client.cache_dir
-        banei_pattern = os.path.join(
-            cache_dir, f"*race_id={year}65{mmdd}*"
-        )
-        cached = _glob_banei.glob(banei_pattern)
-        if cached:
-            # キャッシュからレース番号を検出
-            race_nos = set()
-            for path in cached:
-                m = re.search(rf"{year}65{mmdd}(\d{{2}})", os.path.basename(path))
-                if m:
-                    race_nos.add(int(m.group(1)))
-            max_race = max(race_nos) if race_nos else 12
-            ids = [f"{year}65{mmdd}{rno:02d}" for rno in range(1, max_race + 1)]
-            logger.info("ばんえいキャッシュ検出: %dR分のIDを生成", max_race)
-            return ids
-
-        # 方法2: nar.netkeiba.comで1R目を試行
+        # nar.netkeiba.comで1R目を試行
         try:
             probe_id = f"{year}65{mmdd}01"
             from src.scraper.netkeiba import NAR_URL
             probe_url = f"{NAR_URL}/race/shutuba.html"
             probe_soup = self.client.get(probe_url, params={"race_id": probe_id})
             if probe_soup:
-                # 出馬表テーブルが存在すれば開催日と判断
-                if probe_soup.select("table.Shutuba_Table, table.RaceTable01, table"):
+                # 出馬表テーブル（馬名リンク含む）が存在すれば開催日と判断
+                shutuba = probe_soup.select("table.Shutuba_Table tr a[href*='/horse/'], table.RaceTable01 tr a[href*='/horse/']")
+                if shutuba:
                     ids = [f"{year}65{mmdd}{rno:02d}" for rno in range(1, 13)]
                     logger.info("ばんえいプローブ成功: 12R分のIDを生成")
                     return ids

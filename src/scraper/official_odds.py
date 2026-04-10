@@ -1229,7 +1229,7 @@ class OfficialOddsScraper:
                 distance=distance or 2000, surface=surface or "芝",
                 direction=direction or "右", straight_m=300,
                 corner_count=4, corner_type="小回り",
-                first_corner="平均", slope_type="坂なし",
+                _first_corner="平均", slope_type="坂なし",
                 inside_outside="なし", is_jra=True,
             )
 

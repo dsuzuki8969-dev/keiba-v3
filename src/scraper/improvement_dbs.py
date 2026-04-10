@@ -309,7 +309,9 @@ def ensure_pace_on_past_runs(horses: List[Horse]) -> None:
     for h in horses:
         for r in getattr(h, "past_runs", []) or []:
             if r.pace is None and r.first_3f_sec is not None:
-                pace = infer_pace_from_first3f(r.distance, r.surface, r.first_3f_sec)
+                # course_idからvenue_code抽出（"44_ダート_1600"→"44"）
+                _vc = r.course_id.split("_")[0] if getattr(r, "course_id", None) else None
+                pace = infer_pace_from_first3f(r.distance, r.surface, r.first_3f_sec, venue_code=_vc)
                 if pace is not None:
                     object.__setattr__(r, "pace", pace)
 

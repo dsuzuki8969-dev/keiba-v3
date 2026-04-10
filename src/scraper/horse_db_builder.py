@@ -111,22 +111,29 @@ def _parse_margin_to_sec(text: str) -> float:
 
 
 def _find_last3f(cells) -> float:
-    """セル群から上がり3F(秒)を探す。28-50秒の範囲の XX.X 形式を採用"""
+    """セル群から上がり3F(秒)を探す。28-50秒の妥当範囲で XX.X 形式を採用
+    result.htmlのセル構造: [11]=上がり3F が標準だが、
+    セル直接指定だと構造変更に弱いため正規表現ループで堅牢に。
+    走破タイム(1:XX.X)や斤量(5X.0)の誤認防止のため範囲を厳格化"""
     for c in cells:
         t = c.get_text(strip=True)
         if re.match(r"^\d{2}\.\d$", t):
             val = float(t)
-            if 25.0 <= val <= 55.0:
+            if 28.0 <= val <= 50.0:  # 上がり3Fの妥当範囲（旧25-55→厳格化）
                 return val
     return 35.5
 
 
 def _find_corners(cells) -> List[int]:
-    """セル群からコーナー通過順位を探す ('1-2-3-4' 形式)"""
+    """セル群からコーナー通過順位を探す ('1-2-3-4' 形式)
+    ハイフン区切りの2つ以上の数字列のみ有効（単一数字はマッチしない）"""
     for c in cells:
         t = c.get_text(strip=True)
         if re.match(r"^\d+(-\d+)+$", t):
-            return _parse_corners(t)
+            corners = _parse_corners(t)
+            # 妥当性: コーナー数は2-6、各値は1-30の範囲
+            if 2 <= len(corners) <= 6 and all(1 <= v <= 30 for v in corners):
+                return corners
     return []
 
 
@@ -648,6 +655,91 @@ def load_horse_db(path: str, force_reload: bool = False) -> dict:
         return _HORSE_DB_CACHE
     except Exception:
         return {}
+
+
+def get_past_runs_from_race_log(horse_id: str, max_runs: int = 30):
+    """
+    race_logテーブルからhorse_idの過去走をPastRunリストとして構築。
+    HTMLキャッシュ不要。DB永続化データから確実に取得。
+    """
+    if not horse_id:
+        return []
+    from src.models import PaceType, PastRun
+    from src.database import get_db
+
+    conn = get_db()
+    rows = conn.execute(
+        """SELECT * FROM race_log
+           WHERE horse_id = ? AND finish_pos < 90
+           ORDER BY race_date DESC
+           LIMIT ?""",
+        (horse_id, max_runs),
+    ).fetchall()
+
+    past_runs = []
+    for row in rows:
+        try:
+            # positions_corners: JSON文字列 → List[int]
+            corners_raw = row["positions_corners"] or ""
+            if corners_raw and corners_raw.startswith("["):
+                corners = json.loads(corners_raw)
+            else:
+                corners = []
+
+            # pace
+            pace = None
+            pace_raw = row["pace"]
+            if pace_raw:
+                try:
+                    pace = PaceType(pace_raw)
+                except ValueError:
+                    pass
+
+            # venue: venue_codeから復元
+            venue = row["venue_code"] or ""
+
+            # 通過順バリデーション: 0を含むデータは除外
+            if corners and any(c <= 0 for c in corners):
+                corners = [c for c in corners if c > 0]
+                if len(corners) < 2:
+                    corners = []
+
+            pr = PastRun(
+                race_date=row["race_date"] or "",
+                venue=venue,
+                course_id=row["course_id"] or "",
+                distance=row["distance"] or 2000,
+                surface=row["surface"] or "芝",
+                condition=row["condition"] or "良",
+                class_name=row["race_name"] or "",
+                grade=row["grade"] or "",
+                field_count=row["field_count"] or 10,
+                gate_no=row["gate_no"] or 1,
+                horse_no=row["horse_no"] or 1,
+                jockey=row["jockey_name"] or "",
+                jockey_id=row["jockey_id"] or "",
+                trainer_id=row["trainer_id"] or "",
+                weight_kg=row["weight_kg"] or 55.0,
+                horse_weight=row["horse_weight"],
+                weight_change=row["weight_change"],
+                position_4c=row["position_4c"] or 4,
+                positions_corners=corners,
+                finish_pos=row["finish_pos"] or 10,
+                finish_time_sec=row["finish_time_sec"] or 0.0,
+                last_3f_sec=row["last_3f_sec"] or 35.5,
+                margin_behind=row["margin_behind"] or 0.0,
+                margin_ahead=row["margin_ahead"] or 0.0,
+                pace=pace,
+                first_3f_sec=row["first_3f_sec"],
+                is_generation=bool(row["is_generation"]),
+                race_id=row["race_id"] or "",
+            )
+            past_runs.append(pr)
+        except Exception:
+            logger.debug("race_log→PastRun変換失敗", exc_info=True)
+            continue
+
+    return past_runs
 
 
 def get_past_runs_from_horse_db(horse_id: str, horse_db_path: str, max_runs: int = 30):

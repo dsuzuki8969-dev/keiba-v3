@@ -10,6 +10,7 @@
 import json
 import os
 import re
+import shutil
 import time
 from typing import Dict, List, Optional, Tuple
 
@@ -69,7 +70,16 @@ def save_prediction(date: str, analyses_by_venue: dict, *, lightweight: bool = F
                 "corner_type": course.corner_type if course else "",
                 "slope_type": course.slope_type if course else "",
                 "inside_outside": course.inside_outside if course else "",
+                "first_corner_m": course.first_corner_m if course else 0,
+                # 残り600m地点データ（展開図用）
+                "l3f_corners": getattr(course, "l3f_corners", 1) if course else 1,
+                "l3f_straight_pct": round(getattr(course, "l3f_straight_pct", 0.55), 2) if course else 0.55,
+                "l3f_elevation": getattr(course, "l3f_elevation", 0.0) if course else 0.0,
+                "l3f_hill_start": getattr(course, "l3f_hill_start", 0) if course else 0,
                 "confidence": analysis.overall_confidence.value
+                if analysis.overall_confidence
+                else "B",
+                "overall_confidence": analysis.overall_confidence.value
                 if analysis.overall_confidence
                 else "B",
                 "confidence_score": round(getattr(analysis, "confidence_score", 0.0), 3),
@@ -100,15 +110,38 @@ def save_prediction(date: str, analyses_by_venue: dict, *, lightweight: bool = F
             # leading_horses に含まれる馬番セット（running_style整合用）
             _leading_set = set(analysis.leading_horses or [])
 
+            # 性齢がパースできていない馬がいればレースキャッシュから補完
+            _sex_cache = {}
+            _has_unknown_sex = any(
+                getattr(ev.horse, "sex", "") in ("不明", "", None)
+                for ev in analysis.evaluations
+            )
+            if _has_unknown_sex:
+                try:
+                    from src.scraper.race_cache import load_race_cache
+                    _cached = load_race_cache(race_id, ignore_ttl=True)
+                    if _cached:
+                        _, _cached_horses = _cached
+                        for _ch in _cached_horses:
+                            if getattr(_ch, "sex", "") not in ("不明", "", None):
+                                _sex_cache[_ch.horse_no] = (_ch.sex, _ch.age)
+                except Exception:
+                    pass
+
             for ev in analysis.evaluations:
                 h = ev.horse
+                # 性齢補完
+                _sex = getattr(h, "sex", "")
+                _age = getattr(h, "age", None)
+                if _sex in ("不明", "", None) and h.horse_no in _sex_cache:
+                    _sex, _age = _sex_cache[h.horse_no]
                 horse_data = {
                     # 基本情報
                     "horse_no": h.horse_no,
                     "horse_name": h.horse_name,
                     "horse_id": getattr(h, "horse_id", ""),
-                    "sex": getattr(h, "sex", ""),
-                    "age": getattr(h, "age", None),
+                    "sex": _sex if _sex not in ("不明", None) else "",
+                    "age": _age if _age else getattr(h, "age", None),
                     "gate_no": getattr(h, "gate_no", None),
                     "weight_kg": getattr(h, "weight_kg", None),
                     "jockey": getattr(h, "jockey", ""),
@@ -127,9 +160,9 @@ def save_prediction(date: str, analyses_by_venue: dict, *, lightweight: bool = F
                     # 総合
                     "mark": ev.mark.value if ev.mark else "-",
                     # assign_marks でスナップショットされた値を優先（印との整合性保証）— 30-70クランプ
-                    "composite": round(max(30.0, min(70.0, getattr(ev, "_composite_snapshot", ev.composite))), 2),
+                    "composite": round(max(20.0, min(100.0, getattr(ev, "_composite_snapshot", ev.composite))), 2),
                     # 能力偏差値 (A-E章) — 30-70クランプ
-                    "ability_total": round(max(30.0, min(70.0, ev.ability.total)), 2),
+                    "ability_total": round(max(20.0, min(100.0, ev.ability.total)), 2),
                     "ability_max": round(ev.ability.max_dev, 2),
                     "ability_wa": round(ev.ability.wa_dev, 2),
                     "ability_alpha": round(ev.ability.alpha, 3),
@@ -152,12 +185,13 @@ def save_prediction(date: str, analyses_by_venue: dict, *, lightweight: bool = F
                     "pace_gate_bias": round(ev.pace.gate_bias, 2),
                     "pace_course_style_bias": round(ev.pace.course_style_bias, 2),
                     "pace_jockey": round(ev.pace.jockey_pace, 2),
-                    "pace_estimated_pos4c": round(ev.pace.estimated_position_4c * len(analysis.evaluations) + 1, 1) if ev.pace.estimated_position_4c is not None else None,
+                    "pace_estimated_pos4c": round(max(1, ev.pace.estimated_position_4c * len(analysis.evaluations) + 1 - 1.5), 1) if ev.pace.estimated_position_4c is not None else None,
                     "pace_estimated_last3f": _round_or_none(ev.pace.estimated_last3f),
                     "pace_estimated_front3f": _round_or_none(ev.pace.estimated_front_3f),
                     "pace_estimated_mid_sec": _round_or_none(ev.pace.estimated_mid_sec),
                     "pace_estimated_total_time": _round_or_none(getattr(ev.pace, "estimated_total_time", None)),
                     "position_initial": round(getattr(ev, "_normalized_position", 0.5), 3),
+                    "position_1c": round(getattr(ev, "_position_1c", None) or getattr(ev, "_normalized_position", 0.5), 3),
                     "running_style": ""
                     if race_data.get("is_banei")
                     else (
@@ -169,6 +203,12 @@ def save_prediction(date: str, analyses_by_venue: dict, *, lightweight: bool = F
                             else ""
                         )
                     ),
+                    # 前走通過順（展開図整合性確認用）
+                    "positions_corners": (
+                        "-".join(str(p) for p in h.past_runs[0].positions_corners)
+                        if h.past_runs and h.past_runs[0].positions_corners
+                        else ""
+                    ),
                     # コース適性 (G章)
                     "course_total": round(ev.course.total, 2),
                     "course_record": round(ev.course.course_record, 2),
@@ -176,9 +216,9 @@ def save_prediction(date: str, analyses_by_venue: dict, *, lightweight: bool = F
                     "course_venue_level": ev.course.venue_contrib_level,
                     "course_jockey": round(ev.course.jockey_course, 2),
                     # 確率推定
-                    "win_prob": round(ev.win_prob, 4),
-                    "place2_prob": round(ev.place2_prob, 4),
-                    "place3_prob": round(ev.place3_prob, 4),
+                    "win_prob": round(min(1.0, ev.win_prob), 4),
+                    "place2_prob": round(min(1.0, ev.place2_prob), 4),
+                    "place3_prob": round(min(1.0, ev.place3_prob), 4),
                     # 騎手・調教
                     "jockey_change_score": round(ev.jockey_change_score, 2),
                     "shobu_score": round(ev.shobu_score, 2),
@@ -203,10 +243,13 @@ def save_prediction(date: str, analyses_by_venue: dict, *, lightweight: bool = F
                     "ml_rule_prob": _round_or_none(getattr(ev, "_ml_rule_prob", None), 4),
                     "pre_pop_prob": _round_or_none(getattr(ev, "_pre_pop_prob", None), 4),
                     "model_level": getattr(ev, "_model_level", None),
-                    # 予想オッズ・乖離
+                    # 予想オッズ・乖離・EV
                     "predicted_tansho_odds": _round_or_none(ev.predicted_tansho_odds),
                     "odds_divergence": _round_or_none(ev.odds_divergence),
                     "divergence_signal": ev.divergence_signal or "",
+                    "ev": _round_or_none(
+                        (ev.win_prob or 0) * ev.effective_odds
+                        if ev.effective_odds and ev.effective_odds > 0 else None, 3),
                     # 調教データ (J-4)
                     "training_intensity": _extract_training_summary(ev.training_records),
                     "training_records": _extract_training_records(ev.training_records),
@@ -220,9 +263,10 @@ def save_prediction(date: str, analyses_by_venue: dict, *, lightweight: bool = F
                     "mgs_grade": getattr(ev, "_mgs_grade", "—"),
                     "owner_grade": "—",
                     # 偏差値（数値）— 30-70クランプ
-                    "jockey_dev": round(max(30.0, min(70.0, v)), 1) if (v := getattr(ev, "_jockey_dev", None)) is not None else None,
-                    "trainer_dev": round(max(30.0, min(70.0, v)), 1) if (v := getattr(ev, "_trainer_dev", None)) is not None else None,
-                    "bloodline_dev": round(max(30.0, min(70.0, v)), 1) if (v := getattr(ev, "_bloodline_dev", None)) is not None else None,
+                    "jockey_dev": round(max(20.0, min(100.0, v)), 1) if (v := getattr(ev, "_jockey_dev", None)) is not None else None,
+                    "trainer_dev": round(max(20.0, min(100.0, v)), 1) if (v := getattr(ev, "_trainer_dev", None)) is not None else None,
+                    "bloodline_dev": round(max(20.0, min(100.0, v)), 1) if (v := getattr(ev, "_bloodline_dev", None)) is not None else None,
+                    "training_dev": round(max(20.0, min(100.0, v)), 1) if (v := getattr(ev, "_training_dev", None)) is not None else None,
                     # 確率追加
                     "predicted_rank": getattr(ev, "_predicted_rank", None),
                     # 能力追加
@@ -241,7 +285,123 @@ def save_prediction(date: str, analyses_by_venue: dict, *, lightweight: bool = F
                 }
                 race_data["horses"].append(horse_data)
 
+            # 予想通過順: ML推定の初角位置(pos_1c)と4角位置(pos4c)をベースに
+            # 2角・3角は初角→4角の線形補間で算出
+            _corner_count = race_data.get("corner_count", 4)
+            _n = len(race_data["horses"])
+            if _n >= 2 and not race_data.get("is_banei"):
+                # 各馬の初角・4角の相対位置スコア (0.0=先頭, 1.0=最後方)
+                _horse_positions = []  # [(horse_no, pos_1c, pos_4c)]
+                for _hd in race_data["horses"]:
+                    # Phase 0-B: 本物の1角推定（First1CPredictor）を使用
+                    _pos_1c_raw = _hd.get("estimated_pos_1c")
+                    if _pos_1c_raw is not None and _n > 1:
+                        _pos_1c = max(0.0, min(1.0, (_pos_1c_raw - 1) / (_n - 1)))
+                    else:
+                        _pos_1c = _hd.get("position_initial", 0.5)
+                    # ML推定4角位置: pos4c は番手(1=先頭)なので相対化
+                    _pos_4c_raw = _hd.get("pace_estimated_pos4c")
+                    if _pos_4c_raw is not None and _n > 1:
+                        _pos_4c = max(0.0, min(1.0, (_pos_4c_raw - 1) / (_n - 1)))
+                    else:
+                        # フォールバック: 脚質シフトで推定
+                        _style = _hd.get("running_style", "") or "先行"  # 空文字時は先行扱い（位置維持）
+                        _shift_4c = {"逃げ": 0.06, "先行": 0.00, "差し": -0.15, "追込": -0.25}.get(_style, 0.0)
+                        _pos_4c = max(0.0, min(1.0, _pos_1c + _shift_4c))
+                    _horse_positions.append((_hd["horse_no"], _pos_1c, _pos_4c))
+
+                # コーナー数に応じて各コーナーの位置を線形補間
+                if _corner_count <= 2:
+                    _corner_indices = [2, 3]  # 3角, 4角
+                else:
+                    _corner_indices = [0, 1, 2, 3]  # 1角, 2角, 3角, 4角
+
+                _corners_per_horse = {}  # horse_no → [rank, rank, ...]
+                for _ci in _corner_indices:
+                    # 補間比率: 0=初角, 3=4角
+                    if _corner_count <= 2:
+                        _t = 0.5 if _ci == 2 else 1.0  # 3角=0.5, 4角=1.0
+                    else:
+                        _t = _ci / 3.0  # 0/3, 1/3, 2/3, 3/3
+
+                    _scores = []
+                    for _hno, _p1c, _p4c in _horse_positions:
+                        # 初角→4角を線形補間
+                        _score = _p1c * (1.0 - _t) + _p4c * _t
+                        _scores.append((_hno, _score))
+
+                    # スコア順にソート → 順位付け（小さい=先頭=1位）
+                    _scores.sort(key=lambda x: x[1])
+                    _rank_map = {}
+                    for _rank_idx, (hno, _) in enumerate(_scores, 1):
+                        _rank_map[hno] = _rank_idx
+                    for hno, _ in _scores:
+                        if hno not in _corners_per_horse:
+                            _corners_per_horse[hno] = []
+                        _corners_per_horse[hno].append(_rank_map[hno])
+
+                # 各馬に predicted_corners を設定（"3-3-4-5" 形式）
+                for _hd in race_data["horses"]:
+                    _ranks = _corners_per_horse.get(_hd["horse_no"], [])
+                    _hd["predicted_corners"] = "-".join(str(r) for r in _ranks) if _ranks else ""
+
             # 馬個別見解・印見解・買い目は廃止（2026-03 以降）
+
+            # 出走取消馬の確率再配分
+            # オッズ確定レースでodds=Noneの馬は取消 → 確率0にして残りに再配分
+            _horses_list = race_data["horses"]
+            _has_any_odds = any(h.get("odds") is not None for h in _horses_list)
+            if _has_any_odds:
+                _scratched_nos = set()
+                for _hd in _horses_list:
+                    if _hd.get("odds") is None and _hd.get("popularity") is None:
+                        _scratched_nos.add(_hd["horse_no"])
+                if _scratched_nos:
+                    # 取消馬: 確率・印をクリア（評価データは保持してオッズ復帰時に復元可能にする）
+                    for _hd in _horses_list:
+                        if _hd["horse_no"] in _scratched_nos:
+                            _hd["win_prob"] = 0.0
+                            _hd["place2_prob"] = 0.0
+                            _hd["place3_prob"] = 0.0
+                            _hd["ml_win_prob"] = None
+                            _hd["ml_top2_prob"] = None
+                            _hd["ml_place_prob"] = None
+                            _hd["mark"] = ""
+                            _hd["predicted_corners"] = ""
+                            _hd["running_style"] = ""
+                            _hd["is_scratched"] = True
+                            # 評価データは保持（ability_total, pace_total, course_total, composite）
+                            # オッズ更新で取消解除された場合に復元できるようにする
+                    # 残りの馬で確率を再正規化
+                    for prob_key, target_sum in [("win_prob", 1.0), ("place2_prob", 2.0), ("place3_prob", 3.0)]:
+                        _active = [_hd for _hd in _horses_list if _hd["horse_no"] not in _scratched_nos]
+                        _active_sum = sum(_hd.get(prob_key, 0) for _hd in _active)
+                        if _active_sum > 0:
+                            for _hd in _active:
+                                _hd[prob_key] = round(min(1.0, _hd[prob_key] / _active_sum * target_sum), 4)
+                    # predicted_cornersを取消馬なしで再計算
+                    _active_horses = [_hd for _hd in _horses_list if _hd["horse_no"] not in _scratched_nos]
+                    _n_active = len(_active_horses)
+                    if _n_active >= 2:
+                        _style_shift = {
+                            "逃げ": [0.00, 0.02, 0.04, 0.06], "先行": [0.00, 0.00, 0.00, 0.00],
+                            "差し": [0.00, -0.05, -0.10, -0.15], "追込": [0.00, -0.05, -0.15, -0.25],
+                        }
+                        _corner_indices_s = [2, 3] if _corner_count <= 2 else [0, 1, 2, 3]
+                        _corners_per_horse_s = {}
+                        for _ci_s in _corner_indices_s:
+                            _scores_s = []
+                            for _hd in _active_horses:
+                                _pi = _hd.get("position_initial", 0.5)
+                                _st = _hd.get("running_style", "")
+                                _shift = _style_shift.get(_st, [0, 0, 0, 0])[_ci_s]
+                                _scores_s.append((_hd["horse_no"], max(0.0, min(1.0, _pi + _shift))))
+                            _scores_s.sort(key=lambda x: x[1])
+                            for _ri, (hno, _) in enumerate(_scores_s, 1):
+                                _corners_per_horse_s.setdefault(hno, []).append(_ri)
+                        for _hd in _active_horses:
+                            _ranks = _corners_per_horse_s.get(_hd["horse_no"], [])
+                            _hd["predicted_corners"] = "-".join(str(r) for r in _ranks) if _ranks else ""
 
             # バリューベット
             race_data["value_bets"] = []
@@ -262,6 +422,14 @@ def save_prediction(date: str, analyses_by_venue: dict, *, lightweight: bool = F
 
     fpath = os.path.join(PREDICTIONS_DIR, f"{date.replace('-', '')}_pred.json")
 
+    # 既存ファイルがあれば _prev.json にバックアップ（1世代保持）
+    if os.path.isfile(fpath):
+        prev_path = fpath.replace("_pred.json", "_pred_prev.json")
+        try:
+            shutil.copy2(fpath, prev_path)
+        except Exception:
+            pass  # バックアップ失敗でも処理続行
+
     # 既存の pred.json とマージ（別分析セッションのレースを保持する）
     if os.path.isfile(fpath):
         try:
@@ -269,6 +437,28 @@ def save_prediction(date: str, analyses_by_venue: dict, *, lightweight: bool = F
                 existing = json.load(ef)
             # 今回の分析に含まれる (venue, race_no) のセット
             new_keys = {(r["venue"], r["race_no"]) for r in payload["races"]}
+
+            # 既存レースのオッズ・人気・馬体重を新データに引き継ぎ
+            _old_by_key = {}
+            for old_race in existing.get("races", []):
+                key = (old_race.get("venue", ""), old_race.get("race_no", 0))
+                _old_by_key[key] = old_race
+            for new_race in payload["races"]:
+                key = (new_race.get("venue", ""), new_race.get("race_no", 0))
+                old_race = _old_by_key.get(key)
+                if not old_race:
+                    continue
+                _old_horses = {h.get("horse_no"): h for h in old_race.get("horses", [])}
+                for nh in new_race.get("horses", []):
+                    oh = _old_horses.get(nh["horse_no"])
+                    if not oh:
+                        continue
+                    # オッズ・人気を既存データから引き継ぎ（新データにない場合のみ）
+                    if nh.get("odds") is None and oh.get("odds") is not None:
+                        nh["odds"] = oh["odds"]
+                    if nh.get("popularity") is None and oh.get("popularity") is not None:
+                        nh["popularity"] = oh["popularity"]
+
             # 既存レースのうち、今回の分析に含まれないものを保持
             for old_race in existing.get("races", []):
                 key = (old_race.get("venue", ""), old_race.get("race_no", 0))
@@ -280,6 +470,32 @@ def save_prediction(date: str, analyses_by_venue: dict, *, lightweight: bool = F
                     payload[meta_key] = existing[meta_key]
         except Exception:
             pass  # マージ失敗時は新規データのみで上書き
+
+    # マージ後に全レースで取消馬処理を実行
+    _style_shift_post = {
+        "逃げ": [0.00, 0.02, 0.04, 0.06], "先行": [0.00, 0.00, 0.00, 0.00],
+        "差し": [0.00, -0.05, -0.10, -0.15], "追込": [0.00, -0.05, -0.15, -0.25],
+    }
+    for _race in payload["races"]:
+        _hl = _race.get("horses", [])
+        _hao = any(h.get("odds") is not None for h in _hl)
+        if not _hao:
+            continue
+        _sn = {h["horse_no"] for h in _hl if h.get("odds") is None and h.get("popularity") is None}
+        if not _sn:
+            continue
+        for _hd in _hl:
+            if _hd["horse_no"] in _sn:
+                # 評価データ（ability_total等）は保持、確率・印のみクリア
+                _hd.update({"is_scratched": True, "win_prob": 0.0, "place2_prob": 0.0,
+                            "place3_prob": 0.0, "mark": "", "predicted_corners": "",
+                            "running_style": ""})
+        _act = [h for h in _hl if h["horse_no"] not in _sn]
+        for _pk, _ts in [("win_prob", 1.0), ("place2_prob", 2.0), ("place3_prob", 3.0)]:
+            _as = sum(h.get(_pk, 0) for h in _act)
+            if _as > 0:
+                for h in _act:
+                    h[_pk] = round(min(1.0, h[_pk] / _as * _ts), 4)
 
     with open(fpath, "w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)
@@ -334,7 +550,8 @@ def _extract_training_records(records) -> list:
     return result
 
 
-def _lookup_corners_from_cache(race_id: str, horse_no: int) -> list:
+def _lookup_corners_from_cache(race_id: str, horse_no: int,
+                               finish_pos: int = 0, field_count: int = 0) -> list:
     """result.htmlキャッシュからコーナー通過順を取得"""
     import lz4.frame
     import os
@@ -342,11 +559,18 @@ def _lookup_corners_from_cache(race_id: str, horse_no: int) -> list:
     from bs4 import BeautifulSoup
 
     cache_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "cache")
+    # 園田49/50の二重コード対応
+    race_ids = [race_id]
+    if len(race_id) >= 6:
+        vc2 = race_id[4:6]
+        alt = {"49": "50", "50": "49"}.get(vc2)
+        if alt:
+            race_ids.append(race_id[:4] + alt + race_id[6:])
     # NAR優先 → JRA
-    keys = [
-        f"nar.netkeiba.com_race_result.html_race_id={race_id}",
-        f"race.netkeiba.com_race_result.html_race_id={race_id}",
-    ]
+    keys = []
+    for rid in race_ids:
+        keys.append(f"nar.netkeiba.com_race_result.html_race_id={rid}")
+        keys.append(f"race.netkeiba.com_race_result.html_race_id={rid}")
     html = None
     for key in keys:
         lz4_path = os.path.join(cache_dir, f"{key}.html.lz4")
@@ -384,7 +608,14 @@ def _lookup_corners_from_cache(race_id: str, horse_no: int) -> list:
         if not m:
             continue
         ci = int(m.group(1))
-        nos = [int(x) for x in _re.findall(r"\d+", td.get_text())]
+        # コーナー通過順HTML例: "5,7,12,(2,6),10,4,9,1,3,8,11"
+        # "=" は大差セパレータ（末尾の "=番号" は除外馬）
+        # カッコ=同着。カッコを除去してからカンマ区切りで馬番抽出
+        raw = td.get_text()
+        raw = _re.sub(r'\s*=\s*(\d+)\s*$', '', raw)  # 末尾除外馬を除去
+        raw = raw.replace("(", "").replace(")", "").replace("（", "").replace("）", "")
+        raw = raw.replace("=", ",").replace("-", ",")  # 大差・ハイフン→カンマ
+        nos = [int(x.strip()) for x in raw.split(",") if x.strip().isdigit()]
         corner_orders[ci] = nos
 
     if not corner_orders:
@@ -392,13 +623,44 @@ def _lookup_corners_from_cache(race_id: str, horse_no: int) -> list:
 
     # 指定馬番の各コーナー順位
     positions = []
+    has_valid = False
+    n_corners = len(corner_orders)
+    total_horses = max(len(v) for v in corner_orders.values()) if corner_orders else 0
     for ci in sorted(corner_orders.keys()):
         order = corner_orders[ci]
         try:
             pos = order.index(horse_no) + 1
+            has_valid = True
         except ValueError:
-            pos = 0
+            pos = 0  # 一旦0（後で補完）
         positions.append(pos)
+    # 全コーナーで馬番未発見 → finish_posから推定
+    # コーナー通過データはあるのに馬番だけない = 大差離された馬・途中離脱等
+    if not has_valid:
+        fc = field_count or total_horses or 0
+        fp = finish_pos or fc  # finish_posがなければ最後尾とみなす
+        if fp > 0:
+            # finish_posをそのまま全コーナーの推定位置として使用
+            # 着順が下位なら後方にいた可能性が高い
+            est = min(fp, fc) if fc else fp
+            positions = [est] * n_corners
+        # それでもダメなら空リスト（データ完全欠損）
+        if not any(p > 0 for p in positions):
+            return []
+    else:
+        # 一部コーナーのみ未発見 → 前後の有効値で補間
+        for i, p in enumerate(positions):
+            if p == 0:
+                # 前方の有効値を探す
+                prev = next((positions[j] for j in range(i - 1, -1, -1) if positions[j] > 0), 0)
+                # 後方の有効値を探す
+                nxt = next((positions[j] for j in range(i + 1, len(positions)) if positions[j] > 0), 0)
+                if prev and nxt:
+                    positions[i] = round((prev + nxt) / 2)
+                elif prev:
+                    positions[i] = prev
+                elif nxt:
+                    positions[i] = nxt
     return positions
 
 
@@ -419,10 +681,17 @@ def _lookup_l3f_rank_from_cache(race_id: str, horse_no: int) -> int | None:
     from bs4 import BeautifulSoup
 
     cache_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "cache")
-    keys = [
-        f"nar.netkeiba.com_race_result.html_race_id={race_id}",
-        f"race.netkeiba.com_race_result.html_race_id={race_id}",
-    ]
+    # 園田49/50の二重コード対応: race_idの4-5桁目が49or50なら両方検索
+    race_ids = [race_id]
+    if len(race_id) >= 6:
+        vc2 = race_id[4:6]
+        alt = {"49": "50", "50": "49"}.get(vc2)
+        if alt:
+            race_ids.append(race_id[:4] + alt + race_id[6:])
+    keys = []
+    for rid in race_ids:
+        keys.append(f"nar.netkeiba.com_race_result.html_race_id={rid}")
+        keys.append(f"race.netkeiba.com_race_result.html_race_id={rid}")
     html = None
     for key in keys:
         lz4_path = os.path.join(cache_dir, f"{key}.html.lz4")
@@ -480,6 +749,191 @@ def _lookup_l3f_rank_from_cache(race_id: str, horse_no: int) -> int | None:
     return rank_map.get(horse_no)
 
 
+def _parse_corners_from_race_results(race_id: str, horse_no: int, db_path: str) -> list:
+    """race_resultsのorder_json内cornersフィールドから通過順をパース"""
+    import sqlite3
+    import json as _j
+    conn = sqlite3.connect(db_path)
+    row = conn.execute(
+        "SELECT order_json FROM race_results WHERE race_id=? LIMIT 1",
+        (race_id,),
+    ).fetchone()
+    conn.close()
+    if not row or not row[0]:
+        return []
+    orders = _j.loads(row[0])
+    fc = len(orders)
+    target = None
+    for o in orders:
+        if o.get("horse_no") == horse_no:
+            raw_list = o.get("corners") or []
+            if raw_list and isinstance(raw_list[0], int):
+                target = raw_list[0]
+            break
+    if not target:
+        return []
+    return _parse_corners_num(target, fc)
+
+
+def _parse_corners_num(raw_val: int, field_count: int) -> list:
+    """netkeibaの通過順数値(例: 3333→[3,3,3,3])をパース"""
+    if not raw_val or raw_val == 0:
+        return []
+    s = str(raw_val)
+    # 全桁1-9 かつ 2-4桁 → 各桁分解で確定
+    if all(c in "123456789" for c in s) and 2 <= len(s) <= 4:
+        return [int(c) for c in s]
+    # 1桁+2桁混在: コーナー数4→3→2で試行
+    for nc in (4, 3, 2):
+        cands = _dp_corners(s, nc)
+        if not cands:
+            continue
+        valid = [c for c in cands if all(1 <= v <= field_count for v in c)]
+        if valid:
+            return min(valid, key=lambda c: max(c) - min(c))
+    # フォールバック
+    return [int(c) for c in s if c != "0"]
+
+
+def _dp_corners(s: str, n: int):
+    """文字列sをn個の正整数に分割する全パターンを列挙"""
+    if n == 0:
+        return [[]] if not s else None
+    if not s:
+        return None
+    res = []
+    v1 = int(s[0])
+    if v1 > 0:
+        sub = _dp_corners(s[1:], n - 1)
+        if sub:
+            res.extend([[v1] + r for r in sub])
+    if len(s) >= 2:
+        v2 = int(s[:2])
+        if v2 >= 10:
+            sub = _dp_corners(s[2:], n - 1)
+            if sub:
+                res.extend([[v2] + r for r in sub])
+    return res or None
+
+
+def _get_corners_from_race_log(run) -> list:
+    """race_logテーブルから直接通過順を取得（最も信頼性が高い）"""
+    import sqlite3
+    import json as _json_rl
+    import os
+
+    rd = getattr(run, "race_date", "")
+    venue = getattr(run, "venue", "")
+    horse_no = getattr(run, "horse_no", 0)
+    distance = getattr(run, "distance", 0)
+    finish_pos = getattr(run, "finish_pos", 0)
+    race_id = getattr(run, "race_id", "")
+    if not rd and not race_id:
+        return []
+
+    db_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "keiba.db")
+    if not os.path.exists(db_path):
+        return []
+
+    try:
+        conn = sqlite3.connect(db_path)
+        row = None
+        # race_id指定がある場合は最も正確
+        if race_id and horse_no:
+            row = conn.execute(
+                "SELECT positions_corners FROM race_log "
+                "WHERE race_id=? AND horse_no=? LIMIT 1",
+                (race_id, horse_no),
+            ).fetchone()
+        # race_idがない場合はvenue+date+distance+finish_posで検索
+        if not row and venue and rd:
+            from data.masters.venue_master import VENUE_NAME_TO_CODE
+            # venueがすでにコード形式（"01"-"65"等）の場合はそのまま使用
+            import re as _re_vc
+            if _re_vc.match(r"^\d{2}$", venue):
+                vc = venue
+            else:
+                vc = VENUE_NAME_TO_CODE.get(venue, "")
+            vc_alt = {"49": "50", "50": "49"}.get(vc, "")
+            if vc and horse_no and distance:
+                row = conn.execute(
+                    "SELECT positions_corners FROM race_log "
+                    "WHERE race_date=? AND venue_code IN (?,?) AND horse_no=? "
+                    "AND distance=? AND finish_pos=? LIMIT 1",
+                    (rd, vc, vc_alt or vc, horse_no, distance, finish_pos),
+                ).fetchone()
+            if not row and vc and horse_no:
+                row = conn.execute(
+                    "SELECT positions_corners FROM race_log "
+                    "WHERE race_date=? AND venue_code IN (?,?) AND horse_no=? "
+                    "AND distance=? LIMIT 1",
+                    (rd, vc, vc_alt or vc, horse_no, distance),
+                ).fetchone()
+        # venue不明でもhorse_id+dateで検索（JRA race_idなしのケース救済）
+        horse_id = getattr(run, "horse_id", "") or ""
+        if not row and horse_id and rd and horse_no:
+            row = conn.execute(
+                "SELECT positions_corners FROM race_log "
+                "WHERE horse_id=? AND race_date=? AND horse_no=? LIMIT 1",
+                (horse_id, rd, horse_no),
+            ).fetchone()
+        if not row and horse_id and rd:
+            row = conn.execute(
+                "SELECT positions_corners FROM race_log "
+                "WHERE horse_id=? AND race_date=? LIMIT 1",
+                (horse_id, rd),
+            ).fetchone()
+        conn.close()
+    except Exception:
+        return []
+
+    if row and row[0]:
+        try:
+            parsed = _json_rl.loads(row[0]) if isinstance(row[0], str) else row[0]
+            if isinstance(parsed, list):
+                valid = [v for v in parsed if isinstance(v, int) and v > 0]
+                if len(valid) >= 1:
+                    return valid
+        except Exception:
+            pass
+
+    # race_logに通過順がない場合、race_resultsのorder_jsonから取得
+    _rid = race_id
+    if not _rid:
+        # race_logからrace_idだけ取得
+        try:
+            conn2 = sqlite3.connect(db_path)
+            from data.masters.venue_master import VENUE_NAME_TO_CODE
+            vc = VENUE_NAME_TO_CODE.get(venue, "")
+            vc_alt = {"49": "50", "50": "49"}.get(vc, "")
+            if vc and horse_no and rd:
+                _r = conn2.execute(
+                    "SELECT race_id FROM race_log "
+                    "WHERE race_date=? AND venue_code IN (?,?) AND horse_no=? AND distance=? LIMIT 1",
+                    (rd, vc, vc_alt or vc, horse_no, distance),
+                ).fetchone()
+                if _r:
+                    _rid = _r[0]
+            # venue不明でもhorse_id+dateでrace_id取得
+            if not _rid and horse_id and rd:
+                _r = conn2.execute(
+                    "SELECT race_id FROM race_log "
+                    "WHERE horse_id=? AND race_date=? LIMIT 1",
+                    (horse_id, rd),
+                ).fetchone()
+                if _r:
+                    _rid = _r[0]
+            conn2.close()
+        except Exception:
+            pass
+    if _rid and horse_no:
+        try:
+            return _parse_corners_from_race_results(_rid, horse_no, db_path)
+        except Exception:
+            pass
+    return []
+
+
 def _get_corners_for_run(run) -> list:
     """PastRunのコーナー通過順を取得（DBからrace_id特定→キャッシュ読み込み）"""
     import sqlite3
@@ -494,9 +948,16 @@ def _get_corners_for_run(run) -> list:
         return []
 
     from data.masters.venue_master import VENUE_NAME_TO_CODE
-    vc = VENUE_NAME_TO_CODE.get(venue, "")
+    import re as _re_vc2
+    # venueがすでにコード形式（"01"-"65"等）の場合はそのまま使用
+    if _re_vc2.match(r"^\d{2}$", venue):
+        vc = venue
+    else:
+        vc = VENUE_NAME_TO_CODE.get(venue, "")
     if not vc:
         return []
+    # 園田49/50の二重コード対応
+    vc_alt = {"49": "50", "50": "49"}.get(vc, "")
 
     # distance込みでキャッシュ（同日同場でも距離が違えば別レース）
     cache_key = (rd, vc, horse_no, distance)
@@ -508,31 +969,41 @@ def _get_corners_for_run(run) -> list:
     if not os.path.exists(db_path):
         return []
 
+    last_3f = getattr(run, "last_3f_sec", 0) or 0
+
     try:
         conn = sqlite3.connect(db_path)
-        # distance + finish_pos で正確に特定
         row = None
-        if distance and finish_pos:
+        _vcs = (vc, vc_alt or vc)
+        # last_3f_secも使って精密マッチ（同日同場同馬番同着順の誤ヒット防止）
+        if distance and finish_pos and last_3f > 0:
             row = conn.execute(
                 "SELECT race_id FROM race_log "
-                "WHERE race_date = ? AND venue_code = ? AND horse_no = ? "
+                "WHERE race_date = ? AND venue_code IN (?,?) AND horse_no = ? "
+                "AND distance = ? AND finish_pos = ? AND ABS(last_3f_sec - ?) < 0.2 LIMIT 1",
+                (rd, *_vcs, horse_no, distance, finish_pos, last_3f),
+            ).fetchone()
+        if not row and distance and finish_pos:
+            row = conn.execute(
+                "SELECT race_id FROM race_log "
+                "WHERE race_date = ? AND venue_code IN (?,?) AND horse_no = ? "
                 "AND distance = ? AND finish_pos = ? LIMIT 1",
-                (rd, vc, horse_no, distance, finish_pos),
+                (rd, *_vcs, horse_no, distance, finish_pos),
             ).fetchone()
         # フォールバック: distanceのみで絞り込み
         if not row and distance:
             row = conn.execute(
                 "SELECT race_id FROM race_log "
-                "WHERE race_date = ? AND venue_code = ? AND horse_no = ? "
+                "WHERE race_date = ? AND venue_code IN (?,?) AND horse_no = ? "
                 "AND distance = ? LIMIT 1",
-                (rd, vc, horse_no, distance),
+                (rd, *_vcs, horse_no, distance),
             ).fetchone()
         # 最終フォールバック: distance不明の場合
         if not row:
             row = conn.execute(
                 "SELECT race_id FROM race_log "
-                "WHERE race_date = ? AND venue_code = ? AND horse_no = ? LIMIT 1",
-                (rd, vc, horse_no),
+                "WHERE race_date = ? AND venue_code IN (?,?) AND horse_no = ? LIMIT 1",
+                (rd, *_vcs, horse_no),
             ).fetchone()
         conn.close()
     except Exception:
@@ -542,7 +1013,10 @@ def _get_corners_for_run(run) -> list:
         return []
 
     race_id = row[0]
-    corners = _lookup_corners_from_cache(race_id, horse_no)
+    field_count = getattr(run, "field_count", 0) or 0
+    corners = _lookup_corners_from_cache(race_id, horse_no,
+                                         finish_pos=finish_pos,
+                                         field_count=field_count)
     _corners_cache[cache_key] = corners
     return corners
 
@@ -561,7 +1035,11 @@ def _get_l3f_rank_for_run(run) -> int | None:
         return None
 
     from data.masters.venue_master import VENUE_NAME_TO_CODE
-    vc = VENUE_NAME_TO_CODE.get(venue, "")
+    import re as _re_vc3
+    if _re_vc3.match(r"^\d{2}$", venue):
+        vc = venue
+    else:
+        vc = VENUE_NAME_TO_CODE.get(venue, "")
     if not vc:
         return None
 
@@ -570,22 +1048,35 @@ def _get_l3f_rank_for_run(run) -> int | None:
     if not os.path.exists(db_path):
         return None
 
+    # 園田49/50の二重コード対応
+    vc_alt = {"49": "50", "50": "49"}.get(vc, "")
+    _vcs = (vc, vc_alt or vc)
+    last_3f = getattr(run, "last_3f_sec", 0) or 0
+
     try:
         conn = sqlite3.connect(db_path)
         row = None
-        if distance and finish_pos:
+        # last_3f_secも使って精密マッチ（同日同場同馬番同着順の誤ヒット防止）
+        if distance and finish_pos and last_3f > 0:
             row = conn.execute(
                 "SELECT race_id FROM race_log "
-                "WHERE race_date = ? AND venue_code = ? AND horse_no = ? "
+                "WHERE race_date = ? AND venue_code IN (?,?) AND horse_no = ? "
+                "AND distance = ? AND finish_pos = ? AND ABS(last_3f_sec - ?) < 0.2 LIMIT 1",
+                (rd, *_vcs, horse_no, distance, finish_pos, last_3f),
+            ).fetchone()
+        if not row and distance and finish_pos:
+            row = conn.execute(
+                "SELECT race_id FROM race_log "
+                "WHERE race_date = ? AND venue_code IN (?,?) AND horse_no = ? "
                 "AND distance = ? AND finish_pos = ? LIMIT 1",
-                (rd, vc, horse_no, distance, finish_pos),
+                (rd, *_vcs, horse_no, distance, finish_pos),
             ).fetchone()
         if not row and distance:
             row = conn.execute(
                 "SELECT race_id FROM race_log "
-                "WHERE race_date = ? AND venue_code = ? AND horse_no = ? "
+                "WHERE race_date = ? AND venue_code IN (?,?) AND horse_no = ? "
                 "AND distance = ? LIMIT 1",
-                (rd, vc, horse_no, distance),
+                (rd, *_vcs, horse_no, distance),
             ).fetchone()
         conn.close()
     except Exception:
@@ -595,6 +1086,22 @@ def _get_l3f_rank_for_run(run) -> int | None:
         return None
 
     return _lookup_l3f_rank_from_cache(row[0], horse_no)
+
+
+def _infer_race_no(run) -> int:
+    """PastRunからレース番号を推定（race_id 11-12桁目 or race_no属性）"""
+    # まずrace_no属性を確認
+    rno = getattr(run, "race_no", 0) or 0
+    if rno > 0:
+        return rno
+    # race_idの11-12桁目（例: 202606010903 → 03 = 3R）
+    rid = getattr(run, "race_id", "") or ""
+    if len(rid) >= 12:
+        try:
+            return int(rid[10:12])
+        except ValueError:
+            pass
+    return 0
 
 
 def _extract_past_runs(horse, count: int = 3, run_records=None) -> list:
@@ -627,25 +1134,54 @@ def _extract_past_runs(horse, count: int = 3, run_records=None) -> list:
         # 通過順 (positions_corners) — 取消・除外馬(fp>=90)は通過データなし
         fp_check = getattr(run, "finish_pos", 0) or 0
         corners = getattr(run, "positions_corners", None) if fp_check < 90 else None
+        corners_str = ""
+        _has_zero = False
+        _corner_count = 0
         if corners:
-            if isinstance(corners, (list, tuple)):
-                corners_str = "-".join(str(c) for c in corners)
-            else:
-                corners_str = str(corners)
-        else:
-            # result.htmlキャッシュからコーナー通過順を補完（取消・除外馬は除く）
+            if isinstance(corners, (list, tuple)) and len(corners) >= 1:
+                # 0を除外した有効コーナーのみ採用
+                valid_corners = [c for c in corners if isinstance(c, int) and c > 0]
+                if valid_corners and len(valid_corners) == len(corners):
+                    corners_str = "-".join(str(c) for c in corners)
+                    _corner_count = len(corners)
+                elif valid_corners:
+                    # 一部0あり → 有効値のみ使用（_corner_countは有効数）
+                    corners_str = "-".join(str(c) for c in valid_corners)
+                    _corner_count = len(valid_corners)
+            elif isinstance(corners, str) and corners.strip():
+                # 文字列形式でも0チェック
+                parts = [p.strip() for p in corners.split("-") if p.strip()]
+                valid_parts = [p for p in parts if p != "0"]
+                if valid_parts and len(valid_parts) == len(parts):
+                    corners_str = corners
+                    _corner_count = len(parts)
+                elif valid_parts:
+                    corners_str = "-".join(valid_parts)
+                    _corner_count = len(valid_parts)
+        # 通過順が不完全（2コーナー以下）または空の場合、race_log/HTMLキャッシュから補完
+        _needs_supplement = not corners_str or _corner_count <= 2
+        if _needs_supplement:
             fp = getattr(run, "finish_pos", 0)
             if fp and fp < 90:
+                # race_logから通過順を直接取得（最も信頼性が高い）
                 try:
-                    cached_corners = _get_corners_for_run(run)
-                    if cached_corners:
-                        corners_str = "-".join(str(c) for c in cached_corners)
-                    else:
-                        corners_str = ""
+                    db_corners = _get_corners_from_race_log(run)
+                    if db_corners and len(db_corners) > _corner_count:
+                        # 全て0のデータは除外
+                        valid_db = [c for c in db_corners if c and c != 0]
+                        if valid_db:
+                            corners_str = "-".join(str(c) for c in db_corners if c and c != 0)
+                            _corner_count = len(valid_db)
                 except Exception:
-                    corners_str = ""
-            else:
-                corners_str = ""
+                    pass
+                # HTMLキャッシュからも取得（より多いコーナー数なら採用）
+                if _corner_count <= 2:
+                    try:
+                        cached_corners = _get_corners_for_run(run)
+                        if cached_corners and len(cached_corners) > _corner_count:
+                            corners_str = "-".join(str(c) for c in cached_corners)
+                    except Exception:
+                        pass
         # ペース
         pace = getattr(run, "pace", None)
         if pace:
@@ -658,6 +1194,18 @@ def _extract_past_runs(horse, count: int = 3, run_records=None) -> list:
         # 走破レベル (speed_dev)
         speed_dev_grade = dev_to_grade(sd) if sd is not None else "—"
 
+        # position_4cをcorners_strから正確に導出（スクレイパーのp4cは着順が混入するため信用しない）
+        _p4c_val = 0
+        if corners_str:
+            _parts = corners_str.split("-")
+            if _parts:
+                try:
+                    _p4c_val = int(_parts[-1])
+                except ValueError:
+                    pass
+        if _p4c_val <= 0:
+            _p4c_val = getattr(run, "position_4c", 0) or 0
+
         result.append({
             "date": rd,
             "venue": getattr(run, "venue", ""),
@@ -669,10 +1217,12 @@ def _extract_past_runs(horse, count: int = 3, run_records=None) -> list:
             "horse_no": getattr(run, "horse_no", 0),
             "jockey": getattr(run, "jockey", ""),
             "weight_kg": getattr(run, "weight_kg", 0),
-            "position_4c": getattr(run, "position_4c", 0),
+            "position_4c": _p4c_val,
             "finish_pos": getattr(run, "finish_pos", 0),
             "finish_time": _round_or_none(getattr(run, "finish_time_sec", None), 1),
-            "last_3f": _round_or_none(getattr(run, "last_3f_sec", None), 1),
+            "last_3f": _round_or_none(getattr(run, "last_3f_sec", None), 1)
+                       if (getattr(run, "last_3f_sec", None) or 0) <= 50
+                       else None,  # 上がり3Fが50秒超は異常値 → 非表示
             "margin": _round_or_none(
                 getattr(run, "margin_ahead", None) or getattr(run, "margin_behind", None),
                 1,
@@ -684,8 +1234,9 @@ def _extract_past_runs(horse, count: int = 3, run_records=None) -> list:
             "race_level_grade": race_level_grade,
             "speed_dev_grade": speed_dev_grade,
             "race_id": getattr(run, "race_id", ""),
+            "race_no": _infer_race_no(run),
             "result_cname": getattr(run, "result_cname", ""),
-            "last_3f_rank": l3f_rank_by_date.get(rd) or _get_l3f_rank_for_run(run),
+            "last_3f_rank": _get_l3f_rank_for_run(run) or l3f_rank_by_date.get(rd),
         })
     return result
 
@@ -2490,8 +3041,8 @@ body{font-family:'Noto Sans JP',sans-serif;font-size:13px;margin:16px;background
 .race-hd{font-weight:600;font-size:0.93em;margin-bottom:3px}
 .race-info{font-size:0.78em;color:#6b7280;margin-bottom:5px;display:flex;gap:6px;flex-wrap:wrap;align-items:center}
 .badge{display:inline-block;padding:0 5px;border-radius:3px;font-size:0.75em;font-weight:600}
-.HH{background:#fee2e2;color:#991b1b}.HM{background:#fef3c7;color:#92400e}
-.MM{background:#f0fdf4;color:#166534}.MS{background:#eff6ff;color:#1e40af}.SS{background:#f5f3ff;color:#5b21b6}
+.H{background:#fee2e2;color:#991b1b}
+.M{background:#f0fdf4;color:#166534}.S{background:#f5f3ff;color:#5b21b6}
 .conf{background:#f1f5f9;color:#374151}
 table.mk{width:100%;border-collapse:collapse;font-size:0.82em;margin-bottom:5px}
 table.mk th{background:#f8fafc;padding:2px 5px;border:1px solid #e2e8f0;font-weight:600}
@@ -2558,7 +3109,7 @@ def _render_simple_html(date: str, venues: dict) -> str:
             distance = race.get("distance", 0)
             grade = race.get("grade", "")
             conf = race.get("confidence", "B")
-            pace = race.get("pace_predicted", "MM")
+            pace = race.get("pace_predicted", "M")
             field = race.get("field_count", 0)
 
             # 印付き馬テーブル

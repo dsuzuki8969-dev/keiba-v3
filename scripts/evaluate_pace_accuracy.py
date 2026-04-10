@@ -27,18 +27,14 @@ _PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 # 芝・ダートで閾値が異なる（ダートは約1秒遅め）
 _PACE_THRESHOLDS = {
     "芝": [
-        ("HH", None, 33.8),
-        ("HM", 33.8, 34.8),
-        ("MM", 34.8, 36.2),
-        ("MS", 36.2, 37.2),
-        ("SS", 37.2, None),
+        ("H", None, 34.8),
+        ("M", 34.8, 36.2),
+        ("S", 36.2, None),
     ],
     "ダート": [
-        ("HH", None, 34.8),
-        ("HM", 34.8, 35.8),
-        ("MM", 35.8, 37.2),
-        ("MS", 37.2, 38.2),
-        ("SS", 38.2, None),
+        ("H", None, 35.8),
+        ("M", 35.8, 37.2),
+        ("S", 37.2, None),
     ],
 }
 
@@ -53,7 +49,7 @@ def first3f_to_pace(first3f: float, surface: str) -> str:
             return pace
         if lo is not None and hi is not None and lo <= first3f < hi:
             return pace
-    return "MM"
+    return "M"
 
 
 def load_races(min_year: int = 2020) -> list:
@@ -97,7 +93,7 @@ def evaluate(races: list) -> dict:
     confusion = defaultdict(lambda: defaultdict(int))
     by_surface: dict = defaultdict(lambda: {"total": 0, "correct": 0})
 
-    PACE_ORDER = ["HH", "HM", "MM", "MS", "SS"]
+    PACE_ORDER = ["H", "M", "S"]
 
     for race in races:
         first3f = race.get("first_3f")
@@ -155,7 +151,7 @@ def evaluate(races: list) -> dict:
                 horses_dummy, past_runs_map, course,
                 course_pace_tendency=course_pace_tendency,
             )
-            predicted_pace = result[0].value  # PaceType.value = "HH"/"HM" etc.
+            predicted_pace = result[0].value  # PaceType.value = "H"/"M"/"S"
         except Exception:
             continue
 
@@ -183,7 +179,7 @@ def evaluate(races: list) -> dict:
 
 
 def print_report(result: dict) -> None:
-    PACE_ORDER = ["HH", "HM", "MM", "MS", "SS"]
+    PACE_ORDER = ["H", "M", "S"]
     print("\n" + "=" * 55)
     print("ペース予測精度レポート")
     print("=" * 55)

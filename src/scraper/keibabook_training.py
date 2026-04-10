@@ -123,17 +123,21 @@ NAR_VENUE_TO_KB: Dict[str, Optional[str]] = {
     "44": "10",  # 大井  ✓
     "45": "11",  # 川崎  ✓
     "47": "19",  # 笠松  ✓
-    "48": "34",  # 名古屋 ✓
+    "48": "34",  # 名古屋 (nittei対応だが調教ページは出馬表を返す→調教非対応)
     "50": "37",  # 園田  ✓
     "51": "39",  # 姫路  ✓ (netkeibaコード51)
-    "30": None,  # 門別  ← KB提供あり・コード未確定（動的発見対象）
+    "30": "14",  # 門別  ✓
     "65": "58",  # 帯広  ✓
     "54": "26",  # 高知  ✓
     "55": "23",  # 佐賀  ✓
-    "35": None,  # 盛岡  ← 非対応/未確認
+    "35": "15",  # 盛岡  ✓
     "36": "29",  # 水沢  ✓
     "46": "20",  # 金沢  ✓
 }
+
+# KB調教ページ対応: 門別(30), 浦和(42), 船橋(43), 大井(44), 川崎(45), 園田(50), 姫路(51) + JRA全場
+# それ以外は調教データ非提供（交流重賞で例外的にある場合があるが通常はなし）
+_NAR_TRAINING_SUPPORTED: set = {"30", "42", "43", "44", "45", "50", "51"}  # 門別,浦和,船橋,大井,川崎,園田,姫路
 
 # NAR venue name lookup: netkeiba venue code → KB nittei に表示される競馬場名の先頭文字
 # 動的発見時にnitteiリンクテキストとマッチングするために使用
@@ -414,6 +418,18 @@ class KeibabookClient:
                 logger.warning("keibabook GET failed: %s → %s: %s", url, type(e).__name__, e, exc_info=True)
                 return None
 
+    def remove_cache(self, url: str, params: dict = None) -> bool:
+        """指定URLのキャッシュファイルを削除する"""
+        cache_key = self._cache_key(url, params)
+        cache_path = os.path.join(self.cache_dir, cache_key + ".html")
+        try:
+            if os.path.exists(cache_path):
+                os.remove(cache_path)
+                return True
+        except OSError:
+            pass
+        return False
+
     def _cache_key(self, url: str, params: dict = None) -> str:
         key = url.replace("https://", "").replace("/", "_").replace("?", "_")
         if params:
@@ -589,6 +605,11 @@ class KeibabookTrainingScraper:
         netkeiba IDからは直接変換不可なので nittei ページから取得する。
         """
         venue_code = get_venue_code_from_race_id(netkeiba_race_id)
+
+        # KB調教対応会場のみ取得（門別,浦和,船橋,大井,川崎,園田,姫路）
+        if venue_code not in _NAR_TRAINING_SUPPORTED:
+            return {}
+
         kb_venue = NAR_VENUE_TO_KB.get(venue_code)
 
         # KB venue code が未確定の場合は動的発見を試みる
@@ -640,6 +661,15 @@ class KeibabookTrainingScraper:
             return {}
         if self._is_premium_wall(soup):
             logger.warning("プレミアムコンテンツ壁を検出")
+            return {}
+
+        # 調教ページではなく出馬表ページが返された場合を検出（名古屋等）
+        _title = soup.title.string if soup.title else ""
+        if _title and "出馬表" in _title and "調教" not in _title:
+            venue_name = NAR_VENUE_NAMES.get(venue_code, venue_code)
+            logger.info(f"{venue_name}(KB={kb_venue}) cyokyoページが出馬表を返却 → 調教非対応と判断。キャッシュ削除")
+            # 不正キャッシュを削除（次回アクセス時に再取得させない）
+            self.client.remove_cache(cyokyo_url)
             return {}
 
         training_map = self._parse_training_table(soup)
@@ -951,8 +981,14 @@ class KeibabookTrainingScraper:
 
     def _parse_cyokyodata(self, table) -> tuple:
         """<table class="cyokyodata"> からタイムと周回数を抽出。
-        列: 6F(roku_furlong), 5F, 4F, 3F, 1F, 周回(mawariiti)
-        距離: 1200m, 1000m, 800m, 600m, 200m
+
+        HTMLテーブル列: 6F, 5F, 4F, 3F, 1F, 周回
+        距離マッピング: 1200m, 1000m, 800m, 600m, 200m
+
+        坂路補正:
+          坂路データは6F列に周回数("1回"等)が入り、5F列以降にタイムが入るため
+          実際のタイム位置が1列ずれる。坂路検出時はキーを1段シフトする。
+          例: HTML上の5F列=実際は4F(800m), 4F列=3F(600m), 3F列=2F(400m)
 
         Returns:
             (splits_dict, lap_count_str)
@@ -966,44 +1002,55 @@ class KeibabookTrainingScraper:
         cells = time_row.select("td")
         dist_map = [1200, 1000, 800, 600, 200]
 
+        # 坂路判定: cells[0]が数値でない（"1回"等の周回数）場合は列シフト
+        first_text = cells[0].get_text(strip=True) if cells else ""
+        is_baro = False
+        if first_text:
+            try:
+                float(first_text)
+            except (ValueError, TypeError):
+                # 先頭が数値でない → 坂路パターン（周回数が6F列に入っている）
+                is_baro = True
+                lap_count = first_text
+
+        # 坂路シフトマップ: HTML上の列位置 → 実際の距離
+        # 通常: [1200, 1000, 800, 600, 200]
+        # 坂路: 先頭skip済みなので [1000→800, 800→600, 600→400, 200→200]
+        shift = {1200: 1200, 1000: 1000, 800: 800, 600: 600, 200: 200}
+        if is_baro:
+            shift = {1000: 800, 800: 600, 600: 400, 200: 200}
+
         for i, cell in enumerate(cells):
             text = cell.get_text(strip=True)
             if i < len(dist_map):
-                # 数値以外（空, "1回"等）はスキップ
                 try:
                     val = float(text)
-                    splits[dist_map[i]] = val
+                    raw_dist = dist_map[i]
+                    actual_dist = shift.get(raw_dist, raw_dist)
+                    splits[actual_dist] = val
                 except (ValueError, TypeError):
-                    # "1回" 等はスキップ（周回数ではない）
                     continue
             else:
                 # 最後のセル = 周回数 "［7］" 等
-                if text:
+                if text and not is_baro:
                     lap_count = text
 
         return splits, lap_count
 
     def _normalize_course(self, text: str) -> str:
-        """コース表記を正規化"""
-        map_ = {
-            "坂": "坂路",
-            "坂路": "坂路",
-            "ウッド": "ウッド",
-            "W": "ウッド",
-            "CW": "CW",
-            "C.W": "CW",
-            "ポリ": "ポリトラック",
-            "P": "ポリトラック",
-            "芝": "芝コース",
-            "ダ": "ダートコース",
-            "南W": "南ウッド",
-            "北W": "北ウッド",
-            "障": "障害コース",
-        }
-        for key, val in map_.items():
-            if key in text:
-                return val
-        return text or "不明"
+        """コース表記を正規化。
+
+        競馬ブックの元表記をそのまま保持する。
+        例: 美坂, 栗坂, 美Ｗ, 栗ＣＷ, 美芝, 栗芝, 函館芝,
+            函館ダ, 小倉ダ, 小林坂, 門別坂 等
+        以前は "坂"→"坂路", "芝"→"芝コース" 等に統一していたが、
+        コース別の基準タイムが異なるため区別を保持する。
+        """
+        if not text:
+            return "不明"
+        # 全角→半角の揺れだけ吸収（C.W → CW 等）
+        text = text.replace("Ｃ．Ｗ", "ＣＷ").replace("C.W", "CW")
+        return text
 
     def _parse_laptime(self, text: str) -> dict:
         """
@@ -1148,481 +1195,10 @@ class KbTrainingAdapter:
 
 
 # ============================================================
-# 競馬ブック 結果取得 + 過去走取得
+# 後方互換: KeibabookResultScraper は keibabook_result.py に分離
 # ============================================================
+from src.scraper.keibabook_result import KeibabookResultScraper  # noqa: F401
 
-# 結果ページURL
-KB_CYUOU_SEISEKI = "https://s.keibabook.co.jp/cyuou/seiseki"   # JRA: /{KB_JRA_12桁ID}
-KB_CHIHOU_SEISEKI = "https://s.keibabook.co.jp/chihou/seiseki"  # NAR: /{KB_NAR_16桁ID}
-# 馬詳細ページURL
-KB_UMA_DB = "https://s.keibabook.co.jp/db/uma"  # /{KB_HORSE_ID}/top
-
-# 券種名 → netkeiba互換キー
-_KB_TICKET_MAP = {
-    "単勝": "tansho",
-    "複勝": "fukusho",
-    "枠連": "wakuren",
-    "馬連": "umaren",
-    "馬単": "umatan",
-    "ワイド": "wide",
-    "3連複": "sanrenpuku",
-    "三連複": "sanrenpuku",
-    "3連単": "sanrentan",
-    "三連単": "sanrentan",
-}
-
-
-class KeibabookResultScraper:
-    """競馬ブック 結果取得 + 過去走取得スクレイパー"""
-
-    def __init__(self, client: KeibabookClient):
-        self.client = client
-
-    # ----------------------------------------------------------
-    # 結果取得（Phase 3-A）
-    # ----------------------------------------------------------
-
-    def fetch_result(
-        self,
-        netkeiba_race_id: str,
-        race_date: Optional[Union[date, str]] = None,
-    ) -> Optional[dict]:
-        """
-        netkeiba race_id からレース結果（着順・払戻・通過順）を取得する。
-
-        Returns:
-            {
-                "order": [{"horse_no":1, "finish":1, "corners":[...], "last_3f":34.0, "time_sec":96.5},...],
-                "payouts": {"tansho":[...], "fukusho":[...], ...}
-            }
-            or None（取得失敗時）
-        """
-        venue_code = get_venue_code_from_race_id(netkeiba_race_id)
-        is_jra = _is_jra_venue(venue_code)
-
-        if is_jra:
-            kb_id = jra_netkeiba_to_kb_id(netkeiba_race_id)
-            if not kb_id:
-                logger.debug(f"KB変換失敗(JRA): {netkeiba_race_id}")
-                return None
-            url = f"{KB_CYUOU_SEISEKI}/{kb_id}"
-        else:
-            # NAR: nittei ページから KB race_id を取得
-            kb_id = self._resolve_nar_kb_id(netkeiba_race_id, race_date)
-            if not kb_id:
-                logger.debug(f"KB変換失敗(NAR): {netkeiba_race_id}")
-                return None
-            url = f"{KB_CHIHOU_SEISEKI}/{kb_id}"
-
-        soup = self.client.get(url, use_cache=True)
-        if not soup:
-            return None
-
-        text = soup.get_text() if hasattr(soup, "get_text") else ""
-        if "指定されたページは存在しません" in text:
-            return None
-
-        try:
-            order = self._parse_result_table(soup)
-            payouts = self._parse_payouts(soup)
-            if not order:
-                return None
-            return {"order": order, "payouts": payouts}
-        except Exception as e:
-            logger.warning(f"競馬ブック結果パース失敗: {netkeiba_race_id} → {e}")
-            return None
-
-    def _resolve_nar_kb_id(
-        self,
-        netkeiba_race_id: str,
-        race_date: Optional[Union[date, str]],
-    ) -> Optional[str]:
-        """NAR netkeiba race_id → KB NAR race_id を nittei ページ経由で解決"""
-        venue_code = get_venue_code_from_race_id(netkeiba_race_id)
-        kb_venue = NAR_VENUE_TO_KB.get(venue_code)
-        if not kb_venue:
-            return None
-
-        if race_date is None:
-            return None
-        if isinstance(race_date, str):
-            try:
-                race_date = date.fromisoformat(race_date[:10])
-            except ValueError:
-                return None
-
-        date_str = race_date.strftime("%Y%m%d")
-        race_no = netkeiba_race_id[10:12]
-
-        nittei_url = f"{KB_CHIHOU_NITTEI}/{date_str}{kb_venue}"
-        soup = self.client.get(nittei_url)
-        if not soup:
-            return None
-
-        # nittei ページのリンクからレース番号に対応する KB race_id を見つける
-        # seiseki リンク: /chihou/seiseki/{16桁ID}
-        for a in soup.select("a[href]"):
-            href = a.get("href", "")
-            if "/seiseki/" not in href and "/syutuba/" not in href:
-                continue
-            # リンクテキストからレース番号を抽出
-            link_text = a.get_text(strip=True)
-            m = re.search(r"(\d+)\s*R", link_text)
-            if m and m.group(1).zfill(2) == race_no:
-                # href から KB ID を抽出
-                parts = href.rstrip("/").split("/")
-                if parts:
-                    return parts[-1]
-
-        return None
-
-    def _parse_result_table(self, soup: "BeautifulSoup") -> list:
-        """着順テーブル (table.default.seiseki) をパース"""
-        table = soup.select_one("table.default.seiseki")
-        if not table:
-            # フォールバック: captionが「着順」のテーブルを探す
-            for t in soup.select("table"):
-                cap = t.select_one("caption")
-                if cap and "着順" in cap.get_text():
-                    table = t
-                    break
-        if not table:
-            return []
-
-        results = []
-        for row in table.select("tbody tr"):
-            cells = row.select("td")
-            if not cells:
-                continue
-
-            try:
-                # 着順
-                finish_cell = row.select_one("td.cyakujun")
-                if not finish_cell:
-                    finish_cell = cells[0] if cells else None
-                if not finish_cell:
-                    continue
-                finish_text = finish_cell.get_text(strip=True)
-                if not finish_text or not finish_text.isdigit():
-                    continue  # 取消・除外
-                finish = int(finish_text)
-
-                # 馬番 (td with waku* class)
-                horse_no = 0
-                for c in cells:
-                    cls = " ".join(c.get("class", []))
-                    if "waku" in cls:
-                        hn_text = c.get_text(strip=True)
-                        if hn_text.isdigit():
-                            horse_no = int(hn_text)
-                        break
-                if horse_no == 0:
-                    continue
-
-                # 馬名含む複合セル (td.left)
-                left_cell = row.select_one("td.left")
-                last_3f = None
-                corners = []
-
-                # 通過順 (ul.tuka) — 有料限定のためパース試行
-                if left_cell:
-                    tuka = left_cell.select_one("ul.tuka")
-                    if tuka:
-                        tuka_text = tuka.get_text(strip=True)
-                        if tuka_text and "**" not in tuka_text and "※" not in tuka_text:
-                            corners = [int(x) for x in re.findall(r"\d+", tuka_text)]
-
-                # タイム・上り3F (後半のセル)
-                time_sec = 0.0
-                for c in cells:
-                    ct = c.get_text(strip=True)
-                    # タイム: "M:SS.S" or "M.SS.S"
-                    tm = re.match(r"^(\d):(\d{2})\.(\d)$", ct)
-                    if tm:
-                        time_sec = int(tm.group(1)) * 60 + int(tm.group(2)) + int(tm.group(3)) * 0.1
-                    # 上り3F: "(34.0)" 形式
-                    l3m = re.search(r"\((\d{2}\.\d)\)", ct)
-                    if l3m:
-                        val = float(l3m.group(1))
-                        if 30.0 <= val <= 45.0:
-                            last_3f = val
-
-                entry = {
-                    "horse_no": horse_no,
-                    "finish": finish,
-                    "corners": corners if corners else None,
-                    "last_3f": last_3f,
-                    "time_sec": time_sec if time_sec > 0 else None,
-                }
-                results.append(entry)
-
-            except (ValueError, IndexError):
-                continue
-
-        return sorted(results, key=lambda x: x["finish"])
-
-    def _parse_payouts(self, soup: "BeautifulSoup") -> dict:
-        """払戻テーブル (table.default.kako-haraimoshi) をパース"""
-        table = soup.select_one("table.default.kako-haraimoshi")
-        if not table:
-            for t in soup.select("table"):
-                cap = t.select_one("caption")
-                if cap and "払戻" in cap.get_text():
-                    table = t
-                    break
-        if not table:
-            return {}
-
-        payouts = {}
-        for row in table.select("tr"):
-            cells = row.select("td")
-            if len(cells) < 3:
-                continue
-
-            # 券種名
-            midasi_cell = row.select_one("td.midasi")
-            if not midasi_cell:
-                midasi_cell = cells[0]
-            ticket_name = midasi_cell.get_text(strip=True)
-            key = _KB_TICKET_MAP.get(ticket_name)
-            if not key:
-                continue
-
-            # 組番号と払戻金（複数の場合は <br> 区切り）
-            combo_cell = cells[1] if len(cells) > 1 else None
-            payout_cell = cells[2] if len(cells) > 2 else None
-            if not combo_cell or not payout_cell:
-                continue
-
-            # <br> 区切りで複数値対応
-            combo_parts = re.split(r"<br\s*/?>", str(combo_cell))
-            payout_parts = re.split(r"<br\s*/?>", str(payout_cell))
-
-            entries = []
-            for i, (cp, pp) in enumerate(zip(combo_parts, payout_parts)):
-                combo_text = BeautifulSoup(cp, "lxml").get_text(strip=True)
-                payout_text = BeautifulSoup(pp, "lxml").get_text(strip=True)
-
-                # 組番号のクリーニング
-                combo = re.sub(r"[^\d\-]", "", combo_text).strip("-")
-                if not combo:
-                    continue
-
-                # 払戻金: "1,230円" → 1230
-                payout_val = re.sub(r"[^\d]", "", payout_text)
-                if not payout_val:
-                    continue
-
-                entries.append({
-                    "combo": combo,
-                    "payout": int(payout_val),
-                    "popularity": i + 1,  # 簡易的に順番を人気として設定
-                })
-
-            if entries:
-                payouts[key] = entries
-
-        return payouts
-
-    # ----------------------------------------------------------
-    # 過去走取得（Phase 3-B）
-    # ----------------------------------------------------------
-
-    def fetch_horse_history(
-        self,
-        kb_horse_id: str,
-    ) -> list:
-        """
-        競馬ブック馬詳細ページから過去走データを取得する。
-
-        Args:
-            kb_horse_id: 競馬ブックのhorse_id（7桁数字）
-
-        Returns:
-            過去走リスト（dict形式）。各要素:
-            {
-                "race_date": "2026/3/15",
-                "venue_race": "中山11R",
-                "race_name": "スプリングＳ",
-                "grade": "G2",
-                "field_count": 16,
-                "finish_pos": 1,
-                "surface_distance_condition": "芝1800m良",
-                "time_text": "1.46.0",
-                "jockey": "津村明",
-                "weight_kg": 57.0,
-                "horse_weight_text": "500K",
-                "gate": 15,
-                "popularity": 8,
-                "corners": [],  # 有料限定（取得できれば設定）
-                "last_3f": None,  # 有料限定
-            }
-        """
-        url = f"{KB_UMA_DB}/{kb_horse_id}/top"
-        soup = self.client.get(url, use_cache=True)
-        if not soup:
-            return []
-
-        text = soup.get_text() if hasattr(soup, "get_text") else ""
-        if "指定されたページは存在しません" in text:
-            return []
-
-        try:
-            return self._parse_horse_history(soup)
-        except Exception as e:
-            logger.warning(f"競馬ブック過去走パース失敗: {kb_horse_id} → {e}")
-            return []
-
-    def _parse_horse_history(self, soup: "BeautifulSoup") -> list:
-        """馬詳細ページの過去走データをパース (div.uma_seiseki)"""
-        results = []
-        for block in soup.select("div.uma_seiseki"):
-            try:
-                entry = {}
-                dls = block.select("dl")
-                if len(dls) < 5:
-                    continue
-
-                # dl[0]: 日付・レース番号
-                dt0 = dls[0].select_one("dt")
-                if dt0:
-                    negahi = dt0.select_one("span.negahi")
-                    if negahi:
-                        entry["venue_race"] = negahi.get_text(strip=True).replace("\xa0", " ")
-
-                # dl[1]: レース名・頭数・着順
-                dt1 = dls[1].select_one("dt")
-                dd1 = dls[1].select_one("dd")
-                if dt1:
-                    rn = dt1.select_one("span.racename")
-                    if rn:
-                        entry["race_name"] = rn.get_text(strip=True)
-                    grade_el = dt1.select_one("span.icon_grade")
-                    if grade_el:
-                        grade_cls = " ".join(grade_el.get("class", []))
-                        if "g1" in grade_cls:
-                            entry["grade"] = "G1"
-                        elif "g2" in grade_cls:
-                            entry["grade"] = "G2"
-                        elif "g3" in grade_cls:
-                            entry["grade"] = "G3"
-                if dd1:
-                    tosu = dd1.select_one("span.tosu")
-                    if tosu:
-                        m = re.search(r"(\d+)", tosu.get_text())
-                        if m:
-                            entry["field_count"] = int(m.group(1))
-                    cyakujun = dd1.select_one("span.cyakujun")
-                    if cyakujun:
-                        ft = cyakujun.get_text(strip=True)
-                        if ft.isdigit():
-                            entry["finish_pos"] = int(ft)
-
-                # dl[2]: 距離・タイム・騎手・斤量
-                dt2 = dls[2].select_one("dt")
-                dd2 = dls[2].select_one("dd")
-                if dt2:
-                    kyori = dt2.select_one("span.kyori")
-                    if kyori:
-                        entry["surface_distance_condition"] = kyori.get_text(strip=True)
-                    time_el = dt2.select_one("span.time")
-                    if time_el:
-                        entry["time_text"] = time_el.get_text(strip=True)
-                if dd2:
-                    kisyu = dd2.select_one("span.kisyu")
-                    if kisyu:
-                        entry["jockey"] = kisyu.get_text(strip=True)
-                    kinryo = dd2.select_one("span.kinryo")
-                    if kinryo:
-                        kt = kinryo.get_text(strip=True)
-                        try:
-                            entry["weight_kg"] = float(kt)
-                        except ValueError:
-                            pass
-
-                # dl[3]: 上り3F・通過順（有料限定）
-                dt3 = dls[3].select_one("dt")
-                dd3 = dls[3].select_one("dd")
-                if dt3:
-                    agari = dt3.select_one("span.agari")
-                    if agari:
-                        at = agari.get_text(strip=True)
-                        if at and "※" not in at and "**" not in at:
-                            try:
-                                entry["last_3f"] = float(at)
-                            except ValueError:
-                                pass
-                if dd3:
-                    tuka = dd3.select_one("ul.tuka")
-                    if tuka:
-                        tt = tuka.get_text(strip=True)
-                        if tt and "※" not in tt and "**" not in tt:
-                            entry["corners"] = [int(x) for x in re.findall(r"\d+", tt)]
-
-                # dl[4]: 着差・勝馬・馬体重・ゲート・人気
-                dt4 = dls[4].select_one("dt")
-                dd4 = dls[4].select_one("dd")
-                if dd4:
-                    batai = dd4.select_one("span.batai")
-                    if batai:
-                        entry["horse_weight_text"] = batai.get_text(strip=True)
-                    gate = dd4.select_one("span.gate")
-                    if gate:
-                        gm = re.search(r"(\d+)", gate.get_text())
-                        if gm:
-                            entry["gate"] = int(gm.group(1))
-                    ninki = dd4.select_one("span.ninki")
-                    if ninki:
-                        nm = re.search(r"(\d+)", ninki.get_text())
-                        if nm:
-                            entry["popularity"] = int(nm.group(1))
-
-                if entry.get("finish_pos") is not None:
-                    results.append(entry)
-
-            except Exception:
-                continue
-
-        return results
-
-    def find_kb_horse_id(self, soup_result: "BeautifulSoup") -> Dict[int, str]:
-        """
-        結果ページから馬番→KB horse_id のマッピングを取得する。
-        馬名リンク /db/uma/{KB_HORSE_ID} からIDを抽出。
-
-        Returns:
-            {1: "0954381", 3: "0812345", ...}  # 馬番 → KB horse_id
-        """
-        mapping = {}
-        table = soup_result.select_one("table.default.seiseki")
-        if not table:
-            return mapping
-
-        for row in table.select("tbody tr"):
-            try:
-                # 馬番
-                horse_no = 0
-                for c in row.select("td"):
-                    cls = " ".join(c.get("class", []))
-                    if "waku" in cls:
-                        hn_text = c.get_text(strip=True)
-                        if hn_text.isdigit():
-                            horse_no = int(hn_text)
-                        break
-                if horse_no == 0:
-                    continue
-
-                # 馬名リンクから KB horse_id を抽出
-                for a in row.select("a[href]"):
-                    href = a.get("href", "")
-                    m = re.search(r"/db/uma/(\d+)", href)
-                    if m:
-                        mapping[horse_no] = m.group(1)
-                        break
-            except Exception:
-                continue
-
-        return mapping
 
 
 # ============================================================

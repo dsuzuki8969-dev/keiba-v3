@@ -59,7 +59,7 @@ class Last3FDBBuilder:
                 t = r.last_3f_sec
                 if not (lo <= t <= hi):
                     continue
-                pace_key = r.pace.value if r.pace else PaceType.MM.value
+                pace_key = r.pace.value if r.pace else PaceType.M.value
                 if pace_key not in by_pace:
                     by_pace[pace_key] = []
                 by_pace[pace_key].append(t)

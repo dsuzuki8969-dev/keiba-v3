@@ -331,7 +331,7 @@ def generate_pace_comment(
         (pace_comment, favorable_gate, favorable_style, favorable_style_reason)
     """
 
-    pace_v = pace_type.value if pace_type else "MM"
+    pace_v = pace_type.value if pace_type else "M"
     total_horses = len(all_evaluations)
 
     # 馬番→評価辞書
@@ -343,9 +343,9 @@ def generate_pace_comment(
 
     # ペース名称
     pace_desc = {
-        "HH": "ハイペース", "HM": "ハイ〜ミドル",
-        "MM": "ミドルペース", "MS": "ミドル〜スロー",
-        "SS": "スローペース",
+        "H": "ハイペース",
+        "M": "ミドルペース",
+        "S": "スローペース",
     }.get(pace_v, "ミドルペース")
 
     straight_m = course.straight_m or 0
@@ -442,9 +442,9 @@ def generate_pace_comment(
     else:
         pace_sentence = f"流れは{pace_desc}が想定される。"
 
-    if pace_v in ("HH", "HM"):
+    if pace_v == "H":
         pace_sentence += "速い流れで先行勢は息が入らず、中団から後ろで脚をためた組に展開が向く"
-    elif pace_v in ("SS", "MS"):
+    elif pace_v == "S":
         if len(leaders) <= 1:
             pace_sentence += "逃げ馬が楽に運べるペースで、前に行った馬がそのまま残りやすい流れ"
         else:
@@ -462,7 +462,7 @@ def generate_pace_comment(
     formation = ""
     if n_front_group >= total_horses * 0.5:
         formation = "前に行きたい馬が多く、先行集団が分厚い隊列になる"
-        if pace_v in ("HH", "HM"):
+        if pace_v == "H":
             formation += "。道中は縦長になり、後方との差が開いたまま4角を迎えそうだ"
         else:
             formation += "。ただし激しい先行争いにはならず、一団の隊列でコーナーに入る形か"
@@ -471,45 +471,122 @@ def generate_pace_comment(
         if len(leaders) <= 1:
             formation += "。道中は一団のまま3角を迎え、各馬が外々を回す混戦模様になりそうだ"
     else:
-        if pace_v in ("HH",):
+        if pace_v == "H":
             formation = "ハイペースに引っ張られて前後の差が広がり、縦に長い隊列で道中が進む"
-        elif pace_v in ("SS",):
+        elif pace_v == "S":
             formation = "スローで一団の隊列。後方待機だと射程圏に入れないリスクがある"
         else:
             formation = "先行・中団・後方がバランスよく散らばり、標準的な隊列で道中を進む形"
     parts.append(formation)
 
     # ── (4) 勝負所（ラスト600m）の隊形 ──
+    # コース構造から残り600m地点の具体的な状況を描写
+    l3f_corners = getattr(course, "l3f_corners", 1)
+    l3f_elevation = getattr(course, "l3f_elevation", 0.0)
+    l3f_hill_start = getattr(course, "l3f_hill_start", 0)
+    l3f_corner_m = getattr(course, "l3f_corner_m", max(0, 600 - straight_m))
+    l3f_desc = getattr(course, "l3f_desc", "")
+
     shobubasho = ""
-    if course.corner_count >= 3:
-        # 3〜4角がある（1200m以上）
-        if pace_v in ("HH", "HM"):
+
+    if course.corner_count == 0:
+        # 直線コース（新潟芝1000m等）
+        shobubasho = "直線コースのため各馬が一斉にスピードを上げ、純粋な末脚比べになる"
+    elif l3f_corners == 0:
+        # 残り600mが全て直線（straight_m >= 600: 新潟外回り等）
+        shobubasho = (
+            f"残り600m地点は直線入口の手前。直線{straight_m}mを丸々使える構造で、"
+            "仕掛けどころに余裕がある。後方待機組も直線で十分に追い込めるコース形態だ"
+        )
+    elif l3f_corners >= 2:
+        # 残り600mで2コーナー通過（小回り・短直線コース）
+        # 浦和200m、笠松201m、園田213m、姫路213m、金沢220m、水沢230m等
+        if pace_v == "H":
             shobubasho = (
-                "3〜4角で先行馬の脚色が怪しくなるタイミングが仕掛けどころ。"
-                "後続は外からマクリ気味に押し上げてくるため、"
-                "ラスト600m地点では先頭から後方まで一気に圧縮される場面がありそうだ"
+                f"残り600m地点は3角の途中。ここから3角→4角→直線{straight_m}mの"
+                f"コーナー{l3f_corner_m}mを含むロングスパート戦になる。"
+                "ハイペースで先行馬の脚色が鈍りだすタイミングだが、"
+                f"直線がわずか{straight_m}mしかないため、後方からでは届かない危険がある。"
+                "3角で早めに外に持ち出して押し上げないと間に合わない"
             )
-        elif pace_v in ("SS", "MS"):
+        elif pace_v == "S":
             shobubasho = (
-                "ペースが上がるのは4角手前から。"
-                "各馬がここで一斉にスパートをかけるため、"
-                "仕掛け遅れた馬は置かれる危険がある。ラスト600m地点ではまだ先行勢が優位"
+                f"残り600m地点は3角途中。ここから{l3f_corner_m}mのコーナー区間を経て"
+                f"直線{straight_m}mに向く。スローからの3角仕掛けになるため、"
+                "先にポジションを確保していた馬が圧倒的に有利。"
+                "後方からの差し切りは物理的に困難なコース構造だ"
             )
         else:
             shobubasho = (
-                "3〜4角の手応えで勝負が決まる流れ。"
-                "ここで手応え良く外に持ち出せた馬が直線で伸びる"
+                f"残り600m地点は3角途中で、4角を回って直線{straight_m}mに向く。"
+                f"コーナー区間が{l3f_corner_m}mと長く、コーナーワークの巧拙が直結する。"
+                "内をロスなく立ち回れるかどうかが明暗を分けるポイントだ"
             )
-    elif course.corner_count == 2:
-        # 短距離（1000-1200m）
-        shobubasho = (
-            "コーナーが少ないコース形態で、"
-            "ラスト600m地点ではまだ隊列が固まったまま直線に向く。"
-            "直線に入ってからの瞬発力が問われる"
-        )
     else:
-        # 直線コース
-        shobubasho = "直線コースのため各馬が一斉にスピードを上げ、純粋な末脚比べになる"
+        # 残り600mで1コーナー通過（標準的なコース）
+        if pace_v == "H":
+            if straight_m >= 450:
+                shobubasho = (
+                    f"残り600m地点は4角手前の向正面。4角を回って直線{straight_m}mの"
+                    "ロングスパートになる。ハイペースで先行馬の脚色が怪しくなるタイミングに"
+                    "後続が4角で外からマクリ気味に押し上げてくる。"
+                    "長い直線で先頭が入れ替わる場面がありそうだ"
+                )
+            else:
+                shobubasho = (
+                    f"残り600m地点は4角の入口付近。4角を回って直線{straight_m}mの勝負になる。"
+                    "ハイペースで先行勢の脚が鈍りだすが、"
+                    f"直線が{straight_m}mと限られるため、差し馬は4角で外に持ち出す判断の速さが求められる"
+                )
+        elif pace_v == "S":
+            if straight_m >= 450:
+                shobubasho = (
+                    f"残り600m地点は4角手前。スローから4角手前でペースが上がり始め、"
+                    f"直線{straight_m}mに入ってからの瞬発力勝負になる。"
+                    "各馬が脚をためている分、直線での加速力が問われる"
+                )
+            else:
+                shobubasho = (
+                    f"残り600m地点は4角入口付近。スローから一気にペースが上がるため、"
+                    "仕掛け遅れた馬は置かれる危険がある。"
+                    f"直線{straight_m}mでは前を捉えるのが難しく、4角で好位にいた馬が圧倒的に有利"
+                )
+        else:
+            if straight_m >= 450:
+                shobubasho = (
+                    f"残り600m地点は4角手前。ここから4角を回って直線{straight_m}mの勝負になる。"
+                    "3〜4角の手応えで勝負が決まる流れ。"
+                    "長い直線を味方に、手応え良く外に持ち出せた馬が伸びてくる"
+                )
+            else:
+                shobubasho = (
+                    f"残り600m地点は4角入口付近。4角を回って直線{straight_m}mで決着する。"
+                    "コーナーでの位置取りがそのまま着順に直結しやすく、"
+                    "内をロスなく回れる馬が有利な構造だ"
+                )
+
+    # 坂の影響を描写
+    if l3f_hill_start > 0 and abs(l3f_elevation) >= 0.5:
+        if l3f_elevation >= 1.5:
+            shobubasho += (
+                f"。ゴール前{l3f_hill_start}mからの急坂（高低差{l3f_elevation:.1f}m）が最大の関門。"
+                "パワー不足の馬はここで脚が止まり、坂巧者が逆転する"
+            )
+        elif l3f_elevation >= 0.8:
+            shobubasho += (
+                f"。ゴール前{l3f_hill_start}mからの坂（高低差{l3f_elevation:.1f}m）で"
+                "スタミナが削られ、先行馬にとっては最後の踏ん張りどころになる"
+            )
+        else:
+            shobubasho += (
+                f"。ゴール前{l3f_hill_start}mからの軽い坂があり、坂が苦手な馬は脚が鈍る場面も"
+            )
+    elif l3f_elevation <= -0.3:
+        # 京都の下り基調
+        shobubasho += (
+            "。3〜4角の淀の下り坂で自然とペースが上がり、"
+            "末脚よりも位置取りとコーナーワークが問われる"
+        )
 
     # 馬場の影響を補足
     if condition in ("重", "不良"):
@@ -563,7 +640,7 @@ def generate_pace_comment(
             "後方待機組の推定データが少なく、先行有利の流れが濃厚"
         )
     else:
-        if pace_v in ("HH", "HM"):
+        if pace_v == "H":
             ashiiro = "ハイペースで先行勢はスタミナを消耗し、直線で後続に飲み込まれる危険がある"
         else:
             ashiiro = "先行馬が脚をため直せる流れで、前残りの余地は十分にある"
@@ -629,19 +706,35 @@ def generate_pace_comment(
         s1 = _style_label(top1.horse.horse_no)
 
         if s1 in ("逃げ", "先行"):
-            if straight_m >= 400 and course.slope_type == "急坂":
+            if l3f_hill_start > 0 and l3f_elevation >= 1.5:
                 finish = (
-                    f"ゴール前は急坂で**{n1}**の脚が鈍るかどうかがポイント。"
+                    f"ゴール前{l3f_hill_start}mの急坂が**{n1}**にとって最後の壁。"
+                    "坂を克服できるパワーがあればそのまま押し切るが、脚が止まれば一気に差される。"
                 )
             elif straight_m <= 300:
-                finish = f"直線が短いこのコースなら、{s1}で運ぶ**{n1}**がそのまま押し切る形が濃厚。"
+                finish = f"直線{straight_m}mのこのコースなら、{s1}で運ぶ**{n1}**がそのまま押し切る形が濃厚。"
+            elif l3f_hill_start > 0 and l3f_elevation >= 0.8:
+                finish = (
+                    f"**{n1}**が{s1}から直線で脚を伸ばすが、"
+                    f"ゴール前{l3f_hill_start}mの坂で踏ん張れるかがポイント。"
+                )
             else:
                 finish = f"**{n1}**が{s1}から直線で脚を伸ばす形。"
         elif s1 in ("差し", "追込"):
-            if pace_v in ("HH", "HM"):
+            if pace_v == "H" and straight_m >= 400:
                 finish = f"前が止まる流れなら、**{n1}**が外から一気に差し切る場面。"
-            elif straight_m >= 400:
-                finish = f"長い直線を味方に**{n1}**がゴール前で差し脚を爆発させる形。"
+            elif pace_v == "H" and l3f_hill_start > 0 and l3f_elevation >= 1.0:
+                finish = (
+                    f"ハイペースに加えてゴール前の坂。先行勢がバテるところを"
+                    f"**{n1}**が一気に差し切る展開が浮かぶ。"
+                )
+            elif straight_m >= 450:
+                finish = f"長い直線{straight_m}mを味方に**{n1}**がゴール前で差し脚を爆発させる形。"
+            elif straight_m <= 250:
+                finish = (
+                    f"**{n1}**が中団から鋭く脚を伸ばしてくるが、"
+                    f"直線{straight_m}mでは前を捉え切れない危険も。届くかどうかが焦点。"
+                )
             else:
                 finish = f"**{n1}**が中団から鋭く脚を伸ばしてくるが、前を捉え切れるかが焦点。"
         else:
@@ -679,9 +772,9 @@ def generate_pace_comment(
     # 有利な枠順（従来ロジック維持）
     # ============================================================
     if course.surface == "芝":
-        if pace_v in ("HH", "HM"):
+        if pace_v == "H":
             favorable_gate = "外枠（差し馬向き）"
-        elif pace_v in ("SS", "MS"):
+        elif pace_v == "S":
             favorable_gate = "内枠（前につけやすい）"
         else:
             if course.inside_outside == "内" or course.corner_type == "小回り":
@@ -693,9 +786,9 @@ def generate_pace_comment(
             else:
                 favorable_gate = "内外差なし（平均ペース）"
     else:
-        if pace_v in ("HH", "HM"):
+        if pace_v == "H":
             favorable_gate = "外枠（砂被り回避・ハイペース）"
-        elif pace_v in ("SS", "MS"):
+        elif pace_v == "S":
             favorable_gate = "外枠（砂被り回避）"
         else:
             favorable_gate = "外枠（砂被り回避）"
@@ -724,14 +817,10 @@ def generate_pace_comment(
             last_3f_est,
         )
     else:
-        if pace_v == "HH":
+        if pace_v == "H":
             favorable_style = "差し・追い込み（ハイペース消耗戦）"
-        elif pace_v == "HM":
-            favorable_style = "差し・中団〜後方待機"
-        elif pace_v == "MM":
+        elif pace_v == "M":
             favorable_style = "先行〜差し（力通り）"
-        elif pace_v == "MS":
-            favorable_style = "先行（楽逃げ・前残り）"
         else:
             favorable_style = "先行・逃げ（スロー前残り）"
 
@@ -1174,7 +1263,7 @@ def generate_horse_comment(
     straight_m = race_context.get("straight_m", 0)
     slope_type = race_context.get("slope_type", "")
     surface = race_context.get("surface", "")
-    pace_v = race_context.get("pace_predicted", "MM")
+    pace_v = race_context.get("pace_predicted", "M")
     leading = set(race_context.get("leading_horses", []))
     front = set(race_context.get("front_horses", []))
     mid = set(race_context.get("mid_horses", []))
@@ -1231,7 +1320,7 @@ def generate_horse_comment(
         else:
             pace_text = "逃げ争いに巻き込まれるリスクあり"
     elif no in front:
-        if pace_v in ("SS", "MS"):
+        if pace_v == "S":
             pace_text = "スローの好位で楽に運べる"
         else:
             pace_text = "好位から流れに乗れる"
@@ -1613,7 +1702,7 @@ def generate_horse_diagnosis(
     # レースコンテキスト
     field_count = race_context.get("field_count", 0)
     straight_m = race_context.get("straight_m", 0)
-    pace_v = race_context.get("pace_predicted", "MM")
+    pace_v = race_context.get("pace_predicted", "M")
     leading = set(race_context.get("leading_horses", []))
     front = set(race_context.get("front_horses", []))
     mid = set(race_context.get("mid_horses", []))
@@ -1630,8 +1719,7 @@ def generate_horse_diagnosis(
     if rank == 0:
         rank = len(sorted_comps)
 
-    pace_labels = {"HH": "ハイペース", "HM": "やや速い流れ", "MM": "平均的な流れ",
-                   "MS": "落ち着いた流れ", "SS": "スローペース"}
+    pace_labels = {"H": "ハイペース", "M": "平均的な流れ", "S": "スローペース"}
     pace_ja = pace_labels.get(pace_v, "")
 
     # 上がり評価
@@ -1659,7 +1747,7 @@ def generate_horse_diagnosis(
         if no in leading and len(leading) == 1:
             parts.append("単騎でマイペースの逃げに持ち込めるのも大きなアドバンテージ")
         elif no in front:
-            if pace_v in ("SS", "MS"):
+            if pace_v == "S":
                 parts.append(f"{pace_ja}なら好位でじっくり溜めて、直線で楽に抜け出せる")
             else:
                 parts.append("好位から流れに乗って直線で力を発揮する形が理想")
@@ -1739,7 +1827,7 @@ def generate_horse_diagnosis(
         if no in leading and len(leading) == 1:
             parts.append("単騎逃げが叶えば粘り込みのシーンも")
         elif no in front:
-            if pace_v in ("SS", "MS"):
+            if pace_v == "S":
                 parts.append(f"{pace_ja}になれば好位で楽に運べ、残り目が出てくる")
             else:
                 parts.append("好位から堅実に立ち回れるのが強み")
@@ -1855,7 +1943,7 @@ def generate_mark_comment_rich(
     straight_m = race_context.get("straight_m", 0)
     slope_type = race_context.get("slope_type", "")
     surface = race_context.get("surface", "")
-    pace_v = race_context.get("pace_predicted", "MM")
+    pace_v = race_context.get("pace_predicted", "M")
     leading = set(race_context.get("leading_horses", []))
     front = set(race_context.get("front_horses", []))
     mid = set(race_context.get("mid_horses", []))
@@ -1863,7 +1951,7 @@ def generate_mark_comment_rich(
     all_composites = race_context.get("all_composites", [])
     sorted_comps = sorted(all_composites, reverse=True) if all_composites else []
 
-    pace_labels = {"HH": "ハイペース", "HM": "ハイ寄り", "MM": "ミドルペース", "MS": "スロー寄り", "SS": "スローペース"}
+    pace_labels = {"H": "ハイペース", "M": "ミドルペース", "S": "スローペース"}
 
     def _rank(comp):
         for i, c in enumerate(sorted_comps):
@@ -1905,7 +1993,7 @@ def generate_mark_comment_rich(
                 parts.append("ハナ争いの懸念はあるが、行き脚の速さで主導権を握れるはず")
             elif no in front:
                 pace_label = pace_labels.get(pace_v, "")
-                if pace_v in ("SS", "MS"):
+                if pace_v == "S":
                     parts.append(f"{pace_label}想定なら好位でじっくり脚を溜めて直線一気に弾ける")
                 else:
                     parts.append("好位でレースの流れに乗り、直線で力強く抜け出す形が理想")
@@ -1947,7 +2035,7 @@ def generate_mark_comment_rich(
                     parts.append("すんなりハナを切れる公算が高く、自分の形なら粘り腰を発揮")
             elif no in front:
                 parts.append("好位からそつなく立ち回れる堅実派")
-                if pace_v in ("HH", "HM"):
+                if pace_v == "H":
                     parts.append("ペースが上がれば前残りの展開で浮上の目も")
             elif no in mid:
                 parts.append("中団からの差し脚に期待がかかる")

@@ -39,6 +39,7 @@ def dev_to_grade(value: Optional[float]) -> str:
     return "E"
 
 
+
 def rate_to_dev(rate: float, mean: float = 0.10, sigma: float = 0.05) -> float:
     """勝率/複勝率 → 偏差値変換 (Z-score × 10 + 50)"""
     if sigma <= 0:
@@ -89,6 +90,9 @@ def compute_category_deviation(
         base_sigma: 母集団標準偏差
         min_runs: 最低サンプル数（これ未満のファクターは無視）
     """
+    # ベイズ縮小推定の定数: k_shrink走で実績と母集団平均が半々の重み
+    # 少数サンプルでの偏差値跳ね上がりを防止（5走100%→dev116 のような異常値を抑制）
+    k_shrink = 15
     w_sum = 0.0
     dev_sum = 0.0
     for key, rate in factor_rates.items():
@@ -100,14 +104,16 @@ def compute_category_deviation(
         weight = factor_weights.get(key, 0.0)
         if weight <= 0:
             continue
-        dev = rate_to_dev(rate, base_mean, base_sigma)
+        # ベイズ縮小: サンプル少→母集団平均寄り、サンプル多→実績寄り
+        rate_adj = (rate * runs + base_mean * k_shrink) / (runs + k_shrink)
+        dev = rate_to_dev(rate_adj, base_mean, base_sigma)
         w = weight * min(runs, 100)  # サンプル数上限100で飽和（過大重み防止）
         w_sum += w
         dev_sum += dev * w
     if w_sum == 0:
         return None
     result = dev_sum / w_sum
-    return max(30.0, min(70.0, result))
+    return max(20.0, min(100.0, result))
 
 
 # G5: 血統 rate_to_dev 用の距離帯×面別パラメータ
@@ -1110,7 +1116,7 @@ def compute_profile_grades(
             and jockey_stats.lower_long_dev == 50.0
             and jockey_stats.lower_short_dev == 50.0
         )
-        result["jockey_dev"] = None if _all_default else round(max(30.0, min(70.0, jdev)), 1)
+        result["jockey_dev"] = None if _all_default else round(max(20.0, min(100.0, jdev)), 1)
 
     # 調教師
     if trainer_stats:
@@ -1118,7 +1124,7 @@ def compute_profile_grades(
         if dev is not None:
             result["trainer_grade"] = dev_to_grade(dev)
             # デフォルト50.0（データ不足） → Noneにしてgradeフォールバックを使わせる
-            result["trainer_dev"] = None if dev == 50.0 else round(max(30.0, min(70.0, dev)), 1)
+            result["trainer_dev"] = None if dev == 50.0 else round(max(20.0, min(100.0, dev)), 1)
 
     # 父馬（sire_id が空なら sire_name でフォールバックルックアップ）
     sire_dev_val = None
@@ -1145,7 +1151,7 @@ def compute_profile_grades(
             avg = _weighted_avg(all_recs)
             if avg is not None:
                 result["sire_grade"] = dev_to_grade(avg)
-                result["sire_dev"] = round(max(30.0, min(70.0, avg)), 1)
+                result["sire_dev"] = round(max(20.0, min(100.0, avg)), 1)
                 sire_dev_val = avg
 
     # 母父馬（mgs_id が空なら mgs_name でフォールバックルックアップ）
@@ -1173,14 +1179,14 @@ def compute_profile_grades(
             avg = _weighted_avg(all_recs)
             if avg is not None:
                 result["mgs_grade"] = dev_to_grade(avg)
-                result["mgs_dev"] = round(max(30.0, min(70.0, avg)), 1)
+                result["mgs_dev"] = round(max(20.0, min(100.0, avg)), 1)
                 mgs_dev_val = avg
 
-    # 血統総合偏差値（父と母父の平均）、[30, 70] にクランプ
+    # 血統総合偏差値（父と母父の平均）、[20, 100] にクランプ
     bl_vals = [v for v in [sire_dev_val, mgs_dev_val] if v is not None]
     if bl_vals:
         raw_bl = sum(bl_vals) / len(bl_vals)
-        result["bloodline_dev"] = round(max(30.0, min(70.0, raw_bl)), 1)
+        result["bloodline_dev"] = round(max(20.0, min(100.0, raw_bl)), 1)
     else:
         result["bloodline_dev"] = None
 

@@ -76,8 +76,14 @@ def _build_venue_profiles() -> Dict[str, VenueProfile]:
         slopes = {c.slope_type for c in courses}
         slope = "急坂" if "急坂" in slopes else ("軽坂" if "軽坂" in slopes else "坂なし")
 
-        fc_scores = [_FIRST_CORNER_SCORE.get(c.first_corner, 0.5) for c in courses]
-        avg_fc = sum(fc_scores) / len(fc_scores)
+        # first_corner_m（実距離）が利用可能なら定量的に算出、なければ定性スコア
+        fc_m_values = [c.first_corner_m for c in courses if c.first_corner_m > 0]
+        if fc_m_values:
+            avg_fc_m = sum(fc_m_values) / len(fc_m_values)
+            avg_fc = min(1.5, avg_fc_m / 500.0)  # 0m→0.0, 500m→1.0
+        else:
+            fc_scores = [_FIRST_CORNER_SCORE.get(c.first_corner, 0.5) for c in courses]
+            avg_fc = sum(fc_scores) / len(fc_scores)
 
         profiles[venue] = VenueProfile(
             venue=venue,

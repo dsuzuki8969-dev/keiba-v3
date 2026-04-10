@@ -8,7 +8,6 @@ from typing import Dict, List, Optional, Tuple
 from config.settings import (
     MAX_FORMATION_TICKETS,
     MIN_FORMATION_EV,
-    ODDS_DEDUCTION,
     PAYOUT_RATES,
     STAKE_DEFAULT,
 )
@@ -171,7 +170,7 @@ def calc_predicted_odds(
     total = sum(base_scores.values())
     support: Dict[str, float] = {hid: s / total for hid, s in base_scores.items()}
 
-    deduction = ODDS_DEDUCTION.get("JRA" if is_jra else "NAR", 0.80)
+    deduction = PAYOUT_RATES.get("jra_win" if is_jra else "nar_win", 0.80)
     result: Dict[str, float] = {}
     for hid, rate in support.items():
         result[hid] = round((1 / rate) * deduction, 1) if rate > 0 else 999.9
@@ -551,13 +550,16 @@ def _calc_confidence_score(evaluations: List[HorseEvaluation], is_jra: bool = Tr
         else:
             ml_confidence = 0.5  # ML生値不明時は中立
 
-        # Phase 3-2: 7信号加重合成（重み再配分）
+        # Phase 3-2: 7信号加重合成（EV重視再配分）
+        # 全期間43万馬分析: B自信度+EV≥1.5で回収率296%
+        # value_score重み増でオッズ乖離シグナルを強化
+        # gap_norm 15→12%, value_score 15→20%, multi_factor 15→13%
         score = (
-            gap_norm * 0.15
+            gap_norm * 0.12
             + ml_agreement * 0.20
             + gap23_norm * 0.10
-            + value_score * 0.15
-            + multi_factor * 0.15
+            + value_score * 0.20
+            + multi_factor * 0.13
             + reliability_norm * 0.10
             + ml_confidence * 0.15
         )

@@ -114,9 +114,12 @@ class OfficialNARScraper:
         if not race_no:
             return None, []
 
-        # 日付: 今日を使用（ライブデータ用途）
-        today = datetime.now().strftime("%Y/%m/%d")
-        race_date = datetime.now().strftime("%Y-%m-%d")
+        # 日付: race_idから抽出（YYYY + VV + MMDD + RR）
+        year = race_id[0:4]
+        month = race_id[6:8]
+        day = race_id[8:10]
+        today = f"{year}/{month}/{day}"
+        race_date = f"{year}-{month}-{day}"
 
         return self.get_full_entry(
             race_date=today, race_no=race_no,
@@ -171,13 +174,11 @@ class OfficialNARScraper:
         race_date = date.replace("-", "/")
         race_ids = []
 
-        # 今日のレース開催場一覧を取得
-        venues = self._get_today_venues(race_date)
-        if not venues:
-            return []
-
         year = date[:4]
         mmdd = date[5:7] + date[8:10]  # "YYYY-MM-DD" → "MMDD"
+
+        # 今日のレース開催場一覧を取得
+        venues = self._get_today_venues(race_date)
         for baba_code, venue_name, race_count in venues:
             netkeiba_vc = _NAR_BABA_TO_NETKEIBA.get(baba_code)
             if not netkeiba_vc:
@@ -186,6 +187,15 @@ class OfficialNARScraper:
                 # race_id: YYYY + VV + MMDD + RR (netkeiba NAR形式)
                 race_id = f"{year}{netkeiba_vc}{mmdd}{rno:02d}"
                 race_ids.append(race_id)
+
+        # 岩手競馬（水沢・盛岡）補完
+        # nar.netkeiba.com に岩手競馬は掲載されないため、keiba.go.jp で直接確認
+        for iwate_baba, iwate_vc in [("11", "36"), ("10", "35")]:  # 水沢, 盛岡
+            if not any(rid[4:6] == iwate_vc for rid in race_ids):
+                iwate_ids = self._get_iwate_race_ids(race_date, year, mmdd, iwate_baba, iwate_vc)
+                if iwate_ids:
+                    race_ids.extend(iwate_ids)
+                    logger.info("岩手補完(%s): %dR", "水沢" if iwate_baba == "11" else "盛岡", len(iwate_ids))
 
         # ばんえい(帯広)補完: keiba.go.jpはばんえいを含まないため別途取得
         if not any(rid[4:6] == "65" for rid in race_ids):
@@ -197,6 +207,60 @@ class OfficialNARScraper:
                      len(race_ids), len(venues),
                      " +ばんえい" if any(r[4:6] == "65" for r in race_ids) else "")
         return race_ids
+
+    def _get_iwate_race_ids(self, race_date: str, year: str, mmdd: str,
+                             baba_code: str, netkeiba_vc: str) -> List[str]:
+        """岩手競馬（水沢・盛岡）のレースIDを取得
+
+        nar.netkeiba.comに岩手競馬のレース一覧が掲載されないため:
+        1. keiba.go.jp の RaceListページを直接プローブ
+        2. 失敗時は nar.netkeiba.com の出馬表(shutuba)を直接プローブ
+        """
+        venue_name = "水沢" if baba_code == "11" else "盛岡"
+
+        # ── 1. keiba.go.jp プローブ ──
+        try:
+            url = f"{_BASE}/TodayRaceInfo/RaceList"
+            params = {"k_raceDate": race_date, "k_babaCode": baba_code}
+            self._wait()
+            resp = self._session.get(url, params=params, headers=_HEADERS, timeout=15)
+            if resp.status_code == 200:
+                soup = BeautifulSoup(resp.text, "html.parser")
+                race_links = soup.select("a[href*='DebaTable']")
+                race_count = len(race_links) if race_links else 0
+                if race_count == 0:
+                    # R付きテキストでフォールバック
+                    for el in soup.select("td, a, span"):
+                        text = el.get_text(strip=True)
+                        if re.match(r"^\d{1,2}R$", text):
+                            race_count += 1
+                if race_count > 0:
+                    return [f"{year}{netkeiba_vc}{mmdd}{rno:02d}" for rno in range(1, race_count + 1)]
+            logger.warning("岩手keiba.go.jpプローブ失敗(%s): status=%s, レース検出=0",
+                           venue_name, resp.status_code if resp else "N/A")
+        except Exception as e:
+            logger.warning("岩手keiba.go.jpプローブ例外(%s): %s", venue_name, e)
+
+        # ── 2. nar.netkeiba.com 出馬表プローブ（フォールバック） ──
+        try:
+            probe_id = f"{year}{netkeiba_vc}{mmdd}01"
+            self._wait()
+            resp2 = self._session.get(
+                "https://nar.netkeiba.com/race/shutuba.html",
+                params={"race_id": probe_id}, headers=_HEADERS, timeout=10
+            )
+            if resp2.status_code == 200:
+                soup2 = BeautifulSoup(resp2.text, "html.parser")
+                horse_links = soup2.select("a[href*='/horse/']")
+                if len(horse_links) >= 3:
+                    # 出走馬が確認できた → 開催とみなしデフォルト12R生成
+                    logger.info("岩手netkeibaプローブ成功(%s): 出走馬%d頭検出 → 12R生成",
+                                venue_name, len(horse_links))
+                    return [f"{year}{netkeiba_vc}{mmdd}{rno:02d}" for rno in range(1, 13)]
+        except Exception as e:
+            logger.debug("岩手netkeibaプローブ失敗(%s): %s", venue_name, e)
+
+        return []
 
     def _get_banei_race_ids(self, year: str, mmdd: str) -> List[str]:
         """ばんえい(帯広)のレースIDを取得
@@ -450,7 +514,7 @@ class OfficialNARScraper:
                 distance=distance or 1400, surface=surface or "ダート",
                 direction=direction, straight_m=300,
                 corner_count=4, corner_type="小回り",
-                first_corner="平均", slope_type="坂なし",
+                _first_corner="平均", slope_type="坂なし",
                 inside_outside="なし", is_jra=False,
             )
 
@@ -585,14 +649,17 @@ class OfficialNARScraper:
                             color = text
 
                     # 斤量: "57.0　3-6-0-1" or "△ 54.0　0-0-0-2"
-                    m_wk = re.search(r"△?\s*([\d.]+)", text)
-                    if m_wk and ci >= 2:
-                        try:
-                            wk = float(m_wk.group(1))
-                            if 40 <= wk <= 70:
-                                weight_kg = wk
-                        except ValueError:
-                            pass
+                    # 斤量は XX.0 形式（整数+.0）で40-70の範囲
+                    # 最初に見つかった値を採用し、後続セルで上書きしない
+                    if weight_kg == 55.0 and ci >= 2:
+                        m_wk = re.search(r"△?\s*(\d{2}\.\d)", text)
+                        if m_wk:
+                            try:
+                                wk = float(m_wk.group(1))
+                                if 40 <= wk <= 70:
+                                    weight_kg = wk
+                            except ValueError:
+                                pass
 
             # ── Row 8 (offset +8): 父, 調教師, 馬体重 ──
             sire = ""
@@ -1153,6 +1220,9 @@ class OfficialNARScraper:
                 raw_wk = texts[19] if n > 19 else ""
                 weight_kg = _safe_float(raw_wk) or 55.0
 
+                # レース番号 (ci 2)
+                race_no_val = _safe_int(texts[2]) if n > 2 else 0
+
                 # 通過順位 — 着差列(15)にはないので、パターンで全行探索
                 positions_corners = []
                 for ci2 in range(14, min(n, 18)):
@@ -1183,6 +1253,12 @@ class OfficialNARScraper:
                 except Exception:
                     pass
 
+                # race_idを構築（会場コード + 日付 + レース番号）
+                _race_id = ""
+                if _vc and race_no_val > 0:
+                    _mmdd = date_str.replace("-", "")[4:8]
+                    _race_id = f"{date_str[:4]}{_vc}{_mmdd}{race_no_val:02d}"
+
                 pr = PastRun(
                     race_date=date_str,
                     venue=venue,
@@ -1206,6 +1282,8 @@ class OfficialNARScraper:
                     horse_weight=hw,
                     positions_corners=positions_corners,
                     popularity_at_race=popularity or None,
+                    race_no=race_no_val,
+                    race_id=_race_id,
                 )
                 past_runs.append(pr)
 
@@ -1220,60 +1298,66 @@ class OfficialNARScraper:
     # ================================================================
 
     def _get_today_venues(self, race_date: str) -> List[Tuple[str, str, int]]:
-        """NAR公式から本日の開催場一覧を取得
+        """NAR公式から指定日の開催場一覧を取得
+
+        2段階で確実に取得:
+        1. TodayRaceInfoTop ページからリンク抽出（高速だが翌日分は不確実）
+        2. 未発見の会場を RaceList で直接プローブ（確実）
 
         Args:
             race_date: "YYYY/MM/DD" 形式
 
         Returns: [(baba_code, venue_name, race_count), ...]
         """
-        url = f"{_BASE}/TodayRaceInfo/TodayRaceInfoTop"
+        venues = []
+        seen_baba = set()
+
+        # ── 1. TodayRaceInfoTop からリンク抽出（高速パス） ──
         try:
+            url = f"{_BASE}/TodayRaceInfo/TodayRaceInfoTop"
             self._wait()
             resp = self._session.get(url, headers=_HEADERS, timeout=15)
-            if resp.status_code != 200:
-                logger.debug("NAR TodayRaceInfoTop %d", resp.status_code)
-                return []
+            if resp.status_code == 200:
+                soup = BeautifulSoup(resp.text, "html.parser")
+                for a in soup.select("a[href*='RaceList']"):
+                    href = a.get("href", "")
+                    m_bc = re.search(r"k_babaCode=(\d+)", href)
+                    if not m_bc:
+                        continue
+                    baba_code = m_bc.group(1)
+                    if race_date.replace("/", "%2f") not in href \
+                            and race_date not in href:
+                        continue
+                    if baba_code in seen_baba:
+                        continue
+                    seen_baba.add(baba_code)
+                    venue_name = _NAR_VENUE_NAMES.get(
+                        baba_code, a.get_text(strip=True)
+                    )
+                    race_count = self._get_race_count(race_date, baba_code)
+                    if race_count > 0:
+                        venues.append((baba_code, venue_name, race_count))
         except Exception as e:
-            logger.debug("NAR TodayRaceInfoTop failed: %s", e)
-            return []
+            logger.debug("TodayRaceInfoTop failed: %s", e)
 
-        soup = BeautifulSoup(resp.text, "html.parser")
-        venues = []
-        seen_baba = set()  # baba_code 重複排除
-
-        # RaceList リンクから開催場を抽出
-        # ページには複数日付のリンクが含まれるため、
-        # 対象日付(race_date)のリンクのみ抽出し baba_code で重複排除する
-        for a in soup.select("a[href*='RaceList']"):
-            href = a.get("href", "")
-            m_bc = re.search(r"k_babaCode=(\d+)", href)
-            if not m_bc:
-                continue
-            baba_code = m_bc.group(1)
-
-            # 対象日付のリンクのみ処理（他日付のリンクは無視）
-            if race_date.replace("/", "%2f") not in href \
-                    and race_date not in href:
-                continue
-
-            # 同一 baba_code は1回だけ処理
-            if baba_code in seen_baba:
-                continue
-            seen_baba.add(baba_code)
-
-            venue_name = _NAR_VENUE_NAMES.get(
-                baba_code, a.get_text(strip=True)
-            )
-            # レース数を取得するためRaceListページをfetch
-            race_count = self._get_race_count(race_date, baba_code)
-            if race_count > 0:
-                venues.append((baba_code, venue_name, race_count))
+        # ── 2. 未発見の会場を RaceList で直接プローブ（翌日・過去日対応） ──
+        # TodayRaceInfoTop は日付パラメータを受け付けないため、
+        # 翌日分のリンクが含まれない場合がある。全NAR会場を個別確認する。
+        remaining = [bc for bc in _NAR_BABA_TO_NETKEIBA if bc not in seen_baba]
+        if remaining:
+            logger.debug("RaceListプローブ: %d会場を直接確認", len(remaining))
+            for baba_code in remaining:
+                race_count = self._get_race_count(race_date, baba_code)
+                if race_count > 0:
+                    venue_name = _NAR_VENUE_NAMES.get(baba_code, f"NAR{baba_code}")
+                    venues.append((baba_code, venue_name, race_count))
+                    seen_baba.add(baba_code)
+                    logger.info("RaceListプローブ発見: %s %dR", venue_name, race_count)
 
         return venues
 
     def _get_race_count(self, race_date: str, baba_code: str) -> int:
-        """指定開催場のレース数を取得"""
+        """指定開催場のレース数を取得（0 = 非開催）"""
         url = f"{_BASE}/TodayRaceInfo/RaceList"
         params = {"k_raceDate": race_date, "k_babaCode": baba_code}
         try:
@@ -1286,7 +1370,7 @@ class OfficialNARScraper:
             return 0
 
         soup = BeautifulSoup(resp.text, "html.parser")
-        # レースリンクを数える
+        # DebaTableリンクでレース数を数える（最も確実）
         race_links = soup.select("a[href*='DebaTable']")
         if race_links:
             return len(race_links)
@@ -1296,7 +1380,7 @@ class OfficialNARScraper:
             text = el.get_text(strip=True)
             if re.match(r"^\d{1,2}R$", text):
                 count += 1
-        return max(count, 12)  # デフォルト12レース
+        return count  # 0 = 非開催
 
     # ================================================================
     # NAR公式 成績（結果）取得

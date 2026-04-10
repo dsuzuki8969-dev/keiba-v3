@@ -87,6 +87,16 @@ def train_ranker(valid_days: int = 30) -> dict:
     tracker      = RollingStatsTracker()
     sire_tracker = RollingSireTracker()
 
+    # 調教特徴量抽出器をロード
+    training_extractor = None
+    try:
+        from src.ml.training_features import TrainingFeatureExtractor
+        training_extractor = TrainingFeatureExtractor()
+        training_extractor.load_all()
+        logger.info("調教特徴量抽出器ロード完了")
+    except Exception as e:
+        logger.warning("調教特徴量ロード失敗（スキップ）: %s", e)
+
     # ─── 特徴量・ラベル収集 ───
     train_X:      List[dict] = []
     train_rels:   List[int]  = []   # 関連度 0/1/2/3
@@ -99,6 +109,19 @@ def train_ranker(valid_days: int = 30) -> dict:
     for race in races:
         date_str = race.get("date", "")
         is_valid = date_str >= split_date
+        race_id  = race.get("race_id", "")
+
+        # 調教特徴量をレース単位で一括取得
+        train_feats_map = {}
+        if training_extractor:
+            horse_names = [
+                h.get("horse_name", "") for h in race.get("horses", [])
+                if h.get("horse_name")
+            ]
+            if horse_names:
+                train_feats_map = training_extractor.get_race_training_features(
+                    race_id, horse_names, date_str
+                )
 
         r_feats, r_rels = [], []
         for h in race.get("horses", []):
@@ -111,6 +134,10 @@ def train_ranker(valid_days: int = 30) -> dict:
                 dict(h, sire_id=sid, bms_id=bid),
                 race, tracker, sire_tracker,
             )
+            # 調教特徴量をマージ
+            hname = h.get("horse_name", "")
+            if hname in train_feats_map:
+                feat.update(train_feats_map[hname])
             # 関連度ラベル: 1着=3, 2着=2, 3着=1, 着外=0
             rel = max(0, 4 - fp) if fp <= 3 else 0
             r_feats.append(feat)
@@ -143,7 +170,7 @@ def train_ranker(valid_days: int = 30) -> dict:
         mat = []
         for f in rows:
             mat.append([
-                float(f[c]) if f[c] is not None else float("nan")
+                float(f.get(c) if f.get(c) is not None else float("nan"))
                 for c in FEATURE_COLUMNS
             ])
         return np.array(mat, dtype=np.float32)

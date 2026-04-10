@@ -182,7 +182,7 @@ def _deserialize_course(d: dict) -> CourseMaster:
         straight_m=d["straight_m"],
         corner_count=d["corner_count"],
         corner_type=d["corner_type"],
-        first_corner=d.get("first_corner", ""),
+        _first_corner=d.get("first_corner", ""),
         slope_type=d["slope_type"],
         inside_outside=d["inside_outside"],
         is_jra=d.get("is_jra", True),
@@ -191,7 +191,14 @@ def _deserialize_course(d: dict) -> CourseMaster:
 
 def _deserialize_past_run(d: dict) -> PastRun:
     pace_val = d.get("pace")
-    pace = PaceType(pace_val) if pace_val else None
+    # 旧5段階キャッシュ対応: HH→H, MM→M, SS→S
+    _PACE_COMPAT = {"HH": "H", "HM": "H", "MM": "M", "MS": "S", "SS": "S"}
+    if pace_val in _PACE_COMPAT:
+        pace_val = _PACE_COMPAT[pace_val]
+    try:
+        pace = PaceType(pace_val) if pace_val else None
+    except ValueError:
+        pace = None
     return PastRun(
         race_date=d["race_date"],
         venue=d["venue"],
@@ -440,8 +447,8 @@ def invalidate_race_cache(race_id: str, cache_dir: str = None) -> bool:
     return False
 
 
-def purge_expired_cache(cache_dir: str = None) -> int:
-    """期限切れキャッシュを一括削除"""
+def purge_expired_cache(cache_dir: str = None, *, purge_old_version: bool = True) -> int:
+    """期限切れ・バージョン不整合キャッシュを一括削除"""
     d = cache_dir or RACE_CACHE_DIR
     if not os.path.isdir(d):
         return 0
@@ -450,13 +457,21 @@ def purge_expired_cache(cache_dir: str = None) -> int:
         if not name.endswith(".json"):
             continue
         fp = os.path.join(d, name)
-        race_id = name[:-5]
-        # 簡易: 30日超えたファイルを削除
         try:
             age = time.time() - os.path.getmtime(fp)
+            # 期限切れ: 30日超えたファイルを削除
             if age > _TTL_PAST:
                 os.remove(fp)
                 removed += 1
-        except OSError:
+                continue
+            # バージョン不整合: 古いキャッシュ形式を削除
+            if purge_old_version:
+                with open(fp, "r", encoding="utf-8") as f:
+                    import json as _json
+                    header = _json.load(f)
+                if header.get("_cache_version", 0) != _CACHE_VERSION:
+                    os.remove(fp)
+                    removed += 1
+        except (OSError, ValueError, KeyError):
             pass
     return removed

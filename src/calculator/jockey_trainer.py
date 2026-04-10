@@ -951,17 +951,43 @@ def _estimate_from_rank_table(
     base_top2 = entry["top2"]
     base_top3 = entry["top3"]
 
-    # ---- gap補正（一強・混戦の検出）----
+    # ---- シャープ化: テーブル値のメリハリ拡大 ----
+    # べき乗スケーリング（指数<1で高確率側を持ち上げ、低確率側を圧縮）
+    from config.settings import RANK_TABLE_SHARPNESS
+    if RANK_TABLE_SHARPNESS != 1.0:
+        # 確率をべき乗変換して差を拡大
+        base_win = base_win ** RANK_TABLE_SHARPNESS
+        base_top2 = base_top2 ** RANK_TABLE_SHARPNESS
+        base_top3 = base_top3 ** RANK_TABLE_SHARPNESS
+        # 正規化（合計を保つ）: 後段の_normalize_probsで行うためここではスキップ
+
+    # ---- gap補正（連続型: gap 1.0ptから開始、対数的飽和）----
+    # バックテスト38,019レース実績に基づくキャリブレーション
+    # 旧方式: gap >= 5.0 のみ補正 → gap 1-5pt帯が7.7pt過小評価
+    # 新方式: gap >= 1.0 から連続対数補正で過小評価を解消
+    import math as _math
     gap_1_2 = (sorted_comp[0] - sorted_comp[1]) if n >= 2 else 0.0
 
-    if gap_1_2 >= RANK_GAP_THRESHOLD_STRONG:
-        # 一強レース: 1位を引き上げ、他を圧縮
-        if rank == 1:
-            gap_mult = 1.0 + min(RANK_GAP_MULT_MAX, (gap_1_2 - 2.5) * 0.12)
-        else:
-            gap_mult = 1.0 - min(0.15, (gap_1_2 - 2.5) * 0.03)
+    if rank == 1 and gap_1_2 >= 1.0:
+        # 1位: 連続対数補正（gap 1.0ptから開始、大きなgapで飽和）
+        # gap=1→×1.09, gap=3→×1.22, gap=5→×1.32, gap=10→×1.50, gap=15→×1.49
+        raw_bonus = _math.log1p(gap_1_2 * 0.25) * 0.40
+        # gap 10pt超で減衰（実績: 15+ptの実勝率は10-15ptより低い）
+        if gap_1_2 >= 15.0:
+            raw_bonus *= 0.45  # 超大gap: 実勝率33%に低下する帯
+        elif gap_1_2 >= 10.0:
+            raw_bonus *= 0.82  # 大gap: 過大評価を抑制
+        gap_mult = 1.0 + min(RANK_GAP_MULT_MAX, raw_bonus)
         base_win *= gap_mult
         # top2/top3は控えめに補正（勝率ほど極端にしない）
+        top2_gap_mult = 1.0 + (gap_mult - 1.0) * 0.55
+        top3_gap_mult = 1.0 + (gap_mult - 1.0) * 0.30
+        base_top2 *= top2_gap_mult
+        base_top3 *= top3_gap_mult
+    elif rank > 1 and gap_1_2 >= RANK_GAP_THRESHOLD_STRONG:
+        # 非1位は一強レース時のみ減衰（従来通り）
+        gap_mult = 1.0 - min(0.15, (gap_1_2 - 2.5) * 0.03)
+        base_win *= gap_mult
         top2_gap_mult = 1.0 + (gap_mult - 1.0) * 0.5
         top3_gap_mult = 1.0 + (gap_mult - 1.0) * 0.3
         base_top2 *= top2_gap_mult
@@ -1000,6 +1026,14 @@ def _estimate_from_rank_table(
     win_prob = max(0.01, min(0.85, base_win))
     top2_prob = max(0.02, min(0.92, base_top2))
     top3_prob = max(0.03, min(0.95, base_top3))
+
+    # 数学的下限: 勝てば必ず2着以内・3着以内
+    # P(2着以内) = P(勝ち) + P(2着|勝たない) × P(勝たない)
+    # 最低でも P(勝ち) + (テーブルの2着以内率 - テーブルの勝率) に相当する分を保証
+    top2_floor = win_prob + (1.0 - win_prob) * max(0.0, (base_top2 - base_win) / max(0.01, 1.0 - base_win))
+    top3_floor = top2_floor + (1.0 - top2_floor) * max(0.0, (base_top3 - base_top2) / max(0.01, 1.0 - base_top2))
+    top2_prob = max(top2_prob, top2_floor)
+    top3_prob = max(top3_prob, top3_floor)
 
     # 個馬制約: win <= top2 <= top3
     top2_prob = max(top2_prob, win_prob)

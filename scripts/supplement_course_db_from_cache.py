@@ -145,7 +145,7 @@ def supplement_venues(venues=("01", "02"), verbose=True):
                 field_count = int(fm.group(1))
 
         first_3f, race_last3f, pace_letter = _parse_full_lap_data(soup, distance)
-        pace_from_lap = {"H": PaceType.HH, "M": PaceType.MM, "S": PaceType.SS}.get(pace_letter)
+        pace_from_lap = {"H": PaceType.H, "M": PaceType.M, "S": PaceType.S}.get(pace_letter)
 
         past_runs = _parse_result_to_past_runs(
             soup,

@@ -1,0 +1,40 @@
+# 改行コード統一（CRLF問題の根本解決）
+* text=auto eol=lf
+
+# Python
+*.py text eol=lf
+*.pyw text eol=lf
+
+# Config / Data
+*.json text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.toml text eol=lf
+*.cfg text eol=lf
+*.ini text eol=lf
+*.md text eol=lf
+*.txt text eol=lf
+*.csv text eol=lf
+*.html text eol=lf
+*.css text eol=lf
+*.js text eol=lf
+*.jsx text eol=lf
+*.ts text eol=lf
+*.tsx text eol=lf
+
+# Shell / Batch
+*.sh text eol=lf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# Binary（差分管理しない）
+*.pkl binary
+*.db binary
+*.sqlite binary
+*.lz4 binary
+*.png binary
+*.jpg binary
+*.ico binary
+*.woff2 binary
+*.ttf binary
