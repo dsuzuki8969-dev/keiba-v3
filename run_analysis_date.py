@@ -2,13 +2,15 @@
 日付指定・全レース予想スクリプト。
 使い方:
   python run_analysis_date.py YYYY-MM-DD
-  python run_analysis_date.py YYYY-MM-DD --no-html   # HTML不要・JSON保存のみ（高速）
-  例: python run_analysis_date.py 2026-02-22
+  python run_analysis_date.py YYYY-MM-DD --no-html        # HTML不要・JSON保存のみ
+  python run_analysis_date.py YYYY-MM-DD --venues 園田     # 園田のみ分析
+  python run_analysis_date.py YYYY-MM-DD --venues 園田,船橋 # 複数場指定（カンマ区切り）
+  python run_analysis_date.py YYYY-MM-DD --force           # 既存予測を上書き再生成
+  python run_analysis_date.py YYYY-MM-DD --workers 2       # 並列ワーカー数
 中央（JRA）・地方（NAR）の当日全レースを順次分析し、
 個別HTMLと YYYYMMDD_全レース.html を生成する。
---no-html 指定時はHTML生成をスキップし、予想JSONの保存のみ行う。
 """
-import sys, io, os, time
+import sys, io, os, time, gc
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', line_buffering=True)
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -20,10 +22,13 @@ logger = get_logger(__name__)
 
 try:
     from rich.console import Console
-    console = Console()
+    from rich.progress import Progress, BarColumn, TextColumn, TimeElapsedColumn, TimeRemainingColumn, TaskProgressColumn, SpinnerColumn
+    console = Console(force_terminal=True, file=sys.stdout)
     P = console.print
+    HAS_RICH = True
 except ImportError:
     P = print
+    HAS_RICH = False
 
 if len(sys.argv) < 2:
     P("[bold red]日付を指定してください（例: 2026-02-22）[/]")
@@ -34,7 +39,7 @@ if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", DATE):
     P(f"[bold red]日付フォーマット不正: {DATE}  → YYYY-MM-DD で指定[/]")
     sys.exit(1)
 
-NO_HTML = "--no-html" in sys.argv
+NO_HTML = "--html" not in sys.argv  # デフォルトHTML不要、--html指定時のみ生成
 NO_PURGE = "--no-purge" in sys.argv
 IGNORE_TTL = "--ignore-ttl" in sys.argv
 RACE_IDS_FROM_DB = "--race-ids-from-db" in sys.argv
@@ -43,6 +48,9 @@ FORCE_RERUN = "--force" in sys.argv
 # --workers N: 並列プリフェッチのワーカー数（デフォルト3）
 _workers_idx = next((i for i, a in enumerate(sys.argv) if a == "--workers"), -1)
 WORKERS = int(sys.argv[_workers_idx + 1]) if _workers_idx >= 0 and _workers_idx + 1 < len(sys.argv) else 5
+# --venues 園田,船橋: 指定した競馬場のみ分析（カンマ区切り）
+_venues_idx = next((i for i, a in enumerate(sys.argv) if a == "--venues"), -1)
+VENUE_FILTER = sys.argv[_venues_idx + 1].split(",") if _venues_idx >= 0 and _venues_idx + 1 < len(sys.argv) else []
 
 DATE_KEY = DATE.replace("-", "")
 P(f"\n[bold white on #0d2b5e]  D-AI 競馬予想  日付: {DATE}（全レース）  [/]\n")
@@ -85,8 +93,20 @@ if not NO_PURGE:
     _purge = purge_old_cache(max_age_days=30)
     if _purge["removed"]:
         P(f"  キャッシュパージ: {_purge['removed']}件削除 ({_purge['freed_mb']}MB解放)")
+    # race_cache（JSON形式）の期限切れもパージ
+    try:
+        from src.scraper.race_cache import purge_expired_cache
+        _rc_purge = purge_expired_cache()
+        if _rc_purge:
+            P(f"  レースキャッシュパージ: {_rc_purge}件削除")
+    except Exception:
+        pass
 else:
     P("  [dim]キャッシュパージ: スキップ (--no-purge)[/dim]")
+
+# エンジンのグローバルキャッシュをリセット（前回実行の残骸を排除）
+from src.engine import reset_engine_caches
+reset_engine_caches()
 P(f"  経過: {time.time()-t0:.1f}s")
 
 # ─── 2. 基準タイムDB ─────────────────────────────────────────────
@@ -134,15 +154,10 @@ if RACE_IDS_FROM_PRED:
         with open(_pred_path, "r", encoding="utf-8") as _f:
             _pred = _json.load(_f)
         race_ids = [r["race_id"] for r in _pred.get("races", [])]
-        P(f"  [yellow]pred.jsonから取得: {len(race_ids)}レース[/]")
+        P(f"  [yellow]pred.jsonから取得: {len(race_ids)}レース（JRA/NAR公式フェッチをスキップ）[/]")
     except Exception as _e:
-        P(f"  [red]pred.json読込失敗: {_e}[/]")
-        race_ids = []
-    # 常に通常フェッチ結果と比較し、多い方を採用（キャッシュあるので低コスト）
-    _fetched = scraper.fetch_date(DATE)
-    if len(_fetched) > len(race_ids):
-        P(f"  [yellow]pred.json({len(race_ids)}R) < フェッチ({len(_fetched)}R) → フェッチ採用[/]")
-        race_ids = _fetched
+        P(f"  [red]pred.json読込失敗: {_e} → 通常フェッチにフォールバック[/]")
+        race_ids = scraper.fetch_date(DATE)
 elif RACE_IDS_FROM_DB:
     import sqlite3 as _sql3
     _conn = _sql3.connect("data/keiba.db")
@@ -155,6 +170,26 @@ elif RACE_IDS_FROM_DB:
 else:
     race_ids = scraper.fetch_date(DATE)
 # ばんえい（帯広 vc=65）: venue_65 LightGBMモデル構築済み（Phase 3）
+
+# --venues フィルタ: 指定した競馬場のレースのみ残す
+if VENUE_FILTER:
+    from data.masters.venue_master import VENUE_NAME_TO_CODE
+    _vc_set = set()
+    for _vn in VENUE_FILTER:
+        _vn = _vn.strip()
+        _vc = VENUE_NAME_TO_CODE.get(_vn, "")
+        if _vc:
+            _vc_set.add(_vc)
+            # 園田(49)/姫路(50)相互補完
+            if _vc == "49": _vc_set.add("50")
+            elif _vc == "50": _vc_set.add("49")
+        else:
+            P(f"  [yellow]警告: 不明な競馬場名 '{_vn}'[/]")
+    if _vc_set:
+        _before = len(race_ids)
+        race_ids = [rid for rid in race_ids if rid[4:6] in _vc_set]
+        P(f"  [yellow]--venues {','.join(VENUE_FILTER)}: {_before}R → {len(race_ids)}R にフィルタ[/]")
+
 if not race_ids:
     P(f"[bold red]{DATE} のレースが見つかりません[/]")
     sys.exit(1)
@@ -212,16 +247,40 @@ if _ids_to_fetch and effective_workers > 1:
         return race_id, None, []
 
     done_count = 0
+    _pf_t0 = time.time()
+    if HAS_RICH:
+        _pf_progress = Progress(
+            SpinnerColumn(),
+            TextColumn("[bold cyan]4a プリフェッチ[/]"),
+            BarColumn(bar_width=40),
+            TaskProgressColumn(),
+            TextColumn("{task.fields[status]}"),
+            TimeElapsedColumn(),
+            TextColumn("残り"),
+            TimeRemainingColumn(),
+            console=console,
+        )
+        _pf_task = _pf_progress.add_task("prefetch", total=len(_ids_to_fetch), status="")
+        _pf_progress.start()
     with ThreadPoolExecutor(max_workers=effective_workers) as pool:
         futs = {pool.submit(_prefetch, (i, rid)): rid for i, rid in enumerate(_ids_to_fetch)}
         for fut in as_completed(futs):
             race_id, ri, hs = fut.result()
             prefetched[race_id] = (ri, hs)
             done_count += 1
-            if ri:
-                P(f"  ({done_count}/{len(_ids_to_fetch)}) {ri.venue}{ri.race_no}R ({len(hs)}頭)")
+            if HAS_RICH:
+                _desc = f"{ri.venue}{ri.race_no}R ({len(hs)}頭)" if ri else f"{race_id} [スキップ]"
+                _pf_progress.update(_pf_task, advance=1, status=_desc)
             else:
-                P(f"  ({done_count}/{len(_ids_to_fetch)}) {race_id} [スキップ]")
+                _pf_elapsed = time.time() - _pf_t0
+                _pf_pct = done_count / len(_ids_to_fetch) * 100
+                _pf_remain = _pf_elapsed / done_count * (len(_ids_to_fetch) - done_count) if done_count > 0 else 0
+                if ri:
+                    P(f"  ({done_count}/{len(_ids_to_fetch)}) {_pf_pct:.1f}% {ri.venue}{ri.race_no}R ({len(hs)}頭)  経過{_pf_elapsed:.0f}秒 残り{_pf_remain:.0f}秒")
+                else:
+                    P(f"  ({done_count}/{len(_ids_to_fetch)}) {_pf_pct:.1f}% {race_id} [スキップ]  経過{_pf_elapsed:.0f}秒 残り{_pf_remain:.0f}秒")
+    if HAS_RICH:
+        _pf_progress.stop()
     P(f"  プリフェッチ完了: {done_count}R  経過: {time.time()-t0:.1f}s")
 elif _ids_to_fetch:
     P(f"[bold cyan]\\[4a/N][/] 逐次取得中... ({len(_ids_to_fetch)}R)")
@@ -256,15 +315,21 @@ if _all_prefetched_horses:
     # ★ NAR騎手/調教師のcourse_dbフォールバックを有効にするため、
     #    preload(JRAのみ) + 全馬過去走から構築したcourse_dbを渡す
     _t_sub = time.time()
-    _personnel_course_db = build_course_db_from_past_runs(
+    _shared_course_db = build_course_db_from_past_runs(
         _all_prefetched_horses, dict(course_db_base), target_date=DATE
     )
-    P(f"  [dim]  personnel_course_db: {time.time()-_t_sub:.1f}s[/dim]")
+    P(f"  [dim]  shared_course_db: {time.time()-_t_sub:.1f}s  ({len(_shared_course_db)}コース/{sum(len(v) for v in _shared_course_db.values()):,}走)[/dim]")
+    # l3f_dbも全馬分を一括構築（各レースでの再構築を省略）
+    _shared_l3f_db = Last3FDBBuilder().build(_shared_course_db)
 
     _t_sub = time.time()
     _all_personnel_mgr = PersonnelDBManager()
+    # NAR調教師IDの汚染データ（netkeiba fetchで別人データが保存されたもの）を削除
+    _purged = _all_personnel_mgr.purge_mismatched_nar_trainers()
+    if _purged:
+        P(f"  [dim]  NAR調教師汚染データ {_purged}件を削除[/dim]")
     _all_jockey_db, _all_trainer_db = _all_personnel_mgr.build_from_horses(
-        _all_prefetched_horses, scraper.client, course_db=_personnel_course_db, save=True
+        _all_prefetched_horses, scraper.client, course_db=_shared_course_db, save=True
     )
     P(f"  [dim]  personnel_build: {time.time()-_t_sub:.1f}s  (騎手{len(_all_jockey_db)} / 厩舎{len(_all_trainer_db)})[/dim]")
 
@@ -279,9 +344,14 @@ if _all_prefetched_horses:
     get_composite_weights()
     P(f"  [dim]  calibration_cache: {time.time()-_t_sub:.1f}s[/dim]")
 
+    # 事前構築の一時オブジェクトを解放
+    del _all_prefetched_horses
+    gc.collect()
     P(f"  事前構築完了  経過: {time.time()-t0:.1f}s")
 else:
     _all_jockey_db, _all_trainer_db = {}, {}
+    _shared_course_db = dict(course_db_base)
+    _shared_l3f_db = l3f_db_base
 
 # ─── 4b. 並列分析 ─────────────────────────────────────────────────
 
@@ -311,11 +381,10 @@ def _analyze_one_race(race_id):
 
         race_name = race_info.race_name or f"{race_info.venue}{race_info.race_no}R"
 
-        # 深いコピー: list値を共有すると並列スレッドでデータ汚染が起こる
-        course_db = build_course_db_from_past_runs(
-            horses, {k: list(v) for k, v in course_db_base.items()}, target_date=DATE
-        )
-        l3f_db    = Last3FDBBuilder().build(course_db)
+        # 事前構築済みの共有course_db/l3f_dbを使用（読み取り専用）
+        # _shared_course_db は4a+で全馬分を一括構築済み
+        course_db = _shared_course_db
+        l3f_db    = _shared_l3f_db
         # personnel: 事前構築済みDBからレース出走馬分をフィルタ
         _race_jids = {h.jockey_id for h in horses if h.jockey_id}
         _race_tids = {h.trainer_id for h in horses if h.trainer_id}
@@ -355,6 +424,8 @@ def _analyze_one_race(race_id):
             "head_count":   len(horses),
             "analysis_obj": analysis,
         }
+        # 一時オブジェクトを解放（メモリ圧力軽減）
+        del engine
         return (race_id, out_file, race_name, True, meta)
 
     except Exception as e:
@@ -367,7 +438,28 @@ if _ids_to_fetch:
     _4b_workers = max(1, min(WORKERS, len(_ids_to_fetch)))
     P(f"[bold cyan]\\[4b/N][/] 各レース並列分析中... ({len(_ids_to_fetch)}R, {_4b_workers}ワーカー)")
 
+    # 並列分析前にGCを実行してメモリを確保
+    gc.collect()
+    # GCしきい値を緩めて並列中のGC頻度を下げる（GIL競合軽減）
+    _gc_thresh_orig = gc.get_threshold()
+    gc.set_threshold(50000, 50, 50)
+
     done_4b = 0
+    _4b_t0 = time.time()
+    if HAS_RICH:
+        _4b_progress = Progress(
+            SpinnerColumn(),
+            TextColumn("[bold green]4b 分析[/]"),
+            BarColumn(bar_width=40),
+            TaskProgressColumn(),
+            TextColumn("{task.fields[status]}"),
+            TimeElapsedColumn(),
+            TextColumn("残り"),
+            TimeRemainingColumn(),
+            console=console,
+        )
+        _4b_task = _4b_progress.add_task("analysis", total=len(_ids_to_fetch), status="")
+        _4b_progress.start()
     with ThreadPoolExecutor(max_workers=_4b_workers) as pool:
         futs = {pool.submit(_analyze_one_race, rid): rid for rid in _ids_to_fetch}
         for fut in as_completed(futs):
@@ -382,10 +474,17 @@ if _ids_to_fetch:
                 failed.append(rid_done)
             done_4b += 1
 
-            # プログレス表示
+            # プログレスバー更新
             _v = meta.get("venue", "")
             _rn = meta.get("race_no", "")
-            P(f"  ({done_4b}/{len(_ids_to_fetch)}) {_v}{_rn}R {'完了' if ok else '失敗'}")
+            if HAS_RICH:
+                _4b_progress.update(_4b_task, advance=1,
+                    status=f"{_v}{_rn}R {'✓' if ok else '✗'}")
+            else:
+                _elapsed = time.time() - _4b_t0
+                _pct = done_4b / len(_ids_to_fetch) * 100
+                _remaining = _elapsed / done_4b * (len(_ids_to_fetch) - done_4b) if done_4b > 0 else 0
+                P(f"  ({done_4b}/{len(_ids_to_fetch)}) {_pct:.1f}% {_v}{_rn}R {'完了' if ok else '失敗'}  経過{_elapsed:.0f}秒 残り{_remaining:.0f}秒")
 
             # 中断再開用マーカー記録
             with open(_done_marker, "a") as _df:
@@ -410,7 +509,14 @@ if _ids_to_fetch:
                         _sp_inc(DATE, _abv_inc, lightweight=True)
                 except Exception as _se:
                     logger.warning("pred.json incremental save failed: %s", _se, exc_info=True)
+                # 5レースごとにメインスレッドでGC実行（メモリ蓄積防止）
+                gc.collect()
 
+    if HAS_RICH:
+        _4b_progress.stop()
+    # GCしきい値を復元してメモリ回収
+    gc.set_threshold(*_gc_thresh_orig)
+    gc.collect()
     P(f"  並列分析完了: {done_4b}R  経過: {time.time()-t0:.1f}s")
 
 # 全レース完了 → 中断再開マーカー削除
@@ -436,6 +542,34 @@ try:
     if analyses_by_venue:
         pred_path = save_prediction(DATE, analyses_by_venue)
         P(f"  予想JSON保存: {pred_path}")
+        # JRA出馬表CNAME注入（フロントエンドで公式リンク表示用）
+        try:
+            if scraper._official_odds and scraper._official_odds._jra_shutuba_cname_cache:
+                import json as _json_cname
+                with open(pred_path, "r", encoding="utf-8") as _f:
+                    _pred_data = _json_cname.load(_f)
+                _cache = scraper._official_odds._jra_shutuba_cname_cache
+                _injected = 0
+                for _race in _pred_data.get("races", []):
+                    if not _race.get("is_jra"):
+                        continue
+                    _rid = _race.get("race_id", "")
+                    if len(_rid) < 12:
+                        continue
+                    _vc = _rid[4:6]
+                    _kk_nn = _rid[6:10]
+                    _rno = int(_rid[10:12])
+                    _ck = f"{_vc}_{_kk_nn}_{_rno:02d}"
+                    _cn = _cache.get(_ck, "")
+                    if _cn:
+                        _race["shutuba_cname"] = _cn
+                        _injected += 1
+                if _injected > 0:
+                    with open(pred_path, "w", encoding="utf-8") as _f:
+                        _json_cname.dump(_pred_data, _f, ensure_ascii=False, indent=2)
+                    P(f"  JRA出馬表CNAME注入: {_injected}レース")
+        except Exception as _ce:
+            logger.warning("shutuba_cname injection failed: %s", _ce)
     else:
         P("  予想JSONなし（analysisオブジェクト未格納）")
 except Exception as e:
@@ -596,6 +730,13 @@ function showVenue(idx){{
 </body></html>"""
 
 combined_path = f"output/{DATE_KEY}_全レース.html"
+# 既存の統合HTMLがあればバックアップ
+if os.path.isfile(combined_path):
+    import shutil
+    try:
+        shutil.copy2(combined_path, combined_path.replace(".html", "_prev.html"))
+    except Exception:
+        pass
 with open(combined_path, "w", encoding="utf-8") as f:
     f.write(combined_html)
 P(f"  → {combined_path}")

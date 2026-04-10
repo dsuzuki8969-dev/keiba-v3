@@ -100,10 +100,11 @@ class JockeyScraper:
                 total_runs = yearly.get("total_runs", 0)
                 if total_runs >= 50:
                     overall_wr = total_wins / total_runs
-                    # 全体勝率から直接偏差値を算出
+                    # 全体勝率から直接偏差値を算出（ベイズ収縮付き）
                     # JRA平均勝率 ≈ 0.08, σ ≈ 0.04
-                    # 偏差値50 = 8%勝率、60 = 12%、70 = 16%、40 = 4%
-                    career_dev = max(30.0, min(70.0, 50.0 + (overall_wr - 0.08) / 0.04 * 10))
+                    k_career = 50
+                    adj_wr = (total_wins + 0.08 * k_career) / (total_runs + k_career)
+                    career_dev = max(20.0, min(100.0, 50.0 + (adj_wr - 0.08) / 0.04 * 10))
                     _upper_runs = long_data.get("upper_runs", 0) if long_data else 0
                     _lower_runs = long_data.get("lower_runs", 0) if long_data else 0
                     # recent データが不十分（5走未満）→ career_dev で上書き
@@ -120,6 +121,14 @@ class JockeyScraper:
                     else:
                         stats.lower_long_dev = max(stats.lower_long_dev, career_dev)
                         stats.lower_short_dev = max(stats.lower_short_dev, career_dev)
+                elif total_runs < 50:
+                    # キャリア50走未満: 偏差値を55.0（B中位）に制限
+                    # 少騎乗で偶然良い数字が出ても過大評価しない
+                    _cap = 55.0
+                    stats.upper_long_dev = min(stats.upper_long_dev, _cap)
+                    stats.upper_short_dev = min(stats.upper_short_dev, _cap)
+                    stats.lower_long_dev = min(stats.lower_long_dev, _cap)
+                    stats.lower_short_dev = min(stats.lower_short_dev, _cap)
 
         # コース別成績を構築
         stats.course_records = self._build_course_records_from_races(races)
@@ -275,22 +284,29 @@ class JockeyScraper:
 
     def _calc_deviation(self, wins: int, runs: int, ninki_type: str) -> float:
         """
-        H-1: 勝率から偏差値を算出
+        H-1: 勝率から偏差値を算出（ベイズ収縮付き）
         基準: 上位人気平均勝率=0.30, 下位人気=0.06
         σ: 上位=0.08, 下位=0.04
+
+        ベイズ収縮: サンプルが少ないほど基準値（平均）に引き寄せる。
+        k=30 → 30騎乗で実績と基準が半々の重み。
+        8騎乗で勝率25%のような偶然の偏りをSS 70.0にしない。
         """
         if runs == 0:
             return 50.0
-
-        win_rate = wins / runs
 
         if ninki_type == "upper":
             base_rate, sigma = 0.30, 0.08
         else:
             base_rate, sigma = 0.06, 0.04
 
-        deviation = 50 + (win_rate - base_rate) / sigma * 10
-        return max(30.0, min(70.0, deviation))
+        # ベイズ収縮: adjusted_rate = (実績wins + 事前期待wins) / (実績runs + 事前runs)
+        # k が大きいほど基準値への収縮が強い
+        k = 30
+        adjusted_rate = (wins + base_rate * k) / (runs + k)
+
+        deviation = 50 + (adjusted_rate - base_rate) / sigma * 10
+        return max(20.0, min(100.0, deviation))
 
     def _classify_kaisyu(self, data: dict) -> KaisyuType:
         """H-1: 回収率タイプ分類"""
@@ -386,7 +402,7 @@ class TrainerScraper:
                 base_rate, sigma = 0.10, 0.04  # NAR
             else:
                 base_rate, sigma = 0.07, 0.03  # JRA
-            stats.deviation = max(30.0, min(70.0, 50.0 + (wr - base_rate) / sigma * 10))
+            stats.deviation = max(20.0, min(100.0, 50.0 + (wr - base_rate) / sigma * 10))
 
         # ページタイトルからフルネームを取得
         for s in [prof_soup, soup]:
@@ -888,7 +904,7 @@ def build_jockey_stats_from_course_db(
 
     # z-score → 偏差値（50中心、σ=10）
     z = (adj_wr - pop_wr) / pop_sigma if pop_sigma > 0 else 0
-    dev = round(max(30.0, min(70.0, 50.0 + z * 10.0)), 1)
+    dev = round(max(20.0, min(100.0, 50.0 + z * 10.0)), 1)
 
     # ── course_records を構築（コース別偏差値、ベイズ補正付き） ──
     course_records: Dict[str, Dict[str, Any]] = {}
@@ -917,7 +933,7 @@ def build_jockey_stats_from_course_db(
             cid_var = sum((x - cid_mean) ** 2 for x in cid_adj_wrs) / len(cid_adj_wrs)
             cid_sigma = math.sqrt(cid_var) if cid_var > 0 else 0.03
             cid_z = (cid_adj_wr - cid_pop_wr) / cid_sigma if cid_sigma > 0 else 0
-            course_dev = round(max(30.0, min(70.0, 50.0 + cid_z * 10.0)), 1)
+            course_dev = round(max(20.0, min(100.0, 50.0 + cid_z * 10.0)), 1)
         course_records[cid] = {
             "all_dev": course_dev,
             "upper_dev": course_dev,
@@ -1874,6 +1890,51 @@ class PersonnelDBManager:
             datetime.now().isoformat()
         )
 
+    def purge_mismatched_nar_trainers(self, db_path: str = "data/keiba.db"):
+        """
+        NAR調教師IDの汚染データをクリーンアップする。
+        personnel_dbに保存された名前がrace_logの名前と一致しない場合、
+        netkeiba fetchで別人データが保存された可能性があるため削除する。
+        """
+        import sqlite3
+        _JRA_ID_PREFIXES = {"00", "01"}
+        conn = sqlite3.connect(db_path)
+        purged = 0
+        for tid, tdata in list(self._data.get("trainers", {}).items()):
+            # JRA ID（00xxx/01xxx）やNAR netkeiba ID（aXXXX）はスキップ
+            if not tid.isdigit() or len(tid) != 5:
+                continue
+            if tid[:2] in _JRA_ID_PREFIXES:
+                continue
+            pdb_name = tdata.get("trainer_name", "")
+            # race_logの名前を取得
+            rows = conn.execute(
+                "SELECT DISTINCT trainer_name FROM race_log WHERE trainer_id = ?",
+                (tid,),
+            ).fetchall()
+            if not rows:
+                continue
+            rl_names = [r[0] for r in rows]
+            # 名前の先頭2文字で一致判定（所属サフィックスを除外）
+            pdb_clean = re.sub(r"[（(][^）)]+[）)]", "", pdb_name).strip()
+            match = False
+            for rn in rl_names:
+                rn_clean = re.sub(r"[（(][^）)]+[）)]", "", rn).strip()
+                if len(pdb_clean) >= 2 and len(rn_clean) >= 2 and pdb_clean[:2] == rn_clean[:2]:
+                    match = True
+                    break
+            if not match:
+                logger.info("汚染データ削除: trainer_id=%s PDB=%s RL=%s", tid, pdb_name, rl_names)
+                del self._data["trainers"][tid]
+                # updatedキーも削除
+                self._data.get("updated", {}).pop(f"trainer_{tid}", None)
+                purged += 1
+        conn.close()
+        if purged > 0:
+            logger.info("NAR調教師汚染データ %d件を削除", purged)
+            self.save()
+        return purged
+
     def build_from_horses(
         self,
         horses,
@@ -1881,6 +1942,7 @@ class PersonnelDBManager:
         force: bool = False,
         course_db: Dict = None,
         save: bool = True,
+        nar_race_log_cache=None,
     ) -> Tuple[Dict[str, JockeyStats], Dict[str, TrainerStats]]:
         """
         出走馬リストから騎手・厩舎DBを自動構築する
@@ -1898,7 +1960,10 @@ class PersonnelDBManager:
         # NAR騎手・調教師のIDセットを馬のvenueから構築（IDプレフィックスは不統一のため）
         # JRA所属ID（00xxx/01xxx）はNAR出走があってもJRA扱いを維持（race_log汚染防止）
         # 05xxxはnetkeiba共通ID（NAR調教師も使用）なのでvenue判定に従う
-        _JRA_VENUES = {"札幌","函館","福島","新潟","東京","中山","中京","京都","阪神","小倉"}
+        # Horse.venueは場コード（"05"=東京等）または会場名（"東京"等）の両方がありうる
+        _JRA_VENUE_NAMES = {"札幌","函館","福島","新潟","東京","中山","中京","京都","阪神","小倉"}
+        _JRA_VENUE_CODES = {"01","02","03","04","05","06","07","08","09","10"}
+        _JRA_VENUES = _JRA_VENUE_NAMES | _JRA_VENUE_CODES
         _JRA_ID_PREFIXES = {"00", "01"}
         _nar_jockey_ids = {h.jockey_id for h in horses
                            if h.jockey_id and h.jockey_id[:2] not in _JRA_ID_PREFIXES
@@ -1909,8 +1974,8 @@ class PersonnelDBManager:
         logger.info("騎手%d名 / 厩舎%dの成績取得 (NAR騎手%d, NAR厩舎%d)",
                      len(jockey_ids), len(trainer_ids), len(_nar_jockey_ids), len(_nar_trainer_ids))
 
-        # ---- race_log 一括プリロード ----
-        _nar_cache = _BatchNarRaceLogCache()
+        # ---- race_log 一括プリロード（外部から渡されたキャッシュがあれば再利用） ----
+        _nar_cache = nar_race_log_cache or _BatchNarRaceLogCache()
 
         for jid, jname in jockey_ids.items():
             # NAR騎手のみ race_log クロスチェック対象
