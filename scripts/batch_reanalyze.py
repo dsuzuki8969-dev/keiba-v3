@@ -85,7 +85,7 @@ def run_reanalysis(date: str, workers: int = 6, use_pred: bool = True) -> bool:
     ]
     if use_pred:
         cmd.append("--race-ids-from-pred")
-    log_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "logs", "batch")
+    log_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "log", "batch")
     os.makedirs(log_dir, exist_ok=True)
     log_file = os.path.join(log_dir, f"{date.replace('-','')}.log")
     try:

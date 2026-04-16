@@ -754,41 +754,38 @@ cd frontend && npm run build  # → frontend/dist/ に出力
 
 | ファイル | 用途 |
 |---------|------|
-| `start_dashboard.bat` | ダッシュボード起動（ウォッチドッグ/Tunnel対応） |
-| `start_dashboard_watchdog.bat` | ウォッチドッグ付き起動 |
-| `start_tunnel.bat` | Cloudflare Tunnel起動 |
-| `build_db.bat` | DB構築 |
-| `install_scheduler.bat` | タスクスケジューラー登録 |
 | `setup.bat` / `setup.sh` | 環境セットアップ |
-| `run_race.bat` | 単一レース実行 |
-| `open-in-cursor.bat` | Cursorで開く |
 
-### scripts/ バッチファイル
+### scripts/ スケジューラ関連
 
 | ファイル | 用途 |
 |---------|------|
-| `scripts/daily_predict.bat` | 日次予想バッチ |
-| `scripts/daily_predict_tomorrow.bat` | 翌日予想バッチ |
-| `scripts/daily_results.bat` | 日次結果バッチ |
-| `scripts/daily_maintenance.bat` | 日次メンテナンス |
-| `scripts/overnight_collect.bat` | 夜間データ収集 |
-| `scripts/overnight_train.bat` | 夜間学習 |
-| `scripts/_batch_runner.bat` | バッチ実行ラッパー |
-| `scripts/run_batch_now.bat` | 即時バッチ実行 |
-| `scripts/start_dashboard.bat` | ダッシュボード起動（scripts版） |
+| `scripts/setup_scheduler.ps1` | タスクスケジューラー登録（管理者権限） |
+| `scripts/daily_predict.bat` + `*_hidden.vbs` | 日次予想バッチ（06:00） |
+| `scripts/daily_predict_tomorrow.bat` + `*_hidden.vbs` | 翌日予想バッチ（17:00） |
+| `scripts/daily_results.bat` + `*_hidden.vbs` | 日次結果バッチ（22:00） |
+| `scripts/daily_maintenance.bat` + `*_hidden.vbs` | 日次メンテナンス（23:00） |
+| `scripts/start_dashboard.bat` + `*_hidden.vbs` | ダッシュボード起動（ログオン時） |
+| `scripts/watchdog_check.bat` + `*_hidden.vbs` | Watchdog（5分間隔） |
+
+※ `*_hidden.vbs` はウィンドウ非表示で実行するためのラッパー
 
 ### Cloudflare Tunnel
 
 - 設定: `~/.cloudflared/config.yml`
 - 用途: 外出先からダッシュボードにアクセス
-- 起動: `start_dashboard.bat` で `KEIBA_TUNNEL=1` 設定時
+- 起動: `DAI_Keiba_Tunnel` タスク（ログオン時自動起動）
 - ポート: 5051
 
 ### タスクスケジューラー
 
-- `DAI_Keiba_Dashboard`: ログオン時ダッシュボード起動
+- `DAI_Keiba_Predict`: 毎朝06:00 予想生成
+- `DAI_Keiba_Predict_Tomorrow`: 毎夕17:00 翌日予想生成
+- `DAI_Keiba_Results`: 毎夜22:00 結果照合
+- `DAI_Keiba_Maintenance`: 毎夜23:00 メンテナンス
+- `DAI_Keiba_Dashboard`: ログオン時ダッシュボード起動（自動再起動付き）
 - `DAI_Keiba_Tunnel`: Cloudflare Tunnel起動
-- `keiba-scheduler`: scheduler.py常駐
+- `DAI_Keiba_Watchdog`: 5分間隔でDashboard+cloudflared監視
 
 ### PC環境
 

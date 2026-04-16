@@ -85,7 +85,16 @@ except ImportError:
 all_courses = get_all_courses()
 scraper = PremiumNetkeibaScraper(all_courses, ignore_ttl=IGNORE_TTL)
 scraper.login()
-scraper.training.login()
+kb_ok = scraper.training.login()
+if not kb_ok:
+    logger.warning("競馬ブックログイン失敗。3秒後にリトライ...")
+    time.sleep(3)
+    kb_ok = scraper.training.login()
+if not kb_ok:
+    P("[bold yellow]⚠ 競馬ブック未認証: 調教・厩舎コメントはnetkeiba経由のみ[/]")
+else:
+    grade = "プレミアム" if scraper.training.is_premium else "一般"
+    P(f"  競馬ブック: ログイン成功 ({grade})")
 
 # 起動時に古いキャッシュを自動パージ（30日超）
 if not NO_PURGE:
@@ -103,6 +112,35 @@ if not NO_PURGE:
         pass
 else:
     P("  [dim]キャッシュパージ: スキップ (--no-purge)[/dim]")
+
+# --force 時: 対象日付のKB（競馬ブック）HTTPキャッシュも削除
+# 早朝の空レスポンスが24h TTLで残り、調教データ0件になる問題の恒久対策
+if FORCE_RERUN:
+    try:
+        from config.settings import KEIBABOOK_CACHE_DIR
+        _mmdd = DATE_KEY[4:]  # "0415"
+        # まず対象ファイルを収集してからまとめて削除（Windows scandir + 削除の同時実行回避）
+        _to_delete = []
+        if os.path.isdir(KEIBABOOK_CACHE_DIR):
+            for entry in os.scandir(KEIBABOOK_CACHE_DIR):
+                if not entry.is_file():
+                    continue
+                fn = entry.name
+                # パターン1: nittei等 → ファイル名に YYYYMMDD を含む
+                # パターン2: cyokyo/danwa → ファイル名末尾が MMDD.html
+                if DATE_KEY in fn or fn.endswith(f"{_mmdd}.html"):
+                    _to_delete.append(entry.path)
+        _kb_removed = 0
+        for _f in _to_delete:
+            try:
+                os.remove(_f)
+                _kb_removed += 1
+            except OSError:
+                pass
+        if _kb_removed:
+            P(f"  KBキャッシュパージ: {_kb_removed}件削除 (日付={DATE_KEY})")
+    except Exception as e:
+        logger.warning(f"KBキャッシュパージ失敗: {e}")
 
 # エンジンのグローバルキャッシュをリセット（前回実行の残骸を排除）
 from src.engine import reset_engine_caches

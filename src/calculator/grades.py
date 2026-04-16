@@ -80,7 +80,7 @@ def compute_category_deviation(
 
     1. 各ファクターの rate → rate_to_dev(rate, mean, sigma)
     2. サンプル数 × ファクター重みで加重平均
-    3. 30-70 クランプ
+    3. 20-100 クランプ
 
     Args:
         factor_rates: {"overall": 0.35, "venue": 0.28, ...} (None=データなし)
@@ -870,10 +870,16 @@ def compute_bloodline_detail_grades(
 def _bloodline_venue_grade(
     bloodline_db, sire_id, mgs_id, surface, distance, all_courses, venue_code
 ) -> str:
-    """種牡馬の当該面×距離帯パフォーマンスから競馬場実績グレードを推定"""
+    """種牡馬の当該競馬場でのパフォーマンスからグレードを推定。
+    venue_distance データ（過去走フォールバック）があれば venue_code で絞り込み、
+    なければ従来通り距離×面のデータにフォールバックする。"""
     if not bloodline_db:
         return "—"
     dist_bucket = _distance_bucket(distance) if distance else ""
+    # G6: 長距離(>=2200m)では母父の影響を大きくする
+    sire_w = 0.60 if distance >= 2200 else 0.70
+    mgs_w = 1.0 - sire_w
+
     recs = []
     for ancestor_id, db_key in [(sire_id, "sire"), (mgs_id, "bms")]:
         if not ancestor_id:
@@ -881,21 +887,40 @@ def _bloodline_venue_grade(
         data = bloodline_db.get(db_key, {}).get(ancestor_id, {})
         if not data:
             continue
+        weight = sire_w if db_key == "sire" else mgs_w
+
+        # まず venue_distance（会場別集計）から検索
+        venue_data = data.get("venue_distance", {})
+        if venue_code and venue_data:
+            # 同会場・同面の全距離バケットを集約（会場での総合力）
+            venue_recs = []
+            for key, stats in venue_data.items():
+                if isinstance(key, tuple) and len(key) == 3:
+                    vc, bucket, surf = key
+                elif isinstance(key, str) and "|" in key:
+                    parts = key.split("|")
+                    vc, bucket, surf = parts[0], parts[1], parts[2] if len(parts) >= 3 else ""
+                else:
+                    continue
+                if vc == venue_code and surf == surface and stats.get("runs", 0) >= 1:
+                    pr = stats.get("place_rate", 0)
+                    venue_recs.append((_bloodline_rate_to_dev(pr, bucket, surf), stats["runs"]))
+            if venue_recs:
+                avg = _weighted_avg(venue_recs)
+                if avg is not None:
+                    total_runs = sum(r[1] for r in venue_recs)
+                    recs.append((avg, total_runs * weight))
+                continue  # venue データがあれば距離×面フォールバック不要
+
+        # フォールバック: 従来の距離×面データ
         dist_data = data.get("distance", {})
-        # 当該surface+距離バケットの実績（タプルキーと文字列キー両対応）
         target_key = (dist_bucket, surface)
         target_key_str = f"{dist_bucket}|{surface}"
         stats = dist_data.get(target_key) or dist_data.get(target_key_str)
-        if stats:
-            runs = stats.get("runs", 0)
-            if runs >= 3:
-                pr = stats.get("place_rate", 0)
-                # G6: 長距離(>=2200m)では母父の影響を大きくする
-                sire_w = 0.60 if distance >= 2200 else 0.70
-                mgs_w = 1.0 - sire_w
-                weight = sire_w if db_key == "sire" else mgs_w
-                # G5: 距離帯×面別パラメータ
-                recs.append((_bloodline_rate_to_dev(pr, dist_bucket, surface), runs * weight))
+        if stats and stats.get("runs", 0) >= 3:
+            pr = stats.get("place_rate", 0)
+            recs.append((_bloodline_rate_to_dev(pr, dist_bucket, surface), stats["runs"] * weight))
+
     avg = _weighted_avg(recs)
     return dev_to_grade(avg) if avg is not None else "—"
 

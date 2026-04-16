@@ -661,12 +661,19 @@ class RaceEntryParser:
                         if wh_m:
                             h.horse_weight = int(wh_m.group(1))
                             h.weight_change = int(wh_m.group(2))
-                    # 馬主
+                    # 馬主（名前 + ID）
                     owner_cell = row.select_one("td.Owner a, td.Owner span")
                     if owner_cell:
                         owner_text = owner_cell.get_text(strip=True)
                         if owner_text:
                             h.owner = owner_text
+                        # 馬主IDをhrefから抽出（勝負服画像用）
+                        owner_link = row.select_one("td.Owner a[href]")
+                        if owner_link:
+                            _owner_href = owner_link.get("href", "")
+                            _owner_m = re.search(r"/owner/([^/]+)", _owner_href)
+                            if _owner_m:
+                                h.owner_id = _owner_m.group(1)
                     break
 
     def _parse_race_info(self, race_id: str, soup: BeautifulSoup) -> Optional[RaceInfo]:
@@ -1381,7 +1388,7 @@ class HorseHistoryParser:
             logger.debug("enrich horse sex failed", exc_info=True)
 
     def _enrich_horse_profile_from_top(self, horse: Horse, soup: BeautifulSoup) -> None:
-        """馬TOPページから調教師・年齢を抽出（db_prof_table）"""
+        """馬TOPページから調教師・年齢・所属を抽出（db_prof_table）"""
         try:
             for th in soup.select("table.db_prof_table th"):
                 if "調教師" in th.get_text():
@@ -1395,6 +1402,17 @@ class HorseHistoryParser:
                                 m = re.search(r"/trainer/([^/]+)/", a.get("href", ""))
                                 if m:
                                     horse.trainer_id = m.group(1)
+                            # 所属を抽出（例: "柴田卓  (栗東)" → "栗東"）
+                            td_text = td.get_text(strip=True)
+                            if not horse.trainer_affiliation:
+                                horse.trainer_affiliation = _parse_trainer_affiliation(td_text)
+                                # TOP ページ形式: "(栗東)" "(美浦)" も対応
+                                if not horse.trainer_affiliation:
+                                    am = re.search(r"\(([^\)]{1,6})\)", td_text)
+                                    if am:
+                                        cand = am.group(1)
+                                        if cand in ("美浦", "栗東"):
+                                            horse.trainer_affiliation = cand
                     break
             for th in soup.select("table.db_prof_table th"):
                 if "生年月日" in th.get_text():
@@ -1412,6 +1430,21 @@ class HorseHistoryParser:
                                     if rm_m < bm_m:  # 誕生日前
                                         age -= 1
                                     horse.age = max(2, min(age, 10))
+                    break
+            # 馬主ID（勝負服画像用）
+            for th in soup.select("table.db_prof_table th"):
+                if "馬主" in th.get_text():
+                    tr = th.find_parent("tr")
+                    if tr:
+                        td = tr.select_one("td")
+                        if td:
+                            owner_a = td.select_one("a[href*='/owner/']")
+                            if owner_a:
+                                if not horse.owner:
+                                    horse.owner = owner_a.get_text(strip=True)
+                                om = re.search(r"/owner/([^/]+)/", owner_a.get("href", ""))
+                                if om:
+                                    horse.owner_id = om.group(1)
                     break
             txt01 = soup.select_one("p.txt_01")
             if txt01:
@@ -1463,37 +1496,9 @@ class HorseHistoryParser:
             dist_m_match = re.search(r"(\d{3,4})", course_text)
             distance = int(dist_m_match.group(1)) if dist_m_match else 2000
 
-        # venue_master.py の VENUE_NAME_TO_CODE と完全一致させる
-        venue_code_map = {
-            # 中央10場
-            "札幌": "03",
-            "函館": "04",
-            "福島": "01",
-            "新潟": "02",
-            "東京": "05",
-            "中山": "06",
-            "中京": "07",
-            "京都": "08",
-            "阪神": "09",
-            "小倉": "10",
-            # 地方14場（venue_master.py の正式コード）
-            "帯広": "65",
-            "門別": "30",
-            "盛岡": "35",
-            "水沢": "36",
-            "浦和": "42",
-            "船橋": "43",
-            "大井": "44",
-            "川崎": "45",
-            "金沢": "46",
-            "笠松": "47",
-            "名古屋": "48",
-            "園田": "50",
-            "姫路": "51",
-            "高知": "54",
-            "佐賀": "55",
-        }
-        vc = venue_code_map.get(venue, "05")
+        # venue_master.py の VENUE_NAME_TO_CODE を直接参照
+        from data.masters.venue_master import VENUE_NAME_TO_CODE as _vnc
+        vc = _vnc.get(venue, "05")
         course_id = f"{vc}_{surface}_{distance}"
 
         # 馬場 (16)。ばんえい: cells[15]に水分量（数値）→ 馬場状態を推定
@@ -2126,6 +2131,8 @@ class NetkeibaScraper:
                         for horse in hs:
                             if horse.horse_no in odds_data:
                                 horse.odds, horse.popularity = odds_data[horse.horse_no]
+                    # 血統・所属が欠損しているキャッシュにはkeiba.dbからフォールバック
+                    self._backfill_from_db(hs)
                     logger.info("キャッシュ復元: %s %d頭", ri.race_name, len(hs))
                     return ri, hs
             except Exception:
@@ -2155,6 +2162,9 @@ class NetkeibaScraper:
 
         race_info.field_count = len(horses)
 
+        # 血統・所属が欠損していればkeiba.dbから補完（新規フェッチでも）
+        self._backfill_from_db(horses)
+
         # ── キャッシュ保存（過去走を取得した場合のみ） ──
         if fetch_history and use_cache:
             try:
@@ -2165,6 +2175,55 @@ class NetkeibaScraper:
 
         logger.info("完了: %s %d頭", race_info.race_name, len(horses))
         return race_info, horses
+
+    def _backfill_from_db(self, horses: List[Horse]) -> None:
+        """キャッシュ復元後に sire / trainer_affiliation が空の馬を keiba.db + personnel_db から補完"""
+        need_sire = [h for h in horses if not getattr(h, "sire", "")]
+        need_affil = [h for h in horses if not getattr(h, "trainer_affiliation", "")]
+        if not need_sire and not need_affil:
+            return
+        try:
+            import sqlite3
+            from config.settings import DATABASE_PATH
+            with sqlite3.connect(DATABASE_PATH) as conn:
+                conn.row_factory = sqlite3.Row
+                # sire 補完（keiba.db の race_log から）
+                for h in need_sire:
+                    row = conn.execute(
+                        "SELECT sire_name, bms_name FROM race_log "
+                        "WHERE horse_id=? AND sire_name IS NOT NULL AND sire_name!='' "
+                        "ORDER BY race_date DESC LIMIT 1",
+                        (h.horse_id,),
+                    ).fetchone()
+                    if row:
+                        h.sire = row["sire_name"]
+                        if not getattr(h, "maternal_grandsire", ""):
+                            h.maternal_grandsire = row["bms_name"] or ""
+            # trainer_affiliation 補完（personnel_db から）
+            if need_affil:
+                try:
+                    import json as _json
+                    from config.settings import PERSONNEL_DB_PATH
+                    with open(PERSONNEL_DB_PATH, "r", encoding="utf-8") as _pf:
+                        _pdb = _json.load(_pf)
+                    _trainers = _pdb.get("trainers", {})
+                    for h in need_affil:
+                        tid = getattr(h, "trainer_id", "")
+                        if tid and tid in _trainers:
+                            loc = _trainers[tid].get("location", "")
+                            # "JRA" は美浦/栗東不明→trainer名から推定
+                            if loc in ("美浦", "栗東"):
+                                h.trainer_affiliation = loc
+                            elif loc and loc != "JRA":
+                                h.trainer_affiliation = loc  # NAR場名
+                except Exception:
+                    logger.debug("personnel_db補完スキップ", exc_info=True)
+            filled_s = sum(1 for h in need_sire if getattr(h, "sire", ""))
+            filled_a = sum(1 for h in need_affil if getattr(h, "trainer_affiliation", ""))
+            if filled_s or filled_a:
+                logger.debug("DB補完: sire=%d/%d, affil=%d/%d", filled_s, len(need_sire), filled_a, len(need_affil))
+        except Exception:
+            logger.debug("DB補完スキップ", exc_info=True)
 
     def fetch_date(self, date: str) -> List[str]:
         """指定日のレースID一覧を返す"""

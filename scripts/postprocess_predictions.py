@@ -30,11 +30,11 @@ from config.settings import (
     TEKIPAN_WIN_PROB_JRA, TEKIPAN_WIN_PROB_NAR,
     TEKIPAN_PLACE3_PROB_JRA, TEKIPAN_PLACE3_PROB_NAR,
     CONFIDENCE_GAP_DIVISOR_JRA, CONFIDENCE_GAP_DIVISOR_NAR,
-    CONFIDENCE_SS_GAP_JRA, CONFIDENCE_SS_GAP_NAR,
-    CONFIDENCE_SS_VALUE_JRA, CONFIDENCE_SS_VALUE_NAR,
     CONFIDENCE_THRESHOLDS_JRA, CONFIDENCE_THRESHOLDS_NAR,
-    CONFIDENCE_ODDS_GATE_ENABLED,
-    CONFIDENCE_MIN_ODDS_SS, CONFIDENCE_MIN_ODDS_S,
+    CONFIDENCE_WP_GATE_SS_JRA, CONFIDENCE_WP_GATE_SS_NAR,
+    CONFIDENCE_GAP_GATE_SS_JRA, CONFIDENCE_GAP_GATE_SS_NAR,
+    CONFIDENCE_WP_GATE_S_JRA, CONFIDENCE_WP_GATE_S_NAR,
+    CONFIDENCE_GAP_GATE_S_JRA, CONFIDENCE_GAP_GATE_S_NAR,
     TOKUSEN_KIKEN_POP_LIMIT_JRA, TOKUSEN_KIKEN_POP_LIMIT_NAR,
     TOKUSEN_KIKEN_ODDS_LIMIT_JRA, TOKUSEN_KIKEN_ODDS_LIMIT_NAR,
     TOKUSEN_KIKEN_ML_RANK_PCT_JRA, TOKUSEN_KIKEN_ML_RANK_PCT_NAR,
@@ -224,16 +224,9 @@ def recalc_confidence(horses, is_jra=True):
     gap23 = sorted_h[1].get("composite", 0) - sorted_h[2].get("composite", 0)
     gap23_norm = min(gap23 / 4.0, 1.0)
 
-    # 4. バリュー指標 (15%)
-    eff_odds = top.get("odds") or top.get("predicted_tansho_odds")
-    if eff_odds and eff_odds > 1.0 and wp > 0:
-        odds_implied = 1.0 / eff_odds
-        value_ratio = wp / odds_implied
-        value_score = min(max((value_ratio - 1.0) / 0.5, 0.0), 1.0)
-    else:
-        value_score = 0.5
+    # v5: value_score（市場信号）を除去。市場評価は自信度に不要
 
-    # 5. 因子間合意 (15%)
+    # 4. 因子間合意 (20%)
     top_ability_no = max(horses, key=lambda h: h.get("ability_total", 0) or 0).get("horse_no")
     top_pace_no = max(horses, key=lambda h: h.get("pace_total", 0) or 0).get("horse_no")
     top_course_no = max(horses, key=lambda h: h.get("course_total", 0) or 0).get("horse_no")
@@ -245,11 +238,11 @@ def recalc_confidence(horses, is_jra=True):
     else:
         multi_factor = 0.0
 
-    # 6. 信頼度 (10%)
+    # 5. 信頼度 (10%)
     top3_reliable = sum(1 for h in sorted_h[:3] if h.get("ability_reliability") == "A")
     reliability_norm = top3_reliable / 3.0
 
-    # 7. ML確信度 (15%) — raw_lgbm_probの1位-2位gap
+    # 6. ML確信度 (15%) — raw_lgbm_probの1位-2位gap
     raw_ml_top = top.get("raw_lgbm_prob")
     raw_ml_2nd = sorted_h[1].get("raw_lgbm_prob") if len(sorted_h) >= 2 else None
     if raw_ml_top is not None and raw_ml_2nd is not None:
@@ -258,58 +251,44 @@ def recalc_confidence(horses, is_jra=True):
     else:
         ml_confidence = 0.5  # 不明時は中立
 
-    # 7信号加重合成
+    # v5: 6信号加重合成（市場フリー）
     score = (
-        gap_norm * 0.15
-        + ml_agreement * 0.20
+        gap_norm * 0.20
+        + ml_agreement * 0.25
         + gap23_norm * 0.10
-        + value_score * 0.15
-        + multi_factor * 0.15
+        + multi_factor * 0.20
         + reliability_norm * 0.10
         + ml_confidence * 0.15
     )
 
-    # ---- 自信度判定（JRA/NAR共通構造） ----
+    # ---- v5 自信度判定: パーセンタイル閾値 + win_prob/gapゲート ----
     thresholds = CONFIDENCE_THRESHOLDS_JRA if is_jra else CONFIDENCE_THRESHOLDS_NAR
-    ss_gap_thresh = CONFIDENCE_SS_GAP_JRA if is_jra else CONFIDENCE_SS_GAP_NAR
-    ss_val_thresh = CONFIDENCE_SS_VALUE_JRA if is_jra else CONFIDENCE_SS_VALUE_NAR
 
-    # SS判定: スコア≥0.65 + 硬性条件(2/3) + オッズゲート
-    if score >= 0.65:
-        ml_match = wp_top_no == top_no
-        if eff_odds and eff_odds > 1.0 and wp > 0:
-            vr = wp / (1.0 / eff_odds)
-            value_ok = vr >= ss_val_thresh
-        else:
-            value_ok = True
-        gap_ok = gap >= ss_gap_thresh if len(sorted_h) >= 2 else True
-
-        conditions_met = sum([ml_match, value_ok, gap_ok])
-        if conditions_met >= 2:
-            # オッズゲート — 低オッズはS降格
-            if CONFIDENCE_ODDS_GATE_ENABLED:
-                if eff_odds is not None and eff_odds < CONFIDENCE_MIN_ODDS_SS:
-                    return "S", round(score, 3)
-            return "SS", round(score, 3)
-        else:
-            return "S", round(score, 3)
-
-    if score >= thresholds["S"]:
-        # オッズゲート — 超低オッズはA降格
-        if CONFIDENCE_ODDS_GATE_ENABLED:
-            if eff_odds is not None and eff_odds < CONFIDENCE_MIN_ODDS_S:
-                return "A", round(score, 3)
-        return "S", round(score, 3)
+    if score >= thresholds["SS"]:
+        level = "SS"
+    elif score >= thresholds["S"]:
+        level = "S"
     elif score >= thresholds["A"]:
-        return "A", round(score, 3)
+        level = "A"
     elif score >= thresholds["B"]:
-        return "B", round(score, 3)
+        level = "B"
     elif score >= thresholds["C"]:
-        return "C", round(score, 3)
-    elif score >= thresholds["D"]:
-        return "D", round(score, 3)
+        level = "C"
     else:
-        return "E", round(score, 3)
+        level = "D"
+
+    # v5 win_prob/gapゲート（市場フリー）
+    wp_gate_ss = CONFIDENCE_WP_GATE_SS_JRA if is_jra else CONFIDENCE_WP_GATE_SS_NAR
+    gap_gate_ss = CONFIDENCE_GAP_GATE_SS_JRA if is_jra else CONFIDENCE_GAP_GATE_SS_NAR
+    wp_gate_s = CONFIDENCE_WP_GATE_S_JRA if is_jra else CONFIDENCE_WP_GATE_S_NAR
+    gap_gate_s = CONFIDENCE_GAP_GATE_S_JRA if is_jra else CONFIDENCE_GAP_GATE_S_NAR
+
+    if level == "SS" and (wp < wp_gate_ss or gap < gap_gate_ss):
+        level = "S"
+    if level == "S" and (wp < wp_gate_s or gap < gap_gate_s):
+        level = "A"
+
+    return level, round(score, 3)
 
 
 # ============================================================

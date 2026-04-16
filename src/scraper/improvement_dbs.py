@@ -169,6 +169,10 @@ def build_bloodline_db(
     fallback_dist: Dict[str, Dict[Tuple[str, str], dict]] = defaultdict(
         lambda: defaultdict(lambda: {"wins": 0, "places": 0, "runs": 0})
     )
+    # 会場別集計: {sire_id: {(venue_code, bucket, surface): {wins, places, runs}}}
+    fallback_venue: Dict[str, Dict[Tuple[str, str, str], dict]] = defaultdict(
+        lambda: defaultdict(lambda: {"wins": 0, "places": 0, "runs": 0})
+    )
     for h in horses:
         # ID が空の場合は名前をキーとして代用
         s_key = _sire_key(h)
@@ -176,6 +180,11 @@ def build_bloodline_db(
         for r in getattr(h, "past_runs", []) or []:
             bucket = _distance_bucket(r.distance)
             key = (bucket, r.surface)
+            # course_id から venue_code を抽出
+            _vc = ""
+            _cid = getattr(r, "course_id", "") or ""
+            if _cid and "_" in _cid:
+                _vc = _cid.split("_")[0]
             for bid in (s_key, m_key):
                 if not bid:
                     continue
@@ -185,7 +194,20 @@ def build_bloodline_db(
                     rec["wins"] += 1
                 if r.finish_pos <= 3:
                     rec["places"] += 1
+                # 会場別にも集計
+                if _vc:
+                    vrec = fallback_venue[bid][(_vc, bucket, r.surface)]
+                    vrec["runs"] += 1
+                    if r.finish_pos == 1:
+                        vrec["wins"] += 1
+                    if r.finish_pos <= 3:
+                        vrec["places"] += 1
     for bid, buckets in fallback_dist.items():
+        for k, rec in buckets.items():
+            n = rec["runs"]
+            rec["win_rate"] = rec["wins"] / n if n else 0
+            rec["place_rate"] = rec["places"] / n if n else 0
+    for bid, buckets in fallback_venue.items():
         for k, rec in buckets.items():
             n = rec["runs"]
             rec["win_rate"] = rec["wins"] / n if n else 0
@@ -200,20 +222,49 @@ def build_bloodline_db(
             merged.update(web_data)  # web データが優先（より信頼性高い）
         return merged
 
+    def _build_venue_data(fb_key: str) -> dict:
+        """フォールバックから会場別データを構築"""
+        return dict(fallback_venue.get(fb_key, {}))
+
     result = {"sire": {}, "bms": {}}
+    # sire_id → sire_name の逆引きマップ（両キーで登録するため）
+    _sire_id_to_names: Dict[str, set] = defaultdict(set)
+    _mgs_id_to_names: Dict[str, set] = defaultdict(set)
+    for h in horses:
+        _sid = getattr(h, "sire_id", "") or ""
+        _sname = getattr(h, "sire", "") or ""
+        if _sid and _sname and _sid != _sname:
+            _sire_id_to_names[_sid].add(_sname)
+        _mid = getattr(h, "maternal_grandsire_id", "") or ""
+        _mname = getattr(h, "maternal_grandsire", "") or ""
+        if _mid and _mname and _mid != _mname:
+            _mgs_id_to_names[_mid].add(_mname)
+
     for h in horses:
         s = _sire_key(h)
         m = _mgs_key(h)
         if s:
-            result["sire"][s] = {
+            entry = {
                 "distance": _merge_dist(sire_distance.get(s, {}), s),
                 "course_condition": sire_cc.get(s, {}),
+                "venue_distance": _build_venue_data(s),
             }
+            result["sire"][s] = entry
+            # sire_idキーで登録した場合、sire_nameキーでも登録（参照側フォールバック用）
+            for alt_name in _sire_id_to_names.get(s, set()):
+                if alt_name not in result["sire"]:
+                    result["sire"][alt_name] = entry
         if m:
-            result["bms"][m] = {
+            entry = {
                 "distance": _merge_dist(bms_distance.get(m, {}), m),
                 "course_condition": bms_cc.get(m, {}),
+                "venue_distance": _build_venue_data(m),
             }
+            result["bms"][m] = entry
+            # mgs_idキーで登録した場合、mgs_nameキーでも登録
+            for alt_name in _mgs_id_to_names.get(m, set()):
+                if alt_name not in result["bms"]:
+                    result["bms"][alt_name] = entry
     return result
 
 

@@ -432,6 +432,51 @@ def _estimate_market_place3(odds: float) -> float:
 
 
 # ============================================================
+# 断層（gap）計算ユーティリティ
+# ============================================================
+
+def _find_first_gap(
+    all_evals: List["HorseEvaluation"],
+    min_gap: float = 2.5,
+    max_pos: int = 8,
+) -> tuple:
+    """composite順でソートし、最初の断層の(位置, サイズ)を返す。
+    位置=N は「N位とN+1位の間に断層がある」ことを意味する。
+    断層なしの場合は (None, 0) を返す。
+    """
+    sorted_evals = sorted(all_evals, key=lambda e: e.composite, reverse=True)
+    for i in range(1, min(len(sorted_evals), max_pos)):
+        g = (sorted_evals[i - 1].composite or 0) - (sorted_evals[i].composite or 0)
+        if g >= min_gap:
+            return i, g, sorted_evals
+    return None, 0, sorted_evals
+
+
+def _horse_gap_position(
+    eval_result: "HorseEvaluation",
+    all_evals: List["HorseEvaluation"],
+    gap_pos: int,
+    sorted_evals: List["HorseEvaluation"],
+) -> tuple:
+    """対象馬が断層の上か下か、断層からの距離を返す。
+    Returns: (is_above, distance_from_gap)
+      is_above: True=断層上, False=断層下
+      distance_from_gap: 断層位置からの距離（0=断層直上/直下）
+    """
+    hid = eval_result.horse.horse_id
+    rank = next(
+        (i + 1 for i, e in enumerate(sorted_evals) if e.horse.horse_id == hid),
+        len(sorted_evals),
+    )
+    is_above = rank <= gap_pos
+    if is_above:
+        distance = gap_pos - rank  # 0=断層直上
+    else:
+        distance = rank - gap_pos - 1  # 0=断層直下, 1=断層+1…
+    return is_above, distance, rank
+
+
+# ============================================================
 # I-1b: 特選穴馬スコア (Cohen's d ベース重み付き)
 # ============================================================
 
@@ -511,6 +556,31 @@ def calc_tokusen_score(
     if trend in (Trend.RAPID_UP, Trend.UP):
         score += 1.0
 
+    # --- 6. 断層ボーナス/ペナルティ (2026-04-13追加) ---
+    # 断層直下(+1~2)の☆: JRA単回収113%/NAR単回収165% → +3pt
+    # ML>>オッズ(2倍+)の☆: JRA複勝率11.7% → -3pt（地雷）
+    gap_pos, gap_size, sorted_ev = _find_first_gap(all_evals)
+    if gap_pos is not None:
+        is_above, dist, rank = _horse_gap_position(
+            eval_result, all_evals, gap_pos, sorted_ev
+        )
+        if not is_above and dist <= 1:
+            # 断層直下（+1～2位）→ ボーナス
+            score += 3.0
+
+    # ML vs オッズ乖離ペナルティ
+    odds = eval_result.horse.odds or eff_odds or 0
+    if odds > 0 and wp > 0:
+        odds_wp = 1.0 / odds * 0.8  # 控除率考慮
+        if odds_wp > 0:
+            ratio = wp / odds_wp
+            if ratio >= 2.0:
+                # MLがオッズの2倍以上高評価 = 市場に見放された馬 → ペナルティ
+                score -= 3.0
+            elif ratio >= 1.0 and ratio < 1.5:
+                # ML≒オッズ: 市場と合致 → 小ボーナス
+                score += 1.0
+
     return score
 
 
@@ -525,18 +595,24 @@ def calc_tokusen_kiken_score(
     is_jra: bool = True,
 ) -> float:
     """
-    特選危険馬スコア算出（ML×composite二重否定方式・JRA/NAR分離）
+    特選危険馬スコア算出 v2（win_prob絶対値ベース・JRA/NAR分離）
 
-    コンセプト: 「人気なのにMLもルールベースも低評価」の馬を特定。
-    2つの独立した評価軸が一致して「来ない」と言っている馬だけを捕捉。
+    v2改善(2026-04-13):
+      旧: 順位ベース(OR条件) → 複勝率33.2%（目標15%に遠く及ばず）
+      新: win_prob絶対値ベース + AND条件 → 複勝率19%前後（シミュレーション実証済み）
 
-    必須条件（JRA/NAR別閾値）:
-      ① 人気 ≤ pop_limit かつ odds < odds_limit（人気馬である）
-      ② win_prob_rank ≥ 頭数×ml_pct（MLが低評価）
-      ③ composite_rank ≥ 頭数×comp_pct（ルールベースも低評価）
+    コンセプト: 「人気なのに、MLの勝率予測が期待値の30%未満、かつcomposite下位25%」
+    の馬を特定。市場の評価とシステムの評価が大きく乖離している馬だけを捕捉。
 
-    JRA: ②③はOR条件（どちらか一方で通過。大頭数ANDは構造的矛盾）
-    NAR: ②③はAND条件（小頭数で両方一致が妥当。現行維持）
+    必須条件（JRA）:
+      ① 2-3番人気 かつ odds < 15倍（人気馬である。1番人気は除外 — 複勝率69.5%を否定するのは無理筋）
+      ② win_prob < 期待値 × 0.30（MLが「この人気にしてはありえないほど弱い」と判断）
+      ③ composite_rank ≥ 頭数×0.25（ルールベースも下位25%に低評価）
+      ②③はAND条件（両方必須）
+
+    必須条件（NAR）:
+      ① 1-3番人気 かつ odds < 10倍
+      ②③ 従来AND条件を維持
 
     追加スコア（必須条件通過後）:
       前走大敗（8着以下）      : +2pt
@@ -547,15 +623,18 @@ def calc_tokusen_kiken_score(
       長期休み明け（120日+）    : +1pt
 
     閾値: 合計 ≥ 3.0pt で × 確定
-    目標: × 印の勝率 < 5.0%、複勝率 < 15.0%
+    目標: × 印の勝率 < 5.0%、複勝率 < 20.0%（2-3番人気限定）
     """
     from config.settings import (
+        TOKUSEN_KIKEN_POP_MIN_JRA, TOKUSEN_KIKEN_POP_MIN_NAR,
         TOKUSEN_KIKEN_POP_LIMIT_JRA, TOKUSEN_KIKEN_POP_LIMIT_NAR,
         TOKUSEN_KIKEN_ODDS_LIMIT_JRA, TOKUSEN_KIKEN_ODDS_LIMIT_NAR,
+        TOKUSEN_KIKEN_WP_RATIO, TOKUSEN_KIKEN_EXPECTED_WP,
         TOKUSEN_KIKEN_ML_RANK_PCT_JRA, TOKUSEN_KIKEN_ML_RANK_PCT_NAR,
         TOKUSEN_KIKEN_COMP_RANK_PCT_JRA, TOKUSEN_KIKEN_COMP_RANK_PCT_NAR,
     )
 
+    pop_min = TOKUSEN_KIKEN_POP_MIN_JRA if is_jra else TOKUSEN_KIKEN_POP_MIN_NAR
     pop_limit = TOKUSEN_KIKEN_POP_LIMIT_JRA if is_jra else TOKUSEN_KIKEN_POP_LIMIT_NAR
     odds_limit = TOKUSEN_KIKEN_ODDS_LIMIT_JRA if is_jra else TOKUSEN_KIKEN_ODDS_LIMIT_NAR
     ml_pct = TOKUSEN_KIKEN_ML_RANK_PCT_JRA if is_jra else TOKUSEN_KIKEN_ML_RANK_PCT_NAR
@@ -566,7 +645,7 @@ def calc_tokusen_kiken_score(
     if n < 4:
         return 0.0
 
-    # ---- 必須条件①: 人気馬である（pop_limit以内 & odds_limit未満）----
+    # ---- 必須条件①: 人気馬である（pop_min～pop_limit & odds_limit未満）----
     eff_odds = eval_result.effective_odds
     if eff_odds is None or eff_odds >= odds_limit:
         return 0.0
@@ -579,50 +658,75 @@ def calc_tokusen_kiken_score(
         return 0.0
 
     if real_pop is not None:
-        if real_pop > pop_limit:
+        if real_pop < pop_min or real_pop > pop_limit:
             return 0.0
     elif real_odds is not None:
         # 実オッズはあるが人気なし → 実オッズベースで推定
         sorted_real = sorted([e.horse.odds for e in all_evals if e.horse.odds is not None])
         est_pop = sorted_real.index(real_odds) + 1 if real_odds in sorted_real else 99
-        if est_pop > pop_limit:
+        if est_pop < pop_min or est_pop > pop_limit:
             return 0.0
 
-    # ---- 必須条件②③: ML低評価 / composite低評価 ----
-    sorted_wp = sorted(all_evals, key=lambda e: e.win_prob, reverse=True)
-    rank_wp = next(
-        (
-            i + 1
-            for i, e in enumerate(sorted_wp)
-            if e.horse.horse_id == horse.horse_id
-        ),
-        n,
-    )
-    wp_threshold = max(3, int(n * ml_pct))  # 最低3位以下
-
-    sorted_comp = sorted(all_evals, key=lambda e: e.composite, reverse=True)
-    rank_comp = next(
-        (
-            i + 1
-            for i, e in enumerate(sorted_comp)
-            if e.horse.horse_id == horse.horse_id
-        ),
-        n,
-    )
-    comp_threshold = max(3, int(n * comp_pct))  # 最低3位以下
-
-    ml_low = rank_wp >= wp_threshold
-    comp_low = rank_comp >= comp_threshold
-
+    # ---- 必須条件② (JRA新方式): win_prob < 期待値 × WP_RATIO ----
+    # ---- 必須条件③: composite下位comp_pct% ----
     if is_jra:
-        # JRA: ML低評価 OR composite低評価（どちらか一方で通過）
-        # 大頭数ではAND条件が構造的に厳しすぎる（0.4%通過→機能不全）
-        if not (ml_low or comp_low):
-            return 0.0
+        # JRA v2: win_prob絶対値ベース + composite AND条件
+        wp = eval_result.win_prob or 0
+        pop_for_wp = real_pop if real_pop is not None else 3  # フォールバック
+        expected_wp = TOKUSEN_KIKEN_EXPECTED_WP.get(pop_for_wp, 0.10)
+        wp_threshold_abs = expected_wp * TOKUSEN_KIKEN_WP_RATIO
+
+        if wp >= wp_threshold_abs:
+            return 0.0  # MLの勝率が期待値の30%以上 → ×対象外
+
+        # composite下位チェック（AND条件）
+        # comp_pct=0.25 → rank >= n*0.25 で通過（上位25%未満のみ除外）
+        sorted_comp = sorted(all_evals, key=lambda e: e.composite, reverse=True)
+        rank_comp = next(
+            (i + 1 for i, e in enumerate(sorted_comp)
+             if e.horse.horse_id == horse.horse_id),
+            n,
+        )
+        comp_threshold = max(3, int(n * comp_pct))
+        if rank_comp < comp_threshold:
+            return 0.0  # composite上位 → ×対象外
     else:
-        # NAR: 現行維持（AND — 小頭数で両方一致が妥当）
-        if not (ml_low and comp_low):
-            return 0.0
+        # NAR v3 (2026-04-13改善): 断層+ML wp絶対値+comp下位 AND条件
+        # 分析結果: gap5++ML wp<6%+comp下位30% → 複勝率11.4%（旧18.9%から大幅改善）
+        # 1-3人気はwp<3%に厳格化（シミュレーションで1-3人気wp<6%は複勝率25-35%と高すぎた）
+        wp = eval_result.win_prob or 0
+        real_pop_nar = real_pop if real_pop is not None else 3
+
+        # 必須条件②: ML wp閾値（人気帯で分離）
+        if real_pop_nar <= 3:
+            # 1-3人気: wp<3%に厳格化（人気馬は相当MLが低くないと×にしない）
+            if wp >= 0.03:
+                return 0.0
+        else:
+            # 4-6人気: wp<6%（標準条件）
+            if wp >= 0.06:
+                return 0.0
+
+        # 必須条件③: composite下位30%
+        sorted_comp = sorted(all_evals, key=lambda e: e.composite, reverse=True)
+        rank_comp = next(
+            (i + 1 for i, e in enumerate(sorted_comp)
+             if e.horse.horse_id == horse.horse_id),
+            n,
+        )
+        comp_threshold_nar = max(3, int(n * 0.70))  # 上位70%以降 = 下位30%
+        if rank_comp < comp_threshold_nar:
+            return 0.0  # composite上位70% → ×対象外
+
+        # 必須条件④: 断層5pt以上の下にいること
+        gap_pos, gap_size, sorted_ev = _find_first_gap(all_evals, min_gap=5.0)
+        if gap_pos is not None:
+            is_above, _, _ = _horse_gap_position(
+                eval_result, all_evals, gap_pos, sorted_ev
+            )
+            if is_above:
+                return 0.0  # 断層上 → ×対象外
+        # 断層5pt+がない場合は従来のML+comp条件のみで通過
 
     # ---- 必須条件を全て通過 → 追加スコアリング ----
     score = 0.0

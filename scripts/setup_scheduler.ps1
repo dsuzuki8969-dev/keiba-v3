@@ -20,8 +20,8 @@ $Settings = New-ScheduledTaskSettingsSet `
 
 # ── 1. 予想生成タスク（毎朝6:00）────────────────────────────
 $PredictAction = New-ScheduledTaskAction `
-    -Execute "cmd.exe" `
-    -Argument "/c `"$ScriptDir\scripts\daily_predict.bat`"" `
+    -Execute "wscript.exe" `
+    -Argument "`"$ScriptDir\scripts\daily_predict_hidden.vbs`"" `
     -WorkingDirectory $ScriptDir
 
 $PredictTrigger = New-ScheduledTaskTrigger -Daily -At "06:00"
@@ -39,8 +39,8 @@ Write-Host "OK: DAI_Keiba_Predict (daily 06:00)" -ForegroundColor Green
 
 # ── 2. 結果照合タスク（毎夜22:00）───────────────────────────
 $ResultsAction = New-ScheduledTaskAction `
-    -Execute "cmd.exe" `
-    -Argument "/c `"$ScriptDir\scripts\daily_results.bat`"" `
+    -Execute "wscript.exe" `
+    -Argument "`"$ScriptDir\scripts\daily_results_hidden.vbs`"" `
     -WorkingDirectory $ScriptDir
 
 $ResultsTrigger = New-ScheduledTaskTrigger -Daily -At "22:00"
@@ -58,8 +58,8 @@ Write-Host "OK: DAI_Keiba_Results (daily 22:00)" -ForegroundColor Green
 
 # ── 3. 日次メンテナンス（毎夜23:00）─────────────────────────
 $MaintAction = New-ScheduledTaskAction `
-    -Execute "cmd.exe" `
-    -Argument "/c `"$ScriptDir\scripts\daily_maintenance.bat`"" `
+    -Execute "wscript.exe" `
+    -Argument "`"$ScriptDir\scripts\daily_maintenance_hidden.vbs`"" `
     -WorkingDirectory $ScriptDir
 
 $MaintTrigger = New-ScheduledTaskTrigger -Daily -At "23:00"
@@ -77,8 +77,8 @@ Write-Host "OK: DAI_Keiba_Maintenance (daily 23:00)" -ForegroundColor Green
 
 # ── 4. 翌日予想生成タスク（毎夕17:00）─────────────────────────
 $PredictTomorrowAction = New-ScheduledTaskAction `
-    -Execute "cmd.exe" `
-    -Argument "/c `"$ScriptDir\scripts\daily_predict_tomorrow.bat`"" `
+    -Execute "wscript.exe" `
+    -Argument "`"$ScriptDir\scripts\daily_predict_tomorrow_hidden.vbs`"" `
     -WorkingDirectory $ScriptDir
 
 $PredictTomorrowTrigger = New-ScheduledTaskTrigger -Daily -At "17:00"
@@ -103,8 +103,8 @@ $DashSettings = New-ScheduledTaskSettingsSet `
     -RestartInterval (New-TimeSpan -Minutes 1)
 
 $DashAction = New-ScheduledTaskAction `
-    -Execute "cmd.exe" `
-    -Argument "/c `"$ScriptDir\scripts\start_dashboard.bat`"" `
+    -Execute "wscript.exe" `
+    -Argument "`"$ScriptDir\scripts\start_dashboard_hidden.vbs`"" `
     -WorkingDirectory $ScriptDir
 
 $DashTrigger = New-ScheduledTaskTrigger -AtLogon
@@ -121,10 +121,7 @@ Register-ScheduledTask `
 Write-Host "OK: DAI_Keiba_Dashboard (at logon, auto-restart)" -ForegroundColor Green
 
 # ── 6. Watchdog (every 5 min: dashboard + cloudflared) ──
-$WatchdogBat = "$ScriptDir\scripts\watchdog_check.bat"
-$WatchdogText = "@echo off`r`nchcp 65001 > NUL`r`ncd /d `"c:\Users\dsuzu\keiba\keiba-v3`"`r`n`r`nREM Dashboard check`r`nnetstat -an | find `"0.0.0.0:5051`" | find `"LISTENING`" > NUL 2>&1`r`nif %errorlevel% neq 0 (`r`n    echo [%date% %time%] Dashboard down, restarting... >> data\watchdog.log`r`n    start `"D-AI-Dashboard-WD`" python src\dashboard.py`r`n)`r`n`r`nREM cloudflared check`r`nsc query cloudflared | find `"RUNNING`" > NUL 2>&1`r`nif %errorlevel% neq 0 (`r`n    echo [%date% %time%] cloudflared down, restarting... >> data\watchdog.log`r`n    net start cloudflared > NUL 2>&1`r`n)"
-[System.IO.File]::WriteAllText($WatchdogBat, $WatchdogText)
-Write-Host "  watchdog_check.bat generated" -ForegroundColor Gray
+# watchdog_check.bat は scripts/ に直接管理。動的生成しない
 
 $WdSettings = New-ScheduledTaskSettingsSet `
     -ExecutionTimeLimit (New-TimeSpan -Minutes 2) `
@@ -132,8 +129,8 @@ $WdSettings = New-ScheduledTaskSettingsSet `
     -MultipleInstances IgnoreNew
 
 $WdAction = New-ScheduledTaskAction `
-    -Execute "cmd.exe" `
-    -Argument "/c `"$ScriptDir\scripts\watchdog_check.bat`"" `
+    -Execute "wscript.exe" `
+    -Argument "`"$ScriptDir\scripts\watchdog_check_hidden.vbs`"" `
     -WorkingDirectory $ScriptDir
 
 $WdTrigger = New-ScheduledTaskTrigger -Once -At "00:00" -RepetitionInterval (New-TimeSpan -Minutes 5)

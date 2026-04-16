@@ -1,113 +1,87 @@
-# Windows11での使い方（超簡単版）
+# Windows11での使い方
 
-## 📌 必要なもの
+## 必要なもの
 - Windows11
+- Python 3.11+
 - インターネット接続
-- それだけ！
 
 ---
 
-## 🚀 ステップ1: 準備（初回のみ）
+## ステップ1: 環境セットアップ（初回のみ）
 
-### 1-1: ファイルを解凍
-`keiba-v3-final.zip` を解凍して `keiba-v3` フォルダを作る
-
-### 1-2: setup.batを実行
+### 1-1: setup.batを実行
 `setup.bat` をダブルクリック
-→ 自動的にPythonパッケージがインストールされます
+→ Pythonパッケージが自動インストールされます
+
+### 1-2: 認証情報セットアップ
+```
+python src/setup_credentials.py
+```
+→ netkeiba/競馬ブックのログイン情報を設定
+
+### 1-3: DB構築
+```
+python build_horse_db.py
+```
+→ 馬DB・基準タイムDBを構築（数分〜数十分）
 
 ---
 
-## 📊 ステップ2: データベース構築（初回のみ）
+## ステップ2: タスクスケジューラ登録
 
-### 2-1: build_db.batを実行
-`build_db.bat` をダブルクリック
+管理者権限のPowerShellで:
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\setup_scheduler.ps1
+```
 
-**何が起こるか:**
-- netkeibaから過去のG1レース結果を取得
-- 基準タイムDBを自動作成
-- 数分かかります
+以下のタスクが自動登録されます:
+| タスク | 時刻 | 内容 |
+|--------|------|------|
+| DAI_Keiba_Predict | 06:00 | 当日予想生成 |
+| DAI_Keiba_Predict_Tomorrow | 17:00 | 翌日予想生成 |
+| DAI_Keiba_Results | 22:00 | 結果照合 |
+| DAI_Keiba_Maintenance | 23:00 | メンテナンス |
+| DAI_Keiba_Dashboard | ログオン時 | ダッシュボード常駐 |
+| DAI_Keiba_Watchdog | 5分間隔 | 監視・自動再起動 |
 
-**結果:**
-- `data/standard_times.csv` が作成されます
+※ 全タスクはウィンドウ非表示で実行されます
 
 ---
 
-## 🏇 ステップ3: デモ実行
+## ステップ3: 手動実行
 
-### 3-1: demo.batを実行（まだ無い場合は後で作ります）
-または、コマンドプロンプトで:
+### 予想生成（日付指定）
 ```
-python demo.py
+python run_analysis_date.py 2026-04-12
 ```
 
-**結果:**
-- `keiba_demo.html` が作成されます
-- ブラウザで開いて確認！
+### ダッシュボード起動
+```
+python src/dashboard.py
+```
+→ http://localhost:5051 でアクセス
+
+### モデル再学習
+```
+python retrain_all.py
+```
 
 ---
 
-## 🎯 ステップ4: 実際のレース分析
-
-### 4-1: netkeibaでレースIDを確認
-例: https://race.netkeiba.com/race/result.html?race_id=202506021011
-                                                        ^^^^^^^^^^^^
-                                                        これがレースID
-
-### 4-2: analyze.batを実行（まだ無い場合は後で作ります）
-または、コマンドプロンプトで:
-```
-python analyze.py
-```
-
-レースIDを入力:
-```
-レースIDを入力してください: 202506021011
-```
-
-**結果:**
-- `keiba_202506021011.html` が作成されます
-
----
-
-## ❓ トラブルシューティング
-
-### エラー: 'python' は、内部コマンドまたは外部コマンド...
-**解決策:**
-1. Pythonがインストールされていません
-2. Microsoft StoreでPythonをインストール
-3. もう一度 `setup.bat` を実行
+## トラブルシューティング
 
 ### エラー: ModuleNotFoundError
-**解決策:**
 ```
 python -m pip install -r requirements.txt
 ```
 
-### データベース構築が失敗する
-**解決策:**
-1. インターネット接続を確認
-2. netkeibaにアクセスできるか確認
-3. しばらく待ってから再実行
-
----
-
-## 📁 作成されるファイル
-
+### ダッシュボードが起動しない
+ポート5051が既に使用中の場合:
 ```
-keiba-v3/
-├── build_db.bat          ← これをダブルクリック（DB構築）
-├── demo.py               ← デモ実行
-├── analyze.py            ← レース分析
-└── data/
-    └── standard_times.csv  ← 自動作成されるDB
+netstat -an | find "5051"
 ```
 
----
-
-## 🎉 完了！
-
-あとは `demo.py` や `analyze.py` を使って
-競馬予想を楽しんでください！
-
-**Good Luck! 🏇**
+### タスクスケジューラの状態確認
+```powershell
+Get-ScheduledTask -TaskName "DAI_Keiba_*" | Select TaskName, State
+```

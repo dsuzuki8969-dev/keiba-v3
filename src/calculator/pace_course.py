@@ -804,6 +804,7 @@ class PaceDeviationCalculator:
         field_baseline_override: Optional[float] = None,
         override_position: Optional[float] = None,
         override_pos_1c: Optional[float] = None,
+        field_style_distribution: Optional[Dict[str, int]] = None,
     ) -> PaceDeviation:
         """
         PaceDeviationを算出する
@@ -815,6 +816,7 @@ class PaceDeviationCalculator:
             pace_context: {"n_front": int, "front_ratio": float} (ML推定用)
             field_baseline_override: 出走馬のest_last3f平均（DBにデータがない場合に使用）
             override_position: フィールド正規化済みの推定位置（0.0-1.0）
+            field_style_distribution: 改善2用 脚質分布 {"逃げ": N, "先行": N, "差し": N, "追込": N}
         """
         basic_style = style_info.get("basic", RunningStyle.SENKOU)
         last3f_type = style_info.get("last3f_type", "安定中位末脚")
@@ -913,8 +915,11 @@ class PaceDeviationCalculator:
         # sec_per_rank でスケーリング（ダートで強く、芝で控えめに効く）
         _traj_for_penalty = _trajectory_1c_4c if _trajectory_1c_4c != 0.0 else _pos_trend
         _trajectory_penalty = _traj_for_penalty * sec_per_rank * 12.0
-        # Phase 9B: ±0.35→±0.80 に拡大（大幅下降馬を正しく補正）
-        _trajectory_penalty = max(-0.80, min(0.80, _trajectory_penalty))
+        # Phase 10: 非対称クランプ — 下がる馬は大ペナルティ、上がる馬は控えめボーナス
+        if _trajectory_penalty > 0:  # 下がる馬（ペナルティ方向）
+            _trajectory_penalty = min(3.0, _trajectory_penalty)
+        else:  # 上がる馬（ボーナス方向）
+            _trajectory_penalty = max(-1.5, _trajectory_penalty)
 
         # 推定ゴール差（軌跡補正込み）
         goal_diff = (baseline_last3f - est_last3f) - position_sec - _trajectory_penalty
@@ -952,12 +957,42 @@ class PaceDeviationCalculator:
         pos_balance = self._calc_position_balance(
             est_position, last3f_type, pace_type, course,
             pos_trend_delta=_pos_trend,
+            last3f_cv=last3f_cv,  # 改善4: 末脚安定性を❷に組み込み
         )
-        course_style_bias = self._calc_course_style_bias(course, basic_style)
+        course_style_bias = self._calc_course_style_bias(
+            course, basic_style,
+            field_style_distribution=field_style_distribution,  # 改善2: 脚質分布相対化
+        )
 
         # 表示用running_styleはest_position（ML予測 or ルールベース推定）から導出
         # basic_style（過去走の着順ベース）はcornerデータ不在時に不正確なため
         display_style = _rel_pos_to_style(est_position)
+
+        # Phase 10 + 改善3: 軌跡方向スコア（1角→4角の位置変化に基づく大幅補正）
+        from config.settings import PACE_TRAJECTORY_FIX_ENABLED
+        _pos_1c_for_traj = override_pos_1c if override_pos_1c is not None else None
+        if _pos_1c_for_traj is None and horse is not None:
+            # フォールバック: 過去走トレンドから1角位置を推定
+            _pos_1c_for_traj = est_position - _pos_trend if _pos_trend != 0.0 else None
+        trajectory_score = 0.0
+        if _pos_1c_for_traj is not None and est_position is not None:
+            # 改善3: 正規化後の差分が微小(< 0.03)の場合、過去走トレンドを優先
+            if PACE_TRAJECTORY_FIX_ENABLED:
+                if abs(est_position - _pos_1c_for_traj) < 0.03 and _pos_trend != 0.0:
+                    _pos_1c_for_traj = est_position - _pos_trend
+            trajectory_score = self._calc_trajectory_score(
+                _pos_1c_for_traj, est_position, pace_type
+            )
+
+        # Phase 10: 未出走馬の展開偏差値キャップ
+        num_runs = len(horse.past_runs or []) if horse is not None else 0
+        if num_runs == 0:
+            # 未出走: 全コンポーネントを中立に強制
+            base_score = min(base_score, 50.0)
+            last3f_eval = 0.0
+            pos_balance = 0.0
+            course_style_bias = min(course_style_bias, 0.0)
+            trajectory_score = 0.0
 
         result = PaceDeviation(
             base_score=base_score,
@@ -966,10 +1001,16 @@ class PaceDeviationCalculator:
             gate_bias=gate_bias,
             course_style_bias=course_style_bias,
             jockey_pace=jockey_pace_score,
+            trajectory_score=trajectory_score,
             estimated_position_4c=est_position,
             estimated_last3f=est_last3f,
             running_style=display_style,
         )
+
+        # 少走馬（1-2走）: total が 55.0 を超えないようクランプ
+        if 1 <= num_runs <= 2 and result.total > 55.0:
+            result.norm_adjustment -= (result.total - 55.0)
+
         return result
 
     def _calc_pos_trend_delta(self, horse) -> float:
@@ -1069,12 +1110,15 @@ class PaceDeviationCalculator:
 
     def _calc_last3f_score(self, last3f_type: str, pace: PaceType,
                            last3f_cv: float = 0.0) -> float:
-        """❶末脚評価 (-8〜+8)
+        """❶末脚評価
 
+        改善6: レンジを -12~+12 → -6~+6 に縮小（能力因子との二重計上解消）
         案F-3: 末脚安定性（変動係数 CV = σ/mean）を考慮
         - CV低（安定末脚）はボーナス
         - CV高（ムラ型末脚）はペナルティ
         """
+        from config.settings import PACE_LAST3F_RANGE_HALVED
+
         type_score = {
             "爆発末脚": 7,
             "堅実末脚": 3,
@@ -1089,10 +1133,6 @@ class PaceDeviationCalculator:
             type_score = min(5, type_score + 4)  # スローなら前有利
 
         # 案F-3: 末脚安定性補正 (-2〜+2)
-        # CV < 0.03: 非常に安定 → +2
-        # CV 0.03〜0.06: 安定 → +1
-        # CV 0.06〜0.10: 普通 → 0
-        # CV > 0.10: ムラ型 → -1〜-2
         if last3f_cv > 0:
             if last3f_cv < 0.03:
                 stability_bonus = 2.0
@@ -1106,19 +1146,27 @@ class PaceDeviationCalculator:
                 stability_bonus = -2.0
             type_score += stability_bonus
 
+        # 改善6: レンジ縮小（能力因子のlast3f偏差値との二重計上を軽減）
+        if PACE_LAST3F_RANGE_HALVED:
+            return max(-6, min(6, float(type_score)))
         return max(-12, min(12, float(type_score)))
 
     def _calc_position_balance(self, pos: float, last3f_type: str, pace: PaceType,
                                 course: Optional[CourseMaster] = None,
-                                pos_trend_delta: float = 0.0) -> float:
-        """❷位置取り×末脚バランス (-8〜+8)
+                                pos_trend_delta: float = 0.0,
+                                last3f_cv: float = 0.0) -> float:
+        """❷位置取り×末脚バランス (-12〜+12)
 
         コース構造と通過順トレンドを反映:
         - 短直線(l3f_straight_pct低)→ハイペース×後方の恩恵が減る(届かない)
         - 長直線(l3f_straight_pct高)→ハイペース×後方の恩恵が増す(届く)
         - 急坂→前が止まりやすく差し有利度UP
         - 通過順トレンド→上昇中(前に行けている)=やや有利 / 下降中=やや不利
+        改善4: last3f_cv で末脚安定性をバランス計算に組み込み（共線性解消）
+        改善5: NAR坂データ不足時のフォールバック追加
         """
+        from config.settings import PACE_NAR_POSITION_FIX_ENABLED, PACE_MERGE_LAST3F_INTO_BALANCE
+
         # ペース強度: H=2.0, M=1.0, S=0.0
         pace_strength = {
             PaceType.H: 2.0,
@@ -1135,7 +1183,6 @@ class PaceDeviationCalculator:
         }.get(last3f_type, 0.0)
 
         # コース構造による補正係数
-        # 直線比率: 長直線→差し追込の恩恵UP / 短直線→恩恵DOWN
         l3f_pct = 0.55  # デフォルト（中程度）
         l3f_elev = 0.0
         if course is not None:
@@ -1143,35 +1190,46 @@ class PaceDeviationCalculator:
             l3f_elev = getattr(course, "l3f_elevation", 0.0)
 
         # 直線比率による差し追込の到達可能性倍率 (0.5〜1.3)
-        # pct=0.33(浦和)→0.6倍, pct=0.55(中山)→1.0倍, pct=0.88(東京)→1.3倍
         reach_mult = 0.6 + (l3f_pct - 0.33) * (0.7 / 0.55)
         reach_mult = max(0.5, min(1.3, reach_mult))
 
         # 急坂による前崩れ補正 (0.0〜0.3)
         hill_bonus = 0.0
         if l3f_elev >= 1.5:
-            hill_bonus = 0.3  # 急坂で前が止まりやすい→差し追い込み有利度UP
+            hill_bonus = 0.3
         elif l3f_elev >= 0.8:
             hill_bonus = 0.15
+        elif PACE_NAR_POSITION_FIX_ENABLED and l3f_elev == 0.0 and course is not None:
+            # 改善5: NAR坂データ不足フォールバック
+            # 坂データなし → コーナー数で前残り度を代替推定
+            _is_jra = getattr(course, 'is_jra', True)
+            if not _is_jra:
+                l3f_corners = getattr(course, 'l3f_corners', 1) or 1
+                if l3f_corners >= 2 and pos <= 0.4:
+                    # コーナー多い=小回り=前有利（坂の代替指標）
+                    hill_bonus = 0.15
 
-        # 通過順トレンド補正（全分岐共通）: 上昇中(負)=やや有利 / 下降中(正)=やや不利
-        _trend_adj = -pos_trend_delta * 18.0  # ±0.08 * 18 = ±1.44pt
+        # 通過順トレンド補正（全分岐共通）: 上昇中(負)=有利 / 下降中(正)=不利
+        _trend_adj = -pos_trend_delta * 40.0
 
         # ── ハイペース × 後方待機 × 末脚型 ──
         if pace_strength >= 1.5 and last3f_fitness > 0:
             rear_factor = max(0.0, (pos - 0.3) / 0.7)
-            # reach_mult: 短直線では差し効果が薄い / 長直線では増幅
-            # hill_bonus: 急坂で前が止まる分、差し追込の恩恵が上乗せ
             score = pace_strength * last3f_fitness * rear_factor * 4.0
             score *= reach_mult
             score += hill_bonus * rear_factor * pace_strength * 2.0
             score += _trend_adj
+            # 改善4: 末脚安定性補正
+            if PACE_MERGE_LAST3F_INTO_BALANCE and last3f_cv > 0:
+                if last3f_cv > 0.10 and pos >= 0.6:
+                    score -= min(2.0, (last3f_cv - 0.10) * 15.0)
+                elif last3f_cv < 0.04 and pos >= 0.5:
+                    score += min(1.5, (0.04 - last3f_cv) * 30.0)
             return max(-12.0, min(12.0, score))
 
         # ── スロー × 追い込み（不利）: 前方分岐より先に評価 ──
         if pace_strength <= 1.0 and pos >= 0.65 and last3f_fitness < 0:
             rear_penalty = (pos - 0.65) / 0.35
-            # 短直線ではさらに不利（届かない）
             penalty_mult = 1.0 + (1.0 - reach_mult) * 0.5
             score = -rear_penalty * 5.0 * (1.0 - pace_strength) * penalty_mult
             score += _trend_adj
@@ -1181,10 +1239,8 @@ class PaceDeviationCalculator:
         if pace_strength <= 0.5:
             front_factor = max(0.0, (0.4 - pos) / 0.4)
             style_bonus = 0.5 if last3f_fitness < 0 and pos <= 0.4 else 0.0
-            # 短直線ではスロー前残りの恩恵が大きい
-            front_mult = 1.0 + (1.0 - l3f_pct) * 0.5  # pct低い→前残り有利度UP
+            front_mult = 1.0 + (1.0 - l3f_pct) * 0.5
             score = (front_factor + style_bonus) * 5.0 * front_mult
-            # 下り坂コース（京都）はさらに前残りやすい
             if l3f_elev <= -0.3:
                 score += front_factor * 1.5
             score += _trend_adj
@@ -1194,7 +1250,21 @@ class PaceDeviationCalculator:
         if pace == PaceType.M and pos >= 0.5 and last3f_fitness > 0.5:
             score = min(5.0, last3f_fitness * 3.0 * reach_mult)
             score += _trend_adj
+            # 改善4: 中間ペースでも末脚安定性を反映
+            if PACE_MERGE_LAST3F_INTO_BALANCE and last3f_cv > 0:
+                if last3f_cv < 0.04:
+                    score += min(1.0, (0.04 - last3f_cv) * 20.0)
             return max(-12.0, min(12.0, score))
+
+        # 改善5: 全分岐不該当時のデフォルトスコア（NAR対策）
+        # 従来: トレンド補正のみ → NAR94.3%ゼロ
+        # 改善: ペース強度×位置取り×末脚適性の基本スコアを算出
+        if PACE_NAR_POSITION_FIX_ENABLED:
+            base_pb = (pace_strength - 1.0) * (pos - 0.5) * last3f_fitness * 3.0
+            base_pb *= reach_mult
+            base_pb += _trend_adj
+            if abs(base_pb) > 0.5:
+                return max(-12.0, min(12.0, base_pb))
 
         # どの分岐にも該当しない場合: トレンド補正のみ
         if abs(_trend_adj) > 0.01:
@@ -1202,15 +1272,44 @@ class PaceDeviationCalculator:
 
         return 0.0
 
-    def _calc_course_style_bias(self, course: CourseMaster, style: RunningStyle) -> float:
-        """❹コース脚質バイアス (-5〜+5)
+    def _calc_trajectory_score(self, pos_1c: float, pos_4c: float, pace: PaceType) -> float:
+        """❻位置取り変化方向スコア（-10〜+5）
+
+        下がる馬（前方→後方）: 大ペナルティ — 逃げて交わされる馬はノーチャンス
+        上がる馬（後方→前方）: ボーナス — 差し追込で前に来る馬を高評価
+        """
+        delta = pos_4c - pos_1c  # 正=下がる（前→後）、負=上がる（後→前）
+
+        if delta > 0.02:  # 下がる馬（閾値0.02で微小変化は無視）
+            # 非線形ペナルティ: 少し下がる→-2, 大崩れ→-10
+            # delta 0.1 → -2, delta 0.3 → -6, delta 0.5+ → -10
+            penalty = -min(10.0, delta * 20.0)
+            # スローペースで下がるのは致命的（展開利がないのに下がる）
+            if pace == PaceType.S:
+                penalty *= 1.3
+            return max(-10.0, penalty)
+        elif delta < -0.02:  # 上がる馬
+            # ボーナス: 控えめ（上がれば勝てるわけではない）
+            bonus = min(5.0, abs(delta) * 12.0)
+            # ハイペースで上がるのは展開利 → ボーナス増幅
+            if pace == PaceType.H:
+                bonus *= 1.3
+            return min(5.0, bonus)
+        return 0.0
+
+    def _calc_course_style_bias(self, course: CourseMaster, style: RunningStyle,
+                                field_style_distribution: Optional[Dict[str, int]] = None) -> float:
+        """❹コース脚質バイアス (-8〜+8)
 
         残り600m地点データを活用:
         - l3f_corners: コーナー多い→前有利（差しが物理的に届かない）
         - l3f_straight_pct: 直線比率高い→差し有利（加速スペースがある）
         - l3f_elevation: 急坂→逃げ先行不利（スタミナ消耗で止まる）
         - l3f_corner_m: コーナー区間が長い→内枠前有利
+        改善2: レース内脚質分布を考慮した相対化補正
         """
+        from config.settings import PACE_FIELD_STYLE_RELATIVE
+
         score = 0.0
         is_front = style in (RunningStyle.NIGASHI, RunningStyle.SENKOU)
         is_rear = style in (RunningStyle.SASHIKOMI, RunningStyle.OIKOMI)
@@ -1278,6 +1377,28 @@ class PaceDeviationCalculator:
             score += 1.0  # スパイラルカーブ出口でバラけ差し有利
         elif course.corner_type == "大回り" and is_rear:
             score += 0.5  # 大回りはスピード維持して追込可能
+
+        # 改善2: レース内脚質分布による相対化補正
+        # 先行馬が多い → ペースが流れやすく差し有利 / 差し馬が多い → スロー前残り
+        if PACE_FIELD_STYLE_RELATIVE and field_style_distribution:
+            n_total = sum(field_style_distribution.values())
+            if n_total >= 4:  # 少頭数すぎると分布が無意味
+                n_front_runners = (field_style_distribution.get("逃げ", 0)
+                                   + field_style_distribution.get("先行", 0))
+                front_ratio = n_front_runners / n_total
+
+                if front_ratio >= 0.50 and is_rear:
+                    # 逃げ先行馬が半数以上 → ペース流れやすく差し有利
+                    score += min(3.0, (front_ratio - 0.50) * 10.0)
+                elif front_ratio >= 0.50 and is_front:
+                    # 先行馬だらけ → 競り合い消耗で先行不利
+                    score -= min(2.0, (front_ratio - 0.50) * 6.0)
+                elif front_ratio <= 0.30 and is_front:
+                    # 差し追込馬が多い → スローペースで前残り
+                    score += min(2.0, (0.30 - front_ratio) * 8.0)
+                elif front_ratio <= 0.30 and is_rear:
+                    # ペースが流れない → 差し届かない
+                    score -= min(1.5, (0.30 - front_ratio) * 5.0)
 
         return max(-8.0, min(8.0, score))
 

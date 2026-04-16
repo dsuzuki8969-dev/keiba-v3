@@ -388,6 +388,9 @@ class Horse:
     # 調教師の所属（美浦・栗東・大井・船橋 etc. 出馬表から取得）
     trainer_affiliation: str = ""
 
+    # 馬主ID（勝負服画像用）
+    owner_id: str = ""
+
     # データ取得元 ("netkeiba"/"official"/"keibabook"/"rakuten")
     source: str = ""
 
@@ -583,6 +586,7 @@ class PaceDeviation:
     gate_bias: float = 0.0  # ❸枠順バイアス(-8〜+8)
     course_style_bias: float = 0.0  # ❹コース脚質バイアス(-8〜+8)
     jockey_pace: float = 0.0  # ❺騎手展開影響(-6〜+6) H-3から
+    trajectory_score: float = 0.0  # ❻軌跡方向スコア(-10〜+5) 下がる馬=大ペナ、上がる馬=ボーナス
     ai_adjustment: float = 0.0  # AI層調整(±18pt)
     norm_adjustment: float = 0.0  # フィールド内正規化補正（実行時に設定）
 
@@ -602,6 +606,7 @@ class PaceDeviation:
             + self.gate_bias
             + self.course_style_bias
             + self.jockey_pace
+            + self.trajectory_score
             + self.ai_adjustment
             + self.norm_adjustment
         )
@@ -634,18 +639,21 @@ class AbilityDeviation:
     class_adjustment: float = 0.0  # クラス落差補正 (-2〜+2 pt)
     bloodline_adj: float = 0.0  # 血統×距離×馬場補正 (-5.0〜+5.0 pt)
     norm_adjustment: float = 0.0  # フィールド内正規化 + MLフィードバック補正（実行時に設定）
+    surface_switch_adj: float = 0.0  # 芝ダ転換補正 (-4.0〜+6.0 pt)
+    is_surface_switch: bool = False  # 異馬場転向馬フラグ（同馬場走0 → 異馬場走で推定）
     sire_breakdown: dict = field(default_factory=dict)  # 父馬 surface×SMILE 別複勝率
     run_records: List[Tuple[PastRun, float, Optional[float]]] = field(default_factory=list)
     # [(PastRun, deviation: float, std_time: float | None), ...] 計算に使った走と走破偏差値
 
     @property
     def total(self) -> float:
-        """C-3: 能力偏差値 = MAX×α + WA×(1-α) + クラス落差補正 + 正規化補正"""
+        """C-3: 能力偏差値 = MAX×α + WA×(1-α) + クラス落差補正 + 正規化補正 + 転換補正"""
         v = (
             self.max_dev * self.alpha
             + self.wa_dev * (1 - self.alpha)
             + self.class_adjustment
             + self.norm_adjustment
+            + self.surface_switch_adj
         )
         from config.settings import DEVIATION
 
@@ -722,7 +730,16 @@ class HorseEvaluation:
         from config.settings import DEVIATION, get_composite_weights
         from src.scraper.improvement_dbs import calc_weight_change_adjustment
 
-        w = get_composite_weights(self.venue_name)
+        # 改善1: レース条件を渡して条件別ペースウェイト動的調整
+        _surface = getattr(self, "_race_surface", None)
+        _field_size = getattr(self, "_race_field_size", None)
+        _distance = getattr(self, "_race_distance", None)
+        w = get_composite_weights(
+            self.venue_name,
+            surface=_surface,
+            field_size=_field_size,
+            distance=_distance,
+        )
         # 調教偏差値 → 好調ボーナス係数（不調ペナルティなし）
         # バックテスト検証済み: asym(up=0.006, dn=0.000) が複勝率+0.4pp/単ROI+0.8pp
         jdev = getattr(self, "_jockey_dev", None)

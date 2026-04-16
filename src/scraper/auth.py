@@ -427,90 +427,155 @@ class TrainingScraper:
         Returns:
             {horse_id: [TrainingRecord]}
         """
+        id_map, _ = self._fetch_both(race_id)
+        return id_map
+
+    def fetch_with_names(self, race_id: str, is_jra: bool = True) -> tuple:
+        """
+        レースの全出走馬の調教データをhorse_id/horse_name両方で返す。
+        NAR時はnar.netkeiba.comもフォールバック試行。
+
+        Returns:
+            ({horse_id: [TrainingRecord]}, {horse_name: [TrainingRecord]})
+        """
+        id_map, name_map = self._fetch_both(race_id)
+        # NAR でデータ0件の場合、nar.netkeiba.com を試行
+        if not id_map and not is_jra:
+            try:
+                nar_url = "https://nar.netkeiba.com/race/oikiri.html"
+                soup = self.client.get(nar_url, params={"race_id": race_id}, use_cache=False)
+                if soup:
+                    id_map, name_map = self._parse_soup(soup)
+            except Exception:
+                logger.debug("NAR oikiri fetch failed", exc_info=True)
+        return id_map, name_map
+
+    def _fetch_both(self, race_id: str) -> tuple:
+        """oikiri.htmlを取得してパース。(id_map, name_map)を返す。"""
         url = f"{TRAINING_URL}"
         soup = self.client.get(url, params={"race_id": race_id}, use_cache=False)
         if not soup:
-            return {}
+            return {}, {}
+        return self._parse_soup(soup)
 
-        result = {}
+    def _parse_soup(self, soup) -> tuple:
+        """OikiriTable/Training_Tableをパースして (id_map, name_map) を返す。"""
+        id_map = {}
+        name_map = {}
         for row in soup.select("table.OikiriTable tr, table.Training_Table tr"):
             try:
                 data = self._parse_row(row)
                 if not data:
                     continue
                 hid = data.pop("horse_id", "")
+                hname = data.pop("horse_name", "")
+                rec = TrainingRecord(**data)
                 if hid:
-                    result.setdefault(hid, []).append(TrainingRecord(**data))
+                    id_map.setdefault(hid, []).append(rec)
+                if hname:
+                    name_map.setdefault(hname, []).append(rec)
             except Exception:
                 logger.debug("training row parse failed", exc_info=True)
                 continue
-
-        return result
+        return id_map, name_map
 
     def _parse_row(self, row) -> Optional[dict]:
         cells = row.select("td")
-        if len(cells) < 5:
+        if len(cells) < 10:
             return None
 
-        # 馬IDの取得
-        horse_link = row.select_one("a[href*='/horse/']")
+        # 馬IDと馬名の取得（td[3] Horse_Info内のリンク）
+        horse_info = row.select_one("td.Horse_Info")
+        if not horse_info:
+            return None
+        horse_link = horse_info.select_one("a[href*='/horse/']")
         if not horse_link:
             return None
         m = re.search(r"/horse/([A-Za-z]?\d+)", horse_link.get("href", ""))
         horse_id = m.group(1) if m else ""
+        horse_name = horse_link.get_text(strip=True)
 
-        # 調教日
-        date_cell = cells[0].get_text(strip=True)
-        dm = re.search(r"(\d{1,2})/(\d{1,2})", date_cell)
-        if not dm:
+        # 調教日（td[4] Training_Day: "2026/02/25(火)"）
+        day_td = row.select_one("td.Training_Day")
+        if not day_td:
             return None
+        day_text = day_td.get_text(strip=True)
+        dm = re.search(r"(\d{4})/(\d{1,2})/(\d{1,2})", day_text)
+        if dm:
+            date_str = f"{dm.group(1)}-{int(dm.group(2)):02d}-{int(dm.group(3)):02d}"
+        else:
+            dm2 = re.search(r"(\d{1,2})/(\d{1,2})", day_text)
+            date_str = f"{dm2.group(1)}/{dm2.group(2)}" if dm2 else day_text
 
-        # 調教コース
-        course_map = {
-            "坂路": "坂路",
-            "W": "ウッド",
-            "CW": "CW",
-            "P": "ポリトラック",
-            "芝": "芝",
-            "ダ": "ダート",
-            "南W": "南W",
-            "北W": "北W",
+        # 調教コース（td[5]: 坂路/CW/ウッド/芝等）
+        _COURSE_MAP = {
+            "坂路": "坂路", "坂": "坂路",
+            "CW": "CW", "南W": "南W", "北W": "北W",
+            "W": "ウッド", "ウ": "ウッド",
+            "P": "ポリトラック", "ポ": "ポリトラック",
+            "芝": "芝", "ダ": "ダート",
         }
-        course_text = cells[1].get_text(strip=True) if len(cells) > 1 else ""
-        course = "坂路"
-        for key, val in course_map.items():
+        course_text = cells[5].get_text(strip=True) if len(cells) > 5 else ""
+        course = "調教"
+        for key, val in _COURSE_MAP.items():
             if key in course_text:
                 course = val
                 break
 
-        # ラップタイム (例: 12.5-11.8-11.5-11.2)
-        lap_text = ""
+        # ラップタイム（td[8] TrainingTimeData: "--52.5(15.7)36.8(25.6)11.2(11.2)"）
         splits = {}
-        for ci in range(2, min(8, len(cells))):
-            t = cells[ci].get_text(strip=True)
-            if re.match(r"\d+\.\d+", t):
-                lap_text = t
-                break
+        time_td = row.select_one("td.TrainingTimeData")
+        if time_td:
+            time_text = time_td.get_text(strip=True)
+            # カッコ内を除去してラップタイムを抽出
+            # 形式: "-- 52.5 (15.7) 36.8 (25.6) 11.2 (11.2)" → 通過タイム
+            # カッコ内はラップ差分。カッコ外が通過タイム（累計）
+            clean = re.sub(r"\([^)]*\)", " ", time_text)
+            parts = re.findall(r"[\d]+\.[\d]+", clean)
+            # partsは通過タイム（大→小の順: 5F, 4F, 3F, 2F, 1F）
+            if parts:
+                n = len(parts)
+                for i, p in enumerate(parts):
+                    try:
+                        dist = (n - i) * 200
+                        splits[str(dist)] = float(p)
+                    except ValueError:
+                        pass
 
-        if lap_text:
-            parts = re.findall(r"[\d.]+", lap_text)
-            for i, p in enumerate(parts):
-                try:
-                    splits[f"{(i + 1) * 200}m"] = float(p)
-                except ValueError:
-                    pass
+        # 強度ラベル（td[10] TrainingLoad: "馬也"/"強め"/"一杯"等）
+        load_td = row.select_one("td.TrainingLoad")
+        intensity_raw = load_td.get_text(strip=True) if load_td else ""
+        _INTENSITY_MAP = {
+            "一杯": "一杯", "強め": "強め", "馬也": "馬なり", "馬なり": "馬なり",
+            "仕掛": "やや速い", "仕上": "やや速い", "本調教": "通常",
+            "軽め": "軽め", "極軽め": "極軽め",
+        }
+        intensity = _INTENSITY_MAP.get(intensity_raw, intensity_raw or "馬なり")
+        # TrainingLoadが空の場合はラップから推定
+        if not intensity_raw and splits:
+            intensity = self._infer_intensity(splits, course)
 
-        # 強度ラベル推定
-        intensity = self._infer_intensity(splits, course)
+        # 短評（td[11] Training_Critic）
+        critic_td = row.select_one("td.Training_Critic")
+        comment = critic_td.get_text(strip=True) if critic_td else ""
+
+        # 併せ馬情報（TrainingTimeData内のリンクテキスト）
+        partner = ""
+        if time_td:
+            partner_links = time_td.select("a[href*='/horse/']")
+            if partner_links:
+                partner = partner_links[0].get_text(strip=True)
 
         return {
             "horse_id": horse_id,
-            "date": date_cell,
+            "horse_name": horse_name,
+            "date": date_str,
             "venue": "",
             "course": course,
             "splits": splits,
             "intensity_label": intensity,
-            "comment": "",
+            "comment": comment,
+            "partner": partner,
         }
 
     def _infer_intensity(self, splits: dict, course: str) -> str:
@@ -1022,39 +1087,44 @@ class PremiumNetkeibaScraper:
             logger.debug("マルチソース補完スキップ", exc_info=True)
 
     def _fetch_training_data(self, race_id, race_info, horses, training_from_newspaper):
-        """調教データ取得（競馬ブック → newspaper OikiriTable → oikiri.html）"""
+        """調教データ取得（競馬ブック → oikiri.html直接取得）"""
         training_map = {}  # horse_name → [TrainingRecord]
         if self.training.is_logged_in:
             if not self._quiet:
-                logger.info("調教データ取得: %s", race_id)
-            # race_date を渡す（NAR の場合 nittei ルックアップに必要）
+                logger.info("調教データ取得(KB): %s", race_id)
             race_date = getattr(race_info, "race_date", None)
             training_map = self.training.fetch(race_id, race_date=race_date)
-        # newspaper OikiriTable で補完。netkeiba oikiri.html は中央競馬のみ（地方は非対応）
-        oikiri_by_id = {}
+        # JRA/NAR判定
         try:
             from data.masters.venue_master import JRA_CODES, get_venue_code_from_race_id
 
-            is_jra = get_venue_code_from_race_id(race_id) in JRA_CODES
+            venue_code = get_venue_code_from_race_id(race_id)
+            is_jra = venue_code in JRA_CODES
         except Exception:
+            venue_code = race_id[4:6] if len(race_id) >= 6 else ""
             is_jra = True
+
+        # oikiri.html 直接取得でフォールバック（JRA + NAR調教提供会場）
+        # newspaper OikiriTableはJS動的ロードのため静的HTMLでは取得不可 → 廃止
+        oikiri_by_id = {}
+        oikiri_by_name = {}
         missing = [h for h in horses if not training_map.get(h.horse_name)]
-        # KB非対応かつ newspaper データなし → netkeiba newspaper を直接取得して補完
-        if missing and not training_from_newspaper:
-            try:
-                training_from_newspaper = self._fetch_newspaper_training(race_id, is_jra)
-            except Exception:
-                logger.debug("newspaper調教取得失敗", exc_info=True)
-        if missing and self.client.is_logged_in and is_jra:
+        # NAR調教対応会場: keibabook_training.py _NAR_TRAINING_SUPPORTED 準拠
+        _NAR_TRAINING_VENUES = {"30", "42", "43", "44", "45", "50", "51"}
+        has_oikiri = is_jra or (venue_code in _NAR_TRAINING_VENUES)
+        if missing and self.client.is_logged_in and has_oikiri:
             try:
                 ts = TrainingScraper(self.client)
-                oikiri_by_id = ts.fetch(race_id)  # {horse_id: [TrainingRecord]}
+                oikiri_by_id, oikiri_by_name = ts.fetch_with_names(race_id, is_jra=is_jra)
+                if oikiri_by_name and not self._quiet:
+                    logger.info("oikiri.html調教取得: %s (%d頭)", race_id, len(oikiri_by_name))
             except Exception:
                 logger.debug("oikiri fetch failed", exc_info=True)
         for horse in horses:
             records = training_map.get(horse.horse_name, [])
-            if not records and training_from_newspaper:
-                records = training_from_newspaper.get(horse.horse_name, [])
+            # oikiri.html: horse_name → horse_id の順でフォールバック
+            if not records and oikiri_by_name:
+                records = oikiri_by_name.get(horse.horse_name, [])
             if not records and oikiri_by_id and horse.horse_id:
                 records = oikiri_by_id.get(horse.horse_id, [])
             if records:
@@ -1065,23 +1135,13 @@ class PremiumNetkeibaScraper:
                     logger.debug(
                         "調教 %s: %s %s%s", horse.horse_name, best.intensity_label, best.course, cm
                     )
-
-    def _fetch_newspaper_training(self, race_id: str, is_jra: bool) -> dict:
-        """netkeiba newspaper.html から調教データのみ取得（KB非対応会場用フォールバック）"""
-        from src.scraper.netkeiba import RACE_URL, NAR_URL
-
-        base = RACE_URL if is_jra else NAR_URL
-        soup = self.client.get(f"{base}/race/newspaper.html", params={"race_id": race_id})
-        if not soup:
-            # NAR は race.netkeiba.com にフォールバック
-            if not is_jra:
-                soup = self.client.get(f"{RACE_URL}/race/newspaper.html", params={"race_id": race_id})
-            if not soup:
-                return {}
-        training = self.entry._parse_training_from_oikiri_table(soup)
-        if training and not self._quiet:
-            logger.info("newspaper調教データ取得: %s (%d頭)", race_id, len(training))
-        return training
+        # 取得統計ログ
+        acquired = sum(1 for h in horses if getattr(h, "training_records", None))
+        if not self._quiet:
+            if acquired == 0 and len(horses) > 0:
+                logger.warning("調教データ: 0/%d頭 (race_id=%s)", len(horses), race_id)
+            elif len(horses) > 0:
+                logger.info("調教データ: %d/%d頭 (race_id=%s)", acquired, len(horses), race_id)
 
     def _fetch_from_official(self, race_id: str, fetch_history: bool = True):
         """JRA/NAR公式のみでレースデータを構築（ネット競馬フォールバック）"""

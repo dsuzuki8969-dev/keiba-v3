@@ -467,14 +467,13 @@ def _calc_confidence_score(evaluations: List[HorseEvaluation], is_jra: bool = Tr
     新方式: 複数の独立した予測信号が同じ馬を指しているかで自信度を判定。
     頭数因子を除去し、「予測の確からしさ」を直接測定する。
 
-    7つの信号（Phase 3-2: ML確信度追加）:
-    1. composite_gap (15%): 1位-2位のcomposite差 — 本命の優位度
-    2. ml_agreement (20%): ML予測1位とcomposite1位の一致 — モデル間合意
+    v5: 6つの信号（市場フリー — value_score除去）:
+    1. composite_gap (20%): 1位-2位のcomposite差 — 本命の優位度
+    2. ml_agreement (25%): ML予測1位とcomposite1位の一致 — モデル間合意
     3. gap23 (10%): 2位-3位のcomposite差 — 上位3頭の分離度
-    4. value_ratio (15%): ML勝率/オッズ示唆確率 — 過小評価度（バリュー）
-    5. multi_factor (15%): ability/pace/courseの1位が同一馬 — 因子間合意
-    6. reliability (10%): 上位馬のデータ信頼度 — 予測の確実性
-    7. ml_confidence (15%): ML生値の1位-2位gap — ブレンド前の確信度
+    4. multi_factor (20%): ability/pace/courseの1位が同一馬 — 因子間合意
+    5. reliability (10%): 上位馬のデータ信頼度 — 予測の確実性
+    6. ml_confidence (15%): ML生値の1位-2位gap — ブレンド前の確信度
     """
     sorted_ev = sorted(evaluations, key=lambda e: e.composite, reverse=True)
     if len(sorted_ev) < 3:
@@ -483,13 +482,13 @@ def _calc_confidence_score(evaluations: List[HorseEvaluation], is_jra: bool = Tr
     top = sorted_ev[0]
     top_id = top.horse.horse_id
 
-    # 1. composite差 (20%) — JRA:4pt/NAR:8pt以上で満点
+    # 1. composite差 (20%) — 1位-2位の総合力差。◉判定でも最重要指標
     from config.settings import CONFIDENCE_GAP_DIVISOR_JRA, CONFIDENCE_GAP_DIVISOR_NAR
     gap = sorted_ev[0].composite - sorted_ev[1].composite
     gap_divisor = CONFIDENCE_GAP_DIVISOR_JRA if is_jra else CONFIDENCE_GAP_DIVISOR_NAR
     gap_norm = min(gap / gap_divisor, 1.0)
 
-    # 2. ML一致度 (25%) — win_prob 1位がcomposite 1位と同じか
+    # 2. ML一致度 (25%) — win_prob 1位がcomposite 1位と同じか（最重要: 2モデル合意）
     sorted_wp = sorted(evaluations, key=lambda e: e.win_prob, reverse=True)
     wp_top_id = sorted_wp[0].horse.horse_id
     if wp_top_id == top_id:
@@ -503,17 +502,9 @@ def _calc_confidence_score(evaluations: List[HorseEvaluation], is_jra: bool = Tr
     gap23 = sorted_ev[1].composite - sorted_ev[2].composite
     gap23_norm = min(gap23 / 4.0, 1.0)
 
-    # 4. バリュー指標 (20%) — ML勝率がオッズ示唆確率より高い=過小評価
-    eff_odds = top.effective_odds
-    if eff_odds and eff_odds > 1.0 and top.win_prob > 0:
-        odds_implied_prob = 1.0 / eff_odds
-        value_ratio = top.win_prob / odds_implied_prob
-        # value_ratio 1.0=フェアバリュー、1.5以上=大幅過小評価
-        value_score = min(max((value_ratio - 1.0) / 0.5, 0.0), 1.0)
-    else:
-        value_score = 0.5  # オッズ不明時は中立
+    # v5: value_score（市場信号）を除去。市場評価は自信度に不要
 
-    # 5. 因子間合意 (15%) — ability/pace/courseの各1位が同一馬か
+    # 4. 因子間合意 (20%) — ability/pace/courseの各1位が同一馬か
     top_ability_id = max(evaluations, key=lambda e: e.ability.total).horse.horse_id
     top_course_id = max(evaluations, key=lambda e: e.course.total).horse.horse_id
     if is_banei:
@@ -530,7 +521,7 @@ def _calc_confidence_score(evaluations: List[HorseEvaluation], is_jra: bool = Tr
         else:
             multi_factor = 0.0
 
-    # 6. 信頼度 (10%) — 上位3馬の信頼度A率
+    # 5. 信頼度 (10%) — 上位3馬の信頼度A率
     from src.models import Reliability
     top3_reliable = sum(
         1 for ev in sorted_ev[:3]
@@ -538,40 +529,35 @@ def _calc_confidence_score(evaluations: List[HorseEvaluation], is_jra: bool = Tr
     )
     reliability_norm = top3_reliable / 3.0
 
-    # 7. ML確信度 (15%) — ML生値の1位-2位gap（Phase 3-2）
+    # 6. ML確信度 (15%) — ML生値の1位-2位gap
     from config.settings import PIPELINE_V2_ENABLED
     if PIPELINE_V2_ENABLED:
         raw_ml_top = getattr(sorted_ev[0], '_raw_lgbm_prob', None)
         raw_ml_2nd = getattr(sorted_ev[1], '_raw_lgbm_prob', None) if len(sorted_ev) >= 2 else None
         if raw_ml_top is not None and raw_ml_2nd is not None:
             ml_raw_gap = raw_ml_top - raw_ml_2nd
-            # NAR: gap 0.10以上で満点（ML生値は正規化前なので差が小さい）
             ml_confidence = min(ml_raw_gap / 0.10, 1.0) if ml_raw_gap > 0 else 0.0
         else:
             ml_confidence = 0.5  # ML生値不明時は中立
 
-        # Phase 3-2: 7信号加重合成（EV重視再配分）
-        # 全期間43万馬分析: B自信度+EV≥1.5で回収率296%
-        # value_score重み増でオッズ乖離シグナルを強化
-        # gap_norm 15→12%, value_score 15→20%, multi_factor 15→13%
-        score = (
-            gap_norm * 0.12
-            + ml_agreement * 0.20
-            + gap23_norm * 0.10
-            + value_score * 0.20
-            + multi_factor * 0.13
-            + reliability_norm * 0.10
-            + ml_confidence * 0.15
-        )
-    else:
-        # 旧パイプライン: 6信号
+        # v5: 6信号加重合成（市場フリー）
+        # value_score除去 → composite_gap/ml_agreement/multi_factorに再配分
         score = (
             gap_norm * 0.20
             + ml_agreement * 0.25
             + gap23_norm * 0.10
-            + value_score * 0.20
-            + multi_factor * 0.15
+            + multi_factor * 0.20
             + reliability_norm * 0.10
+            + ml_confidence * 0.15
+        )
+    else:
+        # 旧パイプライン: 5信号（value_score除去版）
+        score = (
+            gap_norm * 0.25
+            + ml_agreement * 0.25
+            + gap23_norm * 0.10
+            + multi_factor * 0.25
+            + reliability_norm * 0.15
         )
     return score
 
@@ -587,73 +573,57 @@ def judge_confidence(
     """
     5-3 自信度判定（多信号一致方式・JRA/NAR分離）。
 
-    旧方式: 頭数依存(45%)でSS<S序列破綻 → オッズ一致(20%)で人気馬偏重
-    新方式: ML・ルール・バリューの多信号一致度でレースの予測確信度を判定。
-    JRA/NARで閾値を分離し、JRA大頭数環境でも適切に自信度が分布するよう較正。
+    v5方式: 6信号スコア（市場フリー）+ パーセンタイル閾値 + win_prob/gapゲート。
+    JRA/NARで閾値を分離。市場評価（人気・オッズ）は一切使用しない。
 
-    SS: score≥0.70 かつ硬性条件（ML/バリュー/gap）クリア
-    S～E: JRA/NAR別閾値で判定
+    SS～D: JRA/NAR別パーセンタイル閾値 + SS/Sはwin_prob・gapゲートで降格判定
     """
     if not evaluations:
-        return ConfidenceLevel.E
+        return ConfidenceLevel.D
 
     from config.settings import (
-        CONFIDENCE_SS_GAP_JRA, CONFIDENCE_SS_GAP_NAR,
-        CONFIDENCE_SS_VALUE_JRA, CONFIDENCE_SS_VALUE_NAR,
         CONFIDENCE_THRESHOLDS_JRA, CONFIDENCE_THRESHOLDS_NAR,
-        CONFIDENCE_ODDS_GATE_ENABLED,
-        CONFIDENCE_MIN_ODDS_SS, CONFIDENCE_MIN_ODDS_S,
+        CONFIDENCE_WP_GATE_SS_JRA, CONFIDENCE_WP_GATE_SS_NAR,
+        CONFIDENCE_GAP_GATE_SS_JRA, CONFIDENCE_GAP_GATE_SS_NAR,
+        CONFIDENCE_WP_GATE_S_JRA, CONFIDENCE_WP_GATE_S_NAR,
+        CONFIDENCE_GAP_GATE_S_JRA, CONFIDENCE_GAP_GATE_S_NAR,
     )
 
-    # ---- Phase 12: JRA/NAR統一 7信号スコア方式 ----
+    # ---- v5: パーセンタイル閾値 + win_prob/gapゲート（市場フリー） ----
     score = _calc_confidence_score(evaluations, is_jra=is_jra, is_banei=is_banei)
     thresholds = CONFIDENCE_THRESHOLDS_JRA if is_jra else CONFIDENCE_THRESHOLDS_NAR
-    ss_gap_threshold = CONFIDENCE_SS_GAP_JRA if is_jra else CONFIDENCE_SS_GAP_NAR
-    ss_value_threshold = CONFIDENCE_SS_VALUE_JRA if is_jra else CONFIDENCE_SS_VALUE_NAR
 
-    # SS判定: スコア≥SS閾値 + 硬性条件(2/3) + オッズゲート
+    # ◎（composite1位）のwin_probとgapを取得
+    sorted_comp = sorted(evaluations, key=lambda e: e.composite, reverse=True)
+    top_wp = sorted_comp[0].win_prob if sorted_comp else 0
+    top_gap = (sorted_comp[0].composite - sorted_comp[1].composite) if len(sorted_comp) >= 2 else 0
+
+    # score閾値で初期レベル判定
     if score >= thresholds["SS"]:
-        sorted_comp = sorted(evaluations, key=lambda e: e.composite, reverse=True)
-        sorted_wp = sorted(evaluations, key=lambda e: e.win_prob, reverse=True)
-        top_ev = sorted_comp[0]
-
-        ml_match = sorted_comp[0].horse.horse_id == sorted_wp[0].horse.horse_id
-        eff_odds = top_ev.effective_odds
-        if eff_odds and eff_odds > 1.0 and top_ev.win_prob > 0:
-            value_ratio = top_ev.win_prob / (1.0 / eff_odds)
-            value_ok = value_ratio >= ss_value_threshold
-        else:
-            value_ok = True
-        gap_check = (sorted_comp[0].composite - sorted_comp[1].composite) >= ss_gap_threshold if len(sorted_comp) >= 2 else True
-
-        conditions_met = sum([ml_match, value_ok, gap_check])
-        if conditions_met >= 2:
-            # オッズゲート — 低オッズはS降格（ROI保護）
-            if CONFIDENCE_ODDS_GATE_ENABLED:
-                _eff = top_ev.effective_odds
-                if _eff is not None and _eff < CONFIDENCE_MIN_ODDS_SS:
-                    return ConfidenceLevel.S
-            return ConfidenceLevel.SS
-        else:
-            return ConfidenceLevel.S
+        level = ConfidenceLevel.SS
     elif score >= thresholds["S"]:
-        # Phase 12: オッズゲート — 超低オッズはAに降格
-        if CONFIDENCE_ODDS_GATE_ENABLED:
-            sorted_comp = sorted(evaluations, key=lambda e: e.composite, reverse=True)
-            _eff = sorted_comp[0].effective_odds if sorted_comp else None
-            if _eff is not None and _eff < CONFIDENCE_MIN_ODDS_S:
-                return ConfidenceLevel.A
-        return ConfidenceLevel.S
+        level = ConfidenceLevel.S
     elif score >= thresholds["A"]:
-        return ConfidenceLevel.A
+        level = ConfidenceLevel.A
     elif score >= thresholds["B"]:
-        return ConfidenceLevel.B
+        level = ConfidenceLevel.B
     elif score >= thresholds["C"]:
-        return ConfidenceLevel.C
-    elif score >= thresholds["D"]:
-        return ConfidenceLevel.D
+        level = ConfidenceLevel.C
     else:
-        return ConfidenceLevel.E
+        level = ConfidenceLevel.D
+
+    # v5 win_prob/gapゲート: 自モデルの確信度で判定（市場評価は不要）
+    wp_gate_ss = CONFIDENCE_WP_GATE_SS_JRA if is_jra else CONFIDENCE_WP_GATE_SS_NAR
+    gap_gate_ss = CONFIDENCE_GAP_GATE_SS_JRA if is_jra else CONFIDENCE_GAP_GATE_SS_NAR
+    wp_gate_s = CONFIDENCE_WP_GATE_S_JRA if is_jra else CONFIDENCE_WP_GATE_S_NAR
+    gap_gate_s = CONFIDENCE_GAP_GATE_S_JRA if is_jra else CONFIDENCE_GAP_GATE_S_NAR
+
+    if level == ConfidenceLevel.SS and (top_wp < wp_gate_ss or top_gap < gap_gate_ss):
+        level = ConfidenceLevel.S
+    if level == ConfidenceLevel.S and (top_wp < wp_gate_s or top_gap < gap_gate_s):
+        level = ConfidenceLevel.A
+
+    return level
 
 
 # ============================================================
@@ -685,7 +655,7 @@ def should_buy_race(
         if confidence not in allowed:
             return False, f"ばんえい: 自信度{confidence.value}（{BANEI_MIN_CONFIDENCE}以上のみ）"
 
-    if confidence in (ConfidenceLevel.D, ConfidenceLevel.E):
+    if confidence == ConfidenceLevel.D:
         return False, f"自信度{confidence.value}"
 
     sorted_ev = sorted(evaluations, key=lambda e: e.composite, reverse=True)

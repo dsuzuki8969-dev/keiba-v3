@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 260 40">
+  <defs>
+    <linearGradient id="gold-grad" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#f0d78c"/>
+      <stop offset="100%" stop-color="#d4a853"/>
+    </linearGradient>
+  </defs>
+  <!-- 馬シルエット（簡略化アイコン） -->
+  <g transform="translate(2, 4) scale(0.55)">
+    <path d="M52 8c-3-4-8-6-12-6-2 0-4 2-6 4l-4 6c-2 2-5 3-8 3l-6-1c-3 0-5 1-6 3l-2 6c0 2 0 4 2 5l6 4 4 8c1 3 3 5 6 5h4l2-4-1-6-2-4 4-2c4-2 7-5 9-9l4-2c3-1 5-3 6-6 1-2 1-4 0-5l-1-2z"
+      fill="url(#gold-grad)" opacity="0.9"/>
+    <circle cx="42" cy="10" r="1.5" fill="#0f172a"/>
+  </g>
+  <!-- D-AI テキスト -->
+  <text x="42" y="23" font-family="Arial Black, Helvetica, sans-serif" font-weight="900" font-size="18" letter-spacing="0.5">
+    <tspan fill="#ffffff">D-</tspan><tspan fill="#d4a853">AI</tspan>
+  </text>
+  <!-- Keiba テキスト -->
+  <text x="108" y="23" font-family="Arial, Helvetica, sans-serif" font-weight="600" font-size="16" fill="#ffffff" opacity="0.85" letter-spacing="1">
+    Keiba
+  </text>
+  <!-- 薄いサブライン -->
+  <line x1="42" y1="29" x2="158" y2="29" stroke="#d4a853" stroke-width="0.5" opacity="0.4"/>
+  <text x="42" y="36" font-family="Arial, Helvetica, sans-serif" font-weight="400" font-size="6" fill="#94a3b8" letter-spacing="2">
+    AI HORSE RACING
+  </text>
+</svg>

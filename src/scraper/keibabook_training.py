@@ -84,6 +84,9 @@ KB_CHIHOU_CYOKYO = "https://s.keibabook.co.jp/chihou/cyokyo/1"  # 地方: /chiho
 KB_CYUOU_DANWA = "https://s.keibabook.co.jp/cyuou/danwa/0"  # 中央: /cyuou/danwa/0/{12桁ID}
 KB_CHIHOU_DANWA = "https://s.keibabook.co.jp/chihou/danwa/1"  # 地方: /chihou/danwa/1/{16桁ID}
 
+# ポイント（門別等、danwaが無い会場のフォールバック）
+KB_CHIHOU_POINT_BASE = "https://s.keibabook.co.jp"  # + /chihou/point/{sub}/{16桁ID}
+
 # nittei（日程）
 KB_CYUOU_NITTEI = "https://s.keibabook.co.jp/cyuou/nittei"  # 中央: /{YYYYMMDD}{KB_venue}
 KB_CHIHOU_NITTEI = "https://s.keibabook.co.jp/chihou/nittei"  # 地方: /{YYYYMMDD}{KB_venue}
@@ -100,17 +103,19 @@ KB_VENUE_CACHE_PATH = Path(__file__).resolve().parents[2] / "data" / "kb_venue_c
 # ※ netkeiba形式: YYYY + ne_venue(2) + kaiko(2) + day(2) + R(2) = 12桁
 # ※ kaiko と venue の順序が逆になることに注意
 JRA_VENUE_TO_KB: Dict[str, str] = {
+    # netkeiba ne_venue(2桁) → KB venue(2桁)
+    # ※ netkeiba race_id の ne_venue は JRA公式場コードとは01-04の割当が異なる
+    #   netkeiba: 01=札幌,02=函館,03=福島,04=新潟,05=東京,...
     "05": "04",  # 東京  ✓ nittei 2026022104 で確認
     "06": "05",  # 中山  ✓ nittei 2026022805 + syutuba 202602050211 で確認
     "08": "00",  # 京都  ✓ nittei 2026020100 で確認
     "09": "01",  # 阪神  ✓ nittei 2026022101 + syutuba 202601010411 で確認
     "10": "03",  # 小倉  ✓ nittei 2026022203 で確認
-    # 以下は未確認（春〜夏開催時に要確認）
-    "07": "02",  # 中京  ← 暫定（3月開催時に確認予定）
-    "01": "07",  # 福島  ← 暫定（春・夏開催時）
-    "02": "08",  # 新潟  ← 暫定（夏開催時）
-    "03": "09",  # 札幌  ← 暫定（夏開催時）
-    "04": "06",  # 函館  ← 暫定（夏開催時）
+    "07": "02",  # 中京  ✓ cyokyo 202401020101 で確認
+    "03": "06",  # 福島  ✓ nittei 2026041106 + cyokyo 202401060101 で確認
+    "04": "07",  # 新潟  ✓ cyokyo 202401070101 で確認
+    "01": "08",  # 札幌  ✓ cyokyo 202401080101 で確認
+    "02": "09",  # 函館  ✓ cyokyo 202401090101 で確認
 }
 
 # NAR: netkeiba場コード → KB場コード
@@ -126,7 +131,7 @@ NAR_VENUE_TO_KB: Dict[str, Optional[str]] = {
     "48": "34",  # 名古屋 (nittei対応だが調教ページは出馬表を返す→調教非対応)
     "50": "37",  # 園田  ✓
     "51": "39",  # 姫路  ✓ (netkeibaコード51)
-    "30": "14",  # 門別  ✓
+    "30": "42",  # 門別  ✓ (2026年シーズンからKBコード14→42に変更)
     "65": "58",  # 帯広  ✓
     "54": "26",  # 高知  ✓
     "55": "23",  # 佐賀  ✓
@@ -301,15 +306,29 @@ class KeibabookClient:
 
         try:
             # ログインページ取得
+            logger.info("KB ログインページ取得: %s", KB_LOGIN)
             resp = self.session.get(KB_LOGIN, timeout=15)
             resp.encoding = "utf-8"
+            logger.info("KB ログインページ: status=%d, len=%d", resp.status_code, len(resp.text))
+
+            if resp.status_code != 200:
+                logger.warning("KB ログインページ取得失敗: status=%d", resp.status_code)
+                return False
+
             soup = BeautifulSoup(resp.text, "lxml")
+
+            # メンテナンス検出: ログインフォームが存在しない場合のみ
+            login_form = soup.select_one("input[name=login_id]")
+            if not login_form:
+                logger.warning("KB メンテナンス中（ログインフォームなし）")
+                return False
 
             # CSRFトークン
             csrf = ""
             for inp in soup.select("input[name=_token]"):
                 csrf = inp.get("value", "")
                 break
+            logger.info("KB CSRFトークン: %s", "取得済み" if csrf else "なし")
 
             time.sleep(REQUEST_INTERVAL)
 
@@ -331,19 +350,22 @@ class KeibabookClient:
                 timeout=15,
             )
             post.encoding = "utf-8"
+            logger.info("KB ログインPOST: status=%d, len=%d", post.status_code, len(post.text))
 
             if self._check_success(post):
                 self._logged_in = True
                 self._is_premium = self._check_premium(post)
                 grade = "スマートプレミアム" if self._is_premium else "一般会員"
-                logger.info(f"ログイン成功: {self._id} ({grade})")
+                logger.info("KB ログイン成功: %s (%s)", self._id, grade)
                 return True
             else:
-                logger.warning("ログイン失敗")
+                # 失敗時のレスポンス一部をログ出力（診断用）
+                body_snippet = post.text[:300].replace("\n", " ")
+                logger.warning("KB ログイン失敗: status=%d, body=%s", post.status_code, body_snippet)
                 return False
 
         except Exception as e:
-            logger.warning("keibabook login error: %s", e, exc_info=True)
+            logger.warning("KB ログインエラー: %s", e, exc_info=True)
             return False
 
     def _check_success(self, resp) -> bool:
@@ -639,6 +661,7 @@ class KeibabookTrainingScraper:
 
         soup = self.client.get(nittei_url)
         if not soup:
+            logger.warning(f"NAR nittei GET失敗: {nittei_url}")
             return {}
 
         text = soup.get_text() if hasattr(soup, "get_text") else ""
@@ -648,16 +671,24 @@ class KeibabookTrainingScraper:
 
         kb_nar_id = self._find_nar_kb_race_id(soup, race_no)
         if not kb_nar_id:
-            logger.warning(f"NAR KB race_id が見つかりません: {netkeiba_race_id} R{race_no} on {date_str}")
+            # デバッグ: syutubaリンクの状況をログ
+            _syutuba_links = soup.select('a[href*="syutuba"]')
+            logger.warning(
+                f"NAR KB race_id が見つかりません: {netkeiba_race_id} R{race_no} on {date_str} "
+                f"(syutubaリンク数={len(_syutuba_links)}, nittei_url={nittei_url})"
+            )
             return {}
 
+        logger.debug(f"NAR KB race_id 解決: {netkeiba_race_id} → {kb_nar_id}")
         cyokyo_url = f"{KB_CHIHOU_CYOKYO}/{kb_nar_id}"
         soup = self.client.get(cyokyo_url)
         if not soup:
+            logger.warning(f"NAR cyokyo GET失敗: {cyokyo_url}")
             return {}
 
         text = soup.get_text() if hasattr(soup, "get_text") else ""
         if "指定されたページは存在しません" in text or "提供外" in text:
+            logger.warning(f"NAR cyokyo ページなし/提供外: {cyokyo_url}")
             return {}
         if self._is_premium_wall(soup):
             logger.warning("プレミアムコンテンツ壁を検出")
@@ -674,14 +705,45 @@ class KeibabookTrainingScraper:
 
         training_map = self._parse_training_table(soup)
 
-        danwa_soup = self.client.get(f"{KB_CHIHOU_DANWA}/{kb_nar_id}")
+        # --- 厩舎コメント取得（danwa → point フォールバック） ---
+        comments: Dict[str, str] = {}
+
+        # cyokyoページからdanwa/pointリンクを動的に発見
+        danwa_href = ""
+        point_href = ""
+        for a_tag in soup.select("a[href]"):
+            href = a_tag.get("href", "")
+            if "danwa" in href and not danwa_href:
+                danwa_href = href
+            if "point" in href and not point_href:
+                point_href = href
+
+        # 1) danwaページを試行（URLはcyokyoページ上のリンクを優先、なければ従来パス）
+        danwa_url = (
+            f"{KB_CHIHOU_POINT_BASE}{danwa_href}" if danwa_href
+            else f"{KB_CHIHOU_DANWA}/{kb_nar_id}"
+        )
+        danwa_soup = self.client.get(danwa_url)
         if danwa_soup:
             dtext = danwa_soup.get_text() if hasattr(danwa_soup, "get_text") else ""
             if "指定されたページは存在しません" not in dtext and "提供外" not in dtext:
                 comments = self._parse_danwa_table(danwa_soup)
-                for name, recs in training_map.items():
-                    if name in comments and recs:
-                        recs[0].stable_comment = comments[name]
+
+        # 2) danwaが空ならポイントページにフォールバック（門別等）
+        if not comments and point_href:
+            point_url = f"{KB_CHIHOU_POINT_BASE}{point_href}"
+            point_soup = self.client.get(point_url)
+            if point_soup:
+                ptext = point_soup.get_text() if hasattr(point_soup, "get_text") else ""
+                if "指定されたページは存在しません" not in ptext and "提供外" not in ptext:
+                    comments = self._parse_point_table(point_soup)
+                    if comments:
+                        logger.info(f"NAR danwa→pointフォールバック成功: {len(comments)}頭 ({point_url})")
+
+        # コメントをtraining_mapに反映
+        for name, recs in training_map.items():
+            if name in comments and recs:
+                recs[0].stable_comment = comments[name]
 
         return training_map
 
@@ -793,6 +855,50 @@ class KeibabookTrainingScraper:
                 if comment and len(comment) > 3:
                     result[current_name] = comment
                     current_name = ""  # 次の馬へ
+        return result
+
+    def _parse_point_table(self, soup: BeautifulSoup) -> Dict[str, str]:
+        """
+        ポイントページから馬名→コメントの辞書を取得。
+        門別など「厩舎の話」がない会場のフォールバック用。
+
+        HTML構造（3行1組）:
+          row[0]: ヘッダー（枠番 | 馬番 | 馬名ポイント）
+          row[1]: 枠番 | 馬番 | 馬名 （3列）
+          row[2]: コメントテキスト（1列 colspan）- "馬名(評価) 本文..."
+          row[3]: 空行
+          以降 row[1]-[3] の繰り返し
+        """
+        result: Dict[str, str] = {}
+        # 最も行数が多いテーブルをポイントテーブルと推定
+        tables = soup.select("table")
+        if not tables:
+            return result
+        table = max(tables, key=lambda t: len(t.select("tr")), default=None)
+        if not table:
+            return result
+
+        rows = table.select("tr")[1:]  # ヘッダー行をスキップ
+        current_name = ""
+        for row in rows:
+            cells = row.select("td")
+            if not cells:
+                continue
+            text = cells[-1].get_text(strip=True) if cells else ""
+
+            if len(cells) >= 3:
+                # 馬名行（枠番・馬番・馬名）
+                current_name = cells[-1].get_text(strip=True)
+            elif len(cells) == 1 and current_name and text:
+                # コメント行: "馬名(評価) 本文..." 形式
+                # 馬名部分を除去してコメント本体を抽出
+                comment = text
+                # "フジノアルファ(軽視不可) 本文..." → "(軽視不可) 本文..." → 全体をコメントとして保持
+                if comment.startswith(current_name):
+                    comment = comment[len(current_name):].strip()
+                if comment and len(comment) > 3:
+                    result[current_name] = comment
+                    current_name = ""
         return result
 
     def _detect_danwa_headers(self, cells: list) -> dict:

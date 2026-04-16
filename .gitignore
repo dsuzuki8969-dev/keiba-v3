@@ -97,10 +97,26 @@ frontend/
 # ルートの一時ファイル
 keiba.db
 nul
+null
 temp_*.html
 cross_validate_*.txt
+tmp_*
+mockup_card.html
+.flask_pid
+
+# ログディレクトリ
+log/
+logs/
+data/logs/
+data/watchdog.log
 
 # アドホック/一時スクリプト
 scripts/_*
-data/watchdog.log
-data/logs/
+
+# 旧バッチファイル（ルート直下）
+install_scheduler.bat
+build_db.bat
+run_race.bat
+start_tunnel.bat
+start_dashboard_watchdog.bat
+open-in-cursor.bat

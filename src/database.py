@@ -966,6 +966,9 @@ def _empty_stat() -> dict:
 
 
 def _add_finish(stat: dict, finish: int) -> None:
+    # 取消・除外（着順90以上）は集計対象外
+    if finish >= 90:
+        return
     stat["total"] += 1
     if finish == 1:
         stat["win"] += 1

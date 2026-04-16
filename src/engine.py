@@ -966,6 +966,17 @@ class RaceAnalysisEngine:
         _field_hist_l3f_mean = (sum(_field_l3f_vals) / len(_field_l3f_vals)) if _field_l3f_vals else None
         _field_hist_fin_mean = (sum(_field_fin_vals) / len(_field_fin_vals)) if _field_fin_vals else None
 
+        # 改善2: 脚質分布カウント（❹コース脚質バイアス相対化用）
+        # 好位→先行、中団→差し、マクリ→追込にマッピングして全馬カバー
+        _STYLE_MAP = {"逃げ": "逃げ", "先行": "先行", "好位": "先行",
+                      "中団": "差し", "差し": "差し", "追込": "追込", "マクリ": "追込"}
+        _style_counts = {"逃げ": 0, "先行": 0, "差し": 0, "追込": 0}
+        for _, (s, _) in field_styles.items():
+            _mapped = _STYLE_MAP.get(s.value)
+            if _mapped:
+                _style_counts[_mapped] += 1
+        _field_style_distribution = _style_counts
+
         pace_context = {
             "n_front": n_front,
             "front_ratio": front_rate,
@@ -974,6 +985,7 @@ class RaceAnalysisEngine:
             "max_escape_strength": max_escape_strength,  # 最強逃げ馬スコア（案C）
             "field_hist_l3f_mean": _field_hist_l3f_mean,  # Phase8: フィールド平均l3f
             "field_hist_finish_mean": _field_hist_fin_mean,  # Phase8: フィールド平均着順
+            "field_style_distribution": _field_style_distribution,  # 改善2: 脚質分布
         }
 
         # ---- Step 2-7: 各馬の評価 ----
@@ -1043,12 +1055,30 @@ class RaceAnalysisEngine:
                 _pred = _1c_predictor.predict(horse, race)
                 if _pred is not None:
                     _1c_raw_all[horse.horse_no] = _pred
-        # MLモデルで予測できなかった馬は4角位置のフォールバック
+        # 改善3: MLモデルで予測できなかった馬の1角位置フォールバック改善
+        # 従来: 4角位置*0.85（順序同一→正規化後差分ゼロ→❻軌跡スコア死亡）
+        # 改善: 過去走コーナー通過データから1角-4角の位置変動平均を算出
+        from config.settings import PACE_TRAJECTORY_FIX_ENABLED
         for horse in horses:
             if horse.horse_no not in _1c_raw_all:
                 _raw_4c = _raw_positions.get(horse.horse_no)
                 if _raw_4c is not None:
-                    _1c_raw_all[horse.horse_no] = _raw_4c * 0.85
+                    if PACE_TRAJECTORY_FIX_ENABLED:
+                        _deltas = []
+                        for r in (horse.past_runs or [])[:5]:
+                            corners = getattr(r, 'positions_corners', None) or []
+                            if len(corners) >= 2 and corners[0] > 0 and corners[-1] > 0:
+                                _fc = getattr(r, 'field_count', 16) or 16
+                                _1c_rel = corners[0] / max(1, _fc)
+                                _4c_rel = corners[-1] / max(1, _fc)
+                                _deltas.append(_4c_rel - _1c_rel)
+                        if _deltas:
+                            avg_delta = sum(_deltas) / len(_deltas)
+                            _1c_raw_all[horse.horse_no] = max(0.01, min(1.0, _raw_4c - avg_delta))
+                        else:
+                            _1c_raw_all[horse.horse_no] = _raw_4c * 0.85  # 従来フォールバック
+                    else:
+                        _1c_raw_all[horse.horse_no] = _raw_4c * 0.85
         # フィールド内正規化
         _1c_normalized = normalize_field_positions(_1c_raw_all, len(horses)) if _1c_raw_all else {}
 
@@ -1071,6 +1101,10 @@ class RaceAnalysisEngine:
                 override_pos_1c=_horse_pos_1c,
             )
             ev.venue_name = race.venue
+            # 改善1: レース条件をセット（composite で条件別ウェイト動的調整に使用）
+            ev._race_surface = race.course.surface if race.course else None
+            ev._race_field_size = race.field_count
+            ev._race_distance = race.course.distance if race.course else None
             evaluations.append(ev)
 
         # Phase 7c: est_last3f + base_score 能力整合補正
@@ -1153,25 +1187,80 @@ class RaceAnalysisEngine:
             ev.place2_prob = t2
             ev.place3_prob = t3
 
-        # 正規化: 合計を理論値に一致させる
-        # 少頭数の場合は連対・複勝の上限を頭数に合わせる
+        # 正規化: 比率保持方式
+        # estimate_three_win_rates()のwin/place2/place3比率を保持しながら合計を理論値に一致
+        # 旧方式（独立正規化）は勝率≒連対率の矛盾を引き起こしていた
         n = len(evaluations)
         place2_target = min(n, 2) / n if n > 0 else 0
         place3_target = min(n, 3) / n if n > 0 else 0
 
-        total_win = sum(ev.win_prob for ev in evaluations)
-        total_place2 = sum(ev.place2_prob for ev in evaluations)
-        total_place3 = sum(ev.place3_prob for ev in evaluations)
+        # Step 1: 各馬のwin/place2/place3比率を保存（正規化前）
+        _ratios_p2 = []  # place2/win比率
+        _ratios_p3 = []  # place3/win比率
+        for ev in evaluations:
+            if ev.win_prob > 0.001:
+                _ratios_p2.append(ev.place2_prob / ev.win_prob)
+                _ratios_p3.append(ev.place3_prob / ev.win_prob)
+            else:
+                _ratios_p2.append(2.0)
+                _ratios_p3.append(3.0)
 
+        # Step 2: win_probを合計1.0に正規化
+        total_win = sum(ev.win_prob for ev in evaluations)
         if total_win > 0:
             for ev in evaluations:
                 ev.win_prob = min(1.0, ev.win_prob / total_win)
-        if total_place2 > 0:
+
+        # Step 3: 比率ベースでplace2/place3を算出
+        for i, ev in enumerate(evaluations):
+            ev.place2_prob = ev.win_prob * _ratios_p2[i]
+            ev.place3_prob = ev.win_prob * _ratios_p3[i]
+
+        # Step 4: place2/place3の合計を理論値に調整（比率は均等スケーリングで保持）
+        _p2_sum = sum(ev.place2_prob for ev in evaluations)
+        _p3_sum = sum(ev.place3_prob for ev in evaluations)
+        _p2_target = place2_target * n  # = min(n, 2)
+        _p3_target = place3_target * n  # = min(n, 3)
+        if _p2_sum > 0:
+            _adj2 = _p2_target / _p2_sum
             for ev in evaluations:
-                ev.place2_prob = min(1.0, (ev.place2_prob / total_place2) * place2_target * n)
-        if total_place3 > 0:
+                ev.place2_prob = min(1.0, ev.place2_prob * _adj2)
+        if _p3_sum > 0:
+            _adj3 = _p3_target / _p3_sum
             for ev in evaluations:
-                ev.place3_prob = min(1.0, (ev.place3_prob / total_place3) * place3_target * n)
+                ev.place3_prob = min(1.0, ev.place3_prob * _adj3)
+
+        # Step 5: 最低比率保証（勝率33%の馬が連対率33%にならないよう）
+        # place2 >= win * 1.3, place3 >= place2 * 1.1 を保証
+        # 再正規化→制約→再正規化を反復して収束させる（最大5回）
+        for _iter in range(5):
+            _needs_readjust = False
+            for ev in evaluations:
+                _min_p2 = ev.win_prob * 1.3
+                if ev.place2_prob < _min_p2:
+                    ev.place2_prob = _min_p2
+                    _needs_readjust = True
+                _min_p3 = max(ev.place2_prob * 1.1, ev.win_prob * 1.5)
+                if ev.place3_prob < _min_p3:
+                    ev.place3_prob = _min_p3
+                    _needs_readjust = True
+            if not _needs_readjust:
+                break
+            # 合計を再調整（制約下限を維持しながら他の馬を縮小）
+            if n >= 2:
+                _p2_sum2 = sum(ev.place2_prob for ev in evaluations)
+                _p3_sum2 = sum(ev.place3_prob for ev in evaluations)
+                if _p2_sum2 > _p2_target and _p2_sum2 > 0:
+                    # 合計超過→全馬を縮小するが、下限制約を維持
+                    _adj2b = _p2_target / _p2_sum2
+                    for ev in evaluations:
+                        _new_p2 = ev.place2_prob * _adj2b
+                        ev.place2_prob = max(_new_p2, ev.win_prob * 1.2)
+                if _p3_sum2 > _p3_target and _p3_sum2 > 0:
+                    _adj3b = _p3_target / _p3_sum2
+                    for ev in evaluations:
+                        _new_p3 = ev.place3_prob * _adj3b
+                        ev.place3_prob = max(_new_p3, ev.place2_prob)
 
         # ---- Step 6: 予測オッズ (オッズ未確定馬に付与) ----
         predicted = calc_predicted_odds(evaluations, self.is_jra)
@@ -1204,21 +1293,64 @@ class RaceAnalysisEngine:
             _sorted_by_pos = sorted(_normalized_positions.items(), key=lambda x: x[1])
             _n = len(_sorted_by_pos)
             _final_style_map: Dict[int, RunningStyle] = {}
-            # 逃げ馬判定: 1角予測値（First1CPredictor）を使用し、
-            # 過去走逃げ実績 + 1角予測最前方で逃げを判定。
-            # 1角予測がなければ4角位置ベースにフォールバック。
+            # 改善7: 逃げ馬判定精度向上（スコアリングv2）
+            from config.settings import PACE_ESCAPE_SCORING_V2
             _nige_threshold = 0.45
-            # 1角正規化値の順序（先頭に近い馬がNIGASHI候補）
             _1c_sorted = sorted(_1c_normalized.items(), key=lambda x: x[1]) if _1c_normalized else []
             _1c_top_horses = {hno for hno, _ in _1c_sorted[:3]} if _1c_sorted else set()
+
+            # 改善7: 逃げ候補の多角スコアリング
+            _nige_set: set = set()
+            if PACE_ESCAPE_SCORING_V2 and _1c_sorted:
+                _escape_candidates = []
+                for hno, pos_1c in _1c_sorted:
+                    h = next((h for h in horses if h.horse_no == hno), None)
+                    if h is None:
+                        continue
+                    # 過去5走の逃げ率（1角1番手 or コーナー通過1番手）
+                    _nige_runs = 0
+                    _valid_runs = 0
+                    for r in (h.past_runs or [])[:5]:
+                        corners = getattr(r, 'positions_corners', None) or []
+                        if corners:
+                            _valid_runs += 1
+                            if corners[0] <= 2:  # 1角2番手以内
+                                _nige_runs += 1
+                    _nige_rate = _nige_runs / max(1, _valid_runs) if _valid_runs > 0 else 0.0
+                    # 内枠ボーナス（内枠ほど逃げやすい）
+                    _gate = getattr(h, 'gate_no', 8) or 8
+                    _gate_bonus = max(0.0, (5 - _gate) * 0.05)
+                    # 総合逃げスコア: 1角位置(反転) + 過去逃げ率 + 内枠ボーナス
+                    _escape_score = (1.0 - pos_1c) * 0.50 + _nige_rate * 0.35 + _gate_bonus * 0.15
+                    _escape_candidates.append((hno, _escape_score, pos_1c))
+
+                _escape_candidates.sort(key=lambda x: -x[1])  # スコア降順
+                if _escape_candidates:
+                    top_score = _escape_candidates[0][1]
+                    for hno, sc, p1c in _escape_candidates:
+                        if sc >= top_score * 0.75 and p1c < 0.30:
+                            _nige_set.add(hno)
+                        else:
+                            break
+                    # 最大3頭まで
+                    if len(_nige_set) > 3:
+                        _nige_set = {hno for hno, _, _ in _escape_candidates[:3]}
+
             for rank, (hno, pos_val) in enumerate(_sorted_by_pos):
                 r = rank / _n if _n > 1 else 0.0  # 0.0=先頭
                 _raw_pos = _raw_positions.get(hno, 0.5)
                 _1c_pos = _1c_normalized.get(hno, 0.5) if _1c_normalized else _raw_pos
-                # 逃げ判定: 1角予測で上位3頭 かつ 生スコアが閾値未満
-                _is_1c_leader = hno in _1c_top_horses and _1c_pos < 0.20
-                _is_raw_leader = _raw_pos < _nige_threshold and rank <= 2
-                if _is_1c_leader or _is_raw_leader:
+
+                # 改善7: 逃げ馬判定
+                _is_nige = False
+                if PACE_ESCAPE_SCORING_V2:
+                    _is_nige = hno in _nige_set
+                else:
+                    _is_1c_leader = hno in _1c_top_horses and _1c_pos < 0.20
+                    _is_raw_leader = _raw_pos < _nige_threshold and rank <= 2
+                    _is_nige = _is_1c_leader or _is_raw_leader
+
+                if _is_nige:
                     _final_style_map[hno] = RunningStyle.NIGASHI
                 elif r <= 0.25:
                     _final_style_map[hno] = RunningStyle.SENKOU
@@ -2149,6 +2281,102 @@ class RaceAnalysisEngine:
     ) -> HorseEvaluation:
         ev = HorseEvaluation(horse=horse)
 
+        # 芝ダ転換コンテキスト構築（同馬場走がない馬のみ）
+        _switch_ctx = None
+        _race_surface = race.course.surface if race.course else None
+        if _race_surface is None:
+            # レース情報不完全 — 転換判定スキップ
+            _has_same_surface = True
+        else:
+            _has_same_surface = any(
+                r.surface == _race_surface for r in (horse.past_runs or [])
+            )
+        if not _has_same_surface and horse.past_runs:
+            # 異馬場走のみ → 転換コンテキストを構築
+            from config.settings import DATABASE_PATH as _DB_PATH_CTX
+            _source_surface = "芝" if _race_surface == "ダート" else "ダート"
+            _switch_dir = "turf_to_dirt" if _race_surface == "ダート" else "dirt_to_turf"
+
+            # 種牡馬・母父の馬場別複勝率をrace_logから取得
+            _sire_tgt_pr, _sire_src_pr = None, None
+            _bms_tgt_pr, _bms_src_pr = None, None
+            try:
+                _sire_nm = getattr(horse, 'sire', '') or ''
+                _bms_nm = getattr(horse, 'maternal_grandsire', '') or ''
+                if _sire_nm or _bms_nm:
+                    import sqlite3 as _ctx_sql
+                    with _ctx_sql.connect(_DB_PATH_CTX) as _ctx_conn:
+                        if _sire_nm:
+                            _s_rows = _ctx_conn.execute(
+                                "SELECT surface, "
+                                "SUM(CASE WHEN finish_pos<=3 THEN 1 ELSE 0 END)*1.0/COUNT(*) "
+                                "FROM race_log WHERE sire_name=? AND is_jra=1 AND finish_pos>0 "
+                                "GROUP BY surface HAVING COUNT(*)>=20",
+                                (_sire_nm,)
+                            ).fetchall()
+                            _sire_map = {s: pr for s, pr in _s_rows}
+                            _sire_tgt_pr = _sire_map.get(_race_surface)
+                            _sire_src_pr = _sire_map.get(_source_surface)
+                        if _bms_nm:
+                            _b_rows = _ctx_conn.execute(
+                                "SELECT surface, "
+                                "SUM(CASE WHEN finish_pos<=3 THEN 1 ELSE 0 END)*1.0/COUNT(*) "
+                                "FROM race_log WHERE bms_name=? AND is_jra=1 AND finish_pos>0 "
+                                "GROUP BY surface HAVING COUNT(*)>=20",
+                                (_bms_nm,)
+                            ).fetchall()
+                            _bms_map = {s: pr for s, pr in _b_rows}
+                            _bms_tgt_pr = _bms_map.get(_race_surface)
+                            _bms_src_pr = _bms_map.get(_source_surface)
+            except Exception:
+                logger.debug("転換コンテキスト: 血統DB参照失敗", exc_info=True)
+
+            # 騎手の馬場別複勝率
+            _j_tgt_pr, _j_src_pr = None, None
+            try:
+                _jid = getattr(horse, 'jockey_id', '') or ''
+                if _jid and race.race_date and race.race_date[:4].isdigit():
+                    import sqlite3 as _ctx_sql2
+                    with _ctx_sql2.connect(_DB_PATH_CTX) as _ctx_conn2:
+                        _j_rows = _ctx_conn2.execute(
+                            "SELECT surface, "
+                            "SUM(CASE WHEN finish_pos<=3 THEN 1 ELSE 0 END)*1.0/COUNT(*) "
+                            "FROM race_log WHERE jockey_id=? AND is_jra=1 AND finish_pos>0 "
+                            "AND race_date>=? "
+                            "GROUP BY surface HAVING COUNT(*)>=10",
+                            (_jid, str(int(race.race_date[:4]) - 2) + race.race_date[4:])
+                        ).fetchall()
+                        _j_map = {s: pr for s, pr in _j_rows}
+                        _j_tgt_pr = _j_map.get(_race_surface)
+                        _j_src_pr = _j_map.get(_source_surface)
+            except Exception:
+                logger.debug("転換コンテキスト: 騎手DB参照失敗", exc_info=True)
+
+            # 推定位置取り（override_positionを使用、なければ簡易推定）
+            _pred_pos = override_position
+            if _pred_pos is None and horse.past_runs:
+                # 直近走の位置取りを簡易プロキシとして使用
+                _last = horse.past_runs[0]
+                _pos4c = getattr(_last, 'position_4c', None)
+                _fc = getattr(_last, 'field_count', None) or 12
+                if _pos4c and _fc > 0:
+                    _pred_pos = _pos4c / _fc  # 0.0=先頭 〜 1.0=最後方
+
+            _switch_ctx = {
+                "switch_direction": _switch_dir,
+                "predicted_position": _pred_pos,
+                "horse_weight": getattr(horse, 'horse_weight', None),
+                "age": getattr(horse, 'age', None),
+                "sire_target_pr": _sire_tgt_pr,
+                "sire_source_pr": _sire_src_pr,
+                "jockey_target_pr": _j_tgt_pr,
+                "jockey_source_pr": _j_src_pr,
+                "gate_no": getattr(horse, 'gate_no', None) or getattr(horse, 'horse_no', None),
+                "field_count": race.field_count,
+                "bms_target_pr": _bms_tgt_pr,
+                "bms_source_pr": _bms_src_pr,
+            }
+
         # A-E章: 能力偏差値
         ev.ability = calc_ability_deviation(
             horse=horse,
@@ -2166,6 +2394,7 @@ class RaceAnalysisEngine:
             bloodline_db=bloodline_db or {},
             pace_db=pace_db or {},
             pace_type=pace_type,
+            surface_switch_context=_switch_ctx,
         )
 
         # 騎手・厩舎データ取得
@@ -2231,6 +2460,7 @@ class RaceAnalysisEngine:
                 field_baseline_override=field_baseline_override,
                 override_position=override_position,
                 override_pos_1c=override_pos_1c,
+                field_style_distribution=pace_context.get("field_style_distribution"),  # 改善2
             )
 
         # G章: コース適性偏差値
@@ -2609,12 +2839,22 @@ def _compute_training_devs(
                 ext = TrainingFeatureExtractor()
                 ext.load_all()
                 _CACHE_TRAINING_EXTRACTOR = ext
+                logger.info("TrainingFeatureExtractor ロード成功")
             except Exception as e:
-                logger.debug("調教偏差値: TrainingFeatureExtractorロード失敗: %s", e)
+                logger.warning("調教偏差値: TrainingFeatureExtractorロード失敗: %s", e)
             _CACHE_TRAINING_LOADED = True
 
         ext = _CACHE_TRAINING_EXTRACTOR
         if not ext:
+            return
+
+        # 調教データがある馬が3頭未満の場合はスキップ
+        horses_with_training = sum(
+            1 for ev in evaluations
+            if getattr(ev.horse, "training_records", None)
+        )
+        if horses_with_training < 3:
+            logger.debug("調教偏差値スキップ: 調教データ%d頭のみ", horses_with_training)
             return
 
         # 馬名リストとレース情報
@@ -2642,10 +2882,10 @@ def _compute_training_devs(
         for ev in evaluations:
             hname = ev.horse.horse_name
             if hname in dev_map and dev_map[hname] is not None:
-                ev._training_dev = dev_map[hname]
+                ev._training_dev = round(max(20.0, min(100.0, dev_map[hname])), 1)
 
     except Exception as e:
-        logger.debug("調教偏差値算出エラー: %s", e)
+        logger.warning("調教偏差値算出エラー: %s", e)
 
 
 # ============================================================
@@ -2907,7 +3147,7 @@ def _compute_personnel_devs(
                         _career_cap = 55.0 + max(0, (_total_runs - 5)) * (15.0 / 45.0)
                         _career_cap = min(_career_cap, 70.0)
                         jdev = min(jdev, _career_cap)
-                    ev._jockey_dev = round(jdev, 1)
+                    ev._jockey_dev = round(max(20.0, min(100.0, jdev)), 1)
             elif ev.jockey_stats:
                 # フォールバック: NAR騎手はrace_logから直接計算（personnel_dbは不正確な場合がある）
                 _fb_dev = None
@@ -3016,7 +3256,7 @@ def _compute_personnel_devs(
                         _t_cap = 55.0 + max(0, (_total_truns - 5)) * (15.0 / 45.0)
                         _t_cap = min(_t_cap, 70.0)
                         tdev = min(tdev, _t_cap)
-                    ev._trainer_dev = round(tdev, 1)
+                    ev._trainer_dev = round(max(20.0, min(100.0, tdev)), 1)
             elif ev.trainer_stats:
                 # フォールバック: NAR調教師はrace_logから直接計算
                 _fb_tdev = None
@@ -3108,11 +3348,11 @@ def _compute_personnel_devs(
 
                 # 父・母父の平均
                 if sire_dev is not None and bms_dev is not None:
-                    ev._bloodline_dev = round((sire_dev * 0.6 + bms_dev * 0.4), 1)
+                    ev._bloodline_dev = round(max(20.0, min(100.0, sire_dev * 0.6 + bms_dev * 0.4)), 1)
                 elif sire_dev is not None:
-                    ev._bloodline_dev = round(sire_dev, 1)
+                    ev._bloodline_dev = round(max(20.0, min(100.0, sire_dev)), 1)
                 elif bms_dev is not None:
-                    ev._bloodline_dev = round(bms_dev, 1)
+                    ev._bloodline_dev = round(max(20.0, min(100.0, bms_dev)), 1)
 
 
 # ============================================================
@@ -3448,7 +3688,7 @@ def _compute_detail_grades(engine: RaceAnalysisEngine, analysis: RaceAnalysis):
             sire_name=_h_sire_name or None,
             mgs_name=_h_mgs_name or None,
         )
-        # 数値（偏差値） — 30-70クランプ
+        # 数値（偏差値） — 20-100クランプ
         # _compute_personnel_devs() で rolling tracker から既に算出済みの場合は上書きしない
         def _clamp_dev(v):
             return round(max(20.0, min(100.0, v)), 1) if v is not None else None

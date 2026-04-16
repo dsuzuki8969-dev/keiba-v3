@@ -176,6 +176,10 @@ def run_odds_update(date_key: str, cancel_event: threading.Event | None = None,
                         h["odds"] = live_odds[race_id][hno][0]
                         h["popularity"] = live_odds[race_id][hno][1]
                         recalc_divergence(h)
+                        # EV再計算: win_prob × 実オッズ
+                        _wp = h.get("win_prob") or 0
+                        _o = h["odds"]
+                        h["ev"] = round(_wp * _o, 3) if _wp > 0 and _o > 0 else None
                         pred_modified = True
                 # 人気順位再計算
                 active = [h for h in race.get("horses", [])

@@ -82,10 +82,10 @@ _WEATHER_CACHE_TTL = 1800  # 秒（天気データ: 30分）
 
 # 競馬場コード → 緯度・経度（天気API用）
 VENUE_COORDS = {
-    "03": (43.06, 141.35),  # 札幌
-    "04": (41.77, 140.73),  # 函館
-    "01": (37.75, 140.47),  # 福島
-    "02": (37.92, 139.04),  # 新潟
+    "01": (43.06, 141.35),  # 札幌
+    "02": (41.77, 140.73),  # 函館
+    "03": (37.75, 140.47),  # 福島
+    "04": (37.92, 139.04),  # 新潟
     "05": (35.66, 139.48),  # 東京
     "06": (35.72, 139.99),  # 中山
     "07": (35.13, 136.95),  # 中京
@@ -641,6 +641,23 @@ def _comp_gap(horses: list, honmei: dict) -> float:
     return 0
 
 
+def _race_belongs_to_date(race_id: str, date_key: str) -> bool:
+    """race_idが指定日(YYYYMMDD)に属するか判定。
+
+    NAR: race_id[6:10] == MMDD（race_idにカレンダー日付が直接埋め込まれる）
+    JRA: race_id[6:10] は回次+日（カレンダー日付ではない）ため判定不可 → True を返す
+    """
+    if len(race_id) < 10 or len(date_key) < 8:
+        return True  # 判定不能 → 許可
+    _JRA_VENUE_CODES = {"01", "02", "03", "04", "05", "06", "07", "08", "09", "10"}
+    venue_code = race_id[4:6]
+    if venue_code in _JRA_VENUE_CODES:
+        return True  # JRA はrace_idから日付判定できないので許可
+    # NAR: race_id[6:10] がMMDD
+    mmdd = date_key[4:8]  # YYYYMMDD → MMDD
+    return race_id[6:10] == mmdd
+
+
 def _scan_today_predictions(date_str: str) -> dict:
     """指定日の個別レースHTML (YYYYMMDD_場名XR.html) をスキャンして会場別に整理"""
     date_key = date_str.replace("-", "")
@@ -665,6 +682,10 @@ def _scan_today_predictions(date_str: str) -> dict:
                 venue = pr.get("venue", "")
                 rno = pr.get("race_no")
                 if not venue or rno is None:
+                    continue
+                # 日付フィルタ: 他日のレースが混在している場合はスキップ
+                _rid = pr.get("race_id", "")
+                if _rid and not _race_belongs_to_date(_rid, date_key):
                     continue
                 key = (venue, rno)
                 _pred_conf[key] = pr.get("confidence", "")
@@ -806,6 +827,10 @@ def _scan_today_predictions(date_str: str) -> dict:
                     venue = pr.get("venue", "")
                     if not venue or venue == "None" or venue.startswith("地方"):
                         continue
+                    # 日付フィルタ: 他日のレースが混在している場合はスキップ
+                    _rid = pr.get("race_id", "")
+                    if _rid and not _race_belongs_to_date(_rid, date_key):
+                        continue
                     race_no = pr.get("race_no", 0)
                     if (venue, race_no) in _existing:
                         continue  # HTML版が既にあるのでスキップ
@@ -898,25 +923,15 @@ def _scan_today_predictions(date_str: str) -> dict:
                     + _s.MIRYOKU_W_JRA * (1 if is_jra else 0),
                     2)
 
-                # グレード判定
-                if miryoku >= _s.MIRYOKU_GRADE_SS:
-                    grade = "SS"
-                elif miryoku >= _s.MIRYOKU_GRADE_S:
-                    grade = "S"
+                # 星評価判定（SS/S→★★★、A→★★、B/C→★、D/E→除外）
+                if miryoku >= _s.MIRYOKU_GRADE_S:
+                    star_rating = 3  # ★★★
                 elif miryoku >= _s.MIRYOKU_GRADE_A:
-                    grade = "A"
-                elif miryoku >= _s.MIRYOKU_GRADE_B:
-                    grade = "B"
+                    star_rating = 2  # ★★
                 elif miryoku >= _s.MIRYOKU_GRADE_C:
-                    grade = "C"
-                elif miryoku >= _s.MIRYOKU_GRADE_D:
-                    grade = "D"
+                    star_rating = 1  # ★
                 else:
-                    grade = "E"
-
-                # C以上のみ表示対象
-                if grade in ("D", "E"):
-                    continue
+                    continue  # D/E は表示対象外
 
                 ana_horses.append({
                     "venue": venue_name,
@@ -931,7 +946,7 @@ def _scan_today_predictions(date_str: str) -> dict:
                     "composite": round(comp, 1),
                     "place3_prob": round(p3 * 100, 1),
                     "miryoku": miryoku,
-                    "miryoku_grade": grade,
+                    "star_rating": star_rating,
                     "is_star": is_star,
                 })
     # 妙味スコア降順でソート
@@ -1251,6 +1266,13 @@ def create_app():
     def serve_logo(filename):
         return send_from_directory(_logos_dir, filename)
 
+    # --- コース見取り図配信 ---
+    _course_images_dir = os.path.join(PROJECT_ROOT, "data", "course_images")
+
+    @app.route("/course_images/<path:filename>")
+    def serve_course_image(filename):
+        return send_from_directory(_course_images_dir, filename)
+
     @app.route("/api/auth_mode")
     def api_auth_mode():
         """クライアントの admin/restricted 判定を返す"""
@@ -1460,6 +1482,12 @@ def create_app():
                                 _t["stake"] = 0
                             _valid.append(_t)
                         race["formation_tickets"] = _valid
+
+                    # EV再計算: 常にwin_prob × odds で最新化
+                    for _hd in race.get("horses", []):
+                        _wp = _hd.get("win_prob") or 0
+                        _o = _hd.get("odds") or _hd.get("predicted_tansho_odds") or 0
+                        _hd["ev"] = round(_wp * _o, 3) if _wp > 0 and _o > 0 else None
 
                     if patched:
                         try:
@@ -2515,6 +2543,55 @@ def create_app():
             logger.warning("predictions unfetched dates failed: %s", e, exc_info=True)
             return jsonify(dates=[], error=str(e))
 
+    @app.route("/api/results/race")
+    def api_results_race():
+        """個別レースの結果（着順・払戻）を返す"""
+        date_str = request.args.get("date", "")
+        race_id = request.args.get("race_id", "")
+        if not date_str or not race_id:
+            return jsonify(ok=False, error="date and race_id required")
+        try:
+            import pathlib
+            results_path = pathlib.Path("data/results") / f"{date_str.replace('-', '')}_results.json"
+            if not results_path.exists():
+                return jsonify(ok=True, found=False)
+            import json as _json
+            with open(results_path, encoding="utf-8") as f:
+                all_results = _json.load(f)
+            race_result = all_results.get(race_id)
+            if not race_result:
+                return jsonify(ok=True, found=False)
+            # 予想データから馬名・印等を補完
+            pred_path = pathlib.Path("data/predictions") / f"{date_str.replace('-', '')}_pred.json"
+            horse_map = {}
+            if pred_path.exists():
+                with open(pred_path, encoding="utf-8") as f:
+                    pred_data = _json.load(f)
+                for r in pred_data.get("races", []):
+                    if r.get("race_id") == race_id:
+                        for h in r.get("horses", []):
+                            horse_map[h.get("horse_no")] = {
+                                "horse_name": h.get("horse_name", ""),
+                                "jockey": h.get("jockey", ""),
+                                "mark": h.get("mark", ""),
+                                "predicted_rank": h.get("predicted_rank"),
+                                "win_prob": h.get("win_prob"),
+                                "gate_no": h.get("gate_no"),
+                            }
+                        break
+            # 着順データに馬名等をマージ
+            order = []
+            for o in race_result.get("order", []):
+                entry = dict(o)
+                hno = entry.get("horse_no")
+                if hno in horse_map:
+                    entry.update(horse_map[hno])
+                order.append(entry)
+            return jsonify(ok=True, found=True, order=order, payouts=race_result.get("payouts", {}))
+        except Exception as e:
+            logger.warning("race result fetch failed: %s", e, exc_info=True)
+            return jsonify(ok=False, error=str(e))
+
     @app.route("/api/results/dates")
     def api_results_dates():
         """予想済み日付一覧 + 日次統計を返す"""
@@ -2571,6 +2648,16 @@ def create_app():
         except Exception as e:
             logger.warning("unmatched dates list failed: %s", e, exc_info=True)
             return jsonify(dates=[], error=str(e))
+
+    @app.route("/api/results/invalidate_cache", methods=["POST"])
+    def api_results_invalidate_cache():
+        """集計キャッシュを全クリアする（pred.json修正後に呼び出し）"""
+        try:
+            from src.results_tracker import invalidate_aggregate_cache
+            invalidate_aggregate_cache()
+            return jsonify(status="ok", message="集計キャッシュクリア完了")
+        except Exception as e:
+            return jsonify(error=str(e)), 500
 
     @app.route("/api/results/summary")
     def api_results_summary():
@@ -3687,13 +3774,9 @@ function dNavRefreshOdds(date){{
             if pos4c == min_p4c:
                 return "逃げ"
             r = pos4c / field_count
-            if r <= 0.22:
+            if r <= 0.35:
                 return "先行"
-            elif r <= 0.38:
-                return "好位"
-            elif r <= 0.55:
-                return "中団"
-            elif r <= 0.72:
+            elif r <= 0.70:
                 return "差し"
             else:
                 return "追込"
@@ -3713,7 +3796,7 @@ function dNavRefreshOdds(date){{
                 if isinstance(fp, int) and fp <= 3:
                     style_stats[style]["place3"] += 1
         running_style_stats = {}
-        for style in ["逃げ","先行","好位","中団","差し","追込"]:
+        for style in ["逃げ","先行","差し","追込"]:
             st = style_stats.get(style, {"total":0,"win":0,"place2":0,"place3":0,"odds_sum":0.0})
             t = st["total"]
             running_style_stats[style] = {
@@ -4143,10 +4226,26 @@ function dNavRefreshOdds(date){{
                 "place3_rate": fst.get("place3_rate", 0),
                 "roi":         st.get("roi"),  # 全体ROIのみ（フィルタ別ROIは未実装）
             })
+            # 脚質率（逃げ率/前行き率/マクリ率）— by_running_style から算出
+            _brs = st.get("by_running_style", {})
+            _rs_total = sum(_brs.get(s, {}).get("total", 0) for s in ("逃げ", "先行", "差し", "追込"))
+            if _rs_total > 0:
+                _nige = _brs.get("逃げ", {}).get("total", 0)
+                _senkou = _brs.get("先行", {}).get("total", 0)
+                _sashi = _brs.get("差し", {}).get("total", 0)
+                _oikomi = _brs.get("追込", {}).get("total", 0)
+                entry["nige_rate"] = round(_nige / _rs_total * 100, 1)
+                entry["maeiki_rate"] = round((_nige + _senkou) / _rs_total * 100, 1)
+                entry["makuri_rate"] = round((_sashi + _oikomi) / _rs_total * 100, 1)
+            else:
+                entry["nige_rate"] = 0
+                entry["maeiki_rate"] = 0
+                entry["makuri_rate"] = 0
             persons.append(entry)
 
         # ソート
-        if sort_key in ("win_rate", "place2_rate", "place3_rate"):
+        if sort_key in ("win_rate", "place2_rate", "place3_rate",
+                        "nige_rate", "maeiki_rate", "makuri_rate"):
             persons.sort(key=lambda x: x.get(sort_key, 0), reverse=True)
         elif sort_key == "roi":
             persons.sort(key=lambda x: (x.get("roi") or 0), reverse=True)
@@ -4304,7 +4403,7 @@ function dNavRefreshOdds(date){{
         "dev_run2_adj": ("前々走偏差値", "前々走の能力偏差値（グレード補正）"),
         "chakusa_index_avg3": ("着差指数", "直近3走の着差指数平均"),
         # 展開・脚質
-        "horse_running_style": ("脚質", "逃げ/先行/好位/中団/差し/追込"),
+        "horse_running_style": ("脚質", "逃げ/先行/差し/追込"),
         "horse_condition_match": ("条件適性", "コース条件との適性度"),
         "ml_pos_est": ("ML位置取り予測", "機械学習による位置取り推定"),
         "ml_l3f_est": ("ML上がり予測", "機械学習による上がり3F推定"),
@@ -4520,11 +4619,11 @@ function dNavRefreshOdds(date){{
         "08": {"芝": "27-38m", "ダート": "25m"},      # 京都
         "09": {"芝": "24-29m", "ダート": "22-25m"},   # 阪神
         "07": {"芝": "25-30m", "ダート": "25m"},      # 中京
-        "02": {"芝": "20-25m", "ダート": "20m"},      # 新潟
+        "04": {"芝": "20-25m", "ダート": "20m"},      # 新潟
         "10": {"芝": "20-30m", "ダート": "20-24m"},   # 小倉
-        "01": {"芝": "20-27m", "ダート": "20-25m"},   # 福島
-        "04": {"芝": "20-29m", "ダート": "20m"},      # 函館
-        "03": {"芝": "25-27m", "ダート": "20m"},      # 札幌
+        "03": {"芝": "20-27m", "ダート": "20-25m"},   # 福島
+        "02": {"芝": "20-29m", "ダート": "20m"},      # 函館
+        "01": {"芝": "25-27m", "ダート": "20m"},      # 札幌
         # NAR 15場
         "30": {"ダート": "25-28m"},                    # 門別
         "65": {"ダート": "2m"},                        # 帯広（ばんえい）
@@ -4722,13 +4821,9 @@ function dNavRefreshOdds(date){{
                 if pos4c == min_p4c:
                     return "逃げ"
                 r = pos4c / field_count
-                if r <= 0.22:
+                if r <= 0.35:
                     return "先行"
-                elif r <= 0.38:
-                    return "好位"
-                elif r <= 0.55:
-                    return "中団"
-                elif r <= 0.72:
+                elif r <= 0.70:
                     return "差し"
                 else:
                     return "追込"
@@ -4749,7 +4844,7 @@ function dNavRefreshOdds(date){{
                         style_stats[style]["place3"] += 1
 
             result = {}
-            for style in ["逃げ", "先行", "好位", "中団", "差し", "追込"]:
+            for style in ["逃げ", "先行", "差し", "追込"]:
                 st = style_stats.get(style, {"total": 0, "win": 0, "place2": 0, "place3": 0, "odds_sum": 0.0})
                 t = st["total"]
                 result[style] = {

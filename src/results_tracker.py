@@ -26,6 +26,64 @@ except Exception:
     _DB_AVAILABLE = False
 
 
+def _build_bloodline_lookup() -> Dict[str, Tuple[str, str]]:
+    """keiba.db race_logから horse_id → (sire_name, bms_name) のルックアップを構築"""
+    try:
+        import sqlite3
+        from config.settings import DATABASE_PATH
+        with sqlite3.connect(DATABASE_PATH) as conn:
+            rows = conn.execute(
+                "SELECT horse_id, sire_name, bms_name FROM race_log "
+                "WHERE sire_name IS NOT NULL AND sire_name != '' "
+                "GROUP BY horse_id ORDER BY MAX(race_date) DESC"
+            ).fetchall()
+        return {r[0]: (r[1], r[2] or "") for r in rows}
+    except Exception:
+        return {}
+
+
+def _build_affiliation_lookup() -> Dict[str, str]:
+    """personnel_db.json + keiba.db trainer_nameから trainer_id → 所属 のルックアップを構築"""
+    result: Dict[str, str] = {}
+    # Step 1: personnel_db.json
+    try:
+        import json as _json
+        from config.settings import PERSONNEL_DB_PATH
+        with open(PERSONNEL_DB_PATH, "r", encoding="utf-8") as f:
+            pdb = _json.load(f)
+        for tid, info in pdb.get("trainers", {}).items():
+            loc = info.get("location", "")
+            if loc and loc not in ("JRA",):
+                result[tid] = loc
+            elif loc == "JRA":
+                # trainer_name/stable_nameから美浦/栗東を推定
+                name = info.get("trainer_name", "") or info.get("stable_name", "")
+                if name.startswith("美浦"):
+                    result[tid] = "美浦"
+                elif name.startswith("栗東"):
+                    result[tid] = "栗東"
+    except Exception:
+        pass
+    # Step 2: keiba.db race_logのtrainer_nameから「美浦XX」「栗東XX」パターンを取得
+    try:
+        import sqlite3
+        from config.settings import DATABASE_PATH
+        with sqlite3.connect(DATABASE_PATH) as conn:
+            rows = conn.execute(
+                "SELECT DISTINCT trainer_id, trainer_name FROM race_log "
+                "WHERE trainer_id IS NOT NULL AND trainer_name IS NOT NULL"
+            ).fetchall()
+        for tid, tname in rows:
+            if tid not in result and tname:
+                if tname.startswith("美浦"):
+                    result[tid] = "美浦"
+                elif tname.startswith("栗東"):
+                    result[tid] = "栗東"
+    except Exception:
+        pass
+    return result
+
+
 # ============================================================
 # 予想データの保存（分析完了時に呼ぶ）
 # ============================================================
@@ -43,6 +101,10 @@ def save_prediction(date: str, analyses_by_venue: dict, *, lightweight: bool = F
     """
     os.makedirs(PREDICTIONS_DIR, exist_ok=True)
     payload = {"date": date, "version": 2, "races": []}
+
+    # 血統・所属のDB補完用ルックアップ（一括構築）
+    _bl_lookup = _build_bloodline_lookup()
+    _af_lookup = _build_affiliation_lookup()
 
     for venue, race_map in analyses_by_venue.items():
         for race_no, analysis in sorted(race_map.items()):
@@ -135,11 +197,25 @@ def save_prediction(date: str, analyses_by_venue: dict, *, lightweight: bool = F
                 _age = getattr(h, "age", None)
                 if _sex in ("不明", "", None) and h.horse_no in _sex_cache:
                     _sex, _age = _sex_cache[h.horse_no]
+
+                # 血統・所属のDB補完
+                _h_sire = getattr(h, "sire", "") or ""
+                _h_bms = getattr(h, "maternal_grandsire", "") or ""
+                _h_affil = getattr(h, "trainer_affiliation", "") or ""
+                _h_id = getattr(h, "horse_id", "") or ""
+                _h_tid = getattr(h, "trainer_id", "") or ""
+                if (not _h_sire or _h_sire in ("一", "―")) and _h_id in _bl_lookup:
+                    _h_sire, _h_bms_db = _bl_lookup[_h_id]
+                    if not _h_bms or _h_bms in ("一", "―"):
+                        _h_bms = _h_bms_db
+                if not _h_affil and _h_tid and _h_tid in _af_lookup:
+                    _h_affil = _af_lookup[_h_tid]
+
                 horse_data = {
                     # 基本情報
                     "horse_no": h.horse_no,
                     "horse_name": h.horse_name,
-                    "horse_id": getattr(h, "horse_id", ""),
+                    "horse_id": _h_id,
                     "sex": _sex if _sex not in ("不明", None) else "",
                     "age": _age if _age else getattr(h, "age", None),
                     "gate_no": getattr(h, "gate_no", None),
@@ -147,11 +223,13 @@ def save_prediction(date: str, analyses_by_venue: dict, *, lightweight: bool = F
                     "jockey": getattr(h, "jockey", ""),
                     "jockey_id": getattr(h, "jockey_id", ""),
                     "trainer": getattr(h, "trainer", ""),
-                    "trainer_id": getattr(h, "trainer_id", ""),
-                    "sire": getattr(h, "sire", ""),
+                    "trainer_id": _h_tid,
+                    "trainer_affiliation": _h_affil,
+                    "sire": _h_sire,
                     "dam": getattr(h, "dam", ""),
-                    "maternal_grandsire": getattr(h, "maternal_grandsire", ""),
+                    "maternal_grandsire": _h_bms,
                     "owner": getattr(h, "owner", ""),
+                    "owner_id": getattr(h, "owner_id", ""),
                     "horse_weight": getattr(h, "horse_weight", None),
                     "weight_change": getattr(h, "weight_change", None),
                     "weight_confirmed": False,  # オッズ取得時に公式データで上書きされたら True
@@ -159,9 +237,9 @@ def save_prediction(date: str, analyses_by_venue: dict, *, lightweight: bool = F
                     "popularity": h.popularity,
                     # 総合
                     "mark": ev.mark.value if ev.mark else "-",
-                    # assign_marks でスナップショットされた値を優先（印との整合性保証）— 30-70クランプ
+                    # assign_marks でスナップショットされた値を優先（印との整合性保証）— 20-100クランプ
                     "composite": round(max(20.0, min(100.0, getattr(ev, "_composite_snapshot", ev.composite))), 2),
-                    # 能力偏差値 (A-E章) — 30-70クランプ
+                    # 能力偏差値 (A-E章) — 20-100クランプ
                     "ability_total": round(max(20.0, min(100.0, ev.ability.total)), 2),
                     "ability_max": round(ev.ability.max_dev, 2),
                     "ability_wa": round(ev.ability.wa_dev, 2),
@@ -174,6 +252,8 @@ def save_prediction(date: str, analyses_by_venue: dict, *, lightweight: bool = F
                     else "B",
                     "ability_class_adj": round(ev.ability.class_adjustment, 2),
                     "ability_bloodline_adj": round(ev.ability.bloodline_adj, 2),
+                    "ability_surface_switch": ev.ability.is_surface_switch,
+                    "ability_switch_adj": round(ev.ability.surface_switch_adj, 2) if ev.ability.is_surface_switch else 0.0,
                     "ability_chakusa_pattern": ev.ability.chakusa_pattern.value
                     if ev.ability.chakusa_pattern
                     else "",
@@ -185,6 +265,8 @@ def save_prediction(date: str, analyses_by_venue: dict, *, lightweight: bool = F
                     "pace_gate_bias": round(ev.pace.gate_bias, 2),
                     "pace_course_style_bias": round(ev.pace.course_style_bias, 2),
                     "pace_jockey": round(ev.pace.jockey_pace, 2),
+                    "pace_trajectory": round(ev.pace.trajectory_score, 2),
+                    "pace_weight_applied": round(_get_pace_weight_for_ev(ev), 3),  # 改善1: 適用されたpaceウェイト
                     "pace_estimated_pos4c": round(max(1, ev.pace.estimated_position_4c * len(analysis.evaluations) + 1 - 1.5), 1) if ev.pace.estimated_position_4c is not None else None,
                     "pace_estimated_last3f": _round_or_none(ev.pace.estimated_last3f),
                     "pace_estimated_front3f": _round_or_none(ev.pace.estimated_front_3f),
@@ -262,7 +344,7 @@ def save_prediction(date: str, analyses_by_venue: dict, *, lightweight: bool = F
                     "sire_grade": getattr(ev, "_sire_grade", "—"),
                     "mgs_grade": getattr(ev, "_mgs_grade", "—"),
                     "owner_grade": "—",
-                    # 偏差値（数値）— 30-70クランプ
+                    # 偏差値（数値）— 20-100クランプ
                     "jockey_dev": round(max(20.0, min(100.0, v)), 1) if (v := getattr(ev, "_jockey_dev", None)) is not None else None,
                     "trainer_dev": round(max(20.0, min(100.0, v)), 1) if (v := getattr(ev, "_trainer_dev", None)) is not None else None,
                     "bloodline_dev": round(max(20.0, min(100.0, v)), 1) if (v := getattr(ev, "_bloodline_dev", None)) is not None else None,
@@ -341,9 +423,52 @@ def save_prediction(date: str, analyses_by_venue: dict, *, lightweight: bool = F
                         _corners_per_horse[hno].append(_rank_map[hno])
 
                 # 各馬に predicted_corners を設定（"3-3-4-5" 形式）
+                # さらに predicted_corners と running_style の整合性を補正
                 for _hd in race_data["horses"]:
                     _ranks = _corners_per_horse.get(_hd["horse_no"], [])
                     _hd["predicted_corners"] = "-".join(str(r) for r in _ranks) if _ranks else ""
+                    # 脚質整合性チェック: 1コーナー位置と running_style の矛盾を補正
+                    if _ranks:
+                        _first_corner = _ranks[0]
+                        _rs = _hd.get("running_style", "")
+                        # 1角3番手以降なのに「逃げ」→「先行」に補正
+                        if _rs == "逃げ" and _first_corner >= 3:
+                            _hd["running_style"] = "先行"
+                        # 1角1番手なのに「差し」「追込」→「逃げ」に補正
+                        elif _rs in ("差し", "追込") and _first_corner == 1:
+                            _hd["running_style"] = "逃げ"
+                        # 1角2番手なのに「追込」→「先行」に補正
+                        elif _rs == "追込" and _first_corner <= 2:
+                            _hd["running_style"] = "先行"
+
+                # Phase 10: 通過順トレンドに基づく展開偏差値補正 + 上がり3F整合性補正
+                # 順位が下がる馬（前→後）= 大ペナルティ、上がる馬（後→前）= ボーナス
+                _is_turf = race_data.get("surface", "") == "芝"
+                for _hd in race_data["horses"]:
+                    _ranks = _corners_per_horse.get(_hd["horse_no"], [])
+                    if len(_ranks) >= 2:
+                        _corner_adj = _calc_corner_trend_adj(_ranks, _n)
+                        if _corner_adj != 0.0:
+                            _old_pace = _hd.get("pace_total", 50.0)
+                            _new_pace = round(max(20.0, min(100.0, _old_pace + _corner_adj)), 2)
+                            _hd["pace_total"] = _new_pace
+                            _hd["pace_corner_adj"] = round(_corner_adj, 2)
+
+                        # 上がり3F整合性補正: 後退中の馬が速い末脚を出せるのは矛盾
+                        # 通過順で下がっている馬は上がり3Fを遅くする
+                        _l3f = _hd.get("pace_estimated_last3f")
+                        if _l3f is not None:
+                            _l3f_adj = _calc_last3f_trajectory_adj(_ranks, _is_turf)
+                            if _l3f_adj != 0.0:
+                                _hd["pace_estimated_last3f"] = round(_l3f + _l3f_adj, 2)
+
+                # 上がり3Fランク再計算（整合性補正後の値で再ソート）
+                _l3f_list = [(hd["horse_no"], hd.get("pace_estimated_last3f") or 99.0)
+                             for hd in race_data["horses"]]
+                _l3f_list.sort(key=lambda x: x[1])
+                _l3f_rank_map = {hno: rank for rank, (hno, _) in enumerate(_l3f_list, 1)}
+                for _hd in race_data["horses"]:
+                    _hd["estimated_last3f_rank"] = _l3f_rank_map.get(_hd["horse_no"])
 
             # 馬個別見解・印見解・買い目は廃止（2026-03 以降）
 
@@ -431,21 +556,30 @@ def save_prediction(date: str, analyses_by_venue: dict, *, lightweight: bool = F
             pass  # バックアップ失敗でも処理続行
 
     # 既存の pred.json とマージ（別分析セッションのレースを保持する）
+    # race_id をプライマリキーに使用（venue名変更でも同一レースを正しく識別）
     if os.path.isfile(fpath):
         try:
             with open(fpath, "r", encoding="utf-8") as ef:
                 existing = json.load(ef)
-            # 今回の分析に含まれる (venue, race_no) のセット
+            # 今回の分析に含まれる race_id のセット（重複防止の主キー）
+            new_race_ids = {r.get("race_id", "") for r in payload["races"] if r.get("race_id")}
+            # フォールバック: race_id がない場合は (venue, race_no) も使う
             new_keys = {(r["venue"], r["race_no"]) for r in payload["races"]}
 
             # 既存レースのオッズ・人気・馬体重を新データに引き継ぎ
+            _old_by_id = {}
             _old_by_key = {}
             for old_race in existing.get("races", []):
+                rid = old_race.get("race_id", "")
+                if rid:
+                    _old_by_id[rid] = old_race
                 key = (old_race.get("venue", ""), old_race.get("race_no", 0))
                 _old_by_key[key] = old_race
             for new_race in payload["races"]:
-                key = (new_race.get("venue", ""), new_race.get("race_no", 0))
-                old_race = _old_by_key.get(key)
+                # race_id で既存を検索（優先）、なければ (venue, race_no) で検索
+                old_race = _old_by_id.get(new_race.get("race_id", ""))
+                if not old_race:
+                    old_race = _old_by_key.get((new_race.get("venue", ""), new_race.get("race_no", 0)))
                 if not old_race:
                     continue
                 _old_horses = {h.get("horse_no"): h for h in old_race.get("horses", [])}
@@ -460,10 +594,15 @@ def save_prediction(date: str, analyses_by_venue: dict, *, lightweight: bool = F
                         nh["popularity"] = oh["popularity"]
 
             # 既存レースのうち、今回の分析に含まれないものを保持
+            # race_id と (venue, race_no) の両方でチェック（venue名変更対応）
             for old_race in existing.get("races", []):
+                rid = old_race.get("race_id", "")
                 key = (old_race.get("venue", ""), old_race.get("race_no", 0))
-                if key not in new_keys:
-                    payload["races"].append(old_race)
+                if rid and rid in new_race_ids:
+                    continue  # race_id が一致 → 新データに含まれる
+                if key in new_keys:
+                    continue  # (venue, race_no) が一致 → 新データに含まれる
+                payload["races"].append(old_race)
             # odds_updated_at 等のメタ情報を引き継ぎ
             for meta_key in ("odds_updated_at",):
                 if meta_key in existing and meta_key not in payload:
@@ -512,6 +651,99 @@ def save_prediction(date: str, analyses_by_venue: dict, *, lightweight: bool = F
 
 def _round_or_none(v, n=2):
     return round(v, n) if v is not None else None
+
+
+def _get_pace_weight_for_ev(ev) -> float:
+    """改善1: HorseEvaluationに適用されたpaceウェイトを取得"""
+    from config.settings import get_composite_weights
+    _surface = getattr(ev, "_race_surface", None)
+    _field_size = getattr(ev, "_race_field_size", None)
+    _distance = getattr(ev, "_race_distance", None)
+    w = get_composite_weights(
+        getattr(ev, "venue_name", None),
+        surface=_surface,
+        field_size=_field_size,
+        distance=_distance,
+    )
+    return w.get("pace", 0.30)
+
+
+def _calc_last3f_trajectory_adj(corners: list, is_turf: bool = True) -> float:
+    """通過順の軌跡に基づく上がり3F補正（秒）
+
+    後退中の馬が速い末脚を使えるのは矛盾 → 上がり3Fを遅くする。
+    前進中の馬は展開が向いている → 上がり3Fを速くする。
+    """
+    if len(corners) < 2:
+        return 0.0
+
+    first = corners[0]
+    last = corners[-1]
+    rank_change = last - first  # 正=順位低下（後退）
+
+    # 後半の動き（3角→4角）も見る
+    late_change = corners[-1] - corners[-2] if len(corners) >= 2 else 0
+
+    adj = 0.0
+    # 芝: 1順位下がるごとに+0.15秒（遅くなる）、ダート: +0.20秒
+    sec_per_rank = 0.15 if is_turf else 0.20
+
+    if rank_change > 0:
+        # 後退中 → 上がり3Fを遅くする
+        adj = rank_change * sec_per_rank
+        # 単調下降はさらに加算
+        monotonic = all(corners[i] <= corners[i + 1] for i in range(len(corners) - 1))
+        if monotonic:
+            adj += rank_change * (sec_per_rank * 0.5)
+        # 逃げ馬が交わされる場合（1-2番手からの後退）
+        if first <= 2 and last > first:
+            adj += (last - first) * (sec_per_rank * 0.5)
+    elif rank_change < 0:
+        # 前進中 → 上がり3Fを速くする（控えめ）
+        adj = rank_change * (sec_per_rank * 0.5)  # 半分だけ速くする
+
+    # クランプ: 芝 -0.5〜+1.5秒、ダート -0.8〜+2.0秒
+    if is_turf:
+        return max(-0.5, min(1.5, adj))
+    else:
+        return max(-0.8, min(2.0, adj))
+
+
+def _calc_corner_trend_adj(corners: list, n_horses: int) -> float:
+    """予想通過順の変化パターンに基づく展開偏差値補正（-15〜+8pt）
+
+    下がる馬（前→後）= 大ペナルティ — 逃げて交わされる馬はノーチャンス
+    上がる馬（後→前）= ボーナス — 差し追込で前に来る馬を高評価
+    """
+    if len(corners) < 2:
+        return 0.0
+
+    first = corners[0]
+    last = corners[-1]
+    rank_change = last - first  # 正=順位低下（下がる）、負=順位上昇（上がる）
+
+    adj = 0.0
+
+    # 1. 順位変化ベース: 1位下がるごとに-2pt、上がるごとに+2pt
+    adj -= rank_change * 2.0
+
+    # 2. 逃げ馬交わされペナルティ: 1-2番手先行→順位低下は致命的
+    if first <= 2 and last > first:
+        adj -= (last - first) * 3.0
+
+    # 3. 単調下降ペナルティ: 毎コーナー順位悪化（展開に逆行）
+    monotonic = all(corners[i] <= corners[i + 1] for i in range(len(corners) - 1))
+    if monotonic and rank_change > 0:
+        adj -= rank_change * 1.5
+
+    # 4. 後半上昇ボーナス: 道中の最悪順位から最終コーナーで前進
+    if len(corners) >= 3:
+        worst_mid = max(corners[1:-1]) if len(corners) > 2 else corners[0]
+        late_gain = worst_mid - last
+        if late_gain > 0:
+            adj += late_gain * 1.0
+
+    return max(-15.0, min(8.0, adj))
 
 
 def _extract_training_summary(records) -> Optional[dict]:
@@ -1107,6 +1339,7 @@ def _infer_race_no(run) -> int:
 def _extract_past_runs(horse, count: int = 3, run_records=None) -> list:
     """馬の過去走データからフロントエンド用に前N走を抽出（走破偏差値付き）"""
     from src.calculator.grades import dev_to_grade
+    from data.masters.venue_master import get_venue_name
 
     runs = getattr(horse, "past_runs", None)
     if not runs:
@@ -1208,7 +1441,7 @@ def _extract_past_runs(horse, count: int = 3, run_records=None) -> list:
 
         result.append({
             "date": rd,
-            "venue": getattr(run, "venue", ""),
+            "venue": get_venue_name(getattr(run, "venue", "")) or getattr(run, "venue", ""),
             "surface": getattr(run, "surface", ""),
             "distance": getattr(run, "distance", 0),
             "condition": getattr(run, "condition", ""),
@@ -1223,8 +1456,11 @@ def _extract_past_runs(horse, count: int = 3, run_records=None) -> list:
             "last_3f": _round_or_none(getattr(run, "last_3f_sec", None), 1)
                        if (getattr(run, "last_3f_sec", None) or 0) <= 50
                        else None,  # 上がり3Fが50秒超は異常値 → 非表示
+            # 着差: 1着=-(margin_behind)で先着を表現、2着以降=+(margin_ahead)で遅れを表現
             "margin": _round_or_none(
-                getattr(run, "margin_ahead", None) or getattr(run, "margin_behind", None),
+                -(getattr(run, "margin_behind", 0) or 0)
+                if getattr(run, "finish_pos", 0) == 1
+                else (getattr(run, "margin_ahead", None) or 0),
                 1,
             ),
             "speed_dev": sd,
@@ -1237,6 +1473,7 @@ def _extract_past_runs(horse, count: int = 3, run_records=None) -> list:
             "race_no": _infer_race_no(run),
             "result_cname": getattr(run, "result_cname", ""),
             "last_3f_rank": _get_l3f_rank_for_run(run) or l3f_rank_by_date.get(rd),
+            "popularity": getattr(run, "popularity_at_race", None),
         })
     return result
 

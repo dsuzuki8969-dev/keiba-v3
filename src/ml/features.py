@@ -308,8 +308,8 @@ def _extract_past_run_features(past: list, current_race: dict, horse: dict = Non
     current_surface = current_race.get("surface", "")
     current_distance = current_race.get("distance", 1600)
 
-    # 基本集計
-    finish_positions = [h.get("finish_pos") for _, _, h in recent if h.get("finish_pos")]
+    # 基本集計（取消・除外=着順90以上を除外）
+    finish_positions = [h.get("finish_pos") for _, _, h in recent if h.get("finish_pos") and h.get("finish_pos") < 90]
     last3fs = [h.get("last_3f_sec") for _, _, h in recent if h.get("last_3f_sec")]
     corners = []
     for _, _, h in recent:

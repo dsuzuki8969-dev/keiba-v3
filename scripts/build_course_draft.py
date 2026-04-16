@@ -12,17 +12,8 @@ import json
 import os
 import sys
 
-# venue_master の競馬場名→venue_code（netkeiba形式）
-VENUE_NAME_TO_CODE = {
-    "札幌": "03", "函館": "04", "福島": "01", "新潟": "02",
-    "東京": "05", "中山": "06", "京都": "07", "阪神": "08",
-    "中京": "09", "小倉": "10",
-    "門別": "51", "盛岡": "36", "水沢": "37",
-    "浦和": "42", "船橋": "43", "大井": "44", "川崎": "45",
-    "金沢": "46", "笠松": "47", "名古屋": "48",
-    "園田": "50", "姫路": "51",
-    "高知": "54", "佐賀": "55",
-}
+# venue_master から直接インポート（JRA場コードのハードコード重複を排除）
+from data.masters.venue_master import VENUE_NAME_TO_CODE
 
 # コーナー角度の正規化（CSV→CourseMaster）
 CORNER_MAP = {

@@ -738,11 +738,12 @@ def filter_past_runs(
     race_date: str,
     target_surface: str,
     is_long_break: bool = False,
-) -> Tuple[List[PastRun], bool]:
+) -> Tuple[List[PastRun], bool, bool]:
     """
     C-1: 1年以内×同系統×最大5走
     長期休養明け: 2年拡張+減衰適用
-    Returns: (filtered_runs, is_decayed)
+    同馬場走がゼロの場合、異馬場走をフォールバック返却（is_surface_switch=True）
+    Returns: (filtered_runs, is_decayed, is_surface_switch)
     """
     try:
         ref_date = datetime.strptime(race_date, "%Y-%m-%d")
@@ -753,6 +754,7 @@ def filter_past_runs(
 
     # 日付・同系統フィルタ
     filtered = []
+    cross_surface = []  # 異馬場走（フォールバック用）
     for r in sorted(runs, key=lambda x: x.race_date, reverse=True):
         try:
             run_date = datetime.strptime(r.race_date, "%Y-%m-%d")
@@ -765,10 +767,182 @@ def filter_past_runs(
         if days_ago > days_limit:
             continue
         if r.surface != target_surface:
+            cross_surface.append(r)
             continue
         filtered.append(r)
 
-    return filtered[:RACE_HISTORY_MAX_RUNS], is_long_break
+    # 同馬場走がある場合: 従来通り
+    if filtered:
+        return filtered[:RACE_HISTORY_MAX_RUNS], is_long_break, False
+
+    # 同馬場走ゼロ + 異馬場走あり: 転向フォールバック
+    if cross_surface:
+        return cross_surface[:RACE_HISTORY_MAX_RUNS], is_long_break, True
+
+    # 過去走なし（新馬）
+    return [], is_long_break, False
+
+
+# ============================================================
+# C-1b: 芝ダ転換適性スコア算出
+# ============================================================
+
+
+def calc_surface_switch_score(
+    switch_direction: str,
+    context: Optional[Dict] = None,
+) -> float:
+    """
+    馬場転向時の適性補正値を算出する（-4.0 〜 +6.0 pt）。
+
+    7因子の加重合算。各因子は -1.0〜+1.0 の正規化スコアを出力し、
+    データ根拠の重みで合算後、MAX_BONUS/MAX_PENALTY でクランプ。
+
+    Args:
+        switch_direction: "turf_to_dirt" or "dirt_to_turf"
+        context: 各因子の入力値を含むdict
+            - predicted_position: float (0.0=逃げ 〜 1.0=追込)
+            - horse_weight: int (kg)
+            - age: int
+            - sire_target_pr: float (種牡馬の転向先面の複勝率)
+            - sire_source_pr: float (種牡馬の転向元面の複勝率)
+            - jockey_target_pr: float (騎手の転向先面の複勝率)
+            - jockey_source_pr: float (騎手の転向元面の複勝率)
+            - gate_no: int
+            - field_count: int
+            - bms_target_pr: float (母父の転向先面の複勝率)
+            - bms_source_pr: float (母父の転向元面の複勝率)
+    Returns:
+        float: 転換適性補正値（偏差値pt）
+    """
+    from config.settings import (
+        SURFACE_SWITCH_FACTOR_WEIGHTS,
+        SURFACE_SWITCH_MAX_BONUS,
+        SURFACE_SWITCH_MAX_PENALTY,
+    )
+
+    if not context:
+        return 0.0
+    if switch_direction not in ("turf_to_dirt", "dirt_to_turf"):
+        return 0.0
+
+    to_dirt = switch_direction == "turf_to_dirt"
+    factor_scores: Dict[str, float] = {}
+
+    # --- 1. 脚質/位置取り (weight=0.347) ---
+    # predicted_position: 0.0=最前 〜 1.0=最後方
+    # ダート転向: 前目に行けるほどプラス（data: 逃げ51% vs 追込2.4%）
+    # 芝転向: 前目がやや有利だが差も大きくない
+    pred_pos = context.get("predicted_position")
+    if pred_pos is not None:
+        if to_dirt:
+            # 0.0→+1.0(逃げ), 0.35→+0.3(先行), 0.65→-0.3(差し), 1.0→-1.0(追込)
+            factor_scores["position"] = max(-1.0, min(1.0, 1.0 - pred_pos * 2.0))
+        else:
+            # 芝転向: 前目が有利だが影響度は半分
+            factor_scores["position"] = max(-1.0, min(1.0, (0.5 - pred_pos) * 1.2))
+
+    # --- 2. 馬体重 (weight=0.141) ---
+    # ダート転向: 重い馬ほどプラス（data: 520+→20.5% vs <440→6.7%）
+    # 芝転向: 軽い方がやや有利だが影響は小さい
+    hw = context.get("horse_weight")
+    if hw and hw > 0:
+        if to_dirt:
+            if hw >= 520:
+                factor_scores["horse_weight"] = 1.0
+            elif hw >= 480:
+                factor_scores["horse_weight"] = 0.5
+            elif hw >= 440:
+                factor_scores["horse_weight"] = 0.0
+            else:
+                factor_scores["horse_weight"] = -0.7
+        else:
+            if hw < 440:
+                factor_scores["horse_weight"] = -0.5  # 軽量は芝でも苦戦
+            elif hw < 480:
+                factor_scores["horse_weight"] = 0.0
+            elif hw < 520:
+                factor_scores["horse_weight"] = 0.3
+            else:
+                factor_scores["horse_weight"] = 0.2  # 大型は芝でもまあまあ
+
+    # --- 3. 年齢 (weight=0.134) ---
+    # 2-4歳: 成長期で転向成功率高い（data: 2歳18.6%, 4歳15.9%）
+    # 5歳+: 急落（data: 5歳6.3%, 7歳2.1%）
+    age = context.get("age")
+    if age and age > 0:
+        if age <= 3:
+            factor_scores["age"] = 0.6
+        elif age == 4:
+            factor_scores["age"] = 0.3
+        elif age == 5:
+            factor_scores["age"] = -0.3
+        elif age == 6:
+            factor_scores["age"] = -0.6
+        else:
+            factor_scores["age"] = -1.0
+
+    # --- 4. 種牡馬の馬場適性 (weight=0.134) ---
+    # 転向先面の複勝率が転向元面より高いほどプラス
+    sire_tgt = context.get("sire_target_pr")
+    sire_src = context.get("sire_source_pr")
+    if sire_tgt is not None and sire_src is not None and sire_src > 0:
+        # 差を0.10で正規化（data: 最大差21.5pt = 0.215）
+        diff = (sire_tgt - sire_src)
+        factor_scores["sire"] = max(-1.0, min(1.0, diff / 0.10))
+
+    # --- 5. 騎手の馬場適性 (weight=0.105) ---
+    j_tgt = context.get("jockey_target_pr")
+    j_src = context.get("jockey_source_pr")
+    if j_tgt is not None and j_src is not None and j_src > 0:
+        diff = (j_tgt - j_src)
+        factor_scores["jockey"] = max(-1.0, min(1.0, diff / 0.08))
+
+    # --- 6. 枠順 (weight=0.083) ---
+    # ダート転向: 外枠が有利（data: 外20.0% vs 内14.7%）
+    # 芝転向: 外枠がやや有利（data: 外13.6% vs 内7.8%）
+    gate_no = context.get("gate_no")
+    field_count = context.get("field_count")
+    if gate_no and field_count and field_count > 0:
+        gate_pct = gate_no / field_count  # 0.0=最内 〜 1.0=大外
+        if to_dirt:
+            # 外枠ほどプラス: 0.5→0, 1.0→+1.0, 0.0→-0.6
+            factor_scores["gate"] = max(-1.0, min(1.0, (gate_pct - 0.5) * 2.0))
+        else:
+            # 芝転向でも外枠がやや有利
+            factor_scores["gate"] = max(-1.0, min(1.0, (gate_pct - 0.4) * 1.5))
+
+    # --- 7. 母父の馬場適性 (weight=0.055) ---
+    bms_tgt = context.get("bms_target_pr")
+    bms_src = context.get("bms_source_pr")
+    if bms_tgt is not None and bms_src is not None and bms_src > 0:
+        diff = (bms_tgt - bms_src)
+        factor_scores["bms"] = max(-1.0, min(1.0, diff / 0.10))
+
+    # --- 加重合算 ---
+    if not factor_scores:
+        return 0.0
+
+    weighted_sum = 0.0
+    weight_total = 0.0
+    for key, score in factor_scores.items():
+        w = SURFACE_SWITCH_FACTOR_WEIGHTS.get(key, 0.0)
+        weighted_sum += score * w
+        weight_total += w
+
+    if weight_total <= 0:
+        return 0.0
+
+    # 利用可能な因子で正規化（欠損因子があっても比率を保つ）
+    normalized = weighted_sum / weight_total
+
+    # スケーリング: -1.0〜+1.0 → MAX_PENALTY〜MAX_BONUS
+    if normalized >= 0:
+        result = normalized * SURFACE_SWITCH_MAX_BONUS
+    else:
+        result = normalized * abs(SURFACE_SWITCH_MAX_PENALTY)
+
+    return round(max(SURFACE_SWITCH_MAX_PENALTY, min(SURFACE_SWITCH_MAX_BONUS, result)), 2)
 
 
 def detect_long_break(runs: List[PastRun], race_date: str, threshold_days: int = 90) -> Tuple[bool, int]:
@@ -1086,10 +1260,14 @@ def _calc_baken_type(runs: List[PastRun]) -> BakenType:
     """三連率ベースで馬券タイプを判定 (I-1 三連率プロファイル)"""
     if not runs:
         return BakenType.BALANCE
-    n = len(runs)
-    wins = sum(1 for r in runs if r.finish_pos == 1) / n
-    top2 = sum(1 for r in runs if r.finish_pos <= 2) / n
-    top3 = sum(1 for r in runs if r.finish_pos <= 3) / n
+    # 取消・除外（着順90以上）を除外して有効走のみで計算
+    valid = [r for r in runs if r.finish_pos < 90]
+    n = len(valid)
+    if n == 0:
+        return BakenType.BALANCE
+    wins = sum(1 for r in valid if r.finish_pos == 1) / n
+    top2 = sum(1 for r in valid if r.finish_pos <= 2) / n
+    top3 = sum(1 for r in valid if r.finish_pos <= 3) / n
 
     if top3 == 0:
         return BakenType.IPPATSU
@@ -1195,6 +1373,7 @@ def calc_ability_deviation(
     bloodline_db: Optional[Dict] = None,
     pace_db: Optional[Dict] = None,
     pace_type=None,
+    surface_switch_context: Optional[Dict] = None,
 ) -> AbilityDeviation:
     """
     全A-E章ロジックを統合して AbilityDeviation を返す
@@ -1214,8 +1393,10 @@ def calc_ability_deviation(
     # 1. 長期休養判定
     is_long_break, break_days = detect_long_break(horse.past_runs, race_date)
 
-    # 2. 過去走フィルタ
-    filtered_runs, _ = filter_past_runs(horse.past_runs, race_date, race_surface, is_long_break)
+    # 2. 過去走フィルタ（同馬場走0の場合は異馬場走をフォールバック返却）
+    filtered_runs, _, is_surface_switch = filter_past_runs(
+        horse.past_runs, race_date, race_surface, is_long_break
+    )
 
     # 3. 各走の走破偏差値算出
     run_deviations: List[float] = []
@@ -1224,7 +1405,7 @@ def calc_ability_deviation(
     # ---- ばんえい専用: JRA同等のタイムベース偏差値計算 ----
     # 計算式: dev = 50 + (斤量帯別基準タイム - 走破タイム) × 係数
     # クラス差はタイム差として自然に反映される（40,630走の実データで検証済み）
-    # 係数0.50: 全体std=24.3s → 1σ=12.2pt → 30-70範囲に収まる
+    # 係数0.50: 全体std=24.3s → 1σ=12.2pt → 大半が20-100範囲に収まる
     from data.masters.venue_master import is_banei as _is_banei_ability
     _banei_mode = _is_banei_ability(course_id[:2] if course_id else "")
     _BANEI_TIME_COEFF = 0.50  # 1秒差 = 0.5偏差値ポイント
@@ -1249,15 +1430,16 @@ def calc_ability_deviation(
 
     if not _banei_mode:
       for run in filtered_runs:
-        # 非完走（取消・除外・中止・競走中止 = 着順99等）はスキップ
-        if run.finish_pos >= 99:
-            run_deviations.append(30.0)  # 非完走は低評価
-            run_records_list.append((run, 30.0, None))
+        # 非完走（取消・除外・中止・競走中止 = 着順90以上）はスキップ
+        if run.finish_pos >= 90:
+            # 取消・除外は最低評価（Noneだと後続でTypeErrorリスク）
+            run_deviations.append(30.0)
+            run_records_list.append((run, None, None))  # 表示はNone→「—」
             continue
         # 走破タイム・距離が無効な場合はスキップ（JRA公式データ等で未取得の場合）
         if not run.finish_time_sec or run.finish_time_sec <= 0:
-            run_deviations.append(50.0)
-            run_records_list.append((run, 50.0, None))
+            run_deviations.append(30.0)  # タイム不明も低評価
+            run_records_list.append((run, None, None))  # 表示はNone→「—」
             continue
         if not run.distance or run.distance <= 0:
             run_deviations.append(50.0)
@@ -1366,8 +1548,32 @@ def calc_ability_deviation(
         distance=race_distance,
     )
 
+    # 5b. 芝ダ転換馬の異馬場WA割引
+    # 異馬場走の偏差値は「その馬場での実力」を表す。転向先での実力に直接置き換えはできないが、
+    # 48.0（完全未知）よりは有用な情報。50基準で圧縮して控えめな参考値とする。
+    surface_switch_adj = 0.0
+    if is_surface_switch and run_deviations:
+        from config.settings import SURFACE_SWITCH_BASE_DISCOUNT
+        # WA/MAXを50基準で割引（例: wa=55 → 48 + (55-48)*0.65 = 52.55）
+        wa_dev = 48.0 + (wa_dev - 48.0) * SURFACE_SWITCH_BASE_DISCOUNT
+        logger.debug(
+            "芝ダ転換: %s → WA割引適用 (discount=%.2f, wa=%.1f)",
+            getattr(horse, 'horse_name', '?'), SURFACE_SWITCH_BASE_DISCOUNT, wa_dev,
+        )
+        # 転換適性スコア算出
+        if surface_switch_context:
+            switch_dir = surface_switch_context.get("switch_direction", "")
+            surface_switch_adj = calc_surface_switch_score(switch_dir, surface_switch_context)
+            logger.debug(
+                "芝ダ転換適性スコア: %s → adj=%.2f (%s)",
+                getattr(horse, 'horse_name', '?'), surface_switch_adj, switch_dir,
+            )
+
     # 6. MAX偏差値（過去走なしの場合は wa_dev と同値で統一）
     max_dev = max(run_deviations) if run_deviations else wa_dev
+    if is_surface_switch and run_deviations:
+        from config.settings import SURFACE_SWITCH_BASE_DISCOUNT
+        max_dev = 48.0 + (max_dev - 48.0) * SURFACE_SWITCH_BASE_DISCOUNT
 
     # 7. α算出 (C-3)
     trend = detect_trend(run_deviations, recent_runs=filtered_runs)
@@ -1381,7 +1587,13 @@ def calc_ability_deviation(
         st_rel = _BaneiRel.A if len(filtered_runs) >= 3 else _BaneiRel.B
     else:
         _, st_rel = std_calc.calc_standard_time(course_id, "", current_condition, 2000)  # ダミー
-    reliability, reliability_score = aggregate_reliability(len(filtered_runs), is_long_break, st_rel)
+    # 転換馬は信頼度を1段階下げる（異馬場データは同馬場より不確実）
+    if is_surface_switch:
+        from src.models import Reliability as _SwitchRel
+        reliability = _SwitchRel.C
+        reliability_score = 0.3
+    else:
+        reliability, reliability_score = aggregate_reliability(len(filtered_runs), is_long_break, st_rel)
 
     # 9. クラス落差補正
     last_grade = filtered_runs[0].grade if filtered_runs else ""
@@ -1442,7 +1654,7 @@ def calc_ability_deviation(
         if days_ago < 0 or days_ago > days_limit:
             continue
         # 異表面の走の偏差値を計算
-        if run.finish_pos >= 99 or not run.finish_time_sec or run.finish_time_sec <= 0:
+        if run.finish_pos >= 90 or not run.finish_time_sec or run.finish_time_sec <= 0:
             run_records_list.append((run, None, None))
             continue
         if not run.distance or run.distance <= 0:
@@ -1479,5 +1691,7 @@ def calc_ability_deviation(
         chakusa_index_avg=chakusa_avg_3,
         class_adjustment=total_adjustment,
         bloodline_adj=bloodline_adj_always,
+        surface_switch_adj=surface_switch_adj,
+        is_surface_switch=is_surface_switch,
         run_records=run_records_list[:5],  # 最大5走保存（表示は3走）
     )
