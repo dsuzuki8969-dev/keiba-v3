@@ -11,7 +11,7 @@ import json
 import os
 import pickle
 from datetime import datetime
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List
 
 import lightgbm as lgb
 import numpy as np
@@ -86,16 +86,17 @@ def train_probability_models(valid_days: int = 30) -> dict:
     3つのLightGBMモデル（win/top2/top3）を学習し、
     Platt Scaling でキャリブレーションしたモデルを保存する。
     """
+    from sklearn.metrics import brier_score_loss, log_loss, roc_auc_score
+
     from src.ml.lgbm_model import (
         CATEGORICAL_FEATURES,
         FEATURE_COLUMNS,
-        RollingStatsTracker,
         RollingSireTracker,
+        RollingStatsTracker,
         _extract_features,
         _load_horse_sire_map,
         _load_ml_races,
     )
-    from sklearn.metrics import brier_score_loss, log_loss, roc_auc_score
 
     races = _load_ml_races()
     if not races:

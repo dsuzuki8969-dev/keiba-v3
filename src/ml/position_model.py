@@ -1010,7 +1010,6 @@ class PositionPredictor:
         return float(np.clip(pred, 0.0, 1.0))
 
     def _build_features(self, horse, race_info, pace_context) -> Optional[dict]:
-        from src.models import PastRun
 
         course = race_info.course
         runs = horse.past_runs or []
@@ -1166,7 +1165,7 @@ def print_report(metrics: dict, fi=None) -> None:
                   f"±0.2={m.get('within_0.2', 0):.1f}%  n={m['n']:,}")
 
     if fi is not None:
-        print(f"\n  特徴量重要度 Top 15:")
+        print("\n  特徴量重要度 Top 15:")
         for i, row in fi.head(15).iterrows():
             bar = "#" * int(row["pct"] / 2)
             print(f"    {i + 1:>2}. {row['feature']:<28} {row['pct']:>6.2f}%  {bar}")

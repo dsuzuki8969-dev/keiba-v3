@@ -696,6 +696,13 @@ def _days_between(d1: str, d2: str) -> Optional[int]:
 
 
 # 特徴量カラム一覧（学習時に使用、オッズ・人気は意図的に除外）
+#
+# IMPORTANT: 推論時に使われる特徴量カラムは src/ml/lgbm_model.py の FEATURE_COLUMNS。
+# このファイルの FEATURE_COLS は build_dataset() による DataFrame 構築用の基礎特徴量で、
+# trainer.py が学習用特徴量を組み立てる際の入力源として使用される。
+# RollingStatsTracker が動的に追加する特徴量（grade_code, jockey_win_rate, dev_run1_adj 等）
+# は trainer.py の特徴量パイプラインで FEATURE_COLUMNS に合わせて拡張される。
+# 両者の整合性は trainer.py が責任を持つ。新特徴量追加時は両ファイルに加えてtrainer.py のパイプラインも更新すること。
 FEATURE_COLS = [
     # レース条件
     "surface", "distance", "condition", "field_count", "is_jra",

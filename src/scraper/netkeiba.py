@@ -2184,6 +2184,7 @@ class NetkeibaScraper:
             return
         try:
             import sqlite3
+
             from config.settings import DATABASE_PATH
             with sqlite3.connect(DATABASE_PATH) as conn:
                 conn.row_factory = sqlite3.Row
@@ -2203,6 +2204,7 @@ class NetkeibaScraper:
             if need_affil:
                 try:
                     import json as _json
+
                     from config.settings import PERSONNEL_DB_PATH
                     with open(PERSONNEL_DB_PATH, "r", encoding="utf-8") as _pf:
                         _pdb = _json.load(_pf)

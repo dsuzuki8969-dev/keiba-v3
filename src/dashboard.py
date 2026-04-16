@@ -21,14 +21,14 @@ logger = get_logger(__name__)
 
 try:
     from config.settings import (
+        AUTH_ENABLED,
+        AUTH_PASSWORD,
+        AUTH_USERNAME,
         COURSE_DB_COLLECTOR_STATE_PATH,
         COURSE_DB_PRELOAD_PATH,
         OUTPUT_DIR,
         SERVER_HOST,
         SERVER_PORT,
-        AUTH_ENABLED,
-        AUTH_USERNAME,
-        AUTH_PASSWORD,
     )
 except Exception:
     _root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -153,7 +153,7 @@ def _get_todays_venues(date_str: str) -> list:
     4. ばんえい安全策 (NAR公式が帯広を返さない場合のみ)
     """
     try:
-        from data.masters.venue_master import get_venue_code_from_race_id, get_venue_name, is_banei
+        from data.masters.venue_master import get_venue_code_from_race_id, get_venue_name
         from src.scraper.netkeiba import NetkeibaClient, RaceListScraper
 
         client = NetkeibaClient(no_cache=True)
@@ -1550,7 +1550,8 @@ def create_app():
             sanrenpuku_odds_map = {}
             _san_source = ""
             try:
-                from src.scraper.netkeiba import NetkeibaClient, OddsScraper as _OS
+                from src.scraper.netkeiba import NetkeibaClient
+                from src.scraper.netkeiba import OddsScraper as _OS
                 _nk_client = _get_auth_client() or NetkeibaClient(no_cache=True)
                 _san_scraper = _OS(_nk_client)
                 sanrenpuku_odds_map = _san_scraper.get_sanrenpuku_odds(race_id)
@@ -1602,7 +1603,8 @@ def create_app():
                     logger.debug("公式馬体重取得失敗: %s", e)
             if not weight_map:
                 try:
-                    from src.scraper.netkeiba import NetkeibaClient, OddsScraper as _OS
+                    from src.scraper.netkeiba import NetkeibaClient
+                    from src.scraper.netkeiba import OddsScraper as _OS
                     wc_client = _get_auth_client() or NetkeibaClient(no_cache=True)
                     w_scraper = _OS(wc_client)
                     weights = w_scraper.get_weights(race_id)
@@ -1865,7 +1867,7 @@ def create_app():
                     cmd.extend(["--venues", ",".join(selected_venues)])
                 cmd.extend(["--workers", "3"])  # 並列フェッチ（3倍速）
                 cmd.append("--quiet")  # 冗長なログを抑制（進捗パース精度向上）
-                _analyzer_state["progress"] = f"初期化中..."
+                _analyzer_state["progress"] = "初期化中..."
                 import re as _re
                 # Windows の cp932 文字化けを防ぐため PYTHONUTF8=1 を設定
                 _env = os.environ.copy()
@@ -2000,6 +2002,7 @@ def create_app():
         """オッズ一括更新（コアロジックは scheduler_tasks.py に委譲）"""
         global _odds_state, _odds_cancel
         import time as _tm
+
         from src.scheduler_tasks import run_odds_update as _core_odds_update
 
         _odds_state = {"running": True, "done": False, "error": None, "updated_at": None,
@@ -2550,9 +2553,15 @@ def create_app():
         race_id = request.args.get("race_id", "")
         if not date_str or not race_id:
             return jsonify(ok=False, error="date and race_id required")
+        # 入力バリデーション（パストラバーサル防御）
+        _date_norm = date_str.replace("-", "")
+        if not re.fullmatch(r"\d{8}", _date_norm):
+            return jsonify(ok=False, error="invalid date format")
+        if not re.fullmatch(r"[A-Za-z0-9_]{6,20}", race_id):
+            return jsonify(ok=False, error="invalid race_id format")
         try:
             import pathlib
-            results_path = pathlib.Path("data/results") / f"{date_str.replace('-', '')}_results.json"
+            results_path = pathlib.Path("data/results") / f"{_date_norm}_results.json"
             if not results_path.exists():
                 return jsonify(ok=True, found=False)
             import json as _json
@@ -2562,7 +2571,7 @@ def create_app():
             if not race_result:
                 return jsonify(ok=True, found=False)
             # 予想データから馬名・印等を補完
-            pred_path = pathlib.Path("data/predictions") / f"{date_str.replace('-', '')}_pred.json"
+            pred_path = pathlib.Path("data/predictions") / f"{_date_norm}_pred.json"
             horse_map = {}
             if pred_path.exists():
                 with open(pred_path, encoding="utf-8") as f:
@@ -2596,7 +2605,7 @@ def create_app():
     def api_results_dates():
         """予想済み日付一覧 + 日次統計を返す"""
         try:
-            from src.results_tracker import list_prediction_dates, aggregate_all
+            from src.results_tracker import aggregate_all, list_prediction_dates
 
             dates = list_prediction_dates()
             # 日次統計を取得（軽量フィールドのみ）
@@ -2632,8 +2641,8 @@ def create_app():
     def api_results_unmatched_dates():
         """予想済みだが着順取得済みでない日付一覧を返す（2024-01-01〜昨日）"""
         try:
-            from src.results_tracker import list_prediction_dates
             from config.settings import RESULTS_DIR
+            from src.results_tracker import list_prediction_dates
 
             yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
             pred_dates = [d for d in list_prediction_dates()
@@ -2766,8 +2775,8 @@ def create_app():
         if not date:
             return jsonify(ok=False, error="日付が指定されていません")
         try:
-            from src.results_tracker import generate_simple_html
             from config.settings import OUTPUT_DIR
+            from src.results_tracker import generate_simple_html
 
             fpath = generate_simple_html(date, OUTPUT_DIR)
             if fpath is None:
@@ -3499,8 +3508,9 @@ function dNavRefreshOdds(date){{
 
         # race_log に実績のあるコースのみに絞り込む
         try:
-            from src.database import DATABASE_PATH as _db_path
             import sqlite3 as _sql3
+
+            from src.database import DATABASE_PATH as _db_path
             _cconn = _sql3.connect(_db_path)
             _active = set()
             for row in _cconn.execute(
@@ -3703,7 +3713,6 @@ function dNavRefreshOdds(date){{
         # ── 枠番別成績（枠単位: 1レースにつき1枠=1カウント）──
         # レース識別キー: (race_date, class_name, field_count) ごとに枠番を集計
         # 同枠に複数頭いても1カウント。勝ち/連対/複勝は枠内の誰かが達成すればOK
-        from collections import defaultdict as _dd
         # (race_key, gate) 単位で集計。勝率等は枠単位、ROIは実頭数ベース
         _gate_race: dict = {}  # (race_key, gate) -> {"win": bool, "place2": bool, "place3": bool, "odds": float, "horses": int}
         for r in records:
@@ -4107,6 +4116,7 @@ function dNavRefreshOdds(date){{
                 _personnel_stats_cache.clear()
                 # ディスクキャッシュも削除
                 import glob as _glob_p
+
                 from config.settings import DATABASE_PATH as _dbp
                 for _cf in _glob_p.glob(os.path.join(os.path.dirname(_dbp), "cache", "personnel_stats", "*.json")):
                     try:
@@ -4311,8 +4321,8 @@ function dNavRefreshOdds(date){{
     def api_results_unmatched_dates_db():
         """予想済みだが結果未取得の日付一覧（DB対応版、2024-01-01〜昨日）"""
         try:
-            from src.results_tracker import list_prediction_dates
             from src.database import results_exist
+            from src.results_tracker import list_prediction_dates
             yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
             pred_dates = [d for d in list_prediction_dates()
                           if "2024-01-01" <= d <= yesterday]
@@ -4645,10 +4655,10 @@ function dNavRefreshOdds(date){{
     @app.route("/api/venue/profile")
     def api_venue_profile():
         """競馬場プロファイル（一覧 or 個別詳細）"""
-        from data.masters.venue_similarity import get_all_profiles, get_similar_venues
-        from data.masters.course_master import ALL_COURSES
         from config.settings import get_composite_weights
+        from data.masters.course_master import ALL_COURSES
         from data.masters.venue_master import VENUE_CODE_TO_NAME
+        from data.masters.venue_similarity import get_all_profiles, get_similar_venues
 
         code = request.args.get("code", "").strip()
         profiles = get_all_profiles()
@@ -4733,8 +4743,9 @@ function dNavRefreshOdds(date){{
     @app.route("/api/venue/bias")
     def api_venue_bias():
         """競馬場バイアス・傾向データ（course_dbベース）"""
-        from src.database import get_course_db, get_course_last3f_sigma
         from collections import defaultdict
+
+        from src.database import get_course_db, get_course_last3f_sigma
 
         code = request.args.get("code", "").strip()
         if not code:
@@ -4945,8 +4956,10 @@ function dNavRefreshOdds(date){{
         if _feature_imp_cache:
             return jsonify(_feature_imp_cache)
         try:
-            import lightgbm as lgb
             from collections import defaultdict
+
+            import lightgbm as lgb
+
             from src.ml.lgbm_model import FEATURE_COLUMNS, SHAP_FEATURE_GROUPS
 
             model_dir = os.path.join(PROJECT_ROOT, "data", "models")

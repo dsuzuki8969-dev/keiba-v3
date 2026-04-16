@@ -46,9 +46,7 @@ def _default_pace_times(
             base_front, base_last = 33.0, 35.0
         elif distance <= 1200:
             base_front, base_last = 34.0, 35.0
-        elif distance <= 1400:
-            base_front, base_last = 35.0, 35.0
-        elif distance <= 1600:
+        elif distance <= 1400 or distance <= 1600:
             base_front, base_last = 35.0, 35.0
         elif distance <= 2000:
             base_front, base_last = 36.0, 35.5

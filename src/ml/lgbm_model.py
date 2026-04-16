@@ -422,10 +422,24 @@ def _style_group(rel_pos: float) -> str:
 class _EntityStats:
     """騎手・調教師のローリング統計"""
 
-    __slots__ = ("wins", "runs", "places", "recent", "venue", "surface", "dist_cat",
-                 "surf_dist", "venue_surf", "venue_surf_dist",
-                 "smile", "cond",
-                 "pace", "style", "gate", "horse_combo")
+    __slots__ = (
+        "cond",
+        "dist_cat",
+        "gate",
+        "horse_combo",
+        "pace",
+        "places",
+        "recent",
+        "runs",
+        "smile",
+        "style",
+        "surf_dist",
+        "surface",
+        "venue",
+        "venue_surf",
+        "venue_surf_dist",
+        "wins",
+    )
 
     def __init__(self):
         self.wins = 0
@@ -685,8 +699,17 @@ class _EntityStats:
 class _HorseStats:
     """馬のローリング統計"""
 
-    __slots__ = ("wins", "runs", "places", "finishes", "last_date", "last_finish",
-                 "venue_runs", "run_details", "last_jockey_id")
+    __slots__ = (
+        "finishes",
+        "last_date",
+        "last_finish",
+        "last_jockey_id",
+        "places",
+        "run_details",
+        "runs",
+        "venue_runs",
+        "wins",
+    )
 
     def __init__(self):
         self.wins = 0
@@ -996,7 +1019,7 @@ class _HorseStats:
 class _ComboStats:
     """騎手×調教師コンビ統計"""
 
-    __slots__ = ("wins", "runs")
+    __slots__ = ("runs", "wins")
 
     def __init__(self):
         self.wins = 0
@@ -1670,7 +1693,7 @@ class RollingStatsTracker:
 
         try:
             from data.masters.venue_similarity import get_venue_similarity
-            from src.ml.features import _get_venue_profile, _DIRECTION_SCORE
+            from src.ml.features import _get_venue_profile
             target_profile = _get_venue_profile(target_venue)
             if not target_profile:
                 return _empty
@@ -2785,8 +2808,8 @@ def _extract_features(
 
     # コース構造特徴量 (venue_straight_m 等)
     try:
-        from src.ml.features import _get_venue_profile
         from data.masters.venue_master import is_banei as _is_banei_check
+        from src.ml.features import _get_venue_profile
         _SLOPE_SCORE = {"急坂": 1.0, "軽坂": 0.5, "坂なし": 0.0}
         _CORNER_SCORE = {"大回り": 1.0, "スパイラル": 0.5, "小回り": 0.0}
         _DIRECTION_SCORE = {"右": 0, "左": 1, "両": 2}
@@ -3502,8 +3525,9 @@ def train_model(
     # ---- ⑦ キャリブレーション (Platt scaling) ----
     if len(valid_y) > 0:
         try:
-            from sklearn.linear_model import LogisticRegression
             import json as _json
+
+            from sklearn.linear_model import LogisticRegression
             cal_X = y_pred.reshape(-1, 1)
             cal_model = LogisticRegression(C=1.0, max_iter=200)
             cal_model.fit(cal_X, y_valid)
@@ -3730,7 +3754,10 @@ class LGBMPredictor:
         self._tracker: Optional[RollingStatsTracker] = None
         self._sire_tracker: Optional[RollingSireTracker] = None
         self._loaded = False
-        self._last_model_level: int = 2  # 直近 predict_race() で使用したモデルのレベル (0-4)
+        # 直近 predict_race() で使用したモデルのレベル (0-4)
+        # NOTE: スレッドセーフではない。並列推論では threading.local の _lgbm_tls.last_model_level を参照すること。
+        # このインスタンス変数は単一スレッド実行時の互換目的でのみ保持。
+        self._last_model_level: int = 2
 
     def _select_model(self, surface_val: int, is_jra: bool,
                       venue_code: str = "", smile_cat: str = ""):
@@ -4040,8 +4067,8 @@ class LGBMPredictor:
             return {}
 
         try:
-            import shap
             import numpy as np
+            import shap
         except ImportError:
             logger.debug("shap not installed — SHAP computation skipped")
             return {}

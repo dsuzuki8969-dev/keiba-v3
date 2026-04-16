@@ -8,14 +8,13 @@ import threading
 import time
 from datetime import datetime
 
-from src.log import get_logger
 from config.settings import (
     COURSE_DB_COLLECTOR_STATE_PATH,
     COURSE_DB_PRELOAD_PATH,
-    DATA_DIR,
     OUTPUT_DIR,
     PROJECT_ROOT,
 )
+from src.log import get_logger
 
 logger = get_logger(__name__)
 

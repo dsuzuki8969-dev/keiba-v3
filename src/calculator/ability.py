@@ -21,8 +21,6 @@ from config.settings import (
     RACE_HISTORY_DAYS_DEFAULT,
     RACE_HISTORY_DAYS_休養明け,
     RACE_HISTORY_MAX_RUNS,
-    RACE_HISTORY_休養DECAY,
-    WA_WEIGHTS,
 )
 from src.log import get_logger
 from src.models import (
@@ -49,7 +47,8 @@ def _load_banei_time_baselines() -> dict:
     global _BANEI_BASELINES_CACHE
     if _BANEI_BASELINES_CACHE is not None:
         return _BANEI_BASELINES_CACHE
-    import json, os
+    import json
+    import os
     path = os.path.join(os.path.dirname(__file__), "..", "..", "data", "models", "banei_time_baselines.json")
     try:
         with open(path, encoding="utf-8") as f:

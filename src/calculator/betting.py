@@ -13,15 +13,12 @@ from config.settings import (
 )
 from src.models import (
     AnaType,
-    BakenType,
     ConfidenceLevel,
     HorseEvaluation,
-    KikenType,
     Mark,
     RaceInfo,
     Reliability,
 )
-
 
 # ============================================================
 # K-1: Fractional Kelly 賭け金配分
@@ -119,6 +116,9 @@ def calc_hit_probability(
     相関補正係数を実際の頭数・連対確率から算出
     """
     n = field_count
+    # ゼロ除算ガード: 少頭数（n<3）は補正なしで素のprob_a*prob_bを返す
+    if n < 3:
+        return min(prob_a * prob_b, 0.99)
 
     if ticket_type == "馬連":
         # P(A連対) × P(B連対) × 補正
@@ -129,6 +129,7 @@ def calc_hit_probability(
         correction = n / (n - 1)
         return min(prob_a * prob_b * correction, 0.99)
     elif ticket_type == "ワイド":
+        # ワイド補正は n>=3 が必要（n=3でもn-2=1で安全）
         correction = n / (n - 2) * 1.2
         return min(prob_a * prob_b * correction, 0.99)
     return 0.0
@@ -582,11 +583,16 @@ def judge_confidence(
         return ConfidenceLevel.D
 
     from config.settings import (
-        CONFIDENCE_THRESHOLDS_JRA, CONFIDENCE_THRESHOLDS_NAR,
-        CONFIDENCE_WP_GATE_SS_JRA, CONFIDENCE_WP_GATE_SS_NAR,
-        CONFIDENCE_GAP_GATE_SS_JRA, CONFIDENCE_GAP_GATE_SS_NAR,
-        CONFIDENCE_WP_GATE_S_JRA, CONFIDENCE_WP_GATE_S_NAR,
-        CONFIDENCE_GAP_GATE_S_JRA, CONFIDENCE_GAP_GATE_S_NAR,
+        CONFIDENCE_GAP_GATE_S_JRA,
+        CONFIDENCE_GAP_GATE_S_NAR,
+        CONFIDENCE_GAP_GATE_SS_JRA,
+        CONFIDENCE_GAP_GATE_SS_NAR,
+        CONFIDENCE_THRESHOLDS_JRA,
+        CONFIDENCE_THRESHOLDS_NAR,
+        CONFIDENCE_WP_GATE_S_JRA,
+        CONFIDENCE_WP_GATE_S_NAR,
+        CONFIDENCE_WP_GATE_SS_JRA,
+        CONFIDENCE_WP_GATE_SS_NAR,
     )
 
     # ---- v5: パーセンタイル閾値 + win_prob/gapゲート（市場フリー） ----

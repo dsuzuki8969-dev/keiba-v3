@@ -1006,8 +1006,6 @@ class OfficialOddsScraper:
 
         Returns: (RaceInfo, List[Horse]) or (None, [])
         """
-        from src.models import RaceInfo, Horse, CourseMaster
-        from data.masters.course_master import ALL_COURSES
 
         venue_code = race_id[4:6]
         if venue_code not in _JRA_VENUE_CODES:
@@ -1107,8 +1105,8 @@ class OfficialOddsScraper:
 
         Returns: (RaceInfo, List[Horse]) or (None, [])
         """
-        from src.models import RaceInfo, Horse, CourseMaster
         from data.masters.course_master import ALL_COURSES
+        from src.models import CourseMaster, Horse, RaceInfo
 
         soup = BeautifulSoup(html, "html.parser")
 
@@ -1455,7 +1453,6 @@ class OfficialOddsScraper:
         Returns:
             (List[PastRun], pedigree_dict)
         """
-        from src.models import PastRun
 
         if not horse_profile_cname:
             return [], {}

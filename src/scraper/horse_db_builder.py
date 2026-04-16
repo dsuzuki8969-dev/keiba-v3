@@ -664,8 +664,8 @@ def get_past_runs_from_race_log(horse_id: str, max_runs: int = 30):
     """
     if not horse_id:
         return []
-    from src.models import PaceType, PastRun
     from src.database import get_db
+    from src.models import PaceType, PastRun
 
     conn = get_db()
     rows = conn.execute(

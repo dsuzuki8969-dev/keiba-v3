@@ -110,8 +110,15 @@ logs/
 data/logs/
 data/watchdog.log
 
-# アドホック/一時スクリプト
+# アドホック/一時スクリプト（試行錯誤・分析用）
 scripts/_*
+scripts/analyze_gap_*.py
+scripts/sim_*.py
+scripts/verify_kiken_v2.py
+scripts/validate_race_type_marks.py
+# パス展開失敗ログ（Windows powershell の表記ミス痕跡）
+C:Users*.log
+race_type_report.txt
 
 # 旧バッチファイル（ルート直下）
 install_scheduler.bat

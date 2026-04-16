@@ -13,9 +13,8 @@ LightGBM等の機械学習に使えるデータセットを構築する。
 import json
 import os
 import re
-import time
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional
+from typing import Optional
 
 from bs4 import BeautifulSoup
 

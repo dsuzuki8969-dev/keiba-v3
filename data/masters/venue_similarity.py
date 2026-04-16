@@ -139,22 +139,30 @@ def _euclidean_similarity(a: List[float], b: List[float]) -> float:
 # 類似度マトリクス生成
 # ============================================================
 
+import threading as _threading
+
 _PROFILES: Optional[Dict[str, VenueProfile]] = None
 _SIMILARITY_MATRIX: Optional[Dict[str, Dict[str, float]]] = None
+_BUILD_LOCK = _threading.Lock()
 
 
 def _ensure_built():
     global _PROFILES, _SIMILARITY_MATRIX
+    # Double-checked locking パターン
     if _SIMILARITY_MATRIX is not None:
         return
-    _PROFILES = _build_venue_profiles()
-    vectors = {v: _venue_to_vector(p) for v, p in _PROFILES.items()}
-    venues = sorted(_PROFILES.keys())
-    _SIMILARITY_MATRIX = {}
-    for v1 in venues:
-        _SIMILARITY_MATRIX[v1] = {}
-        for v2 in venues:
-            _SIMILARITY_MATRIX[v1][v2] = round(_euclidean_similarity(vectors[v1], vectors[v2]), 4)
+    with _BUILD_LOCK:
+        if _SIMILARITY_MATRIX is not None:
+            return
+        _PROFILES = _build_venue_profiles()
+        vectors = {v: _venue_to_vector(p) for v, p in _PROFILES.items()}
+        venues = sorted(_PROFILES.keys())
+        _matrix = {}  # 一時辞書に構築してから atomic にグローバル代入
+        for v1 in venues:
+            _matrix[v1] = {}
+            for v2 in venues:
+                _matrix[v1][v2] = round(_euclidean_similarity(vectors[v1], vectors[v2]), 4)
+        _SIMILARITY_MATRIX = _matrix
 
 
 def get_venue_similarity(venue_a: str, venue_b: str) -> float:

@@ -895,7 +895,7 @@ def print_report(metrics: dict, fi=None) -> None:
                   f"±0.2={m['within_0.2']:.1f}%  n={m['n']:,}")
 
     if fi is not None:
-        print(f"\n  特徴量重要度 Top 15:")
+        print("\n  特徴量重要度 Top 15:")
         for i, row in fi.head(15).iterrows():
             bar = "#" * int(row["pct"])
             print(f"    {i+1:>2}. {row['feature']:<28} {row['pct']:>6.2f}%  {bar}")

@@ -15,7 +15,7 @@
 
 import json
 import os
-from typing import Dict, List, Optional, Tuple
+from typing import List, Optional, Tuple
 
 from src.log import get_logger
 
@@ -218,11 +218,11 @@ def blend_probabilities(
     - Phase 2-2: model_level >= 3 のとき ALPHA_MODEL_MAX を引き上げ
     """
     from config.settings import (
+        ALPHA_MODEL_HIGH_THRESHOLD,
+        ALPHA_MODEL_MAX_HIGH,
+        CONFIDENCE_GAP_V2,
         DISABLE_POPULARITY_BLEND,
         PIPELINE_V2_ENABLED,
-        ALPHA_MODEL_MAX_HIGH,
-        ALPHA_MODEL_HIGH_THRESHOLD,
-        CONFIDENCE_GAP_V2,
     )
 
     if DISABLE_POPULARITY_BLEND:

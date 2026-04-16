@@ -1,200 +1,169 @@
-# 競馬解析マスターシステム v3.0
+# D-AI keiba v3
 
-**市場の評価を無視し、独自の理論で勝負する競馬予想システム**
+**競馬とは「生産者が血統を考えて生産した競走馬を馬主が購入し、育成場で育成したのち厩舎に入れ、調教師が調教をしJRA・NARの競馬場で適性を考え芝・ダートの様々な距離で騎手が乗り賞金をかけてレースをし、それを馬券としてファンが購入する。」**
+
+D-AI keiba は文字や数字の羅列しかない情報を、それぞれのファクタで評価基準を設け、しっかりと全頭見える化していく。市場に騙されない本当のその馬の力をはかるシステム。
 
 ---
 
-## 特徴
+## 構成
 
-### 🎯 独自の理論
-- **指数ベース予測**: オッズに頼らず、偏差値から勝率・連対率・複勝率を算出
-- **市場との乖離を狙う**: システムが高評価×オッズ人気薄 = 穴馬
-- **危険な人気馬を排除**: システムが低評価×オッズ人気 = 危険馬
+```
+scraper (データ収集) → database (SQLite) → engine (分析) → output (HTML/JSON)
+                                              ↑
+                                           ml (LightGBM 47モデル階層)
+                                           calculator (能力値・ペース・コース)
+                                              ↓
+                                         dashboard (Flask + React SPA)
+```
 
-### 📊 10章構成の偏差値計算
-- **能力偏差値** (A-J章): 過去5走の加重平均、トレンド分析、着差評価など
-- **展開偏差値** (E-F章): 脚質、ペース適性、騎手・厩舎の影響
-- **コース偏差値** (G章): コース実績、形状適性、脚質バイアス
-- **総合偏差値**: 3つの偏差値を加重平均（能力55%、展開30%、コース15%）
-
-### 🎲 賢い買い目生成
-- **印の順序で配分**: ◎-○(70%) → ◎-▲(20%) → ◎-△(10%)
-- **回収率300%基準**: 低配当は自動除外、高配当に厚く賭ける
-- **期待値の可視化**: 出現率×オッズ=期待値を明示
-
-### 📈 プロ級のHTML出力
-- ネット競馬風のデザイン
-- 印・穴馬・危険馬の詳細な根拠
-- 展開予測・買い目の見解
+### 主要コンポーネント
+- **scraper**: netkeiba / JRA・NAR公式 / 競馬ブックからデータ収集
+- **database**: SQLite（race_log 49カラム、WAL モード）
+- **engine**: ML予測 + ルールベースの統合分析
+- **ml**: LightGBM 159特徴量、面×距離帯×場別の階層モデル
+- **calculator**: 能力偏差値、展開（ペース/コース）、騎手/調教師、芝ダ転換適性
+- **output**: HTML出力 + 印・穴馬・危険馬・買い目生成
+- **dashboard**: Flask API + React SPA、cloudflared 経由で外部公開
 
 ---
 
 ## インストール
 
-### Windows
-```batch
-setup.bat
-```
+### 必要環境
+- Python 3.11以上
+- Windows / macOS / Linux
+- ディスク 約10GB（モデル + キャッシュ）
 
-### Mac/Linux
+### セットアップ
 ```bash
-bash setup.sh
-```
+# 依存パッケージ
+pip install -r requirements.txt
 
-**必要なもの:**
-- Python 3.9以上
-- インターネット接続（初回のみ）
-
----
-
-## 基本的な使い方
-
-### 1. 認証情報を設定
-```bash
-python -m src.setup_credentials
-```
-
-以下の情報を入力:
-- netkeibaのログインID/パスワード
-- 競馬ブックSmartのID/パスワード
-
-### 2. 日付別・全レース分析（推奨）
-```bash
-python daily.py
-```
-
-**日付を入力するだけ**で、その日の中央競馬・地方競馬の全レースを分析し、
-1つのHTML（競馬場タブ + 1R～12Rタブ）で全て見られます。
-
-または `python main.py --analyze_date 2025-03-15` で日付を直接指定。
-
-### 3. 1レース分析
-```bash
-python analyze.py
-```
-
-対話形式でレースIDを入力すると、HTML形式の予想が生成されます。
-
-### 4. デモ実行
-```bash
-python demo.py
-```
-
-サンプルレースの分析結果が `output/keiba_demo.html` に出力されます。
-
----
-
-## HTML出力の見方
-
-### ■ レース概要
-- レース情報（距離、馬場状態、天候）
-- 展開予測（ペースタイプ、信頼度、有利な枠・脚質）
-
-### ■ 全馬一覧
-- 全馬の総合偏差値・オッズ一覧
-- 印付け（◉鉄板、◎本命、○対抗、▲単穴、△連下、☆大穴）
-
-### ■ 全頭評価
-- 各馬の詳細分析（能力・展開・コース偏差値の内訳）
-- 勝率・連対率・複勝率（指数ベース）
-- 強み・弱み・注目ポイント
-
-### ■ 印・穴馬・危険な人気馬
-- **印の見解**: なぜその印をつけたか（根拠・比較）
-- **穴馬**: 市場が過小評価している馬（実力vs人気の乖離）
-- **危険な人気馬**: 市場が過大評価している馬（避けるべき理由）
-
-### ■ 買い目
-- **自信度**: SS/S/A/B/C/D（根拠付き）
-- **買い目一覧**: 馬連・ワイド（印の順序で並ぶ）
-- **シグナル**: ◎買い（期待値120%以上）、○買い（100-120%）、×買わない（100%未満）
-- **買い目の見解**: 戦略の説明、切った人気馬の理由
-
----
-
-## 設定のカスタマイズ
-
-### 自信度別の賭け金を変更
-`config/settings.py` を編集:
-
-```python
-STAKE_DEFAULT = {
-    "SS": 12000,  # 鉄板
-    "S":   6000,  # 自信大
-    "A":   3000,  # 自信あり
-    "B":   1500,  # 普通
-    "C":      0,  # 自信なし
-    "D":      0,  # 見送り
-}
-```
-
-### 重みの調整
-```python
-COMPOSITE_WEIGHTS = {
-    "ability":  0.55,  # 能力重視なら増やす
-    "pace":     0.30,  # 展開重視なら増やす
-    "course":   0.15,  # コース重視なら増やす
-}
+# データベース初期化（race_log は predictions/ から自動投入）
+python build_horse_db.py
 ```
 
 ---
 
-## システム構成
+## 使い方
 
+### 予想生成（メイン）
+
+```bash
+# 指定日の全レース分析
+python run_analysis_date.py 2026-04-12
+
+# JSONのみ出力（高速）
+python run_analysis_date.py 2026-04-12 --no-html
+
+# 特定会場のみ
+python run_analysis_date.py 2026-04-12 --venues 中山,東京
+
+# 並列ワーカー数指定
+python run_analysis_date.py 2026-04-12 --workers 5
 ```
-keiba-v3/
-├── src/
-│   ├── calculator/         # 偏差値計算ロジック
-│   ├── scraper/            # netkeiba/競馬ブックのスクレイパー
-│   ├── setup_credentials.py # 認証情報設定（python -m src.setup_credentials）
-│   ├── output/             # HTML生成
-│   └── engine.py           # メインエンジン
-├── config/
-│   └── settings.py         # 設定ファイル
-├── data/
-│   ├── course_master.csv   # コースマスター（189コース）
-│   └── ...                 # 各種データベース
-├── main.py                 # CLI（--race_id / --date / --collect）
-├── analyze.py              # 対話式レース分析
-├── demo.py                 # デモ実行
-├── setup.bat / setup.sh    # 初回セットアップ
-└── README.md
+
+### ダッシュボード起動
+
+```bash
+python src/dashboard.py
+# → http://localhost:5051
+```
+
+### モデル再学習
+
+```bash
+python retrain_all.py
 ```
 
 ---
 
-## よくある質問
+## 主要ファイル
 
-### Q1: オッズ確定前でも使えますか？
-**A**: 使えますが、精度は落ちます。オッズが確定してから使うことを推奨します。
+| ファイル | 役割 |
+|---------|------|
+| `run_analysis_date.py` | メインエントリ。日付指定で全レース分析 |
+| `src/engine.py` | 分析の中核。ML + ルールベースのブレンド |
+| `src/ml/lgbm_model.py` | LightGBM 47モデル管理（159特徴量） |
+| `src/ml/features.py` | 特徴量エンジニアリング |
+| `src/ml/trainer.py` | モデル学習 |
+| `src/calculator/ability.py` | 能力値・芝ダ転換適性 |
+| `src/calculator/pace_course.py` | 展開（ペース・コース） |
+| `src/calculator/jockey_trainer.py` | 騎手・調教師評価 |
+| `src/database.py` | SQLite DB操作 |
+| `src/dashboard.py` | Flask + React SPA配信 |
+| `src/scraper/netkeiba.py` | netkeiba スクレイパー |
+| `config/settings.py` | 全設定・パス・定数 |
 
-### Q2: 地方競馬には対応していますか？
-**A**: Phase 1では中央競馬のみ対応。Phase 2で地方競馬対応予定。
+---
 
-### Q3: 過去のレースで検証できますか？
-**A**: できます。netkeibaのレースIDを指定すれば、過去のレースも分析できます。
+## 出力データ
 
-### Q4: 的中率はどのくらいですか？
-**A**: システムは期待値を最大化することを目的としており、的中率の向上は目的ではありません。長期的な回収率300-500%を目指しています。
+```
+data/
+  keiba.db              # メインSQLite（race_log 49カラム）
+  models/               # 学習済みモデル (.txt, .pkl, .json)
+  predictions/          # 予想結果JSON（YYYYMMDD_pred.json）
+  cache/                # スクレイピングキャッシュ（lz4圧縮）
+  bloodline/            # 血統データ
+  ml/                   # ML学習用日次JSON
+output/                 # 生成HTML
+src/static/             # React SPA ビルド成果物
+```
 
-### Q5: なぜオッズを無視するのですか？
-**A**: 市場（オッズ）との乖離こそがチャンスだからです。システムが高評価してオッズが人気薄なら穴馬、システムが低評価してオッズが人気なら危険馬として検出できます。
+---
+
+## 自動運用（Windows）
+
+```powershell
+# スケジューラ登録（管理者権限）
+powershell -ExecutionPolicy Bypass -File scripts\setup_scheduler.ps1
+```
+
+| タスク | 時刻 | 内容 |
+|-------|------|------|
+| `DAI_Keiba_Predict` | 06:00 | 当日予想 |
+| `DAI_Keiba_Predict_Tomorrow` | 17:00 | 翌日予想 |
+| `DAI_Keiba_Results` | 22:00 | 結果照合 |
+| `DAI_Keiba_Maintenance` | 23:00 | 払戻バックフィル・VACUUM |
+| `DAI_Keiba_Watchdog` | 5分間隔 | dashboard + cloudflared 監視 |
+
+---
+
+## ML階層モデル
+
+```
+Level 0: グローバルモデル（全データ）
+Level 1: 面別（芝/ダート）
+Level 2: 面×距離帯（短距離/マイル/中距離/長距離）
+Level 3: 面×距離帯×場（東京/中山/etc）
+Level 4: 面×距離帯×場×コース個別（品質フィルタ済み）
+```
+
+推論時は Level 4 → 0 へとフォールバック。`PIPELINE_V2_ENABLED` でskip制御。
+
+---
+
+## 主要な分析ファクタ
+
+- **能力偏差値**（過去5走の加重平均、トレンド、着差、休養補正、芝ダ転換適性）
+- **展開偏差値**（ペース判定、脚質適性、コーナーロス、コース脚質バイアス）
+- **コース偏差値**（コース実績、形状適性、l3f σ、勝率・連対率実績）
+- **騎手・調教師**（コース別実績、相性、騎乗替わり）
+- **血統**（種牡馬・母父の面別複勝率）
+- **ML予測**（159特徴量、Level 0〜4 階層、Plattキャリブレーション）
+
+---
+
+## ドキュメント
+
+- `CLAUDE.md` — プロジェクト全体ガイド・コーディング規約
+- `docs/SYSTEM_ARCHITECTURE_FULL.md` — システムアーキテクチャ詳細
+- `WINDOWS_GUIDE.md` — Windows環境セットアップ
 
 ---
 
 ## ライセンス
 
-このシステムは個人利用のみ許可されています。商用利用・再配布は禁止です。
-
----
-
-## サポート
-
-問題が発生した場合は、以下を確認してください:
-1. Python 3.9以上がインストールされているか
-2. `pip install -r requirements.txt` が正常に完了したか
-3. 認証情報が正しく設定されているか（`~/.keiba_credentials.json`）
-
----
-
-**Good Luck! 🏇**
+Private — 個人プロジェクト

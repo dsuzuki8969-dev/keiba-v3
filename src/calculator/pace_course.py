@@ -23,7 +23,6 @@ from src.models import (
     RunningStyle,
 )
 
-
 # course_id → direction のマッピング（"両"方向venue内の個別コース方向判定用）
 # 例: "44_ダート_1650" → "左", "44_ダート_1600" → "右"
 _COURSE_DIRECTION_MAP: Dict[str, str] = {}
@@ -449,20 +448,48 @@ class PacePredictor:
 
         内枠ほど外からカバーされにくく逃げやすい。
         過去走で実際に前目を取れていた率も重要。
+
+        改善7 (PACE_ESCAPE_SCORING_V2): 直近走重視＋テン3F考慮
         """
+        from config.settings import PACE_ESCAPE_SCORING_V2
+
         # 内枠ボーナス（1枠=1.0, 8枠≒0）
         if gate_no and 1 <= gate_no <= 8:
             gate_factor = 1.0 - (gate_no - 1) / 7.0
         else:
             gate_factor = 0.5
 
-        # 過去走で1角前目（相対位置0.20以下）を取れた率
+        if PACE_ESCAPE_SCORING_V2 and runs:
+            # ── v2: 時間減衰付き重み付け（直近走を重視）+ テン3F考慮 ──
+            valid = [r for r in runs[:10] if r.relative_position is not None]
+            if valid:
+                # 直近ほど重み大（指数減衰: 0.5, 0.35, 0.25, 0.18, 0.13...）
+                weights = [0.5 * (0.7 ** i) for i in range(len(valid))]
+                w_sum = sum(weights)
+                norm_weights = [w / w_sum for w in weights]
+                # 加重 escape_rate: rp<=0.20 で 1.0、0.20<rp<=0.30 で線形 0.5、それ以上 0.0
+                weighted_score = 0.0
+                for r, w in zip(valid, norm_weights):
+                    rp = r.relative_position
+                    if rp <= 0.20:
+                        weighted_score += w * 1.0
+                    elif rp <= 0.30:
+                        weighted_score += w * (1.0 - (rp - 0.20) / 0.10 * 0.5)
+                past_escape_rate = weighted_score
+                # 直近のテン3F速度（速いほど逃げやすい）
+                recent_rp = valid[0].relative_position
+                recent_bonus = 0.20 if recent_rp <= 0.20 else (0.10 if recent_rp <= 0.30 else 0.0)
+            else:
+                past_escape_rate = 0.4
+                recent_bonus = 0.0
+            # 内枠の重みを 0.40 に増加（旧 0.35）
+            return gate_factor * 0.40 + past_escape_rate * 0.45 + recent_bonus
+
+        # ── 旧ロジック（v2 OFF時） ──
         if runs:
-            # F4: relative_position の Null安全処理
             valid = [r for r in runs[:10] if r.relative_position is not None]
             escape_runs = sum(1 for r in valid if r.relative_position <= 0.20)
             past_escape_rate = escape_runs / max(len(valid), 1)
-            # 直近の状態（前走で逃げ/先行していたか）
             recent_rp = runs[0].relative_position if runs[0].relative_position is not None else 0.5
             recent_bonus = 0.15 if recent_rp <= 0.25 else 0.0
         else:
@@ -1165,7 +1192,7 @@ class PaceDeviationCalculator:
         改善4: last3f_cv で末脚安定性をバランス計算に組み込み（共線性解消）
         改善5: NAR坂データ不足時のフォールバック追加
         """
-        from config.settings import PACE_NAR_POSITION_FIX_ENABLED, PACE_MERGE_LAST3F_INTO_BALANCE
+        from config.settings import PACE_MERGE_LAST3F_INTO_BALANCE, PACE_NAR_POSITION_FIX_ENABLED
 
         # ペース強度: H=2.0, M=1.0, S=0.0
         pace_strength = {

@@ -14,12 +14,11 @@ TTL:
 import json
 import os
 import time
-from dataclasses import asdict, fields
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Tuple
+from typing import List, Optional, Tuple
 
 from src.log import get_logger
-from src.models import CourseMaster, Horse, PastRun, PaceType, RaceInfo
+from src.models import CourseMaster, Horse, PaceType, PastRun, RaceInfo
 
 logger = get_logger(__name__)
 
@@ -359,7 +358,7 @@ def save_race_cache(
                 )
                 return fp
         except Exception:
-            pass
+            logger.debug("既存キャッシュ読み込み失敗: %s", race_id, exc_info=True)
 
     payload = {
         "_cache_version": _CACHE_VERSION,
@@ -368,12 +367,21 @@ def save_race_cache(
         "horses": [_serialize_horse(h) for h in horses],
     }
 
+    # アトミック書き込み（書き込み中断によるキャッシュ破損を防ぐ）
+    tmp_fp = fp + ".tmp"
     try:
-        with open(fp, "w", encoding="utf-8") as f:
+        with open(tmp_fp, "w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=False, separators=(",", ":"))
+        os.replace(tmp_fp, fp)
         logger.debug("レースキャッシュ保存: %s (%d頭)", race_id, len(horses))
     except Exception as e:
         logger.warning("レースキャッシュ保存失敗: %s → %s", race_id, e)
+        # tmpファイルのクリーンアップ
+        try:
+            if os.path.exists(tmp_fp):
+                os.remove(tmp_fp)
+        except Exception:
+            pass
         return ""
     return fp
 

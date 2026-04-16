@@ -25,8 +25,8 @@ except Exception:
     _is_jra_venue = lambda vc: vc in ("01", "02", "03", "04", "05", "06", "07", "08", "09", "10")
 
 from src.scraper.keibabook_training import (
-    KeibabookClient,
     NAR_VENUE_TO_KB,
+    KeibabookClient,
     jra_netkeiba_to_kb_id,
 )
 

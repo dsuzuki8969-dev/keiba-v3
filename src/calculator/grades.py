@@ -14,7 +14,6 @@ SS〜E のグレードに変換して返す。
 
 from typing import Any, Dict, List, Optional, Tuple
 
-
 # ============================================================
 # 共通ユーティリティ
 # ============================================================
@@ -381,7 +380,6 @@ def compute_jockey_detail_grades(
 
         # ── 脚質実績 ── (脚質に合った騎乗能力: 脚質と相性の良いコースでの実績)
         if running_style:
-            from src.models import RunningStyle
             style_val = running_style.value if hasattr(running_style, "value") else str(running_style)
             style_recs = []
             if style_val in ("逃げ", "先行"):
@@ -412,11 +410,7 @@ def compute_jockey_detail_grades(
                 s = _get_venue_straight(all_courses, vc)
                 if s is None or rec.get("sample_n", 0) < 1:
                     continue
-                if is_inner and s < 400:
-                    gate_recs.append((rec.get("all_dev", 50.0), rec["sample_n"]))
-                elif is_outer and s >= 400:
-                    gate_recs.append((rec.get("all_dev", 50.0), rec["sample_n"]))
-                elif not is_inner and not is_outer:
+                if (is_inner and s < 400) or (is_outer and s >= 400) or (not is_inner and not is_outer):
                     gate_recs.append((rec.get("all_dev", 50.0), rec["sample_n"]))
             avg = _weighted_avg(gate_recs)
             if avg is not None:
@@ -521,13 +515,9 @@ def compute_trainer_detail_grades(
                 else:
                     has_short_straight_good = True
         target_is_long = target_straight >= 400
-        if target_is_long and has_long_straight_good:
+        if (target_is_long and has_long_straight_good) or (not target_is_long and has_short_straight_good):
             result["straight"] = "A"
-        elif not target_is_long and has_short_straight_good:
-            result["straight"] = "A"
-        elif target_is_long and has_short_straight_good:
-            result["straight"] = "C"
-        elif not target_is_long and has_long_straight_good:
+        elif (target_is_long and has_short_straight_good) or (not target_is_long and has_long_straight_good):
             result["straight"] = "C"
         else:
             result["straight"] = "C"

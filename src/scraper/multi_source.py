@@ -21,7 +21,7 @@
 """
 
 import logging
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List
 
 from src.models import Horse, RaceInfo
 

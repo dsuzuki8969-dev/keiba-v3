@@ -24,7 +24,7 @@ LightGBM LambdaRank モデル
 
 import os
 import pickle
-from typing import Dict, List, Optional
+from typing import Dict, List
 
 from src.log import get_logger
 
@@ -58,11 +58,14 @@ def train_ranker(valid_days: int = 30) -> dict:
     import numpy as np
 
     from src.ml.lgbm_model import (
-        FEATURE_COLUMNS, CATEGORICAL_FEATURES,
-        RollingStatsTracker, RollingSireTracker,
-        _extract_features, _add_race_relative_features, _smile_key_ml,
-        _load_ml_races, _load_horse_sire_map,
-        STATS_PATH, SIRE_STATS_PATH,
+        CATEGORICAL_FEATURES,
+        FEATURE_COLUMNS,
+        RollingSireTracker,
+        RollingStatsTracker,
+        _add_race_relative_features,
+        _extract_features,
+        _load_horse_sire_map,
+        _load_ml_races,
     )
 
     logger.info("=" * 55)
@@ -308,7 +311,7 @@ class LGBMRanker:
             return True
         if not os.path.exists(RANKER_PATH):
             return False
-        from src.ml.lgbm_model import STATS_PATH, SIRE_STATS_PATH
+        from src.ml.lgbm_model import SIRE_STATS_PATH, STATS_PATH
         if not os.path.exists(STATS_PATH):
             return False
         try:
@@ -351,7 +354,9 @@ class LGBMRanker:
         import numpy as np
 
         from src.ml.lgbm_model import (
-            FEATURE_COLUMNS, _extract_features, _add_race_relative_features,
+            FEATURE_COLUMNS,
+            _add_race_relative_features,
+            _extract_features,
             _load_horse_sire_map,
         )
 

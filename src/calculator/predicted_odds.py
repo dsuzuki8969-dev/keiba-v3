@@ -13,12 +13,10 @@ from typing import Any, Dict, List, Optional, Tuple
 from config.settings import (
     DIVERGENCE_SIGNAL,
     EV_THRESHOLD_BUY,
-    EV_THRESHOLD_STRONG,
     PAYOUT_RATES,
 )
-from src.models import HorseEvaluation, RaceInfo
-
 from src.log import get_logger
+from src.models import HorseEvaluation, RaceInfo
 
 logger = get_logger(__name__)
 

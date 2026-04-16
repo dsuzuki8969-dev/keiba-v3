@@ -30,6 +30,7 @@ def _build_bloodline_lookup() -> Dict[str, Tuple[str, str]]:
     """keiba.db race_logから horse_id → (sire_name, bms_name) のルックアップを構築"""
     try:
         import sqlite3
+
         from config.settings import DATABASE_PATH
         with sqlite3.connect(DATABASE_PATH) as conn:
             rows = conn.execute(
@@ -48,6 +49,7 @@ def _build_affiliation_lookup() -> Dict[str, str]:
     # Step 1: personnel_db.json
     try:
         import json as _json
+
         from config.settings import PERSONNEL_DB_PATH
         with open(PERSONNEL_DB_PATH, "r", encoding="utf-8") as f:
             pdb = _json.load(f)
@@ -67,6 +69,7 @@ def _build_affiliation_lookup() -> Dict[str, str]:
     # Step 2: keiba.db race_logのtrainer_nameから「美浦XX」「栗東XX」パターンを取得
     try:
         import sqlite3
+
         from config.settings import DATABASE_PATH
         with sqlite3.connect(DATABASE_PATH) as conn:
             rows = conn.execute(
@@ -181,7 +184,7 @@ def save_prediction(date: str, analyses_by_venue: dict, *, lightweight: bool = F
             if _has_unknown_sex:
                 try:
                     from src.scraper.race_cache import load_race_cache
-                    _cached = load_race_cache(race_id, ignore_ttl=True)
+                    _cached = load_race_cache(race_info.race_id, ignore_ttl=True)
                     if _cached:
                         _, _cached_horses = _cached
                         for _ch in _cached_horses:
@@ -785,9 +788,10 @@ def _extract_training_records(records) -> list:
 def _lookup_corners_from_cache(race_id: str, horse_no: int,
                                finish_pos: int = 0, field_count: int = 0) -> list:
     """result.htmlキャッシュからコーナー通過順を取得"""
-    import lz4.frame
     import os
     import re as _re
+
+    import lz4.frame
     from bs4 import BeautifulSoup
 
     cache_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "cache")
@@ -907,9 +911,9 @@ def _lookup_l3f_rank_from_cache(race_id: str, horse_no: int) -> int | None:
     if race_id in _l3f_rank_cache:
         return _l3f_rank_cache[race_id].get(horse_no)
 
-    import lz4.frame
     import os
-    import re as _re
+
+    import lz4.frame
     from bs4 import BeautifulSoup
 
     cache_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "cache")
@@ -983,8 +987,8 @@ def _lookup_l3f_rank_from_cache(race_id: str, horse_no: int) -> int | None:
 
 def _parse_corners_from_race_results(race_id: str, horse_no: int, db_path: str) -> list:
     """race_resultsのorder_json内cornersフィールドから通過順をパース"""
-    import sqlite3
     import json as _j
+    import sqlite3
     conn = sqlite3.connect(db_path)
     row = conn.execute(
         "SELECT order_json FROM race_results WHERE race_id=? LIMIT 1",
@@ -1050,9 +1054,9 @@ def _dp_corners(s: str, n: int):
 
 def _get_corners_from_race_log(run) -> list:
     """race_logテーブルから直接通過順を取得（最も信頼性が高い）"""
-    import sqlite3
     import json as _json_rl
     import os
+    import sqlite3
 
     rd = getattr(run, "race_date", "")
     venue = getattr(run, "venue", "")
@@ -1079,9 +1083,10 @@ def _get_corners_from_race_log(run) -> list:
             ).fetchone()
         # race_idがない場合はvenue+date+distance+finish_posで検索
         if not row and venue and rd:
-            from data.masters.venue_master import VENUE_NAME_TO_CODE
             # venueがすでにコード形式（"01"-"65"等）の場合はそのまま使用
             import re as _re_vc
+
+            from data.masters.venue_master import VENUE_NAME_TO_CODE
             if _re_vc.match(r"^\d{2}$", venue):
                 vc = venue
             else:
@@ -1168,8 +1173,8 @@ def _get_corners_from_race_log(run) -> list:
 
 def _get_corners_for_run(run) -> list:
     """PastRunのコーナー通過順を取得（DBからrace_id特定→キャッシュ読み込み）"""
-    import sqlite3
     import os
+    import sqlite3
 
     rd = getattr(run, "race_date", "")
     venue = getattr(run, "venue", "")
@@ -1179,8 +1184,9 @@ def _get_corners_for_run(run) -> list:
     if not rd or not venue or not horse_no:
         return []
 
-    from data.masters.venue_master import VENUE_NAME_TO_CODE
     import re as _re_vc2
+
+    from data.masters.venue_master import VENUE_NAME_TO_CODE
     # venueがすでにコード形式（"01"-"65"等）の場合はそのまま使用
     if _re_vc2.match(r"^\d{2}$", venue):
         vc = venue
@@ -1255,8 +1261,8 @@ def _get_corners_for_run(run) -> list:
 
 def _get_l3f_rank_for_run(run) -> int | None:
     """PastRunの上がり3Fランクを取得（DBからrace_id特定→result HTMLキャッシュ）"""
-    import sqlite3
     import os
+    import sqlite3
 
     rd = getattr(run, "race_date", "")
     venue = getattr(run, "venue", "")
@@ -1266,8 +1272,9 @@ def _get_l3f_rank_for_run(run) -> int | None:
     if not rd or not venue or not horse_no or not finish_pos or finish_pos >= 90:
         return None
 
-    from data.masters.venue_master import VENUE_NAME_TO_CODE
     import re as _re_vc3
+
+    from data.masters.venue_master import VENUE_NAME_TO_CODE
     if _re_vc3.match(r"^\d{2}$", venue):
         vc = venue
     else:
@@ -1338,8 +1345,8 @@ def _infer_race_no(run) -> int:
 
 def _extract_past_runs(horse, count: int = 3, run_records=None) -> list:
     """馬の過去走データからフロントエンド用に前N走を抽出（走破偏差値付き）"""
-    from src.calculator.grades import dev_to_grade
     from data.masters.venue_master import get_venue_name
+    from src.calculator.grades import dev_to_grade
 
     runs = getattr(horse, "past_runs", None)
     if not runs:

@@ -6,10 +6,7 @@
 2. 「期待値プラスだけ買う」戦略の回収率をシミュレーション
 """
 
-import json
 import os
-from collections import defaultdict
-from typing import Dict, List, Optional
 
 import numpy as np
 
@@ -31,9 +28,6 @@ def run_backtest(
     予想オッズと実オッズの精度を検証する。
     """
     from src.ml.lgbm_model import (
-        FEATURE_COLUMNS,
-        RollingStatsTracker,
-        _extract_features,
         _load_ml_races,
     )
     from src.ml.probability_model import ProbabilityPredictor

@@ -19,9 +19,9 @@
 """
 
 import json
+import os
 import re
 import sqlite3
-import os
 from collections import defaultdict
 from typing import Dict, List, Optional, Tuple
 

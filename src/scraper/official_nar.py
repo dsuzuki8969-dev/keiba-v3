@@ -5,17 +5,17 @@ NAR公式サイトスクレイパー (keiba.go.jp)
 RaceList（レース一覧）から完全なレースデータを取得する。
 """
 
-import logging
 import re
 import threading
 import time
-from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 
 import requests
 from bs4 import BeautifulSoup
 
-logger = logging.getLogger("keiba.scraper.official_nar")
+from src.log import get_logger
+
+logger = get_logger(__name__)
 
 _UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -138,7 +138,6 @@ class OfficialNARScraper:
 
         Returns: (RaceInfo, List[Horse]) or (None, [])
         """
-        from src.models import CourseMaster, Horse, RaceInfo
 
         url = f"{_BASE}/TodayRaceInfo/DebaTable"
         params = {
@@ -271,7 +270,7 @@ class OfficialNARScraper:
         try:
             # nar.netkeiba.comの出馬表で1R目をプローブ
             probe_id = f"{year}65{mmdd}01"
-            probe_url = f"https://nar.netkeiba.com/race/shutuba.html"
+            probe_url = "https://nar.netkeiba.com/race/shutuba.html"
             resp = self._session.get(
                 probe_url,
                 params={"race_id": probe_id},
@@ -353,7 +352,6 @@ class OfficialNARScraper:
 
         Returns: (List[PastRun], pedigree_dict)
         """
-        from src.models import PastRun
 
         if not lineage_code:
             return [], {}
@@ -395,8 +393,8 @@ class OfficialNARScraper:
         Row  9: 母, 馬主
         Row 10: 母父, 生産牧場
         """
-        from src.models import CourseMaster, Horse, PastRun, RaceInfo
         from data.masters.course_master import ALL_COURSES
+        from src.models import CourseMaster, Horse, RaceInfo
 
         soup = BeautifulSoup(html, "html.parser")
 
@@ -680,9 +678,7 @@ class OfficialNARScraper:
                     # 父 (最初のセル, colspan=3)
                     if ci == 0 and not sire_set:
                         a = cell.select_one("a")
-                        if a and "TrainerMark" not in a.get("href", ""):
-                            sire = text
-                        elif not a and text:
+                        if (a and "TrainerMark" not in a.get("href", "")) or (not a and text):
                             sire = text
                         sire_set = True
 

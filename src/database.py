@@ -17,6 +17,9 @@ from contextlib import contextmanager
 from typing import Dict, List, Optional
 
 from config.settings import DATABASE_PATH
+from src.log import get_logger
+
+logger = get_logger(__name__)
 
 
 # ============================================================
@@ -228,6 +231,12 @@ def init_schema() -> None:
         "CREATE INDEX IF NOT EXISTS idx_racelog_surface ON race_log(surface)",
         "CREATE INDEX IF NOT EXISTS idx_racelog_horseid ON race_log(horse_id)",
         "CREATE INDEX IF NOT EXISTS idx_racelog_finish  ON race_log(finish_pos)",
+        # 追加インデックス（jockey_name検索の高速化、venue×surface×distance集計）
+        "CREATE INDEX IF NOT EXISTS idx_racelog_jockeyname ON race_log(jockey_name)",
+        "CREATE INDEX IF NOT EXISTS idx_racelog_trainername ON race_log(trainer_name)",
+        "CREATE INDEX IF NOT EXISTS idx_racelog_venue_surf_dist ON race_log(venue_code, surface, distance)",
+        "CREATE INDEX IF NOT EXISTS idx_racelog_sirename ON race_log(sire_name)",
+        "CREATE INDEX IF NOT EXISTS idx_racelog_bmsname ON race_log(bms_name)",
         "CREATE INDEX IF NOT EXISTS idx_training_raceid ON training_records(race_id)",
         "CREATE INDEX IF NOT EXISTS idx_training_horse  ON training_records(horse_name)",
         "CREATE INDEX IF NOT EXISTS idx_personnel_type  ON personnel(person_type)",
@@ -236,9 +245,95 @@ def init_schema() -> None:
     ]:
         try:
             conn.execute(ddl)
-        except Exception:
-            pass
+        except sqlite3.OperationalError as _e:
+            # 既存カラム/インデックスはスキップ（duplicate column / already exists 等）
+            _msg = str(_e).lower()
+            if "duplicate column" in _msg or "already exists" in _msg:
+                continue
+            logger.debug("マイグレーション失敗 (継続): %s → %s", ddl[:60], _e)
     conn.commit()
+    # executescript() が PRAGMA をリセットするため再設定
+    conn.execute("PRAGMA foreign_keys=ON")
+
+
+# ============================================================
+# DB バックアップ・クリーンアップ
+# ============================================================
+
+
+def backup_db(backup_dir: str = None, retain_count: int = 7) -> str:
+    """
+    SQLite オンラインバックアップ（VACUUM中もブロックしない）。
+    backup_dir には日付付きファイル名で保存し、古い世代は retain_count を超えたら削除。
+    Returns: バックアップファイルパス（失敗時は空文字列）
+    """
+    import glob as _glob
+    from datetime import datetime as _dt
+
+    if backup_dir is None:
+        backup_dir = _os.path.join(_os.path.dirname(DATABASE_PATH), "backups")
+    _os.makedirs(backup_dir, exist_ok=True)
+
+    ts = _dt.now().strftime("%Y%m%d_%H%M%S")
+    bk_path = _os.path.join(backup_dir, f"keiba_{ts}.db")
+    try:
+        src_conn = sqlite3.connect(DATABASE_PATH)
+        dst_conn = sqlite3.connect(bk_path)
+        try:
+            src_conn.backup(dst_conn)
+        finally:
+            dst_conn.close()
+            src_conn.close()
+        logger.info("DB バックアップ完了: %s", bk_path)
+    except Exception as e:
+        logger.warning("DB バックアップ失敗: %s", e, exc_info=True)
+        return ""
+
+    # 古いバックアップを削除（retain_count を超えた分）
+    try:
+        all_bks = sorted(_glob.glob(_os.path.join(backup_dir, "keiba_*.db")))
+        if len(all_bks) > retain_count:
+            for old in all_bks[:-retain_count]:
+                try:
+                    _os.remove(old)
+                    logger.debug("古いバックアップを削除: %s", old)
+                except OSError:
+                    pass
+    except Exception:
+        pass
+    return bk_path
+
+
+def cleanup_db(drop_old_tables: bool = False) -> dict:
+    """
+    DB クリーンアップ:
+    - predictions_old テーブル削除（drop_old_tables=True 時）
+    - horse_id 空文字行のカウント報告
+    Returns: {"dropped": [...], "empty_horse_id": int, "vacuum": bool}
+    """
+    result = {"dropped": [], "empty_horse_id": 0, "vacuum": False}
+    conn = get_db()
+    try:
+        # 空horse_idカウント
+        result["empty_horse_id"] = conn.execute(
+            "SELECT COUNT(*) FROM race_log WHERE horse_id IS NULL OR horse_id=''"
+        ).fetchone()[0]
+
+        if drop_old_tables:
+            # 古いテーブルが存在する場合のみ削除
+            for tbl in ["predictions_old"]:
+                exists = conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+                    (tbl,)
+                ).fetchone()
+                if exists:
+                    conn.execute(f"DROP TABLE {tbl}")
+                    result["dropped"].append(tbl)
+                    logger.info("古いテーブルを削除: %s", tbl)
+            conn.commit()
+    except Exception as e:
+        logger.warning("cleanup_db 失敗: %s", e, exc_info=True)
+    return result
 
 
 # ============================================================
@@ -1367,7 +1462,8 @@ def _l3f_corners_backfill(conn) -> None:
     HTMLキャッシュから自動補完する。
     populate_race_log_from_predictions() の末尾で自動呼出しされる。
     """
-    import os as _os, re as _re
+    import os as _os
+    import re as _re
 
     # 補完対象のrace_idを取得（last_3f=0 または corners不足）
     need_l3f = conn.execute(
@@ -1770,7 +1866,11 @@ def populate_race_log_from_predictions() -> int:
                             _updated += r.rowcount
                 except (json.JSONDecodeError, TypeError):
                     continue
-            conn.commit()
+            try:
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                logger.warning("win_odds バックフィルバッチコミット失敗、rollback実行", exc_info=True)
         print(f"[race_log投入] win_odds バックフィル完了: {_updated:,}件更新", flush=True)
 
     # ── sire_name / bms_name のバックフィル（既存行を predictions.horses_json から補完）──
@@ -1808,7 +1908,11 @@ def populate_race_log_from_predictions() -> int:
                             _s_updated += r.rowcount
                 except (json.JSONDecodeError, TypeError):
                     continue
-            conn.commit()
+            try:
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                logger.warning("sire/bms バックフィルバッチコミット失敗、rollback実行", exc_info=True)
         print(f"[race_log投入] sire/bms バックフィル完了: {_s_updated:,}件更新", flush=True)
         # 更新0件なら次回スキップ用フラグを作成
         if _s_updated == 0:
@@ -1879,7 +1983,10 @@ def _load_ml_name_map(cache_hours: int = 24) -> dict:
     ml/training_ml JSON から trainer/jockey の id→name マッピングを構築してキャッシュする。
     返り値: {"trainer": {id: name}, "jockey": {id: name}}
     """
-    import os as _os, glob, re as _re, time as _time
+    import glob
+    import os as _os
+    import re as _re
+    import time as _time
     _PROJECT_ROOT = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
     _CACHE_PATH = _os.path.join(_PROJECT_ROOT, "data", "name_map_cache.json")
 
@@ -1998,9 +2105,9 @@ def compute_personnel_stats_from_race_log(year_filter: str = None) -> dict:
     populate_race_log_from_predictions() 後に呼ぶ。
     year_filter: "2024", "2025", "2026" 等で年度絞り込み。None=全期間。
     """
-    from collections import defaultdict
     import re as _re
     import time as _time
+    from collections import defaultdict
 
     t0 = _time.time()
 

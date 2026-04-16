@@ -38,11 +38,12 @@ except ImportError:
 
 from src.log import get_logger
 from src.models import CourseMaster, Horse, RaceInfo, TrainingRecord
-from src.scraper.netkeiba import BASE_URL, HEADERS, REQUEST_INTERVAL, RACE_URL, NetkeibaClient
+from src.scraper.netkeiba import BASE_URL, HEADERS, RACE_URL, REQUEST_INTERVAL, NetkeibaClient
 
 logger = get_logger(__name__)
 
-from config.settings import CACHE_DIR as _AUTH_DEFAULT_CACHE, DATA_DIR as _DATA_DIR
+from config.settings import CACHE_DIR as _AUTH_DEFAULT_CACHE
+from config.settings import DATA_DIR as _DATA_DIR
 from data.masters.venue_master import JRA_CODES, get_venue_code_from_race_id, get_venue_name
 
 
@@ -711,7 +712,7 @@ class PremiumNetkeibaScraper:
         # ── レースデータキャッシュ復元 ──
         if use_cache and fetch_history:
             try:
-                from src.scraper.race_cache import load_race_cache, invalidate_race_cache
+                from src.scraper.race_cache import invalidate_race_cache, load_race_cache
                 cached = load_race_cache(race_id)
                 if cached:
                     race_info, horses = cached
@@ -1145,7 +1146,7 @@ class PremiumNetkeibaScraper:
 
     def _fetch_from_official(self, race_id: str, fetch_history: bool = True):
         """JRA/NAR公式のみでレースデータを構築（ネット競馬フォールバック）"""
-        from src.scraper.official_odds import OfficialOddsScraper, _JRA_VENUE_CODES
+        from src.scraper.official_odds import _JRA_VENUE_CODES, OfficialOddsScraper
 
         venue_code = race_id[4:6]
         is_jra = venue_code in _JRA_VENUE_CODES

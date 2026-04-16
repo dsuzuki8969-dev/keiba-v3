@@ -16,7 +16,7 @@ import re
 import sys
 import time as _time
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
@@ -29,8 +29,8 @@ except ImportError:
 
 from config.settings import PERSONNEL_DB_PATH
 from data.masters.venue_master import JRA_VENUE_CODES, VENUE_NAME_TO_CODE
-from src.models import JockeyStats, JushaRank, KaisyuType, TrainerStats
 from src.log import get_logger
+from src.models import JockeyStats, JushaRank, KaisyuType, TrainerStats
 from src.scraper.netkeiba import BASE_URL, NetkeibaClient
 
 logger = get_logger(__name__)
@@ -1247,7 +1247,7 @@ def build_nar_jockey_stats_from_race_log(
         # 成績集計（NAR競馬場限定 — 比較対象と条件を揃える）
         stats_row = conn.execute(
             "SELECT COUNT(*), SUM(CASE WHEN finish_pos = 1 THEN 1 ELSE 0 END) "
-            "FROM race_log WHERE jockey_id = ? AND venue_code IN ({})".format(_nar_in),
+            f"FROM race_log WHERE jockey_id = ? AND venue_code IN ({_nar_in})",
             (best_jid,),
         ).fetchone()
         total_runs, total_wins = stats_row
@@ -1260,8 +1260,8 @@ def build_nar_jockey_stats_from_race_log(
         all_jockeys = conn.execute(
             "SELECT jockey_id, COUNT(*) as runs, "
             "SUM(CASE WHEN finish_pos = 1 THEN 1 ELSE 0 END) as wins "
-            "FROM race_log WHERE venue_code IN ({}) AND jockey_id != '' "
-            "GROUP BY jockey_id HAVING runs >= 5".format(_nar_in),
+            f"FROM race_log WHERE venue_code IN ({_nar_in}) AND jockey_id != '' "
+            "GROUP BY jockey_id HAVING runs >= 5",
         ).fetchall()
 
         valid_wrs = sorted(w / r for _, r, w in all_jockeys if r >= 5)
@@ -1333,9 +1333,9 @@ def build_nar_trainer_stats_from_race_log(
     trainer_name は "山中尊（船橋）" 形式 → "山中尊" に正規化して前方一致検索。
     min_runs: 最小NAR出走数（クロスチェック用途では30推奨）。
     """
+    import datetime
     import re
     import sqlite3
-    import datetime
 
     _clean = re.sub(r"[（(].+?[）)]", "", trainer_name).replace("　", "").strip()
     _norm = _normalize_name(_clean)
@@ -1387,7 +1387,7 @@ def build_nar_trainer_stats_from_race_log(
             "SELECT COUNT(*), "
             "SUM(CASE WHEN finish_pos = 1 THEN 1 ELSE 0 END), "
             "SUM(CASE WHEN finish_pos <= 3 THEN 1 ELSE 0 END) "
-            "FROM race_log WHERE trainer_id = ? AND venue_code IN ({})".format(_nar_in),
+            f"FROM race_log WHERE trainer_id = ? AND venue_code IN ({_nar_in})",
             (best_tid,),
         ).fetchone()
         total_runs, total_wins, total_places = stats_row
@@ -1396,7 +1396,7 @@ def build_nar_trainer_stats_from_race_log(
 
         recent = conn.execute(
             "SELECT COUNT(*), SUM(CASE WHEN finish_pos = 1 THEN 1 ELSE 0 END) "
-            "FROM race_log WHERE trainer_id = ? AND race_date >= ? AND venue_code IN ({})".format(_nar_in),
+            f"FROM race_log WHERE trainer_id = ? AND race_date >= ? AND venue_code IN ({_nar_in})",
             (best_tid, cutoff),
         ).fetchone()
         recent_runs, recent_wins = recent
@@ -1409,8 +1409,8 @@ def build_nar_trainer_stats_from_race_log(
         all_trainers = conn.execute(
             "SELECT trainer_id, COUNT(*) as runs, "
             "SUM(CASE WHEN finish_pos = 1 THEN 1 ELSE 0 END) as wins "
-            "FROM race_log WHERE venue_code IN ({}) AND trainer_id != '' "
-            "GROUP BY trainer_id HAVING runs >= 5".format(_nar_in),
+            f"FROM race_log WHERE venue_code IN ({_nar_in}) AND trainer_id != '' "
+            "GROUP BY trainer_id HAVING runs >= 5",
         ).fetchall()
 
         valid_wrs = sorted(w / r for _, r, w in all_trainers if r >= 5)
@@ -1532,8 +1532,8 @@ class _BatchNarRaceLogCache:
         all_j = conn.execute(
             "SELECT jockey_id, COUNT(*) as runs, "
             "SUM(CASE WHEN finish_pos = 1 THEN 1 ELSE 0 END) as wins "
-            "FROM race_log WHERE venue_code IN ({}) AND jockey_id != '' "
-            "GROUP BY jockey_id HAVING runs >= 5".format(_nar_in),
+            f"FROM race_log WHERE venue_code IN ({_nar_in}) AND jockey_id != '' "
+            "GROUP BY jockey_id HAVING runs >= 5",
         ).fetchall()
         self._jockey_nar_stats = {jid: (r, w or 0) for jid, r, w in all_j}
         self._jockey_nar_wrs = sorted(w / r for _, r, w in all_j if r >= 5 and w is not None)
@@ -1543,8 +1543,8 @@ class _BatchNarRaceLogCache:
             "SELECT trainer_id, COUNT(*) as runs, "
             "SUM(CASE WHEN finish_pos = 1 THEN 1 ELSE 0 END) as wins, "
             "SUM(CASE WHEN finish_pos <= 3 THEN 1 ELSE 0 END) as places "
-            "FROM race_log WHERE venue_code IN ({}) AND trainer_id != '' "
-            "GROUP BY trainer_id HAVING runs >= 5".format(_nar_in),
+            f"FROM race_log WHERE venue_code IN ({_nar_in}) AND trainer_id != '' "
+            "GROUP BY trainer_id HAVING runs >= 5",
         ).fetchall()
         self._trainer_nar_stats = {tid: (r, w or 0, p or 0) for tid, r, w, p in all_t}
         self._trainer_nar_wrs = sorted(
@@ -1556,8 +1556,8 @@ class _BatchNarRaceLogCache:
         recent = conn.execute(
             "SELECT trainer_id, COUNT(*), "
             "SUM(CASE WHEN finish_pos = 1 THEN 1 ELSE 0 END) "
-            "FROM race_log WHERE race_date >= ? AND venue_code IN ({}) "
-            "AND trainer_id != '' GROUP BY trainer_id".format(_nar_in),
+            f"FROM race_log WHERE race_date >= ? AND venue_code IN ({_nar_in}) "
+            "AND trainer_id != '' GROUP BY trainer_id",
             (cutoff,),
         ).fetchall()
         self._trainer_recent = {tid: (r, w or 0) for tid, r, w in recent}
@@ -1590,9 +1590,9 @@ class _BatchNarRaceLogCache:
     def _build_name_map(conn, id_col: str, name_col: str) -> Dict[str, Dict[str, int]]:
         """name → {id: count} マッピングを一括構築"""
         rows = conn.execute(
-            "SELECT {}, {}, COUNT(*) as cnt "
-            "FROM race_log WHERE {} != '' AND {} != '' "
-            "GROUP BY {}, {}".format(id_col, name_col, id_col, name_col, id_col, name_col),
+            f"SELECT {id_col}, {name_col}, COUNT(*) as cnt "
+            f"FROM race_log WHERE {id_col} != '' AND {name_col} != '' "
+            f"GROUP BY {id_col}, {name_col}",
         ).fetchall()
         result: Dict[str, Dict[str, int]] = {}
         for pid, pname, cnt in rows:
@@ -1608,10 +1608,10 @@ class _BatchNarRaceLogCache:
     def _load_condition(conn, id_col: str) -> Dict[str, Dict]:
         """馬場状態別成績を一括ロード"""
         rows = conn.execute(
-            "SELECT {}, condition, COUNT(*), "
+            f"SELECT {id_col}, condition, COUNT(*), "
             "SUM(CASE WHEN finish_pos = 1 THEN 1 ELSE 0 END) "
-            "FROM race_log WHERE {} != '' AND condition != '' "
-            "GROUP BY {}, condition HAVING COUNT(*) >= 2".format(id_col, id_col, id_col),
+            f"FROM race_log WHERE {id_col} != '' AND condition != '' "
+            f"GROUP BY {id_col}, condition HAVING COUNT(*) >= 2",
         ).fetchall()
         result: Dict[str, Dict] = {}
         for pid, cond, runs, wins in rows:
@@ -1794,9 +1794,14 @@ class PersonnelDBManager:
                 self._data = json.load(f)
 
     def save(self):
+        """アトミック書き込み: tmp ファイルに書いてから os.replace で原子的差し替え"""
         os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
-        with open(self.db_path, "w", encoding="utf-8") as f:
+        tmp_path = self.db_path + ".tmp"
+        with open(tmp_path, "w", encoding="utf-8") as f:
             json.dump(self._data, f, ensure_ascii=False, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, self.db_path)
 
     def is_stale(self, key: str) -> bool:
         """キャッシュが古いか判定"""
@@ -1898,38 +1903,37 @@ class PersonnelDBManager:
         """
         import sqlite3
         _JRA_ID_PREFIXES = {"00", "01"}
-        conn = sqlite3.connect(db_path)
         purged = 0
-        for tid, tdata in list(self._data.get("trainers", {}).items()):
-            # JRA ID（00xxx/01xxx）やNAR netkeiba ID（aXXXX）はスキップ
-            if not tid.isdigit() or len(tid) != 5:
-                continue
-            if tid[:2] in _JRA_ID_PREFIXES:
-                continue
-            pdb_name = tdata.get("trainer_name", "")
-            # race_logの名前を取得
-            rows = conn.execute(
-                "SELECT DISTINCT trainer_name FROM race_log WHERE trainer_id = ?",
-                (tid,),
-            ).fetchall()
-            if not rows:
-                continue
-            rl_names = [r[0] for r in rows]
-            # 名前の先頭2文字で一致判定（所属サフィックスを除外）
-            pdb_clean = re.sub(r"[（(][^）)]+[）)]", "", pdb_name).strip()
-            match = False
-            for rn in rl_names:
-                rn_clean = re.sub(r"[（(][^）)]+[）)]", "", rn).strip()
-                if len(pdb_clean) >= 2 and len(rn_clean) >= 2 and pdb_clean[:2] == rn_clean[:2]:
-                    match = True
-                    break
-            if not match:
-                logger.info("汚染データ削除: trainer_id=%s PDB=%s RL=%s", tid, pdb_name, rl_names)
-                del self._data["trainers"][tid]
-                # updatedキーも削除
-                self._data.get("updated", {}).pop(f"trainer_{tid}", None)
-                purged += 1
-        conn.close()
+        with sqlite3.connect(db_path) as conn:
+            for tid, tdata in list(self._data.get("trainers", {}).items()):
+                # JRA ID（00xxx/01xxx）やNAR netkeiba ID（aXXXX）はスキップ
+                if not tid.isdigit() or len(tid) != 5:
+                    continue
+                if tid[:2] in _JRA_ID_PREFIXES:
+                    continue
+                pdb_name = tdata.get("trainer_name", "")
+                # race_logの名前を取得
+                rows = conn.execute(
+                    "SELECT DISTINCT trainer_name FROM race_log WHERE trainer_id = ?",
+                    (tid,),
+                ).fetchall()
+                if not rows:
+                    continue
+                rl_names = [r[0] for r in rows]
+                # 名前の先頭2文字で一致判定（所属サフィックスを除外）
+                pdb_clean = re.sub(r"[（(][^）)]+[）)]", "", pdb_name).strip()
+                match = False
+                for rn in rl_names:
+                    rn_clean = re.sub(r"[（(][^）)]+[）)]", "", rn).strip()
+                    if len(pdb_clean) >= 2 and len(rn_clean) >= 2 and pdb_clean[:2] == rn_clean[:2]:
+                        match = True
+                        break
+                if not match:
+                    logger.info("汚染データ削除: trainer_id=%s PDB=%s RL=%s", tid, pdb_name, rl_names)
+                    del self._data["trainers"][tid]
+                    # updatedキーも削除
+                    self._data.get("updated", {}).pop(f"trainer_{tid}", None)
+                    purged += 1
         if purged > 0:
             logger.info("NAR調教師汚染データ %d件を削除", purged)
             self.save()

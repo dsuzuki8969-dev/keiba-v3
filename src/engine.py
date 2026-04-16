@@ -32,7 +32,7 @@ _CACHE_LGBM_LOADED:     bool = False
 _CACHE_RANKER_LOADED:   bool = False
 _CACHE_1C_LOADED:       bool = False
 
-from config.settings import STAKE_DEFAULT
+from data.masters.venue_master import is_banei
 from src.calculator.ability import (
     StandardTimeCalculator,
     TrackCorrector,
@@ -40,18 +40,10 @@ from src.calculator.ability import (
     detect_long_break,
 )
 from src.calculator.betting import (
-    allocate_stakes,
+    _calc_confidence_score,
     calc_predicted_odds,
     generate_formation_tickets,
-    _calc_confidence_score,
     judge_confidence,
-    should_buy_race,
-)
-from src.calculator.predicted_odds import (
-    assign_divergence_to_evaluations,
-    calc_predicted_sanrenpuku,
-    calc_predicted_umaren,
-    detect_value_bets,
 )
 from src.calculator.calibration import (
     diagnose_deviations,
@@ -83,6 +75,13 @@ from src.calculator.pace_course import (
     classify_field_styles,
     normalize_field_positions,
 )
+from src.calculator.popularity_blend import blend_probabilities, load_popularity_stats
+from src.calculator.predicted_odds import (
+    assign_divergence_to_evaluations,
+    calc_predicted_sanrenpuku,
+    calc_predicted_umaren,
+    detect_value_bets,
+)
 from src.models import (
     ConfidenceLevel,
     CourseMaster,
@@ -96,7 +95,6 @@ from src.models import (
     RunningStyle,
     TrainerStats,
 )
-from src.calculator.popularity_blend import blend_probabilities, load_popularity_stats
 from src.output.formatter import HTMLFormatter, assign_marks
 from src.scraper.improvement_dbs import (
     build_bloodline_db,
@@ -105,8 +103,6 @@ from src.scraper.improvement_dbs import (
     calc_odds_consistency_score,
     get_days_since_last_run,
 )
-from data.masters.venue_master import is_banei
-
 
 # ── target_date 単位のDBキャッシュ（バッチ高速化） ──
 _DB_CACHE_DATE = None
@@ -152,6 +148,7 @@ def _calc_banei_aptitude(horse, race) -> dict:
     - weight_trend: 斤量トレンドスコア (-4〜+4)
     """
     import numpy as np
+
     from data.masters.venue_master import is_banei as _is_banei_check
 
     result = {"burden": 0.0, "moisture": 0.0, "time_cv": 0.0, "weight_trend": 0.0}
@@ -366,7 +363,7 @@ class RaceAnalysisEngine:
         # コース別ペース傾向DB（案A）- DBから自動ロード（日付単位キャッシュ）
         global _DB_CACHE_DATE, _DB_CACHE_PACE, _DB_CACHE_L3F_SIGMA, _DB_CACHE_GATE_BIAS
         try:
-            if _DB_CACHE_DATE == target_date and _DB_CACHE_PACE is not None:
+            if target_date == _DB_CACHE_DATE and _DB_CACHE_PACE is not None:
                 self.course_pace_tendency = _DB_CACHE_PACE
             else:
                 from src.database import get_course_pace_tendency
@@ -408,7 +405,7 @@ class RaceAnalysisEngine:
 
         # コース別上がり3F sigma DB（案F-4）（日付単位キャッシュ）
         try:
-            if _DB_CACHE_DATE == target_date and _DB_CACHE_L3F_SIGMA is not None:
+            if target_date == _DB_CACHE_DATE and _DB_CACHE_L3F_SIGMA is not None:
                 _sigma_db = _DB_CACHE_L3F_SIGMA
             else:
                 from src.database import get_course_last3f_sigma
@@ -420,7 +417,7 @@ class RaceAnalysisEngine:
 
         # race_log ベースの枠順バイアスDB（案F-5）（日付単位キャッシュ）
         try:
-            if _DB_CACHE_DATE == target_date and _DB_CACHE_GATE_BIAS is not None:
+            if target_date == _DB_CACHE_DATE and _DB_CACHE_GATE_BIAS is not None:
                 _racelog_gate_bias = _DB_CACHE_GATE_BIAS
             else:
                 from src.database import get_gate_bias_from_race_log
@@ -723,8 +720,9 @@ class RaceAnalysisEngine:
         _enrich_found = 0
         _enrich_updated = 0
         try:
-            import sqlite3 as _sq3
             import json as _js2
+            import sqlite3 as _sq3
+
             from config.settings import DATABASE_PATH
             from data.masters.venue_master import VENUE_NAME_TO_CODE
             _rl2 = _sq3.connect(DATABASE_PATH)
@@ -1913,7 +1911,7 @@ class RaceAnalysisEngine:
             ev.ana_score, ev.ana_type = calc_ana_score(ev, evaluations)
 
         # ---- Step 6b: 特選穴馬スコア（composite上位5頭を除外 → ☆候補のみ）----
-        from config.settings import TOKUSEN_SCORE_THRESHOLD, TOKUSEN_MAX_PER_RACE
+        from config.settings import TOKUSEN_MAX_PER_RACE, TOKUSEN_SCORE_THRESHOLD
         for ev in evaluations:
             ev.tokusen_score = calc_tokusen_score(ev, evaluations)
         # composite上位5頭を除外（既に◉◎○▲△★が付くため☆不要）
@@ -1930,7 +1928,7 @@ class RaceAnalysisEngine:
             ev.is_tokusen = True
 
         # ---- Step 6c: 特選危険馬スコア（印体系とは独立）----
-        from config.settings import TOKUSEN_KIKEN_SCORE_THRESHOLD, TOKUSEN_KIKEN_MAX_PER_RACE
+        from config.settings import TOKUSEN_KIKEN_MAX_PER_RACE, TOKUSEN_KIKEN_SCORE_THRESHOLD
         for ev in evaluations:
             ev.tokusen_kiken_score = calc_tokusen_kiken_score(ev, evaluations, is_jra=self.is_jra)
         tokusen_kiken_candidates = sorted(
@@ -2591,7 +2589,7 @@ def _normalize_probs(evaluations: List[HorseEvaluation]) -> None:
                     ev.win_prob = ev.win_prob / tw2
 
     # 市場確率アンカリング: モデル推定と市場確率をブレンド
-    from config.settings import MARKET_BLEND_RATIO, PROB_SHARPNESS
+    from config.settings import MARKET_BLEND_RATIO
     has_odds = sum(1 for ev in evaluations if ev.horse.odds is not None and ev.horse.odds > 0)
     if MARKET_BLEND_RATIO > 0 and has_odds >= len(evaluations) * 0.5:
         for ev in evaluations:
@@ -2906,14 +2904,19 @@ def _compute_personnel_devs(
     rolling_tracker が利用可能な場合は全ファクターの加重平均で偏差値を算出（ハイブリッド方式）。
     利用不可の場合は personnel_db のフォールバック値を使用。
     """
-    from src.calculator.grades import compute_category_deviation
     from config.settings import (
-        JOCKEY_FACTOR_WEIGHTS, TRAINER_FACTOR_WEIGHTS,
-        SIRE_FACTOR_WEIGHTS, BMS_FACTOR_WEIGHTS,
-        JOCKEY_BASE_PARAMS_JRA, JOCKEY_BASE_PARAMS_NAR,
-        TRAINER_BASE_PARAMS_JRA, TRAINER_BASE_PARAMS_NAR,
-        SIRE_BASE_PARAMS, BMS_BASE_PARAMS,
+        BMS_BASE_PARAMS,
+        BMS_FACTOR_WEIGHTS,
+        JOCKEY_BASE_PARAMS_JRA,
+        JOCKEY_BASE_PARAMS_NAR,
+        JOCKEY_FACTOR_WEIGHTS,
+        SIRE_BASE_PARAMS,
+        SIRE_FACTOR_WEIGHTS,
+        TRAINER_BASE_PARAMS_JRA,
+        TRAINER_BASE_PARAMS_NAR,
+        TRAINER_FACTOR_WEIGHTS,
     )
+    from src.calculator.grades import compute_category_deviation
 
     # レース情報からコンテキスト取得
     venue = ""
@@ -3490,7 +3493,6 @@ def _compute_race_level_devs(
             except Exception:
                 pass
         # ③ course_db の日付インデックス（旧フォールバック）
-        from config.settings import CONVERSION_CONSTANT, DISTANCE_BASE
         import statistics as _stats
 
         candidates = idx.get((run.course_id, run.race_date), [])
@@ -3594,13 +3596,13 @@ def enrich_course_aptitude_with_style_bias(
 def _compute_detail_grades(engine: RaceAnalysisEngine, analysis: RaceAnalysis):
     """全頭診断用の詳細グレードを算出して各 HorseEvaluation に付与する"""
     from src.calculator.grades import (
-        compute_profile_grades,
-        compute_jockey_detail_grades,
-        compute_trainer_detail_grades,
+        compute_ability_extras,
         compute_bloodline_detail_grades,
         compute_course_detail_grades,
+        compute_jockey_detail_grades,
         compute_pace_extras,
-        compute_ability_extras,
+        compute_profile_grades,
+        compute_trainer_detail_grades,
         dev_to_grade,
     )
 
@@ -3611,6 +3613,7 @@ def _compute_detail_grades(engine: RaceAnalysisEngine, analysis: RaceAnalysis):
     bloodline_db = {"sire": {}, "bms": {}}
     try:
         import json
+
         from config.settings import BLOODLINE_DB_PATH
         if BLOODLINE_DB_PATH and os.path.exists(BLOODLINE_DB_PATH):
             with open(BLOODLINE_DB_PATH, "r", encoding="utf-8") as f:

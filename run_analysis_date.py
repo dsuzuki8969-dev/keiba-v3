@@ -10,7 +10,12 @@
 中央（JRA）・地方（NAR）の当日全レースを順次分析し、
 個別HTMLと YYYYMMDD_全レース.html を生成する。
 """
-import sys, io, os, time, gc
+import gc
+import io
+import os
+import sys
+import time
+
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', line_buffering=True)
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -22,7 +27,15 @@ logger = get_logger(__name__)
 
 try:
     from rich.console import Console
-    from rich.progress import Progress, BarColumn, TextColumn, TimeElapsedColumn, TimeRemainingColumn, TaskProgressColumn, SpinnerColumn
+    from rich.progress import (
+        BarColumn,
+        Progress,
+        SpinnerColumn,
+        TaskProgressColumn,
+        TextColumn,
+        TimeElapsedColumn,
+        TimeRemainingColumn,
+    )
     console = Console(force_terminal=True, file=sys.stdout)
     P = console.print
     HAS_RICH = True
@@ -59,21 +72,26 @@ t0 = time.time()
 # ─── 1. 基盤準備 ─────────────────────────────────────────────────
 P("[bold cyan]\\[1/N][/] 初期化...")
 from data.masters.course_master import get_all_courses
+from src.engine import RaceAnalysisEngine, enrich_course_aptitude_with_style_bias
 from src.scraper.auth import PremiumNetkeibaScraper
-from src.scraper.race_results import (
-    StandardTimeDBBuilder, Last3FDBBuilder,
-    build_course_db_from_past_runs,
-    build_course_style_stats_db, build_gate_bias_db,
-    build_position_sec_per_rank_db,
-    build_trainer_baseline_db, load_trainer_baseline_db,
-    save_trainer_baseline_db, merge_trainer_baseline,
-)
 from src.scraper.course_db_collector import load_preload_course_db
 from src.scraper.personnel import PersonnelDBManager, enrich_personnel_with_condition_records
-from src.engine import RaceAnalysisEngine, enrich_course_aptitude_with_style_bias
+from src.scraper.race_results import (
+    Last3FDBBuilder,
+    StandardTimeDBBuilder,
+    build_course_db_from_past_runs,
+    build_course_style_stats_db,
+    build_gate_bias_db,
+    build_position_sec_per_rank_db,
+    build_trainer_baseline_db,
+    load_trainer_baseline_db,
+    merge_trainer_baseline,
+    save_trainer_baseline_db,
+)
+
 if not NO_HTML:
     from src.output.formatter import HTMLFormatter, minify_html
-from config.settings import COURSE_DB_PRELOAD_PATH, TRAINER_BASELINE_DB_PATH, BLOODLINE_DB_PATH
+from config.settings import BLOODLINE_DB_PATH, COURSE_DB_PRELOAD_PATH, TRAINER_BASELINE_DB_PATH
 from src.scraper.improvement_dbs import build_bloodline_db
 
 try:
@@ -144,6 +162,7 @@ if FORCE_RERUN:
 
 # エンジンのグローバルキャッシュをリセット（前回実行の残骸を排除）
 from src.engine import reset_engine_caches
+
 reset_engine_caches()
 P(f"  経過: {time.time()-t0:.1f}s")
 
@@ -154,9 +173,12 @@ std_db = StandardTimeDBBuilder()
 course_db_base = std_db.get_course_db()
 
 # SQLite course_dbテーブルからも読み込み（ローリングウィンドウ適用）
+from datetime import datetime as _dt
+from datetime import timedelta as _td
+
 from src.database import get_course_db as _get_sqlite_course_db
 from src.scraper.course_db_collector import _dict_to_past_run
-from datetime import datetime as _dt, timedelta as _td
+
 _window_start = (_dt.strptime(DATE, "%Y-%m-%d") - _td(days=365)).strftime("%Y-%m-%d")
 _window_end = (_dt.strptime(DATE, "%Y-%m-%d") - _td(days=1)).strftime("%Y-%m-%d")
 _sqlite_db = _get_sqlite_course_db()
@@ -186,6 +208,7 @@ P(f"[bold cyan]\\[3/N][/] {DATE} のレースID取得...")
 if RACE_IDS_FROM_PRED:
     # 既存の予想JSONからrace_idを抽出（バッチ再分析用）
     import json as _json
+
     from config.settings import PREDICTIONS_DIR
     _pred_path = os.path.join(PREDICTIONS_DIR, f"{DATE_KEY}_pred.json")
     try:
@@ -247,7 +270,7 @@ _done_marker = f"output/.done_{DATE_KEY}.txt"
 _done_ids: set = set()
 if FORCE_RERUN and os.path.exists(_done_marker):
     os.remove(_done_marker)
-    P(f"  [yellow]--force: 中断マーカー削除[/]")
+    P("  [yellow]--force: 中断マーカー削除[/]")
 elif os.path.exists(_done_marker):
     with open(_done_marker, "r") as _f:
         _done_ids = {line.strip() for line in _f if line.strip()}
@@ -641,7 +664,7 @@ def _surf_badge(surface):
     if surface in ("芝", "障"):
         return f'<span style="color:#1a7a3a;font-weight:700;font-size:11px">{surface}</span>'
     if surface == "ダート":
-        return f'<span style="color:#8b5e2a;font-weight:700;font-size:11px">ダ</span>'
+        return '<span style="color:#8b5e2a;font-weight:700;font-size:11px">ダ</span>'
     return f'<span style="font-size:11px">{surface or "?"}</span>'
 
 def _grade_badge(grade):

@@ -20,6 +20,7 @@ from sklearn.metrics import (
     roc_auc_score,
 )
 
+from data.masters.venue_master import is_banei
 from src.ml.features import (
     FEATURE_COLS,
     FEATURE_COLS_BANEI,
@@ -27,7 +28,6 @@ from src.ml.features import (
     build_dataset,
     load_all_races,
 )
-from data.masters.venue_master import is_banei
 
 MODEL_DIR = os.path.join(
     os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")),
@@ -94,7 +94,7 @@ def train_and_evaluate(
     train_df = df[df["date"] < val_start].copy()
     val_df = df[df["date"] >= val_start].copy()
 
-    print(f"\n[ML] データ分割:")
+    print("\n[ML] データ分割:")
     print(f"  学習: {train_df['date'].min()} 〜 {train_df['date'].max()}  ({len(train_df):,}件)")
     print(f"  検証: {val_df['date'].min()} 〜 {val_df['date'].max()}  ({len(val_df):,}件)")
 
@@ -241,7 +241,7 @@ def _save_model(model, importance, metrics, feature_cols):
 
 def _print_results(metrics, importance):
     print(f"\n{'='*56}")
-    print(f"  LightGBM 評価結果")
+    print("  LightGBM 評価結果")
     print(f"{'='*56}")
     print(f"  AUC:                {metrics['auc']}")
     print(f"  LogLoss:            {metrics['logloss']}")
@@ -252,7 +252,7 @@ def _print_results(metrics, importance):
     print(f"  検証サンプル数:     {metrics['val_samples']:,}")
 
     print(f"\n{'='*56}")
-    print(f"  特徴量重要度 (gain)")
+    print("  特徴量重要度 (gain)")
     print(f"{'='*56}")
     for _, row in importance.head(20).iterrows():
         bar = "#" * int(row["gain_pct"])
@@ -292,7 +292,7 @@ def train_by_venue(
 
     # 競馬場ごとにグループ化
     venues = df.groupby("venue_name").size().sort_values(ascending=False)
-    print(f"\n[ML] 競馬場別データ量:")
+    print("\n[ML] 競馬場別データ量:")
     for vn, cnt in venues.items():
         marker = " *" if cnt >= min_samples else "  (skip)"
         print(f"  {vn or '不明':<8s} {cnt:>7,}件{marker}")
@@ -394,7 +394,7 @@ def train_by_venue(
 def _print_venue_comparison(results: dict, all_importances: list):
     """競馬場別の特徴量重要度を比較表示"""
     print(f"\n{'='*70}")
-    print(f"  競馬場別 モデル性能")
+    print("  競馬場別 モデル性能")
     print(f"{'='*70}")
     print(f"  {'場名':<8s} {'AUC':>6s}  {'TOP1':>6s}  {'区分':<4s}  {'学習':>8s}  {'検証':>6s}")
     print(f"  {'-'*50}")
@@ -416,7 +416,7 @@ def _print_venue_comparison(results: dict, all_importances: list):
 
     # 重要度トップ5の比較
     print(f"\n{'='*70}")
-    print(f"  競馬場別 重要特徴量 TOP5")
+    print("  競馬場別 重要特徴量 TOP5")
     print(f"{'='*70}")
 
     top_features_by_venue = {}
@@ -427,7 +427,7 @@ def _print_venue_comparison(results: dict, all_importances: list):
 
     # JRA
     if jra:
-        print(f"\n  --- JRA ---")
+        print("\n  --- JRA ---")
         for vn, _ in jra:
             feats = top_features_by_venue[vn]
             feats_str = " > ".join(feats)
@@ -435,7 +435,7 @@ def _print_venue_comparison(results: dict, all_importances: list):
 
     # NAR
     if nar:
-        print(f"\n  --- NAR ---")
+        print("\n  --- NAR ---")
         for vn, _ in nar:
             feats = top_features_by_venue[vn]
             feats_str = " > ".join(feats)
@@ -448,7 +448,7 @@ def _print_venue_comparison(results: dict, all_importances: list):
         for feats in top_features_by_venue.values():
             all_top5.extend(feats)
         common = Counter(all_top5).most_common(5)
-        print(f"\n  --- 全場で共通して重要な特徴量 ---")
+        print("\n  --- 全場で共通して重要な特徴量 ---")
         for feat, count in common:
             pct = count / len(results) * 100
             print(f"  {feat:<28s}  {count}/{len(results)}場 ({pct:.0f}%)")

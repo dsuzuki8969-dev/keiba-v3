@@ -11,7 +11,6 @@ Isotonic Regression を適用し、キャリブレーションを改善する。
 
 import os
 import pickle
-from typing import List, Optional
 
 from src.log import get_logger
 
@@ -48,7 +47,7 @@ class PostCalibrator:
                 return False
 
         self._loaded = True
-        logger.info(f"事後キャリブレータ ロード完了 (3モデル)")
+        logger.info("事後キャリブレータ ロード完了 (3モデル)")
         return True
 
     @property
@@ -114,7 +113,6 @@ class PostCalibrator:
         - 範囲外: 最寄りの許容限界までスケーリング
         例: target=1.0, tolerance=0.30 → 合計0.7〜1.3は無補正
         """
-        import numpy as np
         total = probs.sum()
         if total <= 0:
             return probs

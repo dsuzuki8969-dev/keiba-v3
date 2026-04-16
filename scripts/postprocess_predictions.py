@@ -36,6 +36,7 @@ from config.settings import (
     CONFIDENCE_WP_GATE_S_JRA, CONFIDENCE_WP_GATE_S_NAR,
     CONFIDENCE_GAP_GATE_S_JRA, CONFIDENCE_GAP_GATE_S_NAR,
     TOKUSEN_KIKEN_POP_LIMIT_JRA, TOKUSEN_KIKEN_POP_LIMIT_NAR,
+    TOKUSEN_KIKEN_POP_MIN_JRA, TOKUSEN_KIKEN_POP_MIN_NAR,
     TOKUSEN_KIKEN_ODDS_LIMIT_JRA, TOKUSEN_KIKEN_ODDS_LIMIT_NAR,
     TOKUSEN_KIKEN_ML_RANK_PCT_JRA, TOKUSEN_KIKEN_ML_RANK_PCT_NAR,
     TOKUSEN_KIKEN_COMP_RANK_PCT_JRA, TOKUSEN_KIKEN_COMP_RANK_PCT_NAR,
@@ -304,6 +305,7 @@ def recalc_kiken(horses, race, is_jra=True):
     NAR: 必須条件②③はAND（現行維持）
     """
     pop_limit = TOKUSEN_KIKEN_POP_LIMIT_JRA if is_jra else TOKUSEN_KIKEN_POP_LIMIT_NAR
+    pop_min = TOKUSEN_KIKEN_POP_MIN_JRA if is_jra else TOKUSEN_KIKEN_POP_MIN_NAR
     odds_limit = TOKUSEN_KIKEN_ODDS_LIMIT_JRA if is_jra else TOKUSEN_KIKEN_ODDS_LIMIT_NAR
     ml_pct = TOKUSEN_KIKEN_ML_RANK_PCT_JRA if is_jra else TOKUSEN_KIKEN_ML_RANK_PCT_NAR
     comp_pct = TOKUSEN_KIKEN_COMP_RANK_PCT_JRA if is_jra else TOKUSEN_KIKEN_COMP_RANK_PCT_NAR
@@ -346,11 +348,12 @@ def recalc_kiken(horses, race, is_jra=True):
 
         real_pop = h.get("popularity")
         if real_pop is not None:
-            if real_pop > pop_limit:
+            # JRA: 1番人気は除外（複勝率高すぎ）/ NAR: 1番人気も対象
+            if real_pop < pop_min or real_pop > pop_limit:
                 continue
         else:
             est_pop = odds_rank.get(hno, 99)
-            if est_pop > pop_limit:
+            if est_pop < pop_min or est_pop > pop_limit:
                 continue
 
         # ---- 必須条件②③: ML低評価 / composite低評価 ----

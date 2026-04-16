@@ -18,7 +18,6 @@
 """
 
 import json
-import math
 import os
 import sys
 import time
@@ -913,7 +912,6 @@ class Last3FPredictor:
 
     def _build_features(self, horse, race_info, pace_context) -> Optional[dict]:
         """Horse + RaceInfo から特徴量辞書を構築"""
-        from src.models import PastRun
 
         course = race_info.course
         runs = horse.past_runs or []
@@ -1110,7 +1108,7 @@ def print_report(metrics: dict, fi: pd.DataFrame) -> None:
             print(f"    {name:<12} MAE={m['mae_model']:.4f} (BL={m['mae_baseline']:.4f}) "
                   f"±1s={m['within_1s']:.1f}%  n={m['n']:,}")
 
-    print(f"\n  特徴量重要度 Top 15:")
+    print("\n  特徴量重要度 Top 15:")
     for i, row in fi.head(15).iterrows():
         bar = "#" * int(row["pct"] / 2)
         print(f"    {i + 1:>2}. {row['feature']:<28} {row['pct']:>6.2f}%  {bar}")

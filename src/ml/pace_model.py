@@ -89,7 +89,7 @@ def _encode_grade(g: str) -> int:
 
 def load_and_build_race_features() -> pd.DataFrame:
     """馬レベルデータからレースレベル特徴量を構築"""
-    from src.ml.last3f_model import load_ml_data, build_feature_table
+    from src.ml.last3f_model import build_feature_table, load_ml_data
 
     df = load_ml_data()
     df = build_feature_table(df)

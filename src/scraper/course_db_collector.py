@@ -484,11 +484,16 @@ def _load_collector_state(state_path: str) -> dict:
 
 
 def _save_collector_state(state_path: str, state: dict):
+    """アトミック書き込み（中断耐性）"""
     if not state_path:
         return
     os.makedirs(os.path.dirname(state_path) or ".", exist_ok=True)
-    with open(state_path, "w", encoding="utf-8") as f:
+    tmp_path = state_path + ".tmp"
+    with open(tmp_path, "w", encoding="utf-8") as f:
         json.dump(state, f, ensure_ascii=False, indent=2)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp_path, state_path)
 
 
 def collect_course_db_from_results(
@@ -521,7 +526,7 @@ def collect_course_db_from_results(
     Returns:
         収集したPastRunの総数（今回の実行分）
     """
-    from data.masters.venue_master import JRA_CODES, get_venue_code_from_race_id, is_banei
+    from data.masters.venue_master import JRA_CODES, get_venue_code_from_race_id
 
     max_races_per_day = max_races_per_day or MAX_RACES_PER_DAY
     end_dt = datetime.strptime(end_date, "%Y-%m-%d")

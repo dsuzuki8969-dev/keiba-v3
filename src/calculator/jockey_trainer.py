@@ -416,7 +416,7 @@ def _calc_probability_gap_score(
 def _estimate_market_place3(odds: float) -> float:
     """オッズから市場複勝確率を推定（H13: 実績統計優先）"""
     try:
-        from src.calculator.popularity_blend import load_popularity_stats, _odds_range_key
+        from src.calculator.popularity_blend import _odds_range_key, load_popularity_stats
         stats = load_popularity_stats()
         if stats:
             range_key = _odds_range_key(odds)
@@ -626,12 +626,18 @@ def calc_tokusen_kiken_score(
     目標: × 印の勝率 < 5.0%、複勝率 < 20.0%（2-3番人気限定）
     """
     from config.settings import (
-        TOKUSEN_KIKEN_POP_MIN_JRA, TOKUSEN_KIKEN_POP_MIN_NAR,
-        TOKUSEN_KIKEN_POP_LIMIT_JRA, TOKUSEN_KIKEN_POP_LIMIT_NAR,
-        TOKUSEN_KIKEN_ODDS_LIMIT_JRA, TOKUSEN_KIKEN_ODDS_LIMIT_NAR,
-        TOKUSEN_KIKEN_WP_RATIO, TOKUSEN_KIKEN_EXPECTED_WP,
-        TOKUSEN_KIKEN_ML_RANK_PCT_JRA, TOKUSEN_KIKEN_ML_RANK_PCT_NAR,
-        TOKUSEN_KIKEN_COMP_RANK_PCT_JRA, TOKUSEN_KIKEN_COMP_RANK_PCT_NAR,
+        TOKUSEN_KIKEN_COMP_RANK_PCT_JRA,
+        TOKUSEN_KIKEN_COMP_RANK_PCT_NAR,
+        TOKUSEN_KIKEN_EXPECTED_WP,
+        TOKUSEN_KIKEN_ML_RANK_PCT_JRA,
+        TOKUSEN_KIKEN_ML_RANK_PCT_NAR,
+        TOKUSEN_KIKEN_ODDS_LIMIT_JRA,
+        TOKUSEN_KIKEN_ODDS_LIMIT_NAR,
+        TOKUSEN_KIKEN_POP_LIMIT_JRA,
+        TOKUSEN_KIKEN_POP_LIMIT_NAR,
+        TOKUSEN_KIKEN_POP_MIN_JRA,
+        TOKUSEN_KIKEN_POP_MIN_NAR,
+        TOKUSEN_KIKEN_WP_RATIO,
     )
 
     pop_min = TOKUSEN_KIKEN_POP_MIN_JRA if is_jra else TOKUSEN_KIKEN_POP_MIN_NAR
@@ -941,6 +947,7 @@ def _load_rank_table() -> Optional[dict]:
         return _RANK_TABLE
     import json
     import os
+
     from config.settings import RANK_PROBABILITY_TABLE_PATH
     if os.path.exists(RANK_PROBABILITY_TABLE_PATH):
         try:
@@ -1019,10 +1026,11 @@ def _estimate_from_rank_table(
 ) -> Optional[Tuple[float, float, float]]:
     """テーブルベースの三連率推定"""
     import statistics as _st
+
     from config.settings import (
-        RANK_GAP_THRESHOLD_STRONG,
-        RANK_GAP_MULT_MAX,
         RANK_GAP_FLAT_FACTOR_MAX,
+        RANK_GAP_MULT_MAX,
+        RANK_GAP_THRESHOLD_STRONG,
     )
 
     n = len(all_composites)

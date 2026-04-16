@@ -93,8 +93,13 @@ def progress_bar(iterable=None, total=None, description="処理中"):
     """
     if _HAS_RICH:
         from rich.progress import (
-            Progress, BarColumn, TextColumn, TimeElapsedColumn,
-            TimeRemainingColumn, MofNCompleteColumn, SpinnerColumn,
+            BarColumn,
+            MofNCompleteColumn,
+            Progress,
+            SpinnerColumn,
+            TextColumn,
+            TimeElapsedColumn,
+            TimeRemainingColumn,
         )
         progress = Progress(
             SpinnerColumn(),

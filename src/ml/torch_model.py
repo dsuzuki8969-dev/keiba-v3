@@ -308,8 +308,8 @@ def train_torch_model(
     """
     import torch
     import torch.nn as nn
+    from sklearn.metrics import log_loss, roc_auc_score
     from torch.utils.data import DataLoader, TensorDataset
-    from sklearn.metrics import roc_auc_score, log_loss
 
     from src.ml.lgbm_model import (
         FEATURE_COLUMNS,
@@ -582,7 +582,7 @@ class TorchPredictor:
             return True
         try:
             import torch
-            from src.ml.lgbm_model import FEATURE_COLUMNS
+
 
             if not os.path.exists(TORCH_MODEL_PATH):
                 return False
@@ -637,11 +637,12 @@ class TorchPredictor:
         if not self._loaded and not self.load():
             return {}
 
-        import torch
-        from src.ml.lgbm_model import FEATURE_COLUMNS, _extract_features
-
         # 後方互換: モデルの入力次元と FEATURE_COLUMNS を一致させる
         import json as _json
+
+        import torch
+
+        from src.ml.lgbm_model import FEATURE_COLUMNS, _extract_features
         try:
             meta_path = os.path.join(os.path.dirname(TORCH_MODEL_PATH), "torch_meta.json")
             with open(meta_path) as _f:
@@ -772,8 +773,8 @@ class TorchPredictor:
 # ============================================================
 
 if __name__ == "__main__":
-    import sys
     import logging
+    import sys
 
     logging.basicConfig(
         level=logging.INFO,

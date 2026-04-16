@@ -1790,7 +1790,7 @@ def generate_horse_diagnosis(
             parts.append("好位からそつなく立ち回れる堅実さが武器")
         elif no in mid:
             if straight_m >= 400:
-                parts.append(f"中団からじっくり構えて、長い直線を味方につけたい")
+                parts.append("中団からじっくり構えて、長い直線を味方につけたい")
             else:
                 parts.append("中団から早めの仕掛けで勝負を賭ける形")
         elif no in rear:
@@ -1835,7 +1835,7 @@ def generate_horse_diagnosis(
             if last3f_good:
                 parts.append("末脚の切れ味には定評があり、展開が向けば台頭のシーンも描ける")
             elif straight_m >= 400:
-                parts.append(f"直線が長いコースは味方で、差し込む余地はある")
+                parts.append("直線が長いコースは味方で、差し込む余地はある")
             elif straight_m <= 300:
                 parts.append(f"ただ直線{straight_m}mは追い込みには厳しい条件")
             else:

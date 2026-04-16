@@ -1,3 +1,4 @@
+# 実行時依存
 requests>=2.31.0
 beautifulsoup4>=4.12.0
 lxml>=4.9.0
@@ -6,5 +7,9 @@ lightgbm>=4.0.0
 scikit-learn>=1.3.0
 numpy>=1.24.0
 pandas>=2.0.0
-anthropic>=0.40.0
-winotify>=1.1.0
+scipy>=1.11.0
+rich>=13.0.0
+lz4>=4.0.0
+
+# Windows通知（Windows環境のみ）
+winotify>=1.1.0; sys_platform == "win32"

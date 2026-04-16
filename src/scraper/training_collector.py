@@ -13,16 +13,13 @@ KeibabookTrainingScraper で各レースの調教データを収集する。
 
 import json
 import os
-import time
 from dataclasses import asdict
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional
 
 from data.masters.venue_master import (
     JRA_CODES,
     get_venue_code_from_race_id,
     get_venue_name,
-    is_banei,
 )
 from src.log import get_logger
 from src.scraper.keibabook_training import (
