@@ -2588,13 +2588,50 @@ def create_app():
                                 "gate_no": h.get("gate_no"),
                             }
                         break
-            # 着順データに馬名等をマージ
+            # race_log から通過順・走破タイム・後3F・着差を補完（results.jsonに不足分）
+            racelog_map = {}
+            try:
+                import sqlite3 as _sql
+                from config.settings import DATABASE_PATH as _DBP
+                with _sql.connect(_DBP) as _c:
+                    _c.row_factory = _sql.Row
+                    for _r in _c.execute(
+                        "SELECT horse_no, positions_corners, finish_time_sec, last_3f_sec, "
+                        "margin_ahead, margin_behind, position_4c "
+                        "FROM race_log WHERE race_id=?",
+                        (race_id,)
+                    ).fetchall():
+                        racelog_map[_r["horse_no"]] = dict(_r)
+            except Exception:
+                logger.debug("race_log 補完失敗 race_id=%s", race_id, exc_info=True)
+
+            # 着順データに馬名・通過順等をマージ
             order = []
             for o in race_result.get("order", []):
                 entry = dict(o)
                 hno = entry.get("horse_no")
                 if hno in horse_map:
                     entry.update(horse_map[hno])
+                # race_log から不足分を補完（既存値があれば優先）
+                rl = racelog_map.get(hno)
+                if rl:
+                    if not entry.get("corners"):
+                        try:
+                            import json as _j
+                            _pc = rl.get("positions_corners") or ""
+                            if _pc and _pc.startswith("["):
+                                entry["corners"] = _j.loads(_pc)
+                            elif rl.get("position_4c"):
+                                entry["corners"] = [rl["position_4c"]]
+                        except Exception:
+                            pass
+                    if entry.get("last_3f") is None and rl.get("last_3f_sec"):
+                        entry["last_3f"] = rl["last_3f_sec"]
+                    if not entry.get("time") and rl.get("finish_time_sec"):
+                        _sec = rl["finish_time_sec"]
+                        m = int(_sec // 60)
+                        s = _sec - m * 60
+                        entry["time"] = f"{m}:{s:04.1f}" if m > 0 else f"{s:.1f}"
                 order.append(entry)
             return jsonify(ok=True, found=True, order=order, payouts=race_result.get("payouts", {}))
         except Exception as e:

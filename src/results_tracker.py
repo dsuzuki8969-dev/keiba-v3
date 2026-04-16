@@ -1760,35 +1760,121 @@ def fetch_actual_results(
 
 
 def _parse_finish_order(soup) -> List[dict]:
-    """結果ページから着順・馬番・単勝オッズを抽出"""
+    """結果ページから着順・馬番・単勝オッズ・タイム・着差・通過順・後3F・人気を抽出
+
+    JRA/NARでヘッダが異なるため動的に列インデックスを特定する:
+      JRA: 着順|枠|馬番|馬名|性齢|斤量|騎手|タイム|着差|人気|単勝オッズ|後3F|コーナー通過順|厩舎|馬体重
+      NAR: 着順|枠|馬番|馬名|性齢|斤量|騎手|タイム|着差|人気|単勝オッズ|後3F|厩舎|馬体重
+    """
     rows = []
     table = soup.select_one(".ResultTableWrap table")
     if not table:
         return rows
+
+    # ヘッダ行から列名 → 列インデックスのマップを構築
+    head = table.select_one("thead tr") or table.select_one("tr")
+    col_idx = {}
+    if head:
+        headers = [th.get_text(strip=True) for th in head.select("th, td")]
+        for i, h in enumerate(headers):
+            # ラベル正規化
+            if h in ("着順", "着"):
+                col_idx["finish"] = i
+            elif h in ("馬番", "番"):
+                col_idx["horse_no"] = i
+            elif h == "枠":
+                col_idx["gate_no"] = i
+            elif h == "タイム":
+                col_idx["time"] = i
+            elif h in ("着差", "差"):
+                col_idx["margin"] = i
+            elif h == "人気":
+                col_idx["popularity"] = i
+            elif "単勝" in h:
+                col_idx["odds"] = i
+            elif h in ("後3F", "上り", "上3F", "上がり"):
+                col_idx["last_3f"] = i
+            elif "通過" in h or "コーナー" in h:
+                col_idx["corners"] = i
+            elif h in ("性齢",):
+                col_idx["sex_age"] = i
+            elif h in ("斤量",):
+                col_idx["weight_kg"] = i
+            elif h in ("騎手",):
+                col_idx["jockey"] = i
+
+    def _safe_text(idx, default=""):
+        if idx is None or idx >= len(cells):
+            return default
+        return cells[idx].get_text(strip=True)
+
+    def _safe_float(idx):
+        t = _safe_text(idx, "").replace(",", "")
+        try:
+            return float(t)
+        except (ValueError, TypeError):
+            return None
+
+    def _safe_int(idx):
+        t = _safe_text(idx, "")
+        return int(t) if t.isdigit() else None
+
+    def _parse_time_to_sec(t: str):
+        """ "1:34.5" → 94.5 / "59.6" → 59.6"""
+        if not t:
+            return None
+        try:
+            if ":" in t:
+                m, s = t.split(":", 1)
+                return int(m) * 60 + float(s)
+            return float(t)
+        except (ValueError, TypeError):
+            return None
+
+    def _parse_corners(t: str):
+        """通過順 "08-08-08-08" → [8,8,8,8]"""
+        if not t:
+            return []
+        result = []
+        for part in t.split("-"):
+            p = part.strip()
+            if p.isdigit():
+                result.append(int(p))
+        return result
+
     for tr in table.select("tbody tr"):
         cells = tr.select("td")
         if len(cells) < 3:
             continue
-        finish_text = cells[0].get_text(strip=True)
-        if not finish_text.isdigit():
+        # 着順は数字とは限らない（"中止"/"取消"等もある）
+        finish_text = _safe_text(col_idx.get("finish", 0))
+        finish = int(finish_text) if finish_text.isdigit() else None
+        if finish is None:
             continue
-        finish = int(finish_text)
-        horse_no_text = cells[2].get_text(strip=True)
-        if not horse_no_text.isdigit():
+        horse_no = _safe_int(col_idx.get("horse_no", 2))
+        if horse_no is None:
             continue
-        horse_no = int(horse_no_text)
-        # 単勝オッズ列を探す（一般的に12列目前後）
-        odds = None
-        for c in cells[8:]:
-            t = c.get_text(strip=True).replace(",", "")
-            try:
-                v = float(t)
-                if 1.0 <= v <= 9999:
-                    odds = v
-                    break
-            except ValueError:
-                pass
-        rows.append({"horse_no": horse_no, "finish": finish, "odds": odds})
+
+        time_str = _safe_text(col_idx.get("time"))
+        margin_str = _safe_text(col_idx.get("margin"))
+        last_3f = _safe_float(col_idx.get("last_3f"))
+        popularity = _safe_int(col_idx.get("popularity"))
+        odds = _safe_float(col_idx.get("odds"))
+        corners = _parse_corners(_safe_text(col_idx.get("corners")))
+        gate_no = _safe_int(col_idx.get("gate_no"))
+
+        rows.append({
+            "horse_no": horse_no,
+            "finish": finish,
+            "odds": odds,
+            "popularity": popularity,
+            "time": time_str or None,
+            "time_sec": _parse_time_to_sec(time_str),
+            "margin": margin_str or None,
+            "last_3f": last_3f,
+            "corners": corners,
+            "gate_no": gate_no,
+        })
     return rows
 
 
