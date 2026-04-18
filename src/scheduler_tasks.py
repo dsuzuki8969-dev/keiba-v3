@@ -103,12 +103,14 @@ def is_marks_frozen(race: dict) -> bool:
 # ================================================================
 
 def run_odds_update(date_key: str, cancel_event: threading.Event | None = None,
-                    progress_callback=None):
+                    progress_callback=None,
+                    include_top10_odds: bool = False):
     """
     指定日のオッズ・馬体重・三連複オッズを一括更新。
     date_key: "YYYYMMDD" 形式
     cancel_event: 中断用イベント（None なら中断不可）
     progress_callback: (current, total, race_label) を受け取るコールバック
+    include_top10_odds: True のとき、各レースに TOP10 オッズ (馬連/馬単/三連複/三連単) を追加注入
     戻り値: 更新レース数
     """
     pred_file = os.path.join(PROJECT_ROOT, "data", "predictions", f"{date_key}_pred.json")
@@ -295,11 +297,21 @@ def run_odds_update(date_key: str, cancel_event: threading.Event | None = None,
 
     # 取消解除: オッズが確定した馬のis_scratchedを解除
     _unscratch_count = 0
+    try:
+        from src.calculator.popularity_blend import restore_win_prob_if_zero
+    except Exception:
+        restore_win_prob_if_zero = None
     for race in races:
         horses = race.get("horses", [])
         for h in horses:
             if h.get("is_scratched") and h.get("odds") is not None and h.get("popularity") is not None:
                 h["is_scratched"] = False
+                # win_prob=0 のままだと 0.0% 表示になるため、中間値から復元
+                if restore_win_prob_if_zero is not None:
+                    try:
+                        restore_win_prob_if_zero(h, field_count=len(horses))
+                    except Exception:
+                        pass
                 _unscratch_count += 1
                 logger.info("取消解除: %s %sR 馬番%s (odds=%.1f)",
                             race.get("venue", ""), race.get("race_no", ""),
@@ -325,9 +337,59 @@ def run_odds_update(date_key: str, cancel_event: threading.Event | None = None,
                         race.get("is_jra", True), len(horses), pop_stats,
                     )
                     if not is_marks_frozen(race):
-                        reassign_marks_dict(horses)
+                        reassign_marks_dict(horses, is_jra=race.get("is_jra", True))
     except Exception as e:
         logger.warning("確率再計算失敗: %s", e)
+
+    # TOP10 オッズ (馬連/馬単/三連複/三連単) を追加注入（オプション）
+    if include_top10_odds and official:
+        top10_count = 0
+        for race_idx, race in enumerate(races):
+            if cancel_event and cancel_event.is_set():
+                logger.info("TOP10オッズ: ユーザーにより中断")
+                break
+            if race.get("is_banei"):
+                continue
+            # NAR も 馬連/馬単/三連複/三連単 を keiba.go.jp から取得可能
+            # （旧実装は URL パスが誤っていたため 404 を返しスキップしていた）
+            rid = race.get("race_id")
+            if not rid:
+                continue
+            try:
+                top10_dict = {}
+                raw_umaren     = official.get_umaren_odds(rid) or {}
+                raw_umatan     = official.get_umatan_odds(rid) or {}
+                raw_sanrenpuku = official.get_sanrenpuku_odds(rid) or {}
+                raw_sanrentan  = official.get_sanrentan_odds(rid) or {}
+
+                def _to_top10(d):
+                    items = [(k, v) for k, v in d.items()
+                             if isinstance(v, (int, float)) and v > 0]
+                    items.sort(key=lambda kv: kv[1])
+                    out = []
+                    for combo, odds in items[:10]:
+                        if isinstance(combo, tuple):
+                            out.append({"combo": [int(x) for x in combo],
+                                        "odds": round(float(odds), 1)})
+                        else:
+                            out.append({"combo": [int(combo)],
+                                        "odds": round(float(odds), 1)})
+                    return out
+
+                top10_dict["umaren"]     = _to_top10(raw_umaren)
+                top10_dict["umatan"]     = _to_top10(raw_umatan)
+                top10_dict["sanrenpuku"] = _to_top10(raw_sanrenpuku)
+                top10_dict["sanrentan"]  = _to_top10(raw_sanrentan)
+
+                if any(len(v) > 0 for v in top10_dict.values()):
+                    race["top10_odds"] = top10_dict
+                    top10_count += 1
+                    pred_modified = True
+            except Exception as te:
+                logger.debug("TOP10 取得失敗 %s: %s", rid, te)
+        if top10_count:
+            logger.info("TOP10オッズ注入: %d レース", top10_count)
+        pred["top10_odds_updated_at"] = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
 
     # pred.json にオッズ・馬体重 + タイムスタンプを書き戻し
     ts = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
