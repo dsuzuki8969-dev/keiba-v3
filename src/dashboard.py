@@ -703,8 +703,14 @@ def _scan_today_predictions(date_str: str) -> dict:
                         # 取消解除: オッズが復帰した馬はis_scratchedを解除
                         elif _hd.get("is_scratched") and _hd.get("odds") is not None and _hd.get("popularity") is not None:
                             _hd["is_scratched"] = False
+                            # win_prob=0 のまま残っていると 0.0% 表示になるため、中間値から復元
+                            try:
+                                from src.calculator.popularity_blend import restore_win_prob_if_zero
+                                restore_win_prob_if_zero(_hd, field_count=len(_horses))
+                            except Exception:
+                                pass
                 # 印はpred.json（formatter.py assign_marks）の値をそのまま使用
-                # reassign_marks_dictはwpガード等がなく不整合の原因になるため廃止
+                # （リアルタイムオッズ更新時は1412/1657行の reassign_marks_dict で再割り振り）
                 # 取消馬のみ印をクリア（既にis_scratched処理で対応済み）
                 _pred_horses[key] = _horses
                 _pred_tickets[key] = pr.get("tickets", [])
@@ -1392,6 +1398,12 @@ def create_app():
                             # 取消解除: オッズが復帰した馬はis_scratchedを解除
                             elif _hd.get("is_scratched") and _hd.get("odds") is not None and _hd.get("popularity") is not None:
                                 _hd["is_scratched"] = False
+                                # win_prob=0 のまま残っていると 0.0% 表示になるため、中間値から復元
+                                try:
+                                    from src.calculator.popularity_blend import restore_win_prob_if_zero
+                                    restore_win_prob_if_zero(_hd, field_count=len(_race_horses))
+                                except Exception:
+                                    pass
                                 _scratched_changed = True
                         if _scratched_changed:
                             # 確率再配分
@@ -1402,14 +1414,14 @@ def create_app():
                                     for h in _active:
                                         h[_pk] = round(min(1.0, h[_pk] / _asum * _ts), 4)
 
-                    # reassign_marks_dict内部で_apply_ml_composite_adjも呼ばれるため個別呼び出し不要
+                    # pred.jsonのcomposite・確率を正として印のみ再割り振り（composite不変）
                     if _race_horses and any(h.get("win_prob") for h in _race_horses):
                         try:
                             from src.calculator.popularity_blend import reassign_marks_dict
                             if not _is_marks_frozen(race):
                                 # 取消馬を除外して印再割り振り
                                 _active_for_marks = [h for h in _race_horses if not h.get("is_scratched")]
-                                reassign_marks_dict(_active_for_marks)
+                                reassign_marks_dict(_active_for_marks, is_jra=race.get("is_jra", True))
                             else:
                                 logger.debug("印固定中（発走%d分前以内）: %s", MARK_FREEZE_MINUTES, race.get("race_id"))
                         except Exception:
@@ -1654,7 +1666,7 @@ def create_app():
                                             _is_jra, len(_horses), _pop_stats,
                                         )
                                         if not _is_marks_frozen(race):
-                                            reassign_marks_dict(_horses)
+                                            reassign_marks_dict(_horses, is_jra=_is_jra)
                                             # HTMLの印も同期
                                             if date:
                                                 _dk = date.replace("-", "")
@@ -1685,16 +1697,71 @@ def create_app():
                                     logger.info("三連複チケットを実オッズで更新: %s (%d組中)", race_id, len(sanrenpuku_odds_map))
 
                                 break
+                        # 個別レース更新でも pred レベル odds_updated_at を更新
+                        # （UI 右上「最終オッズ HH:MM」表示がボタン押下のたびに更新されるようにする）
+                        pred["odds_updated_at"] = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
                         with open(pred_file, "w", encoding="utf-8") as f:
                             json.dump(pred, f, ensure_ascii=False, indent=2)
                     except Exception as e:
                         logger.warning("pred.json update failed: %s", e)
 
+            # ---- 発走後なら単一レース結果も取得（着順・払戻） ----
+            # 判定: 現在時刻 >= post_time + 10分（発走直後はまだ結果出ない）
+            result_fetched = False
+            result_entry = None
+            try:
+                _post_time = ""
+                _is_jra_for_result = True
+                if date:
+                    _date_key_tmp = date.replace("-", "")
+                    _pf = os.path.join(PROJECT_ROOT, "data", "predictions", f"{_date_key_tmp}_pred.json")
+                    if os.path.isfile(_pf):
+                        with open(_pf, "r", encoding="utf-8") as _rf:
+                            _pj = json.load(_rf)
+                        for _r in _pj.get("races", []):
+                            if _r.get("race_id") == race_id:
+                                _post_time = _r.get("post_time", "") or ""
+                                _is_jra_for_result = _r.get("is_jra", True)
+                                break
+                _is_post = False
+                if _post_time and date:
+                    try:
+                        _dt_str = f"{date} {_post_time}"  # "YYYY-MM-DD HH:MM"
+                        _post_dt = datetime.strptime(_dt_str, "%Y-%m-%d %H:%M")
+                        # 発走+10分後以降なら結果取得を試行
+                        if datetime.now() >= _post_dt + timedelta(minutes=10):
+                            _is_post = True
+                    except Exception:
+                        pass
+
+                if _is_post:
+                    from src.results_tracker import fetch_single_race_result
+                    from src.scraper.netkeiba import NetkeibaClient as _NC
+                    _rc_client = _get_auth_client() or _NC(no_cache=True)
+                    # 公式スクレイパ準備
+                    _off_for_result = _get_official_odds_scraper()
+                    result_entry = fetch_single_race_result(
+                        date, race_id, _rc_client,
+                        official_scraper=_off_for_result,
+                    )
+                    if result_entry and result_entry.get("order"):
+                        result_fetched = True
+                        logger.info("データ更新: 発走後レース結果を取得 %s (%d着順)",
+                                    race_id, len(result_entry["order"]))
+            except Exception as _e:
+                logger.warning("発走後レース結果取得でエラー: %s", _e, exc_info=True)
+
             # レース一覧キャッシュをクリア（印・確率変更を即反映）
             if date:
                 _predictions_cache.pop(date, None)
 
-            return jsonify(ok=True, odds=odds_map, weights=weight_map)
+            return jsonify(
+                ok=True,
+                odds=odds_map,
+                weights=weight_map,
+                result_fetched=result_fetched,
+                result_order_count=len(result_entry.get("order", [])) if result_entry else 0,
+            )
         except Exception as e:
             logger.error("race_odds failed: %s", e, exc_info=True)
             return jsonify(ok=False, error=str(e))
@@ -1998,7 +2065,7 @@ def create_app():
             return jsonify(ok=False, error=str(e))
 
     # ── オッズ取得共通ロジック（手動/自動共通）──
-    def _run_odds_update(date_key, source="manual"):
+    def _run_odds_update(date_key, source="manual", include_top10_odds: bool = False):
         """オッズ一括更新（コアロジックは scheduler_tasks.py に委譲）"""
         global _odds_state, _odds_cancel
         import time as _tm
@@ -2007,7 +2074,8 @@ def create_app():
 
         _odds_state = {"running": True, "done": False, "error": None, "updated_at": None,
                        "count": 0, "total": 0, "current": 0, "current_race": "",
-                       "started_at": _tm.time(), "source": source}
+                       "started_at": _tm.time(), "source": source,
+                       "include_top10_odds": bool(include_top10_odds)}
         _odds_cancel = False
 
         cancel_event = threading.Event()
@@ -2022,7 +2090,8 @@ def create_app():
 
         try:
             count = _core_odds_update(date_key, cancel_event=cancel_event,
-                                      progress_callback=_progress)
+                                      progress_callback=_progress,
+                                      include_top10_odds=include_top10_odds)
             from datetime import datetime as _dt
             _odds_state.update(running=False, done=True, count=count or 0,
                                current_race="",
@@ -2461,6 +2530,7 @@ def create_app():
 
         data = request.get_json(force=True, silent=True) or {}
         date_str = data.get("date", datetime.now().strftime("%Y-%m-%d"))
+        include_top10 = bool(data.get("include_top10_odds", False))
         if not _is_admin(request):
             date_str = datetime.now().strftime("%Y-%m-%d")
         date_key = date_str.replace("-", "")
@@ -2470,8 +2540,13 @@ def create_app():
             return jsonify(ok=False, error=f"予想データが見つかりません: {date_key}")
 
         import threading
-        threading.Thread(target=_run_odds_update, args=(date_key, "manual"), daemon=True).start()
-        return jsonify(ok=True)
+        threading.Thread(
+            target=_run_odds_update,
+            kwargs={"date_key": date_key, "source": "manual",
+                    "include_top10_odds": include_top10},
+            daemon=True,
+        ).start()
+        return jsonify(ok=True, include_top10_odds=include_top10)
 
     @app.route("/api/odds_update_status")
     def api_odds_update_status():
@@ -4319,6 +4394,156 @@ function dNavRefreshOdds(date){{
             type=person_type,
             total=len(persons),
             persons=persons[:limit],
+            period=period_str,
+        )
+
+    @app.route("/api/db/personnel_agg_course")
+    def api_db_personnel_agg_course():
+        """
+        当該コース条件（会場×馬場×距離レンジ）で race_log を直接集計した
+        騎手/調教師/種牡馬/母父の成績を返す。
+        ?type=jockey|trainer|sire|bms
+        &venue=03 &surface=ダート &distance=1300
+        距離は ±200m レンジで集計（例: 1300m → 1100〜1500m）。
+        """
+        person_type = request.args.get("type", "jockey").strip()
+        venue       = request.args.get("venue", "").strip()
+        surface     = request.args.get("surface", "").strip()
+        distance    = request.args.get("distance", "").strip()
+        try:
+            dist = int(distance) if distance else 0
+        except ValueError:
+            dist = 0
+
+        if not venue or not surface or dist <= 0:
+            return jsonify(
+                type=person_type, total=0, persons=[],
+                period="",
+                error="venue/surface/distance 必須",
+            )
+
+        # 距離レンジ ±200m（最低200m）
+        d_min = max(200, dist - 200)
+        d_max = dist + 200
+
+        # 集計対象カラム選択
+        if person_type == "jockey":
+            id_col   = "jockey_id"
+            name_col = "jockey_name"
+            where_id = "jockey_id != '' AND jockey_id NOT IN ('001','002','003')"
+        elif person_type == "trainer":
+            id_col   = "CASE WHEN trainer_id != '' THEN trainer_id ELSE trainer_name END"
+            name_col = "trainer_name"
+            where_id = "(trainer_id != '' OR trainer_name != '')"
+        elif person_type == "sire":
+            id_col   = "sire_name"
+            name_col = "sire_name"
+            where_id = "sire_name IS NOT NULL AND sire_name != ''"
+        elif person_type == "bms":
+            id_col   = "bms_name"
+            name_col = "bms_name"
+            where_id = "bms_name IS NOT NULL AND bms_name != ''"
+        else:
+            return jsonify(
+                type=person_type, total=0, persons=[],
+                error=f"unknown type: {person_type}",
+            )
+
+        try:
+            conn = db_instance.get_conn() if hasattr(db_instance, "get_conn") else None
+        except Exception:
+            conn = None
+        if conn is None:
+            from src.database import get_db as _get_db
+            conn = _get_db()
+
+        sql = f"""
+            SELECT {id_col} AS pid, {name_col} AS name,
+                   COUNT(*)                                        AS total,
+                   SUM(CASE WHEN finish_pos=1 THEN 1 ELSE 0 END)  AS win,
+                   SUM(CASE WHEN finish_pos<=2 THEN 1 ELSE 0 END) AS place2,
+                   SUM(CASE WHEN finish_pos<=3 THEN 1 ELSE 0 END) AS place3,
+                   SUM(CASE WHEN finish_pos=1 THEN COALESCE(win_odds,0) ELSE 0 END) AS win_odds_sum
+            FROM race_log
+            WHERE {where_id}
+              AND venue_code = ?
+              AND surface = ?
+              AND distance BETWEEN ? AND ?
+            GROUP BY {id_col}, {name_col}
+        """
+        try:
+            rows = conn.execute(sql, (venue, surface, d_min, d_max)).fetchall()
+        except Exception as e:
+            return jsonify(error=str(e))
+
+        # 期間
+        period_row = conn.execute(
+            """
+            SELECT MIN(race_date) AS mn, MAX(race_date) AS mx, COUNT(DISTINCT race_id) AS rc
+            FROM race_log
+            WHERE venue_code = ? AND surface = ? AND distance BETWEEN ? AND ?
+            """,
+            (venue, surface, d_min, d_max),
+        ).fetchone()
+        min_d = period_row["mn"] if period_row and period_row["mn"] else ""
+        max_d = period_row["mx"] if period_row and period_row["mx"] else ""
+        race_count = period_row["rc"] if period_row and period_row["rc"] else 0
+
+        # 同一人物集約（sire/bms は name キー、jockey/trainer は pid キー）
+        agg: dict = {}
+        for r in rows:
+            pid = r["pid"] or ""
+            if not pid:
+                continue
+            if pid not in agg:
+                agg[pid] = {
+                    "id": pid,
+                    "name": r["name"] or pid,
+                    "total": 0, "win": 0, "place2": 0, "place3": 0,
+                    "win_odds_sum": 0.0,
+                }
+            a = agg[pid]
+            a["total"]        += int(r["total"] or 0)
+            a["win"]          += int(r["win"] or 0)
+            a["place2"]       += int(r["place2"] or 0)
+            a["place3"]       += int(r["place3"] or 0)
+            a["win_odds_sum"] += float(r["win_odds_sum"] or 0.0)
+
+        persons = []
+        for pid, a in agg.items():
+            t = a["total"]
+            if t <= 0:
+                continue
+            roi = round(a["win_odds_sum"] / t * 100, 1) if t else 0.0
+            persons.append({
+                "id": pid,
+                "name": a["name"],
+                "location": "",
+                "total": t,
+                "win": a["win"],
+                "place2": a["place2"],
+                "place3": a["place3"],
+                "win_rate":    round(a["win"]    / t * 100, 1),
+                "place2_rate": round(a["place2"] / t * 100, 1),
+                "place3_rate": round(a["place3"] / t * 100, 1),
+                "roi": roi,
+            })
+
+        # 総出走降順
+        persons.sort(key=lambda x: x["total"], reverse=True)
+
+        period_str = (
+            f"{min_d}〜{max_d}（{race_count:,}レース・{venue} {surface} {d_min}〜{d_max}m）"
+            if min_d else f"{venue} {surface} {d_min}〜{d_max}m（データなし）"
+        )
+
+        return jsonify(
+            type=person_type,
+            venue=venue,
+            surface=surface,
+            distance_range=[d_min, d_max],
+            total=len(persons),
+            persons=persons,
             period=period_str,
         )
 
