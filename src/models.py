@@ -590,6 +590,13 @@ class PaceDeviation:
     ai_adjustment: float = 0.0  # AI層調整(±18pt)
     norm_adjustment: float = 0.0  # フィールド内正規化補正（実行時に設定）
 
+    # Phase 11c: ゴールタイム偏差値ブレンド
+    # pace.total が離散的な last3f_eval 優位で構成され、推定された上がり3F秒値を
+    # 直接反映できない問題への対策。全馬の予想ゴールタイム((pos_4c-1)×sec_per_rank+last3f)
+    # からフィールド内偏差値を算出し、セットされていれば既存 total と 5:5 blend する。
+    # engine.py の全馬ループ後に外部から注入する。
+    goal_time_override: Optional[float] = None
+
     # 推定値
     estimated_position_4c: Optional[float] = None  # 推定4角番手
     estimated_last3f: Optional[float] = None  # 推定上がり3F
@@ -610,6 +617,9 @@ class PaceDeviation:
             + self.ai_adjustment
             + self.norm_adjustment
         )
+        # Phase 11c: ゴールタイム偏差値を 5:5 で blend
+        if self.goal_time_override is not None:
+            v = v * 0.5 + self.goal_time_override * 0.5
         from config.settings import DEVIATION
 
         return max(DEVIATION["pace"]["min"], min(DEVIATION["pace"]["max"], v))

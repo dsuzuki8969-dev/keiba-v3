@@ -1143,6 +1143,43 @@ class RaceAnalysisEngine:
                 _bs_adj = -_l3f_adj * 7.5
                 ev.pace.base_score += _bs_adj
 
+        # ---- Phase 11c: ゴールタイム偏差値 → pace.total に統合 ----
+        # pace.total が last3f_eval (離散評価) 優位で構成されているため、
+        # ML が推定した estimated_last3f と estimated_pos4c の実秒値を直接反映しきれず、
+        # 展開図上のゴール順位と印(総合指数)の結論が乖離する問題が発生していた。
+        # 対策: 予想ゴールタイム=(先頭時間差 + 上がり3F秒) からフィールド内偏差値を算出し、
+        #       PaceDeviation.goal_time_override に注入 (total プロパティで 5:5 blend)
+        # 注意: ev.pace.estimated_position_4c は正規化値(0.0=先頭, 1.0=最後尾) なので
+        #       normalized × (field_size-1) × sec_per_rank で「先頭からの時間差」に換算
+        if len(evaluations) >= 3 and not _is_banei:
+            import statistics as _stat_gt
+            _SEC_PER_RANK_GT = 0.15  # 1番手差≈0.15秒 (業界標準)
+            _field_n_gt = len(evaluations)
+            _gts = []
+            for ev in evaluations:
+                _pos4c_norm = getattr(ev.pace, "estimated_position_4c", None)
+                _l3f = getattr(ev.pace, "estimated_last3f", None)
+                if _pos4c_norm is not None and _l3f is not None and _l3f > 0:
+                    # 正規化位置 → 先頭からの時間差 (秒)
+                    _lead_delay = max(0.0, _pos4c_norm) * max(0, _field_n_gt - 1) * _SEC_PER_RANK_GT
+                    _gts.append(_lead_delay + _l3f)
+                else:
+                    _gts.append(None)
+
+            _valid_gts = [g for g in _gts if g is not None]
+            if len(_valid_gts) >= 2:
+                _gt_avg = _stat_gt.mean(_valid_gts)
+                _gt_std = _stat_gt.stdev(_valid_gts) if len(_valid_gts) >= 2 else 0.3
+                _gt_std = max(0.2, _gt_std)  # ゼロ除算＋過剰感度抑制
+                for ev, gt in zip(evaluations, _gts):
+                    if gt is None:
+                        _gt_dev = 50.0
+                    else:
+                        _z = (_gt_avg - gt) / _gt_std  # 速い(gt小)ほど高偏差
+                        _gt_dev = 50.0 + _z * 10.0
+                        _gt_dev = max(20.0, min(100.0, _gt_dev))
+                    ev.pace.goal_time_override = _gt_dev
+
         # オッズ整合性スコア (モデル vs 市場の乖離)
         from config.settings import get_composite_weights
         from src.scraper.improvement_dbs import calc_weight_change_adjustment
