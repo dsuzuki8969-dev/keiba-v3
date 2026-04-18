@@ -12,7 +12,7 @@ import os
 import re
 import shutil
 import time
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from config.settings import PREDICTIONS_DIR, RESULTS_DIR
 from data.masters.venue_master import is_banei
@@ -370,11 +370,22 @@ def save_prediction(date: str, analyses_by_venue: dict, *, lightweight: bool = F
                 }
                 race_data["horses"].append(horse_data)
 
-            # 予想通過順: ML推定の初角位置(pos_1c)と4角位置(pos4c)をベースに
-            # 2角・3角は初角→4角の線形補間で算出
+            # 予想通過順: ML推定の初角位置(pos_1c)と4角位置(pos4c)+ composite順位 を blend
+            # Phase 11c: composite 連動により「総合指数順にゴールへ向かう」展開図を生成
+            # 脚質別 blend: 逃げ馬は ML 位置尊重、追込馬は composite 順位寄り
             _corner_count = race_data.get("corner_count", 4)
             _n = len(race_data["horses"])
             if _n >= 2 and not race_data.get("is_banei"):
+                # composite 順位 (取消馬除く) を 0.0-1.0 にマッピング
+                _active_for_comp = [h for h in race_data["horses"] if not h.get("is_scratched")]
+                _sorted_comp = sorted((h.get("composite", 0.0) or 0.0 for h in _active_for_comp), reverse=True)
+                _n_active = len(_active_for_comp)
+
+                # 脚質別 ML : composite 比率
+                _ML_RATIO_BY_STYLE = {
+                    "逃げ": 0.80, "先行": 0.60, "差し": 0.45, "追込": 0.35,
+                }
+
                 # 各馬の初角・4角の相対位置スコア (0.0=先頭, 1.0=最後方)
                 _horse_positions = []  # [(horse_no, pos_1c, pos_4c)]
                 for _hd in race_data["horses"]:
@@ -384,15 +395,28 @@ def save_prediction(date: str, analyses_by_venue: dict, *, lightweight: bool = F
                         _pos_1c = max(0.0, min(1.0, (_pos_1c_raw - 1) / (_n - 1)))
                     else:
                         _pos_1c = _hd.get("position_initial", 0.5)
-                    # ML推定4角位置: pos4c は番手(1=先頭)なので相対化
+
+                    # ML推定4角位置 (番手→正規化)
                     _pos_4c_raw = _hd.get("pace_estimated_pos4c")
                     if _pos_4c_raw is not None and _n > 1:
-                        _pos_4c = max(0.0, min(1.0, (_pos_4c_raw - 1) / (_n - 1)))
+                        _pos_4c_ml = max(0.0, min(1.0, (_pos_4c_raw - 1) / (_n - 1)))
                     else:
-                        # フォールバック: 脚質シフトで推定
-                        _style = _hd.get("running_style", "") or "先行"  # 空文字時は先行扱い（位置維持）
-                        _shift_4c = {"逃げ": 0.06, "先行": 0.00, "差し": -0.15, "追込": -0.25}.get(_style, 0.0)
-                        _pos_4c = max(0.0, min(1.0, _pos_1c + _shift_4c))
+                        _style_fb = _hd.get("running_style", "") or "先行"
+                        _shift_4c = {"逃げ": 0.06, "先行": 0.00, "差し": -0.15, "追込": -0.25}.get(_style_fb, 0.0)
+                        _pos_4c_ml = max(0.0, min(1.0, _pos_1c + _shift_4c))
+
+                    # composite 順位 → 正規化 (取消馬は blend 対象外)
+                    _comp_val = _hd.get("composite", 0.0) or 0.0
+                    if _n_active > 1 and _comp_val in _sorted_comp:
+                        _comp_rank = _sorted_comp.index(_comp_val) + 1
+                        _pos_4c_comp = max(0.0, min(1.0, (_comp_rank - 1) / (_n_active - 1)))
+                    else:
+                        _pos_4c_comp = _pos_4c_ml
+
+                    # 脚質別 blend
+                    _style = _hd.get("running_style", "") or ""
+                    _ml_r = _ML_RATIO_BY_STYLE.get(_style, 0.55)
+                    _pos_4c = _pos_4c_ml * _ml_r + _pos_4c_comp * (1.0 - _ml_r)
                     _horse_positions.append((_hd["horse_no"], _pos_1c, _pos_4c))
 
                 # コーナー数に応じて各コーナーの位置を線形補間
@@ -1599,6 +1623,216 @@ def _fetch_from_rakuten(race_id: str, rakuten_client, date: str) -> Optional[dic
     return None
 
 
+def fetch_single_race_result(
+    date: str,
+    race_id: str,
+    client,
+    *,
+    official_scraper=None,
+    kb_client=None,
+    rakuten_client=None,
+) -> Optional[dict]:
+    """単一レースの結果（着順・払戻）を取得して results.json に追記保存する。
+
+    発走後の「データ更新」ボタン用。日付単位で全レース取得する `fetch_actual_results`
+    と違い、指定1レースだけ取りに行くので軽量。
+
+    フォールバック: 公式 → netkeiba → 競馬ブック → 楽天競馬(NAR)
+
+    Args:
+        date:              YYYY-MM-DD
+        race_id:           対象レースID
+        client:            NetkeibaClient（2段目）
+        official_scraper:  JRA/NAR公式スクレイパー（1段目、推奨）
+        kb_client:         KeibabookClient（3段目）
+        rakuten_client:    RakutenKeibaScraper（4段目・NAR限定）
+
+    Returns:
+        {"order": [...], "payouts": {...}, "source": "..."} もしくは None
+        既に取得済みの場合はキャッシュをそのまま返す。
+    """
+    os.makedirs(RESULTS_DIR, exist_ok=True)
+    fpath = os.path.join(RESULTS_DIR, f"{date.replace('-', '')}_results.json")
+
+    # 既存ファイルを読み込み（追記モード）
+    existing: Dict[str, dict] = {}
+    if os.path.exists(fpath):
+        try:
+            with open(fpath, "r", encoding="utf-8") as f:
+                loaded = json.load(f)
+                if isinstance(loaded, dict):
+                    existing = loaded
+        except Exception:
+            existing = {}
+
+    from data.masters.venue_master import JRA_CODES
+
+    # 既に着順が入っていればそれを返す（再取得しない）
+    # ただし time/popularity/odds が欠ける場合は netkeiba で補完して上書き保存する。
+    # JRA公式は確定直後これらが未掲載なことがあるため、「データ更新」ボタンで後追い可能に。
+    cached_entry = existing.get(race_id, {})
+    if isinstance(cached_entry, dict) and cached_entry.get("order"):
+        cached_order = cached_entry["order"]
+        if _is_details_incomplete(cached_order) or _is_corners_empty(cached_order):
+            vc = race_id[4:6]
+            base_url = "https://race.netkeiba.com" if vc in JRA_CODES else "https://nar.netkeiba.com"
+            url = f"{base_url}/race/result.html"
+            try:
+                soup_nk = client.get(url, params={"race_id": race_id})
+                if soup_nk:
+                    n1 = _merge_corner_passing_from_soup(cached_order, soup_nk)
+                    n2 = _merge_result_details_from_soup(cached_order, soup_nk)
+                    if n1 or n2:
+                        # 上書き保存
+                        existing[race_id] = cached_entry
+                        try:
+                            with open(fpath, "w", encoding="utf-8") as f:
+                                json.dump(existing, f, ensure_ascii=False, indent=2)
+                        except Exception:
+                            pass
+                        if _DB_AVAILABLE:
+                            try:
+                                _db.save_results(date, {race_id: cached_entry})
+                            except Exception:
+                                pass
+                        import logging
+                        logging.getLogger(__name__).info(
+                            "既存結果に netkeiba 詳細を補完 %s (corners=%d, details=%d)",
+                            race_id, n1, n2,
+                        )
+                time.sleep(1.0)
+            except Exception:
+                import logging
+                logging.getLogger(__name__).debug(
+                    "既存結果補完失敗 %s", race_id, exc_info=True,
+                )
+        return cached_entry
+
+    order, payouts, lap_times, source = None, None, None, ""
+
+    # 1st: JRA/NAR公式
+    if official_scraper:
+        try:
+            _r = _fetch_from_official(race_id, official_scraper, date)
+            if _r and _r.get("order"):
+                order = _r["order"]
+                payouts = _r.get("payouts", {})
+                lap_times = _r.get("lap_times")
+                source = "official"
+        except Exception:
+            import logging
+            logging.getLogger(__name__).debug("公式結果取得失敗 %s", race_id, exc_info=True)
+
+    # 2nd: netkeiba
+    if not order:
+        vc = race_id[4:6]
+        base_url = "https://race.netkeiba.com" if vc in JRA_CODES else "https://nar.netkeiba.com"
+        url = f"{base_url}/race/result.html"
+        try:
+            before_fetch = getattr(client, "_stats_fetch", 0)
+            soup = client.get(url, params={"race_id": race_id})
+            was_fetched = getattr(client, "_stats_fetch", 0) > before_fetch
+            if soup:
+                order = _parse_finish_order(soup)
+                payouts = _parse_payouts(soup)
+                if order:
+                    source = "netkeiba"
+                    # netkeibaページ下部のコーナー通過順テーブルから corners を補完
+                    _merge_corner_passing_from_soup(order, soup)
+            if was_fetched:
+                time.sleep(1.5)
+        except Exception:
+            import logging
+            logging.getLogger(__name__).debug("netkeiba結果取得失敗 %s", race_id, exc_info=True)
+
+    # 公式で order 取れたが corners / time / popularity / odds が欠ける場合、
+    # netkeiba 結果ページで一括補完（ページ取得は1回で済ませる）
+    if order and (_is_corners_empty(order) or _is_details_incomplete(order)):
+        vc = race_id[4:6]
+        base_url = "https://race.netkeiba.com" if vc in JRA_CODES else "https://nar.netkeiba.com"
+        url = f"{base_url}/race/result.html"
+        try:
+            soup_nk = client.get(url, params={"race_id": race_id})
+            if soup_nk:
+                _merge_corner_passing_from_soup(order, soup_nk)
+                _merge_result_details_from_soup(order, soup_nk)
+            time.sleep(1.0)
+        except Exception:
+            import logging
+            logging.getLogger(__name__).debug(
+                "netkeiba結果補完失敗 %s", race_id, exc_info=True,
+            )
+
+    # 3rd: 競馬ブック
+    if not order and kb_client:
+        try:
+            _r = _fetch_from_keibabook(race_id, kb_client, date)
+            if _r and _r.get("order"):
+                order = _r["order"]
+                payouts = _r.get("payouts", {})
+                source = "keibabook"
+        except Exception:
+            pass
+
+    # 4th: 楽天競馬(NAR限定)
+    if not order and rakuten_client and _is_nar_race(race_id):
+        try:
+            _r = _fetch_from_rakuten(race_id, rakuten_client, date)
+            if _r and _r.get("order"):
+                order = _r["order"]
+                payouts = _r.get("payouts", {})
+                source = "rakuten"
+        except Exception:
+            pass
+
+    # 払戻金の補完（着順取れたがpayouts空 → netkeibaで補完）
+    if order and not payouts and source != "netkeiba":
+        vc = race_id[4:6]
+        base_url = "https://race.netkeiba.com" if vc in JRA_CODES else "https://nar.netkeiba.com"
+        url = f"{base_url}/race/result.html"
+        try:
+            soup = client.get(url, params={"race_id": race_id})
+            if soup:
+                payouts = _parse_payouts(soup)
+                time.sleep(1.5)
+        except Exception:
+            pass
+
+    if not order:
+        return None
+
+    result_entry: Dict[str, Any] = {
+        "order": order,
+        "payouts": payouts or {},
+        "source": source,
+    }
+    if lap_times:
+        result_entry["lap_times"] = lap_times
+
+    # results.json に追記保存
+    existing[race_id] = result_entry
+    try:
+        with open(fpath, "w", encoding="utf-8") as f:
+            json.dump(existing, f, ensure_ascii=False, indent=2)
+    except Exception:
+        import logging
+        logging.getLogger(__name__).warning("results.json 保存失敗 %s", race_id, exc_info=True)
+
+    # SQLite にもデュアルライト
+    if _DB_AVAILABLE:
+        try:
+            _db.save_results(date, {race_id: result_entry})
+        except Exception:
+            pass
+
+    import logging
+    logging.getLogger(__name__).info(
+        "単一レース結果取得成功 (%s): %s (%d着順, source=%s)",
+        date, race_id, len(order), source
+    )
+    return result_entry
+
+
 def fetch_actual_results(
     date: str,
     client,
@@ -1677,8 +1911,25 @@ def fetch_actual_results(
                 payouts = _parse_payouts(soup)
                 if order:
                     source = "netkeiba"
+                    # netkeibaページ下部のコーナー通過順テーブルから corners を補完
+                    _merge_corner_passing_from_soup(order, soup)
             if was_fetched:
                 time.sleep(1.5)
+
+        # 公式で order 取れたが corners / time / popularity / odds が欠ける場合、
+        # netkeiba 結果ページで一括補完（ページ取得は1回で済ませる）
+        if order and (_is_corners_empty(order) or _is_details_incomplete(order)):
+            vc = race_id[4:6]
+            base_url = "https://race.netkeiba.com" if vc in JRA_CODES else "https://nar.netkeiba.com"
+            url = f"{base_url}/race/result.html"
+            try:
+                soup_nk = client.get(url, params={"race_id": race_id})
+                if soup_nk:
+                    _merge_corner_passing_from_soup(order, soup_nk)
+                    _merge_result_details_from_soup(order, soup_nk)
+                time.sleep(1.0)
+            except Exception:
+                pass
 
         # 3rd: 競馬ブック
         if not order and kb_client:
@@ -1757,6 +2008,104 @@ def fetch_actual_results(
             pass
 
     return results
+
+
+def _is_corners_empty(order: List[dict]) -> bool:
+    """orderの全馬corners が空またはそもそもキー無しかを判定"""
+    if not order:
+        return True
+    filled = sum(1 for o in order if o.get("corners"))
+    # 1頭でも埋まっていれば有効とみなす（部分的な欠落はそのまま）
+    return filled == 0
+
+
+def _merge_corner_passing_from_soup(order: List[dict], soup) -> int:
+    """netkeibaレース結果ページの下部「コーナー通過順」テーブルを読み取り、
+    orderの各エントリ .corners に注入する。
+
+    Returns: マージできた馬数（既存corners値は上書きしない）
+    """
+    try:
+        from src.scraper.official_nar import parse_corner_passing_from_text
+    except Exception:
+        return 0
+    try:
+        full_text = soup.get_text()
+    except Exception:
+        return 0
+    corners_map = parse_corner_passing_from_text(full_text)
+    if not corners_map:
+        return 0
+    merged = 0
+    for entry in order:
+        hno = entry.get("horse_no")
+        if hno is None:
+            continue
+        # 既存cornersが空または欠けている場合のみ上書き
+        existing = entry.get("corners")
+        if existing:
+            continue
+        new_corners = corners_map.get(hno)
+        if new_corners:
+            entry["corners"] = new_corners
+            merged += 1
+    return merged
+
+
+def _is_details_incomplete(order: List[dict]) -> bool:
+    """order のどこかで time / popularity / odds のいずれかが欠けているかを判定。
+
+    JRA公式結果ページは確定直後「タイム・人気・単勝オッズ」が未掲載なタイミングがあり、
+    その場合でも着順・通過順・上がり3F は取れる。ここで「完備じゃない」と判断したら
+    netkeiba 結果ページから補完する。
+    """
+    if not order:
+        return False
+    for o in order:
+        # 中止・取消などは finish が無い扱いなのでスキップ
+        if o.get("finish") is None:
+            continue
+        if o.get("time") is None or o.get("popularity") is None or o.get("odds") is None:
+            return True
+    return False
+
+
+def _merge_result_details_from_soup(order: List[dict], soup) -> int:
+    """netkeiba 結果ページの着順テーブルから
+    time / time_sec / popularity / odds / last_3f / margin / gate_no / corners を
+    order の各エントリに補完する。既存値は上書きしない。
+
+    JRA公式で order は取れたが人気・単勝オッズ・タイム等が欠けた場合の補完用。
+    Returns: 補完できた項目数（馬ごとではなくフィールド単位の合計）
+    """
+    try:
+        rows = _parse_finish_order(soup)
+    except Exception:
+        return 0
+    if not rows:
+        return 0
+    # horse_no → netkeiba 抽出値
+    by_hno = {r["horse_no"]: r for r in rows if r.get("horse_no") is not None}
+    filled = 0
+    for entry in order:
+        hno = entry.get("horse_no")
+        if hno is None:
+            continue
+        src = by_hno.get(hno)
+        if not src:
+            continue
+        # 補完対象フィールド（既存値がある場合はそのまま）
+        for key in ("time", "time_sec", "popularity", "odds",
+                    "last_3f", "margin", "gate_no", "corners"):
+            new_val = src.get(key)
+            if new_val in (None, "", []):
+                continue
+            existing = entry.get(key)
+            # 既存が空値（None/""/[]）なら補完
+            if existing in (None, "", []):
+                entry[key] = new_val
+                filled += 1
+    return filled
 
 
 def _parse_finish_order(soup) -> List[dict]:
