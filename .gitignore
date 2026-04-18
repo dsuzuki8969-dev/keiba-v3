@@ -109,6 +109,7 @@ log/
 logs/
 data/logs/
 data/watchdog.log
+data/watchdog.log.*
 
 # アドホック/一時スクリプト（試行錯誤・分析用）
 scripts/_*
