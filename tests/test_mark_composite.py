@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
-"""reassign_marks_dict / _apply_ml_composite_adj の修正テスト"""
+"""reassign_marks_dict の修正テスト"""
 import sys, json, copy, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.calculator.popularity_blend import reassign_marks_dict, _apply_ml_composite_adj
+from src.calculator.popularity_blend import reassign_marks_dict
 
 MARKS_ORDER = {"◉": 0, "◎": 1, "○": 2, "▲": 3, "△": 4, "★": 5}
 PRED_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
@@ -85,7 +85,7 @@ def test_real_data_consistency():
             continue
         total += 1
         orig = {h["horse_no"]: h["composite"] for h in horses}
-        reassign_marks_dict(horses)
+        reassign_marks_dict(horses, is_jra=race.get("is_jra", True))
         # composite不変チェック
         for h in horses:
             if abs(h["composite"] - orig[h["horse_no"]]) > 0.001:
@@ -114,42 +114,8 @@ def test_real_data_consistency():
         print(f"  NG: {mismatch}/{total}レースで不整合")
 
 
-def test_apply_ml_adj_no_double_count():
-    """テスト5: _apply_ml_composite_adj が二重適用しない"""
-    horses = [
-        {"horse_no": 1, "composite": 55.0, "win_prob": 0.30, "ml_composite_adj": 3.0},
-        {"horse_no": 2, "composite": 50.0, "win_prob": 0.15, "ml_composite_adj": 1.0},
-        {"horse_no": 3, "composite": 45.0, "win_prob": 0.05, "ml_composite_adj": -2.0},
-    ]
-    # 元のbase（composite - ml_adj）
-    expected_bases = {1: 52.0, 2: 49.0, 3: 47.0}
-    _apply_ml_composite_adj(horses)
-    for h in horses:
-        base = h.get("_composite_base")
-        exp = expected_bases[h["horse_no"]]
-        assert abs(base - exp) < 0.001, \
-            f"#{h['horse_no']} _composite_base={base:.2f} != expected={exp:.2f}"
-    print("  OK: _composite_base が既存ml_adjを正しく差し引いて算出")
-
-
-def test_apply_ml_adj_idempotent():
-    """テスト6: _apply_ml_composite_adj を2回呼んでも冪等"""
-    horses = [
-        {"horse_no": 1, "composite": 55.0, "win_prob": 0.30, "ml_composite_adj": 3.0},
-        {"horse_no": 2, "composite": 50.0, "win_prob": 0.15, "ml_composite_adj": 1.0},
-        {"horse_no": 3, "composite": 45.0, "win_prob": 0.05, "ml_composite_adj": -2.0},
-    ]
-    _apply_ml_composite_adj(horses)
-    after_1st = {h["horse_no"]: h["composite"] for h in horses}
-    _apply_ml_composite_adj(horses)
-    for h in horses:
-        assert abs(h["composite"] - after_1st[h["horse_no"]]) < 0.001, \
-            f"#{h['horse_no']} 2回目で変化: {after_1st[h['horse_no']]:.2f} -> {h['composite']:.2f}"
-    print("  OK: 2回呼んでも冪等（同じ結果）")
-
-
 def test_urawa_r6_specific():
-    """テスト7: 浦和6R — 修正前のバグケースが解消されたか"""
+    """テスト5: 浦和6R — 修正前のバグケースが解消されたか"""
     if not os.path.exists(PRED_PATH):
         print("  SKIP: pred.jsonが見つからない")
         return
@@ -158,7 +124,7 @@ def test_urawa_r6_specific():
     for race in pred.get("races", []):
         if race.get("race_no") == 6 and "浦和" in race.get("venue", ""):
             horses = copy.deepcopy(race["horses"])
-            reassign_marks_dict(horses)
+            reassign_marks_dict(horses, is_jra=race.get("is_jra", False))
             # composite順でソート
             sorted_h = sorted(horses, key=lambda h: h.get("composite", 0), reverse=True)
             # ◎は最高composite馬であるべき
@@ -177,12 +143,10 @@ def test_urawa_r6_specific():
 
 
 if __name__ == "__main__":
-    print("=== reassign_marks_dict / _apply_ml_composite_adj テスト ===\n")
+    print("=== reassign_marks_dict テスト ===\n")
     test_composite_unchanged()
     test_marks_follow_composite_order()
     test_special_marks_preserved()
     test_real_data_consistency()
-    test_apply_ml_adj_no_double_count()
-    test_apply_ml_adj_idempotent()
     test_urawa_r6_specific()
     print("\n=== 全テスト完了 ===")

@@ -365,6 +365,56 @@ def blend_probabilities_dict(
     _normalize_dict_probs(horses, field_count)
 
 
+def restore_win_prob_if_zero(h: dict, field_count: int = None) -> bool:
+    """取消解除馬の win_prob=0 を中間診断値から復元する
+
+    取消馬は win_prob=0 にクリアされる。オッズ復帰時に is_scratched=False にする
+    だけでは win_prob=0 のままになり、再正規化後も 0.0% と表示されるバグがある。
+    この関数は復元候補値（優先順）から非ゼロ値を探して win_prob を復元する:
+      1. _pre_pop_prob 相当（人気ブレンド前のモデル予測値）
+      2. ml_rule_prob（ML+ルールブレンド）
+      3. ensemble_prob（ML アンサンブル）
+      4. raw_lgbm_prob（生のLGBM出力）
+      5. 市場確率 0.80 / odds（フォールバック）
+
+    復元後は place2/place3 を理論比(1:2:3)で仮置き。
+    呼び出し側で再正規化すること。
+
+    Returns:
+        True: 復元した / False: 復元不要・不能
+    """
+    if (h.get("win_prob") or 0) > 0:
+        return False  # 既に非ゼロなら何もしない
+
+    # 中間値から復元を試みる
+    for key in ("pre_pop_prob", "ml_rule_prob", "ensemble_prob", "raw_lgbm_prob"):
+        v = h.get(key)
+        if v and v > 0:
+            h["win_prob"] = float(v)
+            h["place2_prob"] = min(1.0, float(v) * 2.0)
+            h["place3_prob"] = min(1.0, float(v) * 3.0)
+            return True
+
+    # フォールバック: オッズから市場確率を推定（控除率80%想定）
+    odds = h.get("odds")
+    if odds and odds > 0:
+        mp = min(0.95, 0.80 / float(odds))
+        h["win_prob"] = mp
+        h["place2_prob"] = min(1.0, mp * 2.0)
+        h["place3_prob"] = min(1.0, mp * 3.0)
+        return True
+
+    # 最終フォールバック: 平均確率
+    if field_count and field_count > 0:
+        mp = 1.0 / field_count
+        h["win_prob"] = mp
+        h["place2_prob"] = min(1.0, mp * 2.0)
+        h["place3_prob"] = min(1.0, mp * 3.0)
+        return True
+
+    return False
+
+
 def _normalize_dict_probs(horses: List[dict], field_count: int) -> None:
     """dict版の確率正規化"""
     total_win = sum(h.get("win_prob", 0) for h in horses)
@@ -386,36 +436,33 @@ def _normalize_dict_probs(horses: List[dict], field_count: int) -> None:
             h["place3_prob"] = h.get("place3_prob", 0) / total_p3 * target_p3
 
 
-def _apply_ml_composite_adj(horses: List[dict]) -> None:
-    """win_probから偏差値スケールのML補正を計算し、compositeに反映する"""
-    win_probs = [h.get("win_prob", 0) for h in horses]
-    n = len(win_probs)
-    if n < 3:
-        return
-    avg_wp = sum(win_probs) / n
-    std_wp = (sum((p - avg_wp) ** 2 for p in win_probs) / n) ** 0.5
-    if std_wp < 0.001:
-        return
-    for h in horses:
-        z = (h.get("win_prob", 0) - avg_wp) / std_wp
-        ml_adj = max(-6.0, min(6.0, z * 2.5))  # チューニング結果: 元の値が最適
-        # compositeを更新（元値 + ML補正）
-        # pred.jsonのcompositeは既にml_composite_adjを含むため、差し引いて素のbaseを算出
-        if "_composite_base" not in h:
-            existing_adj = h.get("ml_composite_adj", 0)
-            h["_composite_base"] = h.get("composite", 50.0) - existing_adj
-        h["ml_composite_adj"] = ml_adj
-        h["composite"] = max(20.0, min(100.0, h["_composite_base"] + ml_adj))
-
-
-def reassign_marks_dict(horses: List[dict]) -> None:
+def reassign_marks_dict(horses: List[dict], is_jra: bool = True) -> None:
     """dict版の印再割り当て（リアルタイムオッズ更新用）
 
-    formatter.py の assign_marks と同じロジック（wpガード＋ML合意）を適用。
-    pred.jsonの印をそのまま使う場合はこの関数を呼ばない（dashboard.pyで制御）。
+    formatter.py の assign_marks と同じ厳格ロジック
+    （◉:v4 TEKIPAN / 印分布:v5、settings.py準拠）を適用。
+    ◉判定は gap / win_prob / place3_prob / popularity_max / EV の5条件AND。
+    composite自体は変更せず、印のみ再割り振りする（pred.jsonの値を正とする）。
     ☆(穴馬)・×(危険馬)は維持。
+
+    Args:
+        horses: 馬dict配列（pred.jsonの形式）
+        is_jra: JRAレースか（閾値分岐に使用）
     """
-    TEKIPAN_GAP = 4.0
+    # ---- TEKIPAN閾値（settings.pyから取得、JRA/NAR分離）----
+    from config.settings import (
+        TEKIPAN_GAP_JRA, TEKIPAN_GAP_NAR,
+        TEKIPAN_WIN_PROB_JRA, TEKIPAN_WIN_PROB_NAR,
+        TEKIPAN_PLACE3_PROB_JRA, TEKIPAN_PLACE3_PROB_NAR,
+        TEKIPAN_POP_MAX_JRA, TEKIPAN_POP_MAX_NAR,
+        TEKIPAN_MIN_EV_JRA, TEKIPAN_MIN_EV_NAR,
+    )
+    TEKIPAN_GAP = TEKIPAN_GAP_JRA if is_jra else TEKIPAN_GAP_NAR
+    TEKIPAN_WP = TEKIPAN_WIN_PROB_JRA if is_jra else TEKIPAN_WIN_PROB_NAR
+    TEKIPAN_P3 = TEKIPAN_PLACE3_PROB_JRA if is_jra else TEKIPAN_PLACE3_PROB_NAR
+    TEKIPAN_POP_MAX = TEKIPAN_POP_MAX_JRA if is_jra else TEKIPAN_POP_MAX_NAR
+    TEKIPAN_MIN_EV = TEKIPAN_MIN_EV_JRA if is_jra else TEKIPAN_MIN_EV_NAR
+
     # wpガード閾値（formatter.pyと統一）
     _MIN_WP_HONMEI = 0.05  # ◎: wp >= 5%（未満ならwp1位に切替）
     _MIN_WP_TAIKOU = 0.02  # ○: wp >= 2%
@@ -474,13 +521,30 @@ def reassign_marks_dict(horses: List[dict]) -> None:
             if gap <= 2.0 and wp_ratio >= 1.5:
                 honmei_horse = wp_top
 
-    # ◉/◎判定
+    # ◉/◎判定 — formatter.py と同じ5条件AND（gap/wp/p3/pop/EV）
     c1 = honmei_horse.get("composite", 0)
     c2 = sorted_h[1].get("composite", 0) if len(sorted_h) > 1 else 0
     gap = c1 - c2
     if gap < 0:
+        # win_prob1位に切り替えた場合のフォールバック（composite基準gap）
         gap = sorted_h[0].get("composite", 0) - c2 if len(sorted_h) > 1 else 0
-    is_tekipan = gap >= TEKIPAN_GAP and (honmei_horse.get("win_prob", 0)) >= 0.30
+
+    # 人気条件（v4新設: 市場との合意確認）
+    top_pop = honmei_horse.get("popularity") or 99
+    pop_ok = top_pop <= TEKIPAN_POP_MAX
+
+    # EV条件（TEKIPAN_MIN_EV > 0 のときのみ課金、v4は0.0で無効化）
+    _eff_odds = honmei_horse.get("odds") or honmei_horse.get("predicted_tansho_odds") or 0
+    _top_ev = (honmei_horse.get("win_prob", 0)) * _eff_odds if _eff_odds and _eff_odds > 0 else 1.0
+    ev_ok = _top_ev >= TEKIPAN_MIN_EV if TEKIPAN_MIN_EV > 0 else True
+
+    is_tekipan = (
+        gap >= TEKIPAN_GAP
+        and (honmei_horse.get("win_prob", 0)) >= TEKIPAN_WP
+        and (honmei_horse.get("place3_prob", 0)) >= TEKIPAN_P3
+        and pop_ok
+        and ev_ok
+    )
     honmei_horse["mark"] = "◉" if is_tekipan else "◎"
 
     # ---- Step 1: ○▲△★ — composite順でwpガード付き ----
