@@ -17,6 +17,112 @@ from src.log import get_logger
 
 logger = get_logger(__name__)
 
+
+# ================================================================
+# 共通: コーナー通過順パーサ（括弧対応）
+# ================================================================
+# NAR公式・netkeiba・競馬ブック等で共通利用される
+# 「(14,7),(5,9,12),(1,6,8),13,4,10,(11,3),2」形式を
+# 各馬番 → 通過順位リストに変換する
+
+def _parse_bracketed_corner_sequence(text: str) -> List[List[int]]:
+    """括弧付き馬番シーケンスをパース
+
+    例: "(14,7),(5,9,12),13,4" → [[14,7], [5,9,12], [13], [4]]
+    括弧内は同通過位置の馬群（同順位タイ）を表す。
+
+    Args:
+        text: 括弧付き馬番文字列
+    Returns:
+        グループリスト。各グループは同通過位置の馬番リスト。
+    """
+    groups: List[List[int]] = []
+    i = 0
+    n = len(text)
+    while i < n:
+        ch = text[i]
+        if ch == "(" or ch == "（":
+            # 括弧内の馬番を収集
+            close_paren = ")" if ch == "(" else "）"
+            j = text.find(close_paren, i)
+            if j < 0:
+                break
+            inner = text[i + 1:j]
+            hnos = []
+            for part in re.split(r"[,\uFF0C\s\-]+", inner):
+                part = part.strip()
+                if part.isdigit():
+                    hnos.append(int(part))
+            if hnos:
+                groups.append(hnos)
+            i = j + 1
+        elif ch.isdigit():
+            # 単独馬番
+            j = i
+            while j < n and text[j].isdigit():
+                j += 1
+            try:
+                num = int(text[i:j])
+                if 1 <= num <= 30:  # 馬番妥当性チェック
+                    groups.append([num])
+            except ValueError:
+                pass
+            i = j
+        else:
+            i += 1
+    return groups
+
+
+def parse_corner_passing_from_text(full_text: str) -> Dict[int, List[int]]:
+    """フルテキストから各コーナー通過順をパース
+
+    「3角 (14,7),(5,9,12),...」「4コーナー: 14,7,(5,9)...」等を検知し、
+    同通過位置の馬群には同順位を付与する。
+
+    Returns:
+        {馬番: [コーナー1順位, コーナー2順位, ...], ...}
+        同通過位置（括弧内）の馬は全員同じ順位になる。
+    """
+    corners_map: Dict[int, List[int]] = {}
+
+    # コーナー番号 → シーケンス文字列 を抽出
+    # 対応形式:
+    #   "3角 (14,7),..."
+    #   "3コーナー (14,7),..."
+    #   "3角: (14,7),..."
+    # 各マッチごとに「次のN角/末尾」までを捕獲
+    corner_pattern = re.compile(
+        r"(\d)\s*(?:角|コーナー)[：:\s　]*([0-9\(\)（）,\uFF0C\-\s]+?)(?=\d\s*(?:角|コーナー)|ハロンタイム|払戻|$)",
+        re.DOTALL,
+    )
+
+    corner_data: List[Tuple[int, List[List[int]]]] = []
+    for m in corner_pattern.finditer(full_text):
+        corner_num = int(m.group(1))
+        raw = m.group(2).strip()
+        # 改行・全角カンマ除去
+        raw = raw.replace("\u3000", " ").replace("\n", " ")
+        groups = _parse_bracketed_corner_sequence(raw)
+        if groups:
+            corner_data.append((corner_num, groups))
+
+    if not corner_data:
+        return corners_map
+
+    # コーナー番号順にソート（3角→4角の順）
+    corner_data.sort(key=lambda x: x[0])
+
+    # 各馬番に通過順位を付与: 同位置馬群は同順位、次位置は「現位置 + グループサイズ」
+    for corner_num, groups in corner_data:
+        pos = 1
+        for grp in groups:
+            for hno in grp:
+                corners_map.setdefault(hno, []).append(pos)
+            pos += len(grp)
+
+    return corners_map
+
+
 _UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
@@ -1560,49 +1666,19 @@ class OfficialNARScraper:
     def _parse_nar_corners(self, soup: BeautifulSoup) -> dict:
         """コーナー通過順テーブルをパース
 
-        形式: "1角: 3,5,1,2,7,..." のような馬番の列挙
+        対応形式:
+          "3角 (14,7),(5,9,12),(1,6,8),13,4,10,(11,3),2"
+          "3コーナー: (14,7),(5,9,12),..."
+          "1角: 3,5,1,2,7"
+          "1角 3-5-1-2-7"
+
+        括弧 () は同通過位置の馬群を表し、同じ順位を付与する。
 
         Returns:
             {馬番: [各コーナーの通過順位], ...}
-            例: {6: [1, 1, 1, 1], 3: [3, 3, 2, 2]}
+            例: 3角 (14,7),(5,9,12) → {14:[1], 7:[1], 5:[3], 9:[3], 12:[3]}
         """
-        corners_map: Dict[int, List[int]] = {}
-
-        # ページ全体のテキストからコーナー通過順を探す
-        # "1角: 3,5,1,2,7" or "1角　3-5-1-2-7" 等の形式
-        full_text = soup.get_text()
-        corner_pattern = re.compile(
-            r"(\d)角[：:\s]+([0-9,\-\s]+)"
-        )
-
-        corner_data = []  # [(コーナー番号, [馬番順序リスト]), ...]
-        for m in corner_pattern.finditer(full_text):
-            corner_num = int(m.group(1))
-            # 馬番リスト: カンマ・ハイフン・スペース区切りに対応
-            raw = m.group(2).strip()
-            horse_nos = []
-            for token in re.split(r"[,\-\s]+", raw):
-                token = token.strip()
-                if token.isdigit():
-                    horse_nos.append(int(token))
-            if horse_nos:
-                corner_data.append((corner_num, horse_nos))
-
-        if not corner_data:
-            return corners_map
-
-        # コーナー番号順にソート
-        corner_data.sort(key=lambda x: x[0])
-
-        # 各馬番について、各コーナーでの通過順位を算出
-        # 通過順位 = リスト内での位置 + 1
-        for corner_num, horse_nos in corner_data:
-            for position, hno in enumerate(horse_nos, 1):
-                if hno not in corners_map:
-                    corners_map[hno] = []
-                corners_map[hno].append(position)
-
-        return corners_map
+        return parse_corner_passing_from_text(soup.get_text())
 
     def _parse_nar_payouts(self, soup: BeautifulSoup) -> dict:
         """払戻テーブルをパースしてnetkeiba互換形式で返す

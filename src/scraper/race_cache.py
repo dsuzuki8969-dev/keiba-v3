@@ -18,7 +18,7 @@ from datetime import datetime
 from typing import List, Optional, Tuple
 
 from src.log import get_logger
-from src.models import CourseMaster, Horse, PaceType, PastRun, RaceInfo
+from src.models import CourseMaster, Horse, PaceType, PastRun, RaceInfo, TrainingRecord
 
 logger = get_logger(__name__)
 
@@ -26,7 +26,7 @@ logger = get_logger(__name__)
 # 定数
 # ============================================================
 
-_CACHE_VERSION = 1
+_CACHE_VERSION = 2  # v2: training_records をシリアライズ対象に追加
 _TTL_TODAY = 2 * 3600       # 当日レース: 2時間
 _TTL_PAST = 30 * 86400      # 過去レース: 30日
 _TTL_HISTORY_ONLY = 7 * 86400  # 過去走のみキャッシュ: 7日
@@ -100,8 +100,29 @@ def _serialize_past_run(r: PastRun) -> dict:
     }
 
 
+def _serialize_training_record(t: TrainingRecord) -> dict:
+    """TrainingRecord → JSON-safe dict"""
+    return {
+        "date": t.date,
+        "venue": t.venue,
+        "course": t.course,
+        "splits": dict(t.splits) if t.splits else {},
+        "partner": t.partner,
+        "position": t.position,
+        "rider": t.rider,
+        "track_condition": t.track_condition,
+        "lap_count": t.lap_count,
+        "intensity_label": t.intensity_label,
+        "sigma_from_mean": t.sigma_from_mean,
+        "comment": t.comment,
+        "stable_comment": t.stable_comment,
+    }
+
+
 def _serialize_horse(h: Horse) -> dict:
     """Horse → JSON-safe dict"""
+    # training_records は dynamic attribute（auth.py で付与）
+    _tr_records = getattr(h, "training_records", None) or []
     return {
         "horse_id": h.horse_id,
         "horse_name": h.horse_name,
@@ -134,6 +155,8 @@ def _serialize_horse(h: Horse) -> dict:
         "prev_jockey": h.prev_jockey,
         "trainer_affiliation": h.trainer_affiliation,
         "past_runs": [_serialize_past_run(r) for r in h.past_runs],
+        # 調教記録（dynamic attribute）— キャッシュ再ロード時の調教データ欠損対策
+        "training_records": [_serialize_training_record(t) for t in _tr_records],
         # 公式モード用: 馬プロフ/馬詳細リンクコード
         "_profile_cname": getattr(h, "_profile_cname", ""),
         "_lineage_code": getattr(h, "_lineage_code", ""),
@@ -234,6 +257,25 @@ def _deserialize_past_run(d: dict) -> PastRun:
     )
 
 
+def _deserialize_training_record(d: dict) -> TrainingRecord:
+    """dict → TrainingRecord（キャッシュ再ロード用）"""
+    return TrainingRecord(
+        date=d.get("date", ""),
+        venue=d.get("venue", ""),
+        course=d.get("course", ""),
+        splits=dict(d.get("splits", {})) if d.get("splits") else {},
+        partner=d.get("partner", ""),
+        position=d.get("position", ""),
+        rider=d.get("rider", ""),
+        track_condition=d.get("track_condition", ""),
+        lap_count=d.get("lap_count", ""),
+        intensity_label=d.get("intensity_label", "通常"),
+        sigma_from_mean=d.get("sigma_from_mean", 0.0),
+        comment=d.get("comment", ""),
+        stable_comment=d.get("stable_comment", ""),
+    )
+
+
 def _deserialize_horse(d: dict) -> Horse:
     past_runs = [_deserialize_past_run(r) for r in d.get("past_runs", [])]
     h = Horse(
@@ -269,6 +311,10 @@ def _deserialize_horse(d: dict) -> Horse:
         trainer_affiliation=d.get("trainer_affiliation", ""),
         past_runs=past_runs,
     )
+    # 調教記録（dynamic attributeとして復元）
+    _tr_raw = d.get("training_records") or []
+    if _tr_raw:
+        h.training_records = [_deserialize_training_record(t) for t in _tr_raw]
     # 公式モード用: 馬プロフ/馬詳細リンクコード復元
     pcn = d.get("_profile_cname", "")
     if pcn:

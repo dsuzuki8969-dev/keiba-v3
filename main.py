@@ -232,6 +232,16 @@ def run_date_analysis(
     if official_only:
         scraper._official_only = True
         logger.info("--official モード: ネット競馬ログインをスキップ")
+        # KB（競馬ブック）は別ドメイン・別認証。--official でも
+        # 調教データ・厩舎コメントの取得にはログインが必要。
+        kb_ok = scraper.training.login()
+        if not kb_ok:
+            logger.warning("競馬ブックログイン失敗。3秒後にリトライ...")
+            import time as _t
+            _t.sleep(3)
+            kb_ok = scraper.training.login()
+        if not kb_ok:
+            logger.warning("⚠ 競馬ブック未認証: 調教・厩舎コメントは取得できません")
     else:
         scraper.login()
         scraper.training.login()
