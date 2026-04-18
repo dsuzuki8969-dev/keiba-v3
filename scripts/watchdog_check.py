@@ -20,7 +20,10 @@ except Exception:
     subprocess.Popen(
         [r"C:\Program Files\Python311\pythonw.exe", "src/dashboard.py"],
         cwd=r"c:\Users\dsuzu\keiba\keiba-v3",
-        creationflags=_DETACHED
+        creationflags=_DETACHED | _NO_WINDOW,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        stdin=subprocess.DEVNULL,
     )
 
 # cloudflaredチェック（プロセス存在確認のみ）
@@ -35,5 +38,8 @@ if "cloudflared.exe" not in result.stdout:
          "tunnel", "--config", r"C:\Users\dsuzu\.cloudflared\config.yml",
          "run", "keiba-dash"],
         cwd=r"c:\Users\dsuzu\keiba\keiba-v3",
-        creationflags=_DETACHED
+        creationflags=_DETACHED | _NO_WINDOW,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        stdin=subprocess.DEVNULL,
     )
