@@ -91,6 +91,32 @@
 
 ---
 
-## typescript-reviewer 所見
+## typescript-reviewer 所見（2026-04-24 完了）
 
-（BG 完了待ち — 完了後ここに要約追記）
+### HIGH（即日対応済 → commit 5fb4ade）
+1. ✅ `PremiumCard` `as never` 除去 — タグ別型分岐、`type="button"` 自動注入
+2. ✅ `HomePage` useMemo 依存 `[order, races]` → `[pred]` で安定化
+3. ✅ vite.config `manualChunks` 追加 — recharts/react-vendor/ui-base を分離
+4. ✅ `OddsPanel` probEntries useMemo 化
+5. ✅ `AbilityTable` radarEntries useMemo 化
+6. ✅ Top10 行 key を安定キー (`combo-odds`) に
+7. ✅ `WinProbBar` 冗長 Cell 削除
+
+### バンドル削減効果
+- `RaceDetailView`: **563KB → 142KB (75%減)**
+- `recharts`: 独立チャンク 413KB（キャッシュ効率大）
+- 初回 Home 読み込み: **391KB (gzip 106KB)**
+
+### MEDIUM（次セッション対応推奨）
+- Fast Refresh 違反 3ファイル（`buildPaceEntry` / `computeWinPctRanks` / `MARK_SYMBOL` を utils ファイルへ分離）
+- `calcRanks` の O(n²) を useMemo 化
+- `HomePage.tsx` の API レスポンス型に zod スキーマ導入
+- `movieUrl` の `useCallback` + `()` を `useMemo` に
+- HomePageHero TOP3 を `role="list" / role="listitem"` でセマンティック化
+
+---
+
+## 最終コミット
+
+- `62a4042` feat(ui): D-Aikeiba v6.1 プレミアム UI 刷新
+- `5fb4ade` perf(ui): typescript-reviewer 対応 + bundle 分割 (v6.1.1)
