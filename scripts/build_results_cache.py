@@ -282,6 +282,18 @@ def main() -> int:
     results: List[dict] = []
 
     # 並列生成（aggregate_all/detailed は DB/JSON の読み込み中心で GIL 解放あり）
+    #
+    # v6.1.22 reviewer MEDIUM 対応: SQLite 接続のスレッド安全性について
+    # ------------------------------------------------------------------
+    # `src/database.py` 側の `HorseDB` は `threading.local()` で接続を保持し、
+    # 各スレッド別にコネクションが作成される。従って ThreadPoolExecutor 配下の
+    # 各 worker が `aggregate_all(year_filter=y)` を呼ぶと、内部で取得される
+    # DB 接続はスレッド毎に独立し、SQLite の WAL モード下で並列読み取りが
+    # 安全に成立する。書き込みは `atomic_write_json` が FileLock で
+    # シリアライズするため JSON 破損も起きない。
+    # ProcessPoolExecutor ではなく ThreadPoolExecutor を採用したのは、
+    # SQLite の接続プールがスレッド分離済みなのと、プロセス起動コストを
+    # 避けるため（4 worker で 5-7 分の集計を 80-90 秒に短縮できる）。
     if workers <= 1:
         for y in years:
             print(f"  [year={y}] 生成中...")

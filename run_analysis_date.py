@@ -826,6 +826,59 @@ try:
 except Exception as _e:
     logger.warning("export HTML generation skipped: %s", _e, exc_info=True)
 
+# ────────────────────────────────────────────────────────────
+# 厩舎コメント + 調教 Bullets 自動生成（v6.0.1 マスター指示 2026-04-23）
+#   claude -p subprocess で stable_comment を箇条書き化。
+#   失敗しても規則ベース bulletize にフォールバック。
+#
+# v6.1.22 根本修正（2026-04-25）:
+#   paraphrase の timeout を 1800s → 10800s (3 時間) に延長。
+#   LLM 呼び出しは 1 件 約 15-20 秒 × 500+ 件 = 約 2 時間 必要。
+#   旧 30 分 timeout では途中 stop → bulletize フォールバックも走らず、
+#   調教 bullets が 0 件のまま公開される問題が発生していた。
+#
+#   また bulletize を **paraphrase の結果に関係なく** 独立して必ず実行する
+#   よう try/finally 構造に変更。timeout や例外で paraphrase が失敗しても
+#   調教コメント bullets は規則ベースで確実に注入される。
+# ────────────────────────────────────────────────────────────
+P("[bold cyan]\\[N/N+2][/] 厩舎コメント bullets 自動生成...")
+import subprocess as _sp
+try:
+    # 1) Claude CLI paraphrase を試行（成功すれば人間レベル）
+    _llm = _sp.run(
+        [sys.executable, "scripts/paraphrase_stable_comments.py", DATE],
+        cwd=os.path.dirname(os.path.abspath(__file__)),
+        capture_output=True, text=True, encoding="utf-8",
+        timeout=10800,  # 3 時間: 500 件 LLM 呼び出しを完走可能
+    )
+    _ok = 0
+    for _line in (_llm.stdout or "").strip().splitlines()[-10:]:
+        if _line.strip():
+            P(f"  {_line}")
+        if "注入:" in _line or "キャッシュ命中:" in _line:
+            _ok += 1
+except _sp.TimeoutExpired:
+    logger.warning("paraphrase timeout: 3時間超過しました。bulletize は続行します")
+    P("  [WARN] paraphrase timeout → bulletize フォールバックで調教 bullets を注入します")
+except Exception as _e:
+    logger.warning("paraphrase 実行失敗: %s", _e, exc_info=True)
+    P(f"  [WARN] paraphrase 実行失敗: {_e} → bulletize で調教分のみ注入")
+
+# 2) 規則ベース bulletize — paraphrase の成否に関係なく **必ず** 実行
+#    特に調教 comment は LLM ではなく規則ベースで bulletize する設計なので、
+#    paraphrase timeout で skip されると調教 bullets が 0 件のままになる。
+try:
+    _rule = _sp.run(
+        [sys.executable, "scripts/bulletize_stable_comments.py", DATE],
+        cwd=os.path.dirname(os.path.abspath(__file__)),
+        capture_output=True, text=True, encoding="utf-8", timeout=120,
+    )
+    for _line in (_rule.stdout or "").strip().splitlines()[-5:]:
+        if _line.strip():
+            P(f"  [規則]{_line}")
+except Exception as _e:
+    logger.warning("bulletize 実行失敗: %s", _e, exc_info=True)
+
 nc = scraper.client
 kc = scraper.training.client if hasattr(scraper, "training") and hasattr(scraper.training, "client") else None
 ne_c, ne_f, ne_s = getattr(nc, "_stats_cache", 0), getattr(nc, "_stats_fetch", 0), getattr(nc, "_stats_skip", 0)
