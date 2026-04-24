@@ -89,6 +89,22 @@ _auto_fetch_busy_dates: set = set()         # 現在 fetch 処理中の日付
 _auto_fetch_cooldown: dict = {}             # race_id → last_attempt_timestamp
 _AUTO_FETCH_COOLDOWN_SEC = 300              # 同一 race_id の再試行は 5 分に 1 回まで
 _AUTO_FETCH_MAX_PER_CALL = 5                # 1 API 呼び出しで最大 5R まで fetch
+_AUTO_FETCH_COOLDOWN_MAX = 300              # reviewer HIGH #4 対応: メモリリーク対策
+
+
+def _cleanup_cooldown_if_needed() -> None:
+    """_auto_fetch_cooldown が肥大化したら期限切れエントリをパージ。
+
+    常時稼働 Flask プロセスで race_id が蓄積し続けるのを防ぐ。
+    2倍の cooldown 期間を過ぎたエントリは削除（再試行判定に不要）。
+    """
+    if len(_auto_fetch_cooldown) < _AUTO_FETCH_COOLDOWN_MAX:
+        return
+    now = time.time()
+    expired = [k for k, v in list(_auto_fetch_cooldown.items())
+               if now - v > _AUTO_FETCH_COOLDOWN_SEC * 2]
+    for k in expired:
+        _auto_fetch_cooldown.pop(k, None)
 
 # 競馬場コード → 緯度・経度（天気API用）
 VENUE_COORDS = {
@@ -3111,7 +3127,14 @@ def create_app():
 
     @app.route("/api/results/invalidate_cache", methods=["POST"])
     def api_results_invalidate_cache():
-        """集計キャッシュを全クリアする（pred.json修正後に呼び出し）"""
+        """集計キャッシュを全クリアする（pred.json修正後に呼び出し）
+
+        v6.1.18 security fix: 管理者のみ許可。cloudflared で外部公開されており、
+        第三者が無差別に POST すると 234 秒級の fallback が連発して DoS と同等になる。
+        """
+        # reviewer HIGH #3 対応: 認証ガードを追加
+        if not _is_admin(request):
+            return jsonify(error="管理者のみ実行可能"), 403
         try:
             from src.results_tracker import invalidate_aggregate_cache
             invalidate_aggregate_cache()
@@ -3142,9 +3165,21 @@ def create_app():
     _results_cache_building: dict = {}  # year → True: 生成中フラグ
     _results_cache_stats = {"hits": 0, "misses": 0, "stale": 0, "lazy_builds": 0}
 
+    # reviewer HIGH #2 対応: year パラメータは許可リスト検証
+    # Windows \ 経由の path traversal を防ぐ。"all" または 4桁数字のみ許可。
+    _VALID_YEAR_RE = re.compile(r"^(all|\d{4})$")
+
+    def _validate_year(year: str | None) -> str:
+        """year パラメータを許可リストで検証。不正なら 'all' にフォールバック。"""
+        if year and _VALID_YEAR_RE.fullmatch(year):
+            return year
+        if year:
+            logger.warning("不正な year パラメータ: %r → 'all' にフォールバック", year)
+        return "all"
+
     def _results_cache_path(kind: str, year: str) -> str:
-        safe_year = year.replace("/", "_")
-        return os.path.join(_RESULTS_CACHE_DIR, f"{kind}_{safe_year}.json")
+        # year は既に _validate_year 済みで、slash / backslash は含まれない保証あり
+        return os.path.join(_RESULTS_CACHE_DIR, f"{kind}_{year}.json")
 
     def _results_cache_load(kind: str, year: str) -> tuple[dict | None, bool]:
         """キャッシュ JSON を読み込む。(data, is_stale) を返す。
@@ -3220,7 +3255,7 @@ def create_app():
     @app.route("/api/results/summary")
     def api_results_summary():
         """通算成績を返す（year=all/2025/2026 等）。by_dateは巨大なため除外"""
-        year = request.args.get("year", "all")
+        year = _validate_year(request.args.get("year", "all"))
 
         def _fallback():
             try:
@@ -3240,7 +3275,7 @@ def create_app():
         """三連単フォーメーション戦略（Phase 3）の成績を返す。
         year=all/2024/2025/2026 の単位でキャッシュ（30分）。
         """
-        year = request.args.get("year", "all")
+        year = _validate_year(request.args.get("year", "all"))
         force = request.args.get("force", "") in ("1", "true")
 
         def _fallback():
@@ -3261,7 +3296,7 @@ def create_app():
     @app.route("/api/results/detailed")
     def api_results_detailed():
         """詳細集計（競馬場別・コース別・距離区分別・高額配当TOP10）"""
-        year = request.args.get("year", "all")
+        year = _validate_year(request.args.get("year", "all"))
 
         def _fallback():
             try:
@@ -3290,7 +3325,7 @@ def create_app():
     @app.route("/api/results/trend")
     def api_results_trend():
         """累積回収率推移・月別収支データ（Chart.js用）"""
-        year = request.args.get("year", "all")
+        year = _validate_year(request.args.get("year", "all"))
 
         def _fallback():
             try:
@@ -4658,6 +4693,41 @@ function dNavRefreshOdds(date){{
     _personnel_stats_cache: dict = {}
     # 位置取りキャッシュ（騎手/調教師の前行き率・4角率・軌跡データ）
     _position_cache: dict = {}  # {"jockey": {...}, "trainer": {...}}
+
+    # v6.1.18: 起動時に personnel キャッシュをバックグラウンドでウォームアップ
+    # 初回アクセス時の 22 秒待機を回避（2 回目以降は 5ms）
+    def _warmup_personnel_cache():
+        """dashboard 起動後、all + 各年の personnel stats を裏でロードする"""
+        try:
+            from src.database import compute_personnel_stats_from_race_log
+            import time as _tw
+            years_to_warm = [None, "2026", "2025"]  # 重要な年度のみ先読み
+            for yf in years_to_warm:
+                try:
+                    t0 = _tw.time()
+                    stats = compute_personnel_stats_from_race_log(year_filter=yf)
+                    cache_key = f"_year_{yf}" if yf else ""
+                    if cache_key:
+                        _personnel_stats_cache[cache_key] = stats
+                    else:
+                        _personnel_stats_cache.update(stats)
+                    yl = yf or "all"
+                    logger.info(
+                        "personnel キャッシュ ウォームアップ完了 year=%s (%.1fs)",
+                        yl, _tw.time() - t0,
+                    )
+                except Exception as e:
+                    logger.warning("personnel ウォームアップ失敗 year=%s: %s", yf, e)
+        except Exception as e:
+            logger.warning("personnel ウォームアップ全体失敗: %s", e)
+
+    # 起動 5 秒後にバックグラウンドでウォームアップ（ダッシュボード応答を優先）
+    def _delayed_warmup():
+        import time as _tw
+        _tw.sleep(5)
+        _warmup_personnel_cache()
+
+    threading.Thread(target=_delayed_warmup, daemon=True).start()
 
     def _load_position_cache() -> dict:
         """ML位置取りキャッシュ（騎手/調教師）を読み込み"""

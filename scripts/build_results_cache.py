@@ -30,6 +30,7 @@
 from __future__ import annotations
 import argparse
 import os
+import re
 import sys
 import time
 import traceback
@@ -61,14 +62,23 @@ DEFAULT_YEARS = ["all", "2026", "2025", "2024"]
 # ファイル命名規則
 # ============================================================
 
+# reviewer HIGH #2 対応: year パラメータは許可リストで検証
+# （Windows バックスラッシュ経由の path traversal 対策）
+_VALID_YEAR_RE = re.compile(r"^(all|\d{4})$")
+
+
 def cache_path(kind: str, year: str) -> str:
     """キャッシュ JSON のパスを返す。
 
     kind: "summary" / "sanrentan_summary" / "detailed" / "trend"
     year: "all" / "2026" / ...
     """
-    safe_year = year.replace("/", "_")
-    return os.path.join(RESULTS_CACHE_DIR, f"{kind}_{safe_year}.json")
+    # 許可リスト検証。path traversal を根本的に防ぐ
+    if not _VALID_YEAR_RE.fullmatch(year):
+        raise ValueError(f"不正な year: {year!r} (許可: all/YYYY)")
+    if kind not in ("summary", "sanrentan_summary", "detailed", "trend"):
+        raise ValueError(f"不正な kind: {kind!r}")
+    return os.path.join(RESULTS_CACHE_DIR, f"{kind}_{year}.json")
 
 
 def manifest_path() -> str:
@@ -167,7 +177,11 @@ def _shape_trend(agg: dict) -> dict:
 def build_year_cache(year: str, force: bool = False) -> dict:
     """指定 year の 4 種 JSON を生成する。
 
-    戻り値: {"year": year, "ok": bool, "elapsed": {...}, "error": str | None}
+    戻り値: {"year": year, "ok": bool, "elapsed": {...}, "error": str | None, "skipped": bool}
+
+    v6.1.18 reviewer HIGH #1 対応:
+      force=False (既定) のとき、既存キャッシュが 1 時間以内なら再生成スキップ
+      force=True なら常に再生成
     """
     # 遅延 import（並列 worker で 1 回ずつ）
     from src.results_tracker import (
@@ -176,7 +190,25 @@ def build_year_cache(year: str, force: bool = False) -> dict:
     )
     from src.analytics.sanrentan_summary import get_sanrentan_summary
 
-    stats = {"year": year, "ok": False, "elapsed": {}, "error": None}
+    stats = {"year": year, "ok": False, "elapsed": {}, "error": None, "skipped": False}
+
+    # force=False の場合は新鮮なキャッシュをスキップ
+    if not force:
+        kinds = ("summary", "sanrentan_summary", "detailed", "trend")
+        try:
+            all_exist = all(os.path.exists(cache_path(k, year)) for k in kinds)
+            if all_exist:
+                newest = max(os.path.getmtime(cache_path(k, year)) for k in kinds)
+                age = time.time() - newest
+                if age < 3600:  # 1時間以内なら十分新鮮
+                    stats["ok"] = True
+                    stats["skipped"] = True
+                    stats["elapsed"]["skipped_age_sec"] = round(age, 1)
+                    return stats
+        except Exception:
+            # 検査中エラーでも続行して再生成（保険）
+            pass
+
     try:
         # 1) aggregate_all（trend 用に by_date 付きでまず取得し、summary は除去版を書く）
         t0 = time.time()
