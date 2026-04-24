@@ -45,12 +45,23 @@ if "%DOW%"=="Sunday" (
 REM ── 4. 月初CSVエクスポート更新 ─────────────────────────────
 REM  毎月1日のみ全期間CSVを再生成
 if "%date:~8,2%"=="01" (
-    echo [4/4] 月初CSVエクスポート更新...
+    echo [4/5] 月初CSVエクスポート更新...
     python scripts\export_results_csv.py >> "%LOG%" 2>&1
     python scripts\export_stats_csv.py   >> "%LOG%" 2>&1
     echo  [OK] CSV更新完了
 ) else (
-    echo [4/4] CSVエクスポート: スキップ (月初のみ実行)
+    echo [4/5] CSVエクスポート: スキップ (月初のみ実行)
+)
+
+REM ── 5. 成績ページ用サマリJSONキャッシュ再生成 ─────────────
+REM  /api/results/{summary,sanrentan_summary,detailed,trend} の応答を
+REM  234秒→<100ms に短縮するためのキャッシュ事前生成
+echo [5/5] 成績サマリキャッシュ再生成...
+python scripts\build_results_cache.py --workers 4 >> "%LOG%" 2>&1
+if errorlevel 1 (
+    echo  [WARN] サマリキャッシュ生成でエラーが発生しました
+) else (
+    echo  [OK] サマリキャッシュ生成完了
 )
 
 echo.

@@ -16,6 +16,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from flask import Flask, Response, jsonify, redirect, render_template, request, send_from_directory
 
 from src.log import get_logger
+from src.utils.atomic_json import atomic_write_json
 
 logger = get_logger(__name__)
 
@@ -79,6 +80,15 @@ _predictions_cache: dict = {}
 _home_info_cache: dict = {}
 _CACHE_TTL = 1800  # 秒（予想データ: 30分、ただしpred.json更新時は自動無効化）
 _WEATHER_CACHE_TTL = 1800  # 秒（天気データ: 30分）
+
+# ── 案A (2026-04-23): Home API 自動フェッチ用 state ──
+# /api/home/today_stats 呼び出し時に、発走+10分経過かつ results.json 未登録のレースを
+# バックグラウンドで自動フェッチする。以下はそのための重複防止・クールダウン state。
+_auto_fetch_lock = threading.Lock()
+_auto_fetch_busy_dates: set = set()         # 現在 fetch 処理中の日付
+_auto_fetch_cooldown: dict = {}             # race_id → last_attempt_timestamp
+_AUTO_FETCH_COOLDOWN_SEC = 300              # 同一 race_id の再試行は 5 分に 1 回まで
+_AUTO_FETCH_MAX_PER_CALL = 5                # 1 API 呼び出しで最大 5R まで fetch
 
 # 競馬場コード → 緯度・経度（天気API用）
 VENUE_COORDS = {
@@ -691,10 +701,16 @@ def _scan_today_predictions(date_str: str) -> dict:
                 _pred_conf[key] = pr.get("confidence", "")
                 _horses = pr.get("horses", [])
                 # 取消馬処理 + 印再割り当て（個別ページと同じロジック）
+                # マスター指示 2026-04-23: 実オッズ未取得だが ML 予測値を持つ馬を
+                #   取消扱いにしていたバグを修正。predicted_tansho_odds か win_prob が
+                #   有効な馬は取消とみなさない（=部分オッズ取得の穴埋め失敗にすぎない）。
                 _has_any_odds = any(h.get("odds") is not None for h in _horses)
                 if _has_any_odds:
                     for _hd in _horses:
-                        if _hd.get("odds") is None and _hd.get("popularity") is None and not _hd.get("is_scratched"):
+                        _has_ml = (_hd.get("predicted_tansho_odds") is not None
+                                    or (_hd.get("win_prob") or 0) > 0)
+                        if (_hd.get("odds") is None and _hd.get("popularity") is None
+                                and not _hd.get("is_scratched") and not _has_ml):
                             _hd["is_scratched"] = True
                             _hd["win_prob"] = 0.0
                             _hd["place2_prob"] = 0.0
@@ -1385,7 +1401,11 @@ def create_app():
                     if _has_any_odds:
                         _scratched_changed = False
                         for _hd in _race_horses:
-                            if _hd.get("odds") is None and _hd.get("popularity") is None and not _hd.get("is_scratched"):
+                            # マスター指示 2026-04-23: ML予測がある馬は「取消」扱いしない
+                            _has_ml = (_hd.get("predicted_tansho_odds") is not None
+                                        or (_hd.get("win_prob") or 0) > 0)
+                            if (_hd.get("odds") is None and _hd.get("popularity") is None
+                                    and not _hd.get("is_scratched") and not _has_ml):
                                 _hd["is_scratched"] = True
                                 _hd["win_prob"] = 0.0
                                 _hd["place2_prob"] = 0.0
@@ -1427,10 +1447,12 @@ def create_app():
                         except Exception:
                             pass
 
-                    # フォーメーション買い目は無効化 — 既存データも除去
-                    race["formation_tickets"] = []
-                    race["formation_columns"] = {}
-                    race["tickets"] = []
+                    # 買い目指南 Phase 1: formation_tickets/formation_columns を復活
+                    # 以前は下記3行で強制的に空にしていたが、◎◉心中・無印列制約を
+                    # 導入したのでエンジン出力（pred.json）をそのまま UI に流す。
+                    # race["formation_tickets"] = []  # 廃止
+                    # race["formation_columns"] = {}  # 廃止
+                    # race["tickets"] = []            # 廃止
 
                     # チケットにmark情報を補完（既存JSONに未保存の場合）
                     _mark_by_no = {h.get("horse_no"): h.get("mark", "") for h in race.get("horses", [])}
@@ -1503,10 +1525,10 @@ def create_app():
 
                     if patched:
                         try:
-                            with open(pred_file, "w", encoding="utf-8") as wf:
-                                json.dump(data, wf, ensure_ascii=False, indent=2)
-                        except Exception:
-                            pass
+                            # 原子書き込み + プロセス間ロック（並行書き込みで JSON が破損するのを防止）
+                            atomic_write_json(pred_file, data)
+                        except Exception as _e:
+                            logger.warning("pred.json 印パッチ書き戻し失敗: %s", _e)
                     return jsonify({"ok": True, "race": race})
             # pred.json にレースが見つからない場合、HTMLファイルにフォールバック
             html_file = os.path.join(OUTPUT_DIR, f"{date_key}_{venue}{race_no}R.html")
@@ -1529,8 +1551,46 @@ def create_app():
         date = data.get("date", "")
         venue = data.get("venue", "")
         race_no = data.get("race_no", 0)
+        # マスター指示 2026-04-23: auto=true の場合は fire-and-forget モード
+        # （フロント側が race 詳細タブを開いた瞬間に裏で叩く用途。クールダウン付き。）
+        _auto_mode = bool(data.get("auto"))
         if not race_id:
             return jsonify(ok=False, error="race_id が必要です")
+        # auto モード: cooldown チェック → 別スレッドで直接スクレイプ → 即レスポンス
+        # マスター指示 2026-04-23 (python-reviewer 指摘):
+        # Flask test_client はスレッドローカル依存で別スレッドから呼ぶと危険
+        # → 直接スクレイプ関数を呼ぶ fire-and-forget に変更
+        if _auto_mode:
+            now_ts = time.time()
+            _cd_key = f"odds:{race_id}"
+            with _auto_fetch_lock:
+                last_attempt = _auto_fetch_cooldown.get(_cd_key, 0)
+                if now_ts - last_attempt < _AUTO_FETCH_COOLDOWN_SEC:
+                    return jsonify(ok=True, auto=True, skipped="cooldown",
+                                   remaining=int(_AUTO_FETCH_COOLDOWN_SEC - (now_ts - last_attempt)))
+                _auto_fetch_cooldown[_cd_key] = now_ts
+            # マスター指示 2026-04-23 (修正版): 単に get_tansho だけでは
+            # pred.json のチケットオッズが更新されない（実オッズ反映されない）。
+            # 実装済の同期 POST (/api/race_odds) を localhost HTTP で自己呼出しし、
+            # 完全な更新パイプラインを走らせる。
+            def _bg_worker(payload: dict):
+                try:
+                    import requests as _req
+                    _p = dict(payload)
+                    _p.pop("auto", None)   # 無限ループ防止
+                    port = os.environ.get("KEIBA_PORT", "5051")
+                    resp = _req.post(
+                        f"http://127.0.0.1:{port}/api/race_odds",
+                        json=_p, timeout=60,
+                    )
+                    if resp.status_code == 200:
+                        logger.info("auto-odds bg fetch 完了: %s (%dB)", _p.get("race_id"), len(resp.content))
+                    else:
+                        logger.warning("auto-odds bg fetch HTTP %d: %s", resp.status_code, _p.get("race_id"))
+                except Exception as _e:
+                    logger.warning("auto odds fetch bg worker error: %s", _e)
+            threading.Thread(target=_bg_worker, args=(dict(data),), daemon=True).start()
+            return jsonify(ok=True, auto=True, started=True)
         try:
             result = {}
             source = ""
@@ -1681,27 +1741,152 @@ def create_app():
                                     logger.warning("確率再計算に失敗: %s", _e)
 
                                 # 三連複チケットのオッズを実オッズで更新
+                                # マスター指摘 2026-04-23: tickets_by_mode も走査対象に追加
                                 if sanrenpuku_odds_map:
-                                    for t in race.get("tickets", []):
-                                        if t.get("type") != "三連複":
-                                            continue
-                                        combo = t.get("combo", [])
-                                        if len(combo) == 3:
-                                            key = tuple(sorted(int(x) for x in combo))
-                                            if key in sanrenpuku_odds_map:
-                                                actual = sanrenpuku_odds_map[key]
-                                                t["odds"] = round(actual, 1)
-                                                prob = t.get("prob", 0)
-                                                if prob > 0:
-                                                    t["ev"] = round(prob * actual * 100, 1)
+                                    _san_collections = [race.get("tickets", [])]
+                                    _tbm2 = race.get("tickets_by_mode") or {}
+                                    for _mk in ("fixed", "accuracy", "balanced", "recovery"):
+                                        _tl = _tbm2.get(_mk)
+                                        if isinstance(_tl, list):
+                                            _san_collections.append(_tl)
+                                    for _ts in _san_collections:
+                                        for t in _ts:
+                                            if t.get("type") != "三連複":
+                                                continue
+                                            combo = t.get("combo", [])
+                                            if len(combo) == 3:
+                                                key = tuple(sorted(int(x) for x in combo))
+                                                if key in sanrenpuku_odds_map:
+                                                    actual = sanrenpuku_odds_map[key]
+                                                    t["odds"] = round(actual, 1)
+                                                    t["odds_source"] = "real"
+                                                    prob = t.get("prob", 0)
+                                                    if prob > 0:
+                                                        t["ev"] = round(prob * actual * 100, 1)
                                     logger.info("三連複チケットを実オッズで更新: %s (%d組中)", race_id, len(sanrenpuku_odds_map))
+
+                                # ── マスター指示 2026-04-22 / 2026-04-23:
+                                # 馬連・馬単・ワイド・三連単 も公式実オッズで更新
+                                # （netkeiba に同等メソッドが無いため公式のみ。
+                                #  公式失敗時は WARNING でログ出力し、マスターに気付かせる） ──
+                                _umaren_odds = {}
+                                _umatan_odds = {}
+                                _wide_odds = {}
+                                _sanrentan_odds = {}
+                                try:
+                                    _off2 = _get_official_odds_scraper()
+                                    if _off2:
+                                        try:
+                                            _umaren_odds = _off2.get_umaren_odds(race_id) or {}
+                                            if not _umaren_odds:
+                                                logger.warning(
+                                                    "馬連実オッズ 公式取得 0組: %s（フォールバック対象）",
+                                                    race_id,
+                                                )
+                                        except Exception as _e:
+                                            logger.warning("馬連実オッズ公式失敗: %s (%s)", race_id, _e)
+                                        try:
+                                            _umatan_odds = _off2.get_umatan_odds(race_id) or {}
+                                            if not _umatan_odds:
+                                                logger.warning(
+                                                    "馬単実オッズ 公式取得 0組: %s（フォールバック対象）",
+                                                    race_id,
+                                                )
+                                        except Exception as _e:
+                                            logger.warning("馬単実オッズ公式失敗: %s (%s)", race_id, _e)
+                                        try:
+                                            _wide_odds = _off2.get_wide_odds(race_id) or {} if hasattr(_off2, "get_wide_odds") else {}
+                                            if not _wide_odds:
+                                                logger.info(
+                                                    "ワイド実オッズ 未取得: %s（メソッド未実装の可能性）",
+                                                    race_id,
+                                                )
+                                        except Exception as _e:
+                                            logger.warning("ワイド実オッズ公式失敗: %s (%s)", race_id, _e)
+                                        try:
+                                            _sanrentan_odds = _off2.get_sanrentan_odds(race_id) or {}
+                                            if not _sanrentan_odds:
+                                                logger.warning(
+                                                    "三連単実オッズ 公式取得 0組: %s（フォールバック対象）",
+                                                    race_id,
+                                                )
+                                        except Exception as _e:
+                                            logger.warning("三連単実オッズ公式失敗: %s (%s)", race_id, _e)
+                                    else:
+                                        logger.warning(
+                                            "公式スクレイパ取得失敗 → 全券種実オッズ更新不可: %s",
+                                            race_id,
+                                        )
+                                except Exception as _e:
+                                    logger.warning("実オッズ一括取得失敗: %s (%s)", race_id, _e)
+
+                                # 実 horse.odds を辞書化（単勝再計算用）
+                                _horse_odds_map = {
+                                    int(h.get("horse_no", 0)): (h.get("odds") or 0)
+                                    for h in race.get("horses", [])
+                                    if h.get("horse_no") is not None
+                                }
+
+                                # 全チケットを走査してオッズ更新
+                                # マスター指摘 2026-04-23: tickets_by_mode.{fixed,accuracy,balanced,recovery} も
+                                # 更新対象に含める（旧実装では race.tickets / formation_tickets のみで tickets_by_mode を漏らしていた）
+                                _updated_counts = {"単勝": 0, "馬連": 0, "馬単": 0, "ワイド": 0, "三連単": 0}
+                                _ticket_collections = [
+                                    race.get("tickets", []),
+                                    race.get("formation_tickets", []),
+                                ]
+                                _tbm = race.get("tickets_by_mode") or {}
+                                for _mode_key in ("fixed", "accuracy", "balanced", "recovery"):
+                                    _mode_tickets = _tbm.get(_mode_key)
+                                    if isinstance(_mode_tickets, list):
+                                        _ticket_collections.append(_mode_tickets)
+                                for _ts in _ticket_collections:
+                                    for t in _ts:
+                                        _tt = t.get("type", "")
+                                        _combo = t.get("combo", [])
+                                        _new_odds = None
+                                        _src = None
+                                        if _tt == "単勝" and len(_combo) == 1:
+                                            _o = _horse_odds_map.get(int(_combo[0]))
+                                            if _o and _o > 0:
+                                                _new_odds = float(_o)
+                                                _src = "real"
+                                        elif _tt == "馬連" and len(_combo) == 2:
+                                            _k = tuple(sorted(int(x) for x in _combo))
+                                            if _k in _umaren_odds:
+                                                _new_odds = float(_umaren_odds[_k])
+                                                _src = "real"
+                                        elif _tt == "馬単" and len(_combo) == 2:
+                                            _k = (int(_combo[0]), int(_combo[1]))
+                                            if _k in _umatan_odds:
+                                                _new_odds = float(_umatan_odds[_k])
+                                                _src = "real"
+                                        elif _tt == "ワイド" and len(_combo) == 2:
+                                            _k = tuple(sorted(int(x) for x in _combo))
+                                            if _k in _wide_odds:
+                                                _new_odds = float(_wide_odds[_k])
+                                                _src = "real"
+                                        elif _tt == "三連単" and len(_combo) == 3:
+                                            _k = tuple(int(x) for x in _combo)  # 順序固定
+                                            if _k in _sanrentan_odds:
+                                                _new_odds = float(_sanrentan_odds[_k])
+                                                _src = "real"
+                                        if _new_odds is not None and _new_odds > 0:
+                                            t["odds"] = round(_new_odds, 1)
+                                            t["odds_source"] = _src
+                                            _prob = t.get("prob", 0)
+                                            if _prob > 0:
+                                                t["ev"] = round(_prob * _new_odds * 100, 1)
+                                            _updated_counts[_tt] = _updated_counts.get(_tt, 0) + 1
+                                if any(_updated_counts.values()):
+                                    logger.info("チケット実オッズ更新: %s %s", race_id, _updated_counts)
 
                                 break
                         # 個別レース更新でも pred レベル odds_updated_at を更新
                         # （UI 右上「最終オッズ HH:MM」表示がボタン押下のたびに更新されるようにする）
                         pred["odds_updated_at"] = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
-                        with open(pred_file, "w", encoding="utf-8") as f:
-                            json.dump(pred, f, ensure_ascii=False, indent=2)
+                        # 原子書き込み + プロセス間ロック（オッズ更新の並行書き込みでも JSON が壊れないように）
+                        atomic_write_json(pred_file, pred)
                     except Exception as e:
                         logger.warning("pred.json update failed: %s", e)
 
@@ -2621,6 +2806,72 @@ def create_app():
             logger.warning("predictions unfetched dates failed: %s", e, exc_info=True)
             return jsonify(dates=[], error=str(e))
 
+    def _auto_fetch_single_race(date: str, race_id: str) -> None:
+        """単一レースの結果を発走+10分経過後に裏で取得するヘルパー。
+
+        マスター指示 2026-04-23: レース結果タブ / オッズタブを開いた時、
+        既に発走+10分経過しているのに results.json に未登録なら自動取得。
+        fire-and-forget、クールダウン付き（_auto_fetch_lock で TOCTOU 保護）。
+        """
+        # クールダウン（TOCTOU 保護のため Lock 内で check-then-set）
+        now_ts = time.time()
+        with _auto_fetch_lock:
+            last_attempt = _auto_fetch_cooldown.get(race_id, 0)
+            if now_ts - last_attempt < _AUTO_FETCH_COOLDOWN_SEC:
+                return
+            _auto_fetch_cooldown[race_id] = now_ts
+
+        # pred.json から post_time を取得
+        try:
+            from src.results_tracker import load_prediction, fetch_single_race_result
+            pred = load_prediction(date)
+            if not pred:
+                return
+            target_race = None
+            for r in pred.get("races", []):
+                if str(r.get("race_id", "")) == race_id:
+                    target_race = r
+                    break
+            if not target_race:
+                return
+            post_time = target_race.get("post_time", "") or ""
+            if not post_time:
+                return
+            try:
+                post_dt = datetime.strptime(f"{date} {post_time}", "%Y-%m-%d %H:%M")
+            except Exception:
+                return
+            if datetime.now() < post_dt + timedelta(minutes=10):
+                return  # 発走+10分まだ
+            # 既に取得済みチェック
+            date_key = date.replace("-", "")
+            rfp = os.path.join(PROJECT_ROOT, "data", "results", f"{date_key}_results.json")
+            if os.path.isfile(rfp):
+                try:
+                    with open(rfp, "r", encoding="utf-8") as f:
+                        _rdata = json.load(f)
+                    _entry = _rdata.get(race_id) or {}
+                    if _entry.get("order"):
+                        return  # 取得済み
+                except Exception as _e:
+                    logger.debug("auto-fetch 既取得判定で読込失敗 %s: %s", rfp, _e)
+            # 取得実行
+            from src.scraper.netkeiba import NetkeibaClient
+            client = NetkeibaClient(no_cache=True)
+            official = _get_official_odds_scraper()
+            logger.info("auto-fetch(single): %s %s 開始", date, race_id)
+            entry = fetch_single_race_result(date, race_id, client, official_scraper=official)
+            if entry and entry.get("order"):
+                logger.info("auto-fetch(single): %s %s 取得成功", date, race_id)
+                # 集計キャッシュ無効化（全体集計が古くならないように）
+                try:
+                    from src.results_tracker import invalidate_aggregate_cache
+                    invalidate_aggregate_cache()
+                except Exception:
+                    pass
+        except Exception as e:
+            logger.warning("auto-fetch(single) 失敗 %s/%s: %s", date, race_id, e)
+
     @app.route("/api/results/race")
     def api_results_race():
         """個別レースの結果（着順・払戻）を返す"""
@@ -2634,6 +2885,17 @@ def create_app():
             return jsonify(ok=False, error="invalid date format")
         if not re.fullmatch(r"[A-Za-z0-9_]{6,20}", race_id):
             return jsonify(ok=False, error="invalid race_id format")
+
+        # マスター指示 2026-04-23: 発走+10分経過かつ未取得なら裏で自動 fetch
+        # （レース結果タブを開いた瞬間に取得、次回 polling で反映）
+        _iso_date = f"{_date_norm[:4]}-{_date_norm[4:6]}-{_date_norm[6:]}"
+        if _iso_date == datetime.now().strftime("%Y-%m-%d"):
+            threading.Thread(
+                target=_auto_fetch_single_race,
+                args=(_iso_date, race_id),
+                daemon=True,
+            ).start()
+
         try:
             import pathlib
             results_path = pathlib.Path("data/results") / f"{_date_norm}_results.json"
@@ -2661,9 +2923,13 @@ def create_app():
                                 "predicted_rank": h.get("predicted_rank"),
                                 "win_prob": h.get("win_prob"),
                                 "gate_no": h.get("gate_no"),
+                                # 総合指数（UI表示用、印の後に数値）
+                                "composite": h.get("composite"),
+                                # 人気がpred側にあれば初期値として使う（race_log優先）
+                                "popularity": h.get("popularity"),
                             }
                         break
-            # race_log から通過順・走破タイム・後3F・着差を補完（results.jsonに不足分）
+            # race_log から通過順・走破タイム・後3F・着差・人気・オッズを補完（results.jsonに不足分）
             racelog_map = {}
             try:
                 import sqlite3 as _sql
@@ -2672,13 +2938,56 @@ def create_app():
                     _c.row_factory = _sql.Row
                     for _r in _c.execute(
                         "SELECT horse_no, positions_corners, finish_time_sec, last_3f_sec, "
-                        "margin_ahead, margin_behind, position_4c "
+                        "margin_ahead, margin_behind, position_4c, popularity, win_odds "
                         "FROM race_log WHERE race_id=?",
                         (race_id,)
                     ).fetchall():
                         racelog_map[_r["horse_no"]] = dict(_r)
             except Exception:
                 logger.debug("race_log 補完失敗 race_id=%s", race_id, exc_info=True)
+
+            # 結果取得スクレイパーのバグ対策（2026-04-22 JRA/NAR 両方で判明）:
+            # JRA _parse_jra_result_order / NAR result parser の右→左スキャンが
+            # 「単勝オッズ」列を飛ばして「人気」列を odds に代入してしまう場合がある。
+            # → 8割以上 odds==popularity なら全 odds を None 化して信頼しない。
+            # → 払戻金（単勝）から着順1位の実オッズを逆算して補完する。
+            _bug_detected = False
+            if racelog_map:
+                _same_count = sum(
+                    1 for _rl in racelog_map.values()
+                    if _rl.get("win_odds") is not None
+                    and _rl.get("popularity") is not None
+                    and float(_rl["win_odds"]) == float(_rl["popularity"])
+                )
+                if _same_count >= len(racelog_map) * 0.8:
+                    _bug_detected = True
+                    for _rl in racelog_map.values():
+                        _rl["win_odds"] = None
+
+            # 払戻金（単勝）から 1位馬の実オッズを逆算
+            _winner_odds_from_payout = None
+            if _bug_detected:
+                try:
+                    _payouts = race_result.get("payouts", {}) or {}
+                    _tansho = _payouts.get("単勝")
+                    if isinstance(_tansho, dict):
+                        _tansho_list = [_tansho]
+                    elif isinstance(_tansho, list):
+                        _tansho_list = _tansho
+                    else:
+                        _tansho_list = []
+                    if _tansho_list:
+                        _p = _tansho_list[0]
+                        _win_combo = str(_p.get("combo", ""))
+                        _win_payout = int(_p.get("payout", 0) or 0)
+                        # 100円 → payout/100 倍
+                        if _win_payout > 0 and _win_combo.isdigit():
+                            _winner_odds_from_payout = (
+                                int(_win_combo),
+                                round(_win_payout / 100.0, 1),
+                            )
+                except Exception:
+                    logger.debug("単勝払戻 → オッズ逆算失敗 race_id=%s", race_id, exc_info=True)
 
             # 着順データに馬名・通過順等をマージ
             order = []
@@ -2687,16 +2996,20 @@ def create_app():
                 hno = entry.get("horse_no")
                 if hno in horse_map:
                     entry.update(horse_map[hno])
-                # race_log から不足分を補完（既存値があれば優先）
+                # race_log から不足分を補完（既存値があれば優先 / corners は短い場合は上書き）
                 rl = racelog_map.get(hno)
                 if rl:
-                    if not entry.get("corners"):
+                    # corners: results.json に 1要素しかない場合がある → race_log の完全版で上書き
+                    _existing_corners = entry.get("corners") or []
+                    if len(_existing_corners) <= 1:
                         try:
                             import json as _j
                             _pc = rl.get("positions_corners") or ""
                             if _pc and _pc.startswith("["):
-                                entry["corners"] = _j.loads(_pc)
-                            elif rl.get("position_4c"):
+                                _parsed = _j.loads(_pc)
+                                if isinstance(_parsed, list) and len(_parsed) > len(_existing_corners):
+                                    entry["corners"] = _parsed
+                            elif rl.get("position_4c") and not _existing_corners:
                                 entry["corners"] = [rl["position_4c"]]
                         except Exception:
                             pass
@@ -2707,8 +3020,34 @@ def create_app():
                         m = int(_sec // 60)
                         s = _sec - m * 60
                         entry["time"] = f"{m}:{s:04.1f}" if m > 0 else f"{s:.1f}"
+                    # 人気・単勝オッズ・着差 (race_log に持っていれば使う)
+                    if entry.get("popularity") in (None, 0) and rl.get("popularity"):
+                        entry["popularity"] = rl["popularity"]
+                    # オッズバグ（popularity 値が odds に入っていた）→ 全て None に
+                    # ただし 1位馬は払戻金から逆算した実オッズを入れる
+                    if _bug_detected:
+                        if (_winner_odds_from_payout is not None
+                                and entry.get("horse_no") == _winner_odds_from_payout[0]):
+                            entry["odds"] = _winner_odds_from_payout[1]
+                        else:
+                            entry["odds"] = None
+                    elif entry.get("odds") in (None, 0) and rl.get("win_odds") is not None:
+                        entry["odds"] = rl["win_odds"]
+                    if not entry.get("margin") and rl.get("margin_ahead") is not None:
+                        _ma = rl["margin_ahead"]
+                        # 1着は 0.0 → "—" 表示、それ以外は "+X.X" 形式
+                        if _ma == 0:
+                            entry["margin"] = ""
+                        else:
+                            entry["margin"] = f"+{_ma:.1f}" if _ma > 0 else f"{_ma:.1f}"
+                # 総合指数（composite）を horse_map 経由で補完 / horse_map 側を拡張
                 order.append(entry)
-            return jsonify(ok=True, found=True, order=order, payouts=race_result.get("payouts", {}))
+            return jsonify(
+                ok=True, found=True, order=order,
+                payouts=race_result.get("payouts", {}),
+                # 応急パッチで odds を埋めた場合、データが未完全であることを通知
+                data_incomplete=bool(_bug_detected),
+            )
         except Exception as e:
             logger.warning("race result fetch failed: %s", e, exc_info=True)
             return jsonify(ok=False, error=str(e))
@@ -2776,108 +3115,241 @@ def create_app():
         try:
             from src.results_tracker import invalidate_aggregate_cache
             invalidate_aggregate_cache()
-            return jsonify(status="ok", message="集計キャッシュクリア完了")
+            # 事前生成サマリキャッシュ（data/cache/results/）もクリア
+            cache_dir = os.path.join(PROJECT_ROOT, "data", "cache", "results")
+            removed = 0
+            if os.path.isdir(cache_dir):
+                for f in os.listdir(cache_dir):
+                    if f.endswith(".json"):
+                        try:
+                            os.remove(os.path.join(cache_dir, f))
+                            removed += 1
+                        except OSError:
+                            pass
+            return jsonify(status="ok",
+                           message=f"集計キャッシュクリア完了 (results_cache削除={removed}件)")
         except Exception as e:
             return jsonify(error=str(e)), 500
+
+    # ============================================================
+    # 成績ページ用 事前計算キャッシュ (scripts/build_results_cache.py)
+    #   - data/cache/results/{kind}_{year}.json を読むだけなら <50ms
+    #   - 古い / 未存在の場合は裏で lazy 再生成（_results_cache_lock で二重実行防止）
+    # ============================================================
+    _RESULTS_CACHE_DIR = os.path.join(PROJECT_ROOT, "data", "cache", "results")
+    _RESULTS_CACHE_MAX_AGE_SEC = 6 * 3600  # 6時間以上古ければ lazy 再生成
+    _results_cache_lock = threading.Lock()
+    _results_cache_building: dict = {}  # year → True: 生成中フラグ
+    _results_cache_stats = {"hits": 0, "misses": 0, "stale": 0, "lazy_builds": 0}
+
+    def _results_cache_path(kind: str, year: str) -> str:
+        safe_year = year.replace("/", "_")
+        return os.path.join(_RESULTS_CACHE_DIR, f"{kind}_{safe_year}.json")
+
+    def _results_cache_load(kind: str, year: str) -> tuple[dict | None, bool]:
+        """キャッシュ JSON を読み込む。(data, is_stale) を返す。
+
+        - ファイルなし → (None, True)
+        - 古い（_RESULTS_CACHE_MAX_AGE_SEC 超）→ (data, True)
+        - 正常 → (data, False)
+        """
+        p = _results_cache_path(kind, year)
+        if not os.path.exists(p):
+            return None, True
+        try:
+            mt = os.path.getmtime(p)
+            is_stale = (time.time() - mt) > _RESULTS_CACHE_MAX_AGE_SEC
+            with open(p, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            return data, is_stale
+        except Exception as e:
+            logger.debug("results cache 読み込み失敗 %s/%s: %s", kind, year, e)
+            return None, True
+
+    def _results_cache_build_bg(year: str) -> None:
+        """バックグラウンドで特定 year のキャッシュを再生成する。
+
+        - 多重実行は _results_cache_building で抑止
+        - 失敗しても握りつぶし（フォールバックは呼び出し元が持つ）
+        """
+        with _results_cache_lock:
+            if _results_cache_building.get(year):
+                return
+            _results_cache_building[year] = True
+
+        def _run():
+            try:
+                _results_cache_stats["lazy_builds"] += 1
+                from scripts.build_results_cache import build_year_cache
+                logger.info("results cache lazy build start: year=%s", year)
+                t0 = time.time()
+                r = build_year_cache(year, force=True)
+                logger.info("results cache lazy build done: year=%s ok=%s elapsed=%.1fs",
+                            year, r.get("ok"), time.time() - t0)
+            except Exception as e:
+                logger.warning("results cache lazy build failed year=%s: %s", year, e, exc_info=True)
+            finally:
+                with _results_cache_lock:
+                    _results_cache_building.pop(year, None)
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    def _serve_results_cache(kind: str, year: str, fallback):
+        """キャッシュを返すヘルパー。
+
+        - hit かつ新鮮 → キャッシュを返す
+        - hit かつ stale → キャッシュを返しつつ裏で lazy 再生成
+        - miss → fallback() を呼んで計算結果を返す + 裏で lazy 生成
+        """
+        data, stale = _results_cache_load(kind, year)
+        if data is not None:
+            if stale:
+                _results_cache_stats["stale"] += 1
+                _results_cache_build_bg(year)
+            else:
+                _results_cache_stats["hits"] += 1
+            return jsonify(data)
+        # miss → fallback（重い）
+        _results_cache_stats["misses"] += 1
+        _results_cache_build_bg(year)
+        return fallback()
+
+    # 公開（/api/health から参照）
+    app.config["_RESULTS_CACHE_STATS"] = _results_cache_stats
 
     @app.route("/api/results/summary")
     def api_results_summary():
         """通算成績を返す（year=all/2025/2026 等）。by_dateは巨大なため除外"""
-        try:
-            from src.results_tracker import aggregate_all
+        year = request.args.get("year", "all")
 
-            year = request.args.get("year", "all")
-            result = aggregate_all(year_filter=year)
-            # by_dateは2MB超→summaryには不要。trendで必要な列だけ別途返す
-            return jsonify({k: v for k, v in result.items() if k != "by_date"})
-        except Exception as e:
-            logger.warning("results summary failed: %s", e, exc_info=True)
-            return jsonify(error=str(e))
+        def _fallback():
+            try:
+                from src.results_tracker import aggregate_all
+
+                result = aggregate_all(year_filter=year)
+                # by_dateは2MB超→summaryには不要。trendで必要な列だけ別途返す
+                return jsonify({k: v for k, v in result.items() if k != "by_date"})
+            except Exception as e:
+                logger.warning("results summary failed: %s", e, exc_info=True)
+                return jsonify(error=str(e))
+
+        return _serve_results_cache("summary", year, _fallback)
+
+    @app.route("/api/results/sanrentan_summary")
+    def api_results_sanrentan_summary():
+        """三連単フォーメーション戦略（Phase 3）の成績を返す。
+        year=all/2024/2025/2026 の単位でキャッシュ（30分）。
+        """
+        year = request.args.get("year", "all")
+        force = request.args.get("force", "") in ("1", "true")
+
+        def _fallback():
+            try:
+                from src.analytics.sanrentan_summary import get_sanrentan_summary
+
+                result = get_sanrentan_summary(year_filter=year, force=force)
+                return jsonify(result)
+            except Exception as e:
+                logger.warning("results sanrentan_summary failed: %s", e, exc_info=True)
+                return jsonify(error=str(e))
+
+        # force 指定時はキャッシュを無視してフルパスで再計算
+        if force:
+            return _fallback()
+        return _serve_results_cache("sanrentan_summary", year, _fallback)
 
     @app.route("/api/results/detailed")
     def api_results_detailed():
         """詳細集計（競馬場別・コース別・距離区分別・高額配当TOP10）"""
-        try:
-            from src.results_tracker import aggregate_detailed
+        year = request.args.get("year", "all")
 
-            year = request.args.get("year", "all")
-            result = aggregate_detailed(year_filter=year)
-            # by_venueの各会場からフロントで未使用の巨大フィールドを除去（1.4MB→200KB）
-            _trim_keys = {"by_surface", "by_dist_zone"}
-            for cat_key in ("all", "jra", "nar"):
-                cat_data = result.get(cat_key)
-                if not isinstance(cat_data, dict):
-                    continue
-                by_venue = cat_data.get("by_venue")
-                if isinstance(by_venue, dict):
-                    for venue_data in by_venue.values():
-                        if isinstance(venue_data, dict):
-                            for tk in _trim_keys:
-                                venue_data.pop(tk, None)
-            return jsonify(result)
-        except Exception as e:
-            logger.warning("results detailed failed: %s", e, exc_info=True)
-            return jsonify(error=str(e))
+        def _fallback():
+            try:
+                from src.results_tracker import aggregate_detailed
+
+                result = aggregate_detailed(year_filter=year)
+                # by_venueの各会場からフロントで未使用の巨大フィールドを除去（1.4MB→200KB）
+                _trim_keys = {"by_surface", "by_dist_zone"}
+                for cat_key in ("all", "jra", "nar"):
+                    cat_data = result.get(cat_key)
+                    if not isinstance(cat_data, dict):
+                        continue
+                    by_venue = cat_data.get("by_venue")
+                    if isinstance(by_venue, dict):
+                        for venue_data in by_venue.values():
+                            if isinstance(venue_data, dict):
+                                for tk in _trim_keys:
+                                    venue_data.pop(tk, None)
+                return jsonify(result)
+            except Exception as e:
+                logger.warning("results detailed failed: %s", e, exc_info=True)
+                return jsonify(error=str(e))
+
+        return _serve_results_cache("detailed", year, _fallback)
 
     @app.route("/api/results/trend")
     def api_results_trend():
         """累積回収率推移・月別収支データ（Chart.js用）"""
-        try:
-            from src.results_tracker import aggregate_all
+        year = request.args.get("year", "all")
 
-            year = request.args.get("year", "all")
-            agg = aggregate_all(year_filter=year)
-            by_date = agg.get("by_date", [])
-            if not by_date:
-                return jsonify(labels=[], ticket_roi_cum=[], honmei_tansho_roi_cum=[],
-                               monthly_labels=[], monthly_profit=[])
+        def _fallback():
+            try:
+                from src.results_tracker import aggregate_all
 
-            # 日付昇順にソート
-            by_date_sorted = sorted(by_date, key=lambda r: r.get("date", ""))
+                agg = aggregate_all(year_filter=year)
+                by_date = agg.get("by_date", [])
+                if not by_date:
+                    return jsonify(labels=[], ticket_roi_cum=[], honmei_tansho_roi_cum=[],
+                                   monthly_labels=[], monthly_profit=[])
 
-            labels = []
-            ticket_roi_cum = []
-            honmei_roi_cum = []
-            cum_stake = 0
-            cum_ret = 0
-            cum_h_stake = 0
-            cum_h_ret = 0
+                # 日付昇順にソート
+                by_date_sorted = sorted(by_date, key=lambda r: r.get("date", ""))
 
-            monthly_profit_map: dict = {}
+                labels = []
+                ticket_roi_cum = []
+                honmei_roi_cum = []
+                cum_stake = 0
+                cum_ret = 0
+                cum_h_stake = 0
+                cum_h_ret = 0
 
-            for r in by_date_sorted:
-                d = r.get("date", "")
-                if not d:
-                    continue
-                labels.append(d)
-                cum_stake += r.get("total_stake", 0)
-                cum_ret   += r.get("total_return", 0)
-                cum_h_stake += r.get("honmei_tansho_stake", r.get("honmei_total", 0) * 100)
-                cum_h_ret   += r.get("honmei_tansho_ret", 0)
-                roi_c  = round(cum_ret   / cum_stake   * 100, 1) if cum_stake   > 0 else 0.0
-                h_roi_c = round(cum_h_ret / cum_h_stake * 100, 1) if cum_h_stake > 0 else 0.0
-                ticket_roi_cum.append(roi_c)
-                honmei_roi_cum.append(h_roi_c)
+                monthly_profit_map: dict = {}
 
-                # 月別収支 (YYYY-MM) — ◉◎単勝ベース
-                month_key = d[:7]
-                profit_day = r.get("honmei_tansho_ret", 0) - r.get("honmei_tansho_stake", r.get("honmei_total", 0) * 100)
-                monthly_profit_map[month_key] = monthly_profit_map.get(month_key, 0) + profit_day
+                for r in by_date_sorted:
+                    d = r.get("date", "")
+                    if not d:
+                        continue
+                    labels.append(d)
+                    cum_stake += r.get("total_stake", 0)
+                    cum_ret   += r.get("total_return", 0)
+                    cum_h_stake += r.get("honmei_tansho_stake", r.get("honmei_total", 0) * 100)
+                    cum_h_ret   += r.get("honmei_tansho_ret", 0)
+                    roi_c  = round(cum_ret   / cum_stake   * 100, 1) if cum_stake   > 0 else 0.0
+                    h_roi_c = round(cum_h_ret / cum_h_stake * 100, 1) if cum_h_stake > 0 else 0.0
+                    ticket_roi_cum.append(roi_c)
+                    honmei_roi_cum.append(h_roi_c)
 
-            monthly_sorted = sorted(monthly_profit_map.items())
-            monthly_labels = [m for m, _ in monthly_sorted]
-            monthly_profit = [v for _, v in monthly_sorted]
+                    # 月別収支 (YYYY-MM) — ◉◎単勝ベース
+                    month_key = d[:7]
+                    profit_day = r.get("honmei_tansho_ret", 0) - r.get("honmei_tansho_stake", r.get("honmei_total", 0) * 100)
+                    monthly_profit_map[month_key] = monthly_profit_map.get(month_key, 0) + profit_day
 
-            return jsonify(
-                labels=labels,
-                ticket_roi_cum=ticket_roi_cum,
-                honmei_tansho_roi_cum=honmei_roi_cum,
-                monthly_labels=monthly_labels,
-                monthly_profit=monthly_profit,
-            )
-        except Exception as e:
-            logger.warning("results trend failed: %s", e, exc_info=True)
-            return jsonify(error=str(e))
+                monthly_sorted = sorted(monthly_profit_map.items())
+                monthly_labels = [m for m, _ in monthly_sorted]
+                monthly_profit = [v for _, v in monthly_sorted]
+
+                return jsonify(
+                    labels=labels,
+                    ticket_roi_cum=ticket_roi_cum,
+                    honmei_tansho_roi_cum=honmei_roi_cum,
+                    monthly_labels=monthly_labels,
+                    monthly_profit=monthly_profit,
+                )
+            except Exception as e:
+                logger.warning("results trend failed: %s", e, exc_info=True)
+                return jsonify(error=str(e))
+
+        return _serve_results_cache("trend", year, _fallback)
 
     @app.route("/api/generate_simple_html", methods=["POST"])
     def api_generate_simple_html():
@@ -4579,6 +5051,241 @@ function dNavRefreshOdds(date){{
             logger.warning("high_confidence failed: %s", e)
             return jsonify(date=date, races=[], error=str(e))
 
+    def _auto_fetch_post_races(date: str) -> None:
+        """当日の発走+10分経過かつ未取得レースを バックグラウンドで順次 fetch。
+
+        マスター指示 2026-04-23 (案 A):
+          - Home 画面が 2分ごとに polling → この関数を fire-and-forget で起動
+          - 発走+10分経過 & results.json 未登録のレースを最大 5R 取得
+          - クールダウン 5分（同 race_id の多重試行防止）
+          - netkeiba レートリミット 1.5秒 を NetkeibaClient 内で尊守
+        """
+        # 多重起動防止
+        with _auto_fetch_lock:
+            if date in _auto_fetch_busy_dates:
+                return
+            _auto_fetch_busy_dates.add(date)
+        try:
+            # 当日のみ対象（過去日は nightly batch に任せる）
+            if date != datetime.now().strftime("%Y-%m-%d"):
+                return
+            from src.results_tracker import load_prediction
+            pred = load_prediction(date)
+            if not pred:
+                return
+            date_key = date.replace("-", "")
+            rfp = os.path.join(PROJECT_ROOT, "data", "results", f"{date_key}_results.json")
+            existing_rids: set = set()
+            if os.path.isfile(rfp):
+                try:
+                    with open(rfp, "r", encoding="utf-8") as f:
+                        _rdata = json.load(f)
+                    existing_rids = {
+                        rid for rid, entry in _rdata.items()
+                        if isinstance(entry, dict) and entry.get("order")
+                    }
+                except Exception:
+                    existing_rids = set()
+
+            now = datetime.now()
+            now_ts = time.time()
+            targets: list = []
+            for race in pred.get("races", []):
+                rid = str(race.get("race_id", ""))
+                if not rid or rid in existing_rids:
+                    continue
+                post_time = race.get("post_time", "") or ""
+                if not post_time:
+                    continue
+                try:
+                    post_dt = datetime.strptime(f"{date} {post_time}", "%Y-%m-%d %H:%M")
+                except Exception:
+                    continue
+                # 発走+10分経過していること
+                if now < post_dt + timedelta(minutes=10):
+                    continue
+                # クールダウン: 5分以内に試行済ならスキップ
+                last_attempt = _auto_fetch_cooldown.get(rid, 0)
+                if now_ts - last_attempt < _AUTO_FETCH_COOLDOWN_SEC:
+                    continue
+                targets.append(rid)
+                if len(targets) >= _AUTO_FETCH_MAX_PER_CALL:
+                    break
+
+            if not targets:
+                return
+
+            # 早発の post_time が古い順（= 古い race から）を優先
+            logger.info("auto-fetch: %s 対象 %d レース開始", date, len(targets))
+
+            from src.results_tracker import fetch_single_race_result
+            from src.scraper.netkeiba import NetkeibaClient
+            client = NetkeibaClient(no_cache=True)
+            official = _get_official_odds_scraper()
+
+            success_cnt = 0
+            for rid in targets:
+                # クールダウンを先に記録（失敗時も再試行を抑制）。Lock で TOCTOU 保護
+                with _auto_fetch_lock:
+                    _auto_fetch_cooldown[rid] = time.time()
+                try:
+                    entry = fetch_single_race_result(
+                        date, rid, client, official_scraper=official
+                    )
+                    if entry and entry.get("order"):
+                        success_cnt += 1
+                        logger.info("auto-fetch: %s 取得成功", rid)
+                except Exception as e:
+                    logger.warning("auto-fetch: %s 失敗 %s", rid, e)
+
+            if success_cnt > 0:
+                # 集計キャッシュを無効化（次回 today_stats 呼び出しで再計算）
+                try:
+                    from src.results_tracker import invalidate_aggregate_cache
+                    invalidate_aggregate_cache()
+                except Exception:
+                    pass
+                logger.info("auto-fetch: %s 完了 %d/%d 取得", date, success_cnt, len(targets))
+        except Exception as e:
+            logger.warning("auto-fetch 全体失敗: %s", e, exc_info=True)
+        finally:
+            with _auto_fetch_lock:
+                _auto_fetch_busy_dates.discard(date)
+
+    @app.route("/api/home/today_stats")
+    def api_home_today_stats():
+        """本日（指定日）の ◉◎単勝 リアルタイム成績 + 三連単F 集計を返す。
+
+        マスター指示 2026-04-22:
+          - ◉◎結果 X-X-X-X（勝率 / 連対率 / 単回収率）
+          - 三連単F: 予想R / 的中R / 投資 / 回収 / 回収率
+          - 各レースの 10分後自動更新
+
+        マスター指示 2026-04-23 (案 A):
+          - 本 API 呼び出し時、発走+10分経過かつ未取得レースを
+            バックグラウンド Thread で最大5件自動 fetch（fire-and-forget）
+          - 応答は即座に返す（次回 polling で新データ反映）
+        """
+        date = request.args.get("date", datetime.now().strftime("%Y-%m-%d"))
+
+        # ── 案 A: 発走+10分経過の未取得レースを裏で fetch（非同期） ──
+        threading.Thread(
+            target=_auto_fetch_post_races, args=(date,), daemon=True,
+        ).start()
+
+        try:
+            from src.results_tracker import compare_and_aggregate, load_prediction
+            # まず当日の集計（キャッシュ有効）
+            agg = compare_and_aggregate(date)
+            if not agg:
+                # 予想はあるが結果がまだ → 枠を返す
+                pred = load_prediction(date)
+                if not pred:
+                    return jsonify(date=date, found=False)
+                return jsonify(
+                    date=date, found=True, results_pending=True,
+                    total_races=len(pred.get("races", [])),
+                    honmei={"total": 0, "win": 0, "place2": 0, "place3": 0,
+                            "win_rate": 0, "place2_rate": 0, "place_rate": 0,
+                            "tansho_stake": 0, "tansho_ret": 0, "tansho_roi": 0},
+                    sanrentan={"played": 0, "hit": 0, "stake": 0, "payback": 0, "roi_pct": 0},
+                )
+
+            # ◉◎単勝ベース（honmei_* フィールドを直接利用）
+            h_total = agg.get("honmei_total", 0)
+            h_win = agg.get("honmei_win", 0)
+            h_p2 = agg.get("honmei_place2", 0)
+            h_p3 = agg.get("honmei_placed", 0)
+            h_stake = agg.get("honmei_tansho_stake", 0)
+            h_ret = agg.get("honmei_tansho_ret", 0)
+            honmei = {
+                "total": h_total,
+                "win": h_win,
+                "place2": h_p2 - h_win,  # 2着のみ
+                "place3": h_p3 - h_p2,   # 3着のみ
+                "out": h_total - h_p3,   # 着外
+                "win_count": h_win,
+                "place2_count": h_p2,
+                "place3_count": h_p3,
+                "win_rate":    round(h_win / h_total * 100, 1) if h_total else 0.0,
+                "place2_rate": round(h_p2  / h_total * 100, 1) if h_total else 0.0,
+                "place_rate":  round(h_p3  / h_total * 100, 1) if h_total else 0.0,
+                "tansho_stake": h_stake,
+                "tansho_ret":   h_ret,
+                "tansho_roi":   round(h_ret / h_stake * 100, 1) if h_stake > 0 else 0.0,
+            }
+
+            # 三連単Fリアルタイム計算（当日限定）
+            sanrentan = {"played": 0, "hit": 0, "stake": 0, "payback": 0, "roi_pct": 0.0}
+            try:
+                from scripts.monthly_backtest import build_sanrentan_tickets, get_payout
+                from src.calculator.betting import SANRENTAN_SKIP_CONFIDENCES
+                from config.settings import RESULTS_DIR as _RDIR
+                import os as _os
+                pred = load_prediction(date)
+                if pred:
+                    date_key = date.replace("-", "")
+                    res_fp = _os.path.join(_RDIR, f"{date_key}_results.json")
+                    if _os.path.isfile(res_fp):
+                        with open(res_fp, "r", encoding="utf-8") as _rf:
+                            results = json.load(_rf)
+                        for r in pred.get("races", []):
+                            rid = str(r.get("race_id", ""))
+                            conf = r.get("confidence", "C")
+                            n = r.get("field_count") or len(r.get("horses", []))
+                            is_jra = r.get("is_jra", True)
+                            horses = [h for h in r.get("horses", []) if not h.get("is_scratched")]
+                            if not horses:
+                                continue
+                            rdata = results.get(rid)
+                            if not rdata:
+                                continue
+                            payouts = rdata.get("payouts", {})
+                            if "三連単" not in payouts:
+                                continue
+                            if conf in SANRENTAN_SKIP_CONFIDENCES:
+                                continue
+                            try:
+                                tickets = build_sanrentan_tickets(horses, n, is_jra)
+                            except Exception:
+                                continue
+                            if not tickets:
+                                continue
+                            sanrentan["played"] += 1
+                            race_hit = False
+                            for t in tickets:
+                                stake = t["stake"]
+                                pp = get_payout(payouts, t)
+                                payback = pp * (stake // 100)
+                                sanrentan["stake"] += stake
+                                sanrentan["payback"] += payback
+                                if payback > 0:
+                                    race_hit = True
+                            if race_hit:
+                                sanrentan["hit"] += 1
+                        sanrentan["roi_pct"] = (
+                            round(sanrentan["payback"] / sanrentan["stake"] * 100, 1)
+                            if sanrentan["stake"] > 0 else 0.0
+                        )
+                        sanrentan["hit_rate_pct"] = (
+                            round(sanrentan["hit"] / sanrentan["played"] * 100, 1)
+                            if sanrentan["played"] > 0 else 0.0
+                        )
+                        sanrentan["balance"] = sanrentan["payback"] - sanrentan["stake"]
+            except Exception as _e:
+                logger.debug("today_stats sanrentan 計算失敗: %s", _e)
+
+            return jsonify(
+                date=date, found=True,
+                total_races=agg.get("total_races", 0),
+                honmei=honmei,
+                sanrentan=sanrentan,
+                last_updated=datetime.now().strftime("%H:%M"),
+            )
+        except Exception as e:
+            logger.warning("today_stats failed: %s", e, exc_info=True)
+            return jsonify(date=date, error=str(e), found=False)
+
     @app.route("/api/results/unmatched_dates_db")
     def api_results_unmatched_dates_db():
         """予想済みだが結果未取得の日付一覧（DB対応版、2024-01-01〜昨日）"""
@@ -5288,12 +5995,28 @@ function dNavRefreshOdds(date){{
             db_ok = True
         except Exception:
             pass
+        # 成績キャッシュ統計（build_results_cache.py 由来の hit/miss）
+        results_cache = app.config.get("_RESULTS_CACHE_STATS", {}) or {}
+        # manifest.json があれば last_built_at を露出
+        results_cache_manifest = None
+        try:
+            mf = os.path.join(PROJECT_ROOT, "data", "cache", "results", "manifest.json")
+            if os.path.exists(mf):
+                with open(mf, "r", encoding="utf-8") as f:
+                    mdata = json.load(f)
+                results_cache_manifest = {
+                    "generated_at": mdata.get("generated_at"),
+                    "years": mdata.get("years", []),
+                }
+        except Exception:
+            pass
         return jsonify({
             "status": "ok",
             "uptime_sec": round(time.time() - _start_time),
             "memory_mb": mem_mb,
             "db_connected": db_ok,
             "pid": os.getpid(),
+            "results_cache": {**results_cache, "manifest": results_cache_manifest},
         })
 
     return app
@@ -5330,9 +6053,61 @@ def run_server(port: int = None, open_browser: bool = False):
     run_simple(host, port, app, threaded=True, use_reloader=False)
 
 
+def _acquire_singleton_lock(port: int):
+    """ダッシュボードの二重起動を防ぐ pidfile ロック。
+
+    2026-04-19 の pred.json 破損事故（05:00 に dashboard が 2 プロセス稼働していて
+    両方の内蔵 odds-scheduler が同時に pred.json を書き込み JSON 破損）の再発防止。
+
+    - 取得失敗したら即 exit(0) し、新プロセスは Flask 起動しない
+    - filelock はプロセス終了で自動解放（OS が fd を閉じる）
+    - pidfile には自身の PID を書いておき、調査用に残す
+    """
+    from pathlib import Path
+    from src.utils.atomic_json import _HAS_FILELOCK  # 存在チェック
+
+    lock_dir = Path(PROJECT_ROOT) / "data" / "logs"
+    lock_dir.mkdir(parents=True, exist_ok=True)
+    lock_path = lock_dir / f"dashboard.{port}.lock"
+
+    if not _HAS_FILELOCK:
+        logger.warning("filelock 未導入のため singleton ロックをスキップ")
+        return None
+
+    from filelock import FileLock, Timeout
+    lock = FileLock(str(lock_path) + ".flock", timeout=0.1)
+    try:
+        lock.acquire()
+    except Timeout:
+        logger.critical(
+            "ダッシュボードは既に別プロセスで起動中です (port=%d, lock=%s)。"
+            "本プロセスは終了します。",
+            port, lock_path,
+        )
+        # pidfile から既存プロセスの PID を読んでログに残す
+        try:
+            existing_pid = lock_path.read_text(encoding="utf-8").strip()
+            logger.critical("既存プロセス PID: %s", existing_pid)
+        except Exception:
+            pass
+        sys.exit(0)  # 重複起動は正常扱いで終了（bat の exit code を汚さない）
+
+    # 自分の PID を書き込む
+    try:
+        lock_path.write_text(str(os.getpid()), encoding="utf-8")
+    except Exception:
+        pass
+    logger.info("singleton ロック取得: pid=%d port=%d", os.getpid(), port)
+    return lock  # 参照を保持してプロセス終了まで解放しない
+
+
 if __name__ == "__main__":
     try:
         _port = int(os.environ.get("PORT", os.environ.get("KEIBA_PORT", SERVER_PORT)))
+        # 二重起動防止: 別プロセスが既に起動していたら即終了
+        _singleton = _acquire_singleton_lock(_port)
         run_server(port=_port)
+    except SystemExit:
+        raise
     except Exception as _fatal:
         logger.critical("ダッシュボード異常終了: %s", _fatal, exc_info=True)
