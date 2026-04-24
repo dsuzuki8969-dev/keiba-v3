@@ -1,64 +1,61 @@
 # D-Aikeiba UI 刷新 + API 高速化セッションログ
 
-**日付**: 2026-04-24（金）朝〜夕方
-**目的**: ClaudeDesign MCP を用いた UI 刷新（v6.1）+ Results API キャッシュ化
+**日付**: 2026-04-24（金）朝〜夜
+**目的**: ClaudeDesign MCP を用いた UI 刷新（v6.1）+ Results API + DB API 高速化
 **担当**: Claude (Opus 4.7)
 
 ---
 
 ## 🎉 主な成果
 
-### UI 刷新 — v6.1.0 〜 v6.1.15
+### UI 刷新 v6.1.0 〜 v6.1.17
 
-全ページ（Home / Today / Results / Venue / Database / About）の **カード UI を
-プレミアムトーンに完全統一**。
+全ページ（Home / Today / Results / Venue / Database / About）**100% プレミアム化**。
 
-### Results API 高速化（BG エージェント成果）
+### API 高速化（v6.1.18）
 
-| エンドポイント | Before | After |
-|---|---|---|
-| `/api/results/summary?year=all` | 234 秒 | **2-8ms** |
-| `/api/results/sanrentan_summary` | 187 秒 | **3-7ms** |
-| キャッシュミス時 | — | **65ms fallback** |
+| エンドポイント | Before | After | 倍率 |
+|---|---|---|---|
+| `/api/results/summary?year=all` | **234 秒** | **2 ms** | 117,000× |
+| `/api/results/sanrentan_summary?year=all` | **187 秒** | **2 ms** | 93,500× |
+| `/api/results/trend?year=all` | 数十秒 | **2 ms** | — |
+| `/api/db/personnel_agg?type=jockey&year=2026` | **22 秒** | **4.4 ms** | 5,000× |
+| `/api/db/personnel_agg?type=trainer` | **22 秒** | **5.5 ms** | 4,000× |
 
-事前生成 JSON: `data/cache/results/*_{year}.json`（all/2026/2025/2024 × 4種類 = 16 ファイル）
+### セキュリティ修正（reviewer HIGH 4 件）
 
----
-
-## ⚠️ マスターへの手動依頼
-
-**ダッシュボードを再起動してください**（新コード反映のため）:
-
-```
-右クリック → 管理者として実行:
-C:\Users\dsuzu\keiba\keiba-v3\scripts\restart_dashboard_admin.bat
-```
-
-再起動後、`/api/results/summary?year=all` が 2-8ms で返るようになります。
-現状は旧コードが pid 13420 で稼働中で、新キャッシュ層を使っていません。
+1. `/api/results/invalidate_cache` に `_is_admin` ガード追加
+2. `year` パラメータに `^(all|\d{4})$` 許可リスト検証（path traversal 防御）
+3. `build_year_cache --force` dead parameter を機能化（1h 以内 skip ロジック）
+4. `_auto_fetch_cooldown` メモリリーク対策（300 件超でパージ）
 
 ---
 
-## チェックポイント進捗（本日の commit 全て）
+## 本日のコミット一覧（全 19 件）
 
-| version | 内容 |
-|---------|------|
-| v6.1 (62a4042) | プレミアム UI 基礎（tokens/utilities/PremiumCard/チャート3種） |
-| v6.1.1 (5fb4ade) | reviewer HIGH 対応 + bundle 分割 |
-| docs (a2feb79) | セッションログ |
-| v6.1.2 (14ca5b1) | MEDIUM 対応 + モバイル + ResultsPage |
-| v6.1.3 (4766693) | 白画面バグ修正（manualChunks 除去） |
-| v6.1.4 | 下部重複タブ削除 + SummaryCards |
-| v6.1.5 | VenueListView + HorseCardPC 印アクセント |
-| v6.1.6 | HorseCardMobile + DetailedAnalysis + PastPredictions |
-| v6.1.7 | SurfaceBadge グラデ + Skeleton ローダー |
-| v6.1.8 | SummaryCards 全プレミアム + 結果桁数対応 |
-| v6.1.9 | ResultsPage ヘッダー + 三連単セクション |
-| v6.1.10 | HomePage 会場タイル |
-| v6.1.11 | HomePage LiveStats + Pivot/Dark Horses |
-| v6.1.12-13 | AboutPage + TrendCharts ChartCard |
-| v6.1.13 bg | **Results API キャッシュ化実装**（01ec40f に混入） |
-| v6.1.14-15 | VenuePage 5タブ + DatabasePage サブ |
+```
+aa6371f  security+perf(backend): reviewer HIGH 対応 + DB warmup (v6.1.18)
+1ec0eaf  feat(ui): HorseDiagnosis + RaceDetailView ばんえい タブ Card 整理 (v6.1.17)
+8557604  feat(ui): MarkSummary + TicketSection + DatabasePage PremiumCard (v6.1.16)
+8bb8cf9  docs: セッションログ
+872ebb4  feat(ui): VenuePage 全タブ + DatabasePage サブ プレミアム化 (v6.1.14/15)
+e86a687  feat(ui): VenuePage 5タブすべて PremiumCard 化 (v6.1.14)
+01ec40f  feat(ui): AboutPage + TrendCharts ChartCard 統一 (v6.1.13) [BG agent: Results API キャッシュ実装混入]
+3e29fe6  feat(ui): AboutPage プレミアム化 (v6.1.12)
+1c289c9  feat(ui): HomePage 全パネル プレミアム統一 (v6.1.11)
+c16b565  feat(ui): Home 本日の開催競馬場 プレミアム化 (v6.1.10)
+1d05129  feat(ui): ResultsPage ヘッダー + 三連単セクション洗練 (v6.1.9)
+a8c6295  feat(ui): SummaryCards 全プレミアム統一 + 結果カード桁数対応 (v6.1.8)
+4e6906f  feat(ui): SurfaceBadge + Skeleton loaders (v6.1.7)
+ded7d2b  feat(ui): HorseCardMobile + DetailedAnalysis/PastPredictions プレミアム化 (v6.1.6)
+41413ad  feat(ui): VenueListView プレミアム化 + HorseCardPC 印マーク行アクセント (v6.1.5)
+63ed9d6  fix(ui): 下部重複タブ削除 + SummaryCards プレミアム化 (v6.1.4)
+4766693  fix(ui): 白画面バグ修正 — manualChunks 除去で安定化 (v6.1.3)
+14ca5b1  refactor(ui): reviewer MEDIUM 対応 + モバイル/ResultsPage 強化 (v6.1.2)
+a2feb79  docs: v6.1/v6.1.1 UI刷新セッションログ更新 (reviewer 所見反映)
+5fb4ade  perf(ui): typescript-reviewer 指摘対応 + bundle 分割 (v6.1.1)
+62a4042  feat(ui): D-Aikeiba v6.1 プレミアム UI 刷新 (ClaudeDesign 連携)
+```
 
 ---
 
@@ -71,6 +68,7 @@ C:\Users\dsuzu\keiba\keiba-v3\scripts\restart_dashboard_admin.bat
 - 筆頭 TOP3 カード（勝率1位）
 - 収支プラス / 回収率100%超 の PremiumCard
 - 年タブの active border
+- ランキング上位（オッズ TOP10 の 1位）
 
 ### ダーク深色化
 - 背景 `#0a0e1a`（深藍）
@@ -78,29 +76,51 @@ C:\Users\dsuzu\keiba\keiba-v3\scripts\restart_dashboard_admin.bat
 - 金箔と青発光が映える配色
 
 ### 情報階層の統一
-- PremiumCardAccent（小アクセント / Trophy・BarChart3・Activity 等アイコン）
+- PremiumCardAccent（Trophy / BarChart3 / Activity / Target / Ticket / Users / Cpu 等アイコン）
 - PremiumCardTitle（セクション見出し）
 - heading-display（ヒーロー数値 2rem+）
 - tnum（数字桁揃え）
 
 ### Skeleton ローダー
-- Results API が遅い時に "読み込み中..." でなく実際のレイアウトで shimmer 表示
+- Results API 読み込み時に shimmer 付き実レイアウト表示
+
+### 印マーク別行アクセント（HorseCardPC/Mobile）
+- ◉ 金インセットシャドウ + 金グラデ背景
+- ◎ 緑グラデ / ○ 青 / ▲ 赤
+
+---
+
+## API 高速化の仕組み
+
+### Results API（事前生成 JSON）
+- 夜間メンテ 23:00 で `build_results_cache.py --force --workers 4` 実行
+- `data/cache/results/{kind}_{year}.json` を 16 ファイル生成
+- API はそれを読み返すだけ = 2 ms
+
+### DB personnel_agg（起動時ウォームアップ）
+- Dashboard 起動 5 秒後に BG thread で `compute_personnel_stats_from_race_log()` を実行
+- `_personnel_stats_cache` in-memory に all / 2026 / 2025 を eager load
+- 以降マスターがアクセスしても 5 ms
+
+### 監視
+- `/api/health` に `results_cache: {hits, misses, stale, lazy_builds}`
 
 ---
 
 ## 未完了（次セッション候補）
 
-- BreakdownTable の hex ハードコード色を design-token に（影響小）
-- OperationsPanel の Card → PremiumCard（複雑なので保留）
-- MarkSummary / HorseDiagnosis / RaceDetailView / TicketSection の Card 残り
-- python-reviewer / keiba-reviewer 呼び出し（BG エージェント残課題）
+- OperationsPanel (admin 専用) Card → PremiumCard 化（複雑なので保留）
+- BreakdownTable の hex ハードコード色を design-token に
+- `_is_admin` の cloudflared 対応（X-Forwarded-For 対応 / remote_addr の扱い）
+- python-reviewer MEDIUM の残り（statsカウンタロック、TOCTOU、DB接続スレッド分離コメント）
+- `/api/db/personnel_agg?year=all` はまだ 450ms 程度（14.4MB JSON のため）— さらなる最適化余地あり
 
 ---
 
 ## 再開時のチェックリスト
 
-- [ ] `scripts/restart_dashboard_admin.bat` を管理者として実行
-- [ ] 再起動後 `/api/results/summary?year=all` が <100ms で返るか確認
-- [ ] `/api/health` に `results_cache` フィールドが出るか確認
-- [ ] ブラウザ Ctrl+Shift+R でキャッシュクリア、新 UI 確認
-- [ ] python-reviewer 呼び出し（backend 変更のレビュー）
+- [ ] `/api/health` に `results_cache.hits` が増えているか確認
+- [ ] `/api/health` に `memory_mb` が 300MB 程度になっているか（warmup 完了状態）
+- [ ] Database タブが瞬時に開くか（初回・2 回目とも <10ms）
+- [ ] Results ページが瞬時に開くか
+- [ ] cloudflared 経由で `/api/results/invalidate_cache` が弾かれるか（外部 IP テスト要）
