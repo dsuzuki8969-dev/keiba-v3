@@ -1038,7 +1038,25 @@ def _auth_required():
 
 
 def _is_admin(req) -> bool:
-    """localhost (127.0.0.1 / ::1) からのアクセスなら admin とみなす"""
+    """localhost からのアクセスなら admin とみなす。
+
+    v6.1.19 セキュリティ強化: cloudflared 経由の外部アクセスも 127.0.0.1 として
+    到達するため、単純な remote_addr チェックだけだと外部クライアントが admin 扱い
+    になってしまう。以下いずれかの Cloudflare ヘッダがあれば「トンネル経由」と
+    判定し admin ではないとする。
+
+    - CF-Connecting-IP: Cloudflare が付与する実クライアント IP
+    - CF-Ray:           Cloudflare リクエスト識別子
+    - X-Forwarded-For:  上流プロキシ/tunnel 経由の目印
+
+    これにより `dash.d-aikeiba.com` 経由のリクエストは admin にならず、
+    ローカル PC 上の Chrome など `http://127.0.0.1:5051` に直接アクセスした
+    場合のみ admin として扱われる。
+    """
+    # トンネル経由のヘッダがあれば admin ではない（外部クライアント）
+    for header in ("CF-Connecting-IP", "CF-Ray", "X-Forwarded-For"):
+        if req.headers.get(header):
+            return False
     addr = req.remote_addr or ""
     return addr in ("127.0.0.1", "::1")
 
@@ -3165,6 +3183,16 @@ def create_app():
     _results_cache_building: dict = {}  # year → True: 生成中フラグ
     _results_cache_stats = {"hits": 0, "misses": 0, "stale": 0, "lazy_builds": 0}
 
+    # v6.1.19 reviewer MEDIUM 対応: stats カウンタの原子性保証
+    def _inc_cache_stat(key: str) -> None:
+        """results cache 統計のロック付きインクリメント。
+
+        CPython GIL 下では `dict[key] += 1` はほぼ原子的だが、
+        read-modify-write を明示的に保護して TOCTOU/ロストアップデートを防ぐ。
+        """
+        with _results_cache_lock:
+            _results_cache_stats[key] = _results_cache_stats.get(key, 0) + 1
+
     # reviewer HIGH #2 対応: year パラメータは許可リスト検証
     # Windows \ 経由の path traversal を防ぐ。"all" または 4桁数字のみ許可。
     _VALID_YEAR_RE = re.compile(r"^(all|\d{4})$")
@@ -3214,7 +3242,7 @@ def create_app():
 
         def _run():
             try:
-                _results_cache_stats["lazy_builds"] += 1
+                _inc_cache_stat("lazy_builds")
                 from scripts.build_results_cache import build_year_cache
                 logger.info("results cache lazy build start: year=%s", year)
                 t0 = time.time()
@@ -3239,13 +3267,13 @@ def create_app():
         data, stale = _results_cache_load(kind, year)
         if data is not None:
             if stale:
-                _results_cache_stats["stale"] += 1
+                _inc_cache_stat("stale")
                 _results_cache_build_bg(year)
             else:
-                _results_cache_stats["hits"] += 1
+                _inc_cache_stat("hits")
             return jsonify(data)
         # miss → fallback（重い）
-        _results_cache_stats["misses"] += 1
+        _inc_cache_stat("misses")
         _results_cache_build_bg(year)
         return fallback()
 
@@ -4777,14 +4805,27 @@ function dNavRefreshOdds(date){{
                         os.remove(_cf)
                     except Exception:
                         pass
+            # v6.1.19 bugfix: year="" のとき cache_key="" だと
+            # `"" not in _personnel_stats_cache` が常に True となり
+            # 毎回 compute が走って 350ms かかっていた。
+            # person_type（"jockey"等）がトップレベル key で既に存在するかを
+            # 判定基準にすることで、warmup 済みキャッシュを正しく再利用する。
             cache_key = f"_year_{year_filter}" if year_filter else ""
-            if cache_key not in _personnel_stats_cache or not _personnel_stats_cache.get(cache_key):
+            if year_filter:
+                need_compute = cache_key not in _personnel_stats_cache or not _personnel_stats_cache.get(cache_key)
+            else:
+                # year="" (全期間) → トップレベルに person_type 系キーがあれば warm
+                need_compute = person_type not in _personnel_stats_cache
+            if need_compute:
                 stats = compute_personnel_stats_from_race_log(year_filter=year_filter or None)
                 if cache_key:
                     _personnel_stats_cache[cache_key] = stats
                 else:
                     _personnel_stats_cache.update(stats)
-            all_stats = (_personnel_stats_cache.get(cache_key) or _personnel_stats_cache).get(person_type, {})
+            if cache_key:
+                all_stats = _personnel_stats_cache.get(cache_key, {}).get(person_type, {})
+            else:
+                all_stats = _personnel_stats_cache.get(person_type, {})
         except Exception as e:
             return jsonify(error=str(e))
 
