@@ -130,30 +130,112 @@
 - **対応**: PC 強制 + 1066px viewport で 3 馬同時展開 → expandedDetailDivs=3 / tablesOnPage=3 確認
 - **判定**: feedback_test_verification_strict.md 「3 馬以上クリック展開して目視」要件達成
 
+### T-017 リアルタイム成績 手動更新ボタン + 自動更新高速化 ✅ 2026-04-27 (commit daa921c, v6.1.34)
+- **指示内容**: 「ここのリアルタイム成績を即座に更新できるボタンをつけられないかな？24R 終了していても集計は 19R になってるしね」
+- **真因**: `_AUTO_FETCH_COOLDOWN_SEC = 60秒` がフロント polling 2 分と相性悪く最大 5R 遅延
+- **改修**:
+  - dashboard.py: COOLDOWN 60→30 + `_auto_fetch_post_races(force=False)` 引数追加 + `POST /api/force_refresh_today` 新規
+  - frontend/api/hooks.ts: `useForceRefreshToday()` mutation
+  - frontend/HomePage.tsx: `TodayStatsPanel` に「↻ 更新」ボタン (連打防止 5 秒)
+- **委託**: Sonnet.5 (バック) + Sonnet.6 (フロント) 並列
+- **検証**: python-reviewer + security-reviewer + typescript-reviewer 全 PASS / Playwright 実機確認 (新 PID 5108)
+- **既知の派生 P1**: pending 計算不整合 (画面 6R 遅延 vs API 0 件) → T-020 候補
+
+### T-018 帯広/大井 行揃いズレ修正 (表層+中層) ✅ 2026-04-27 (commit e6f769d, v6.1.35)
+- **指示内容**: 「大井と帯広の行が合っていないのが気になる。帯広に天気がないからだね」
+- **真因**: venue_master.py = 帯広 "65" / dashboard.py VENUE_COORDS = "52" のみ → 帯広天気取得スキップ
+- **改修**:
+  - 表層: HomePage.tsx の天気行を `min-h-[1rem]` プレースホルダ化
+  - 中層: dashboard.py VENUE_COORDS に `"65": (42.93, 143.20)` 追加
+- **検証**: Flask 再起動後 `/api/home_info` で `weather["帯広"] = "くもり"` 取得確認 (Playwright)
+
+### T-019 注目レース TOP3 カード高さ揃え ✅ 2026-04-27 (リトライ commit bff455d, v6.1.37)
+- **指示内容**: 「ここの高さもあってないかな」+ リトライ「お前の目にはこれは高さが揃って見えるのか？」
+- **真因 1 (初回 03d982a)**: 筆頭だけ `padding="lg"` で他 2 枚 `padding="md"` → padding 統一で対応
+- **真因 2 (リトライ bff455d)**: CardContent の `large=true` プロパティで内部要素 (タイトル/レース名/馬名/数字) サイズが筆頭だけ大 → `large` 削除で完全統一
+- **検証**: Playwright `getBoundingClientRect()` で全 3 枚 width=292/height=189/top=201/bottom=389 完全一致
+- **反省**: `feedback_test_verification_strict.md ★` 違反 1 件追加（遠目スクショで揃ったと判断、ピクセル測定怠った）
+
+### Plan-α: ability_total -50 拡張に results_tracker 追従 ✅ 2026-04-27 (commit 7f434a8, v6.1.33)
+- **指示**: 「もう全て変更したの？-50.0〜100.0 で表してる？」マスター追求から発覚
+- **真因**: `src/results_tracker.py:311` の二重クランプで DEVIATION["ability"]["min"]=-50 拡張を潰していた
+- **修正**: 1 行リテラル変更 `max(20.0, ...)` → `max(-50.0, ...)`
+- **検証**: 4/28 pred.json で ability_total=20.0 張り付き 176 件 (53%) → 0 件、min 20.00 → -36.42
+
+### Plan-γ Phase 1: race_log.relative_dev カラム + 全期間バックフィル ✅ 2026-04-27 (commit 5b9ebbc, v6.2.0-phase1)
+- **指示**: 「能力指数を他馬比較に変えたら？」マスター提案 → ハイブリッド設計
+- **設計**: plans/plan-gamma-hybrid-relative-dev.md（マスター承認 4 件取得済）
+- **バックフィル**: 723,046 行中 710,439 行 NON-NULL (97.5%)
+- **張り付き解消**: 帯広 >=100 / <=-50 各 24,905/25,219 件 → 各 0 件 (★完全解消)
+- **副次バグ**: 99=失格 で異常値 -420.1 → 防御 + テスト 2 件追加
+- **テスト**: 20 件全 pass
+
+### Plan-γ Phase 2: engine.py に race_relative_dev 出力 🔄 2026-04-27 進行中 (Sonnet.8 委託)
+- **指示**: 「次着手 C → A だね」マスター承認
+- **実装範囲**: HorseEvaluation に `race_relative_dev` 追加 / engine.py に `_calc_race_relative_dev()` ヘルパー / pred.json 出力
+- **進行中**: Sonnet.8 がバックグラウンドで実装中
+
+### Plan-α: ability_total -50 拡張に results_tracker 追従 ✅ 2026-04-27 17:30 (commit 7f434a8)
+- **指示**: 「もう全て変更したの？-50.0〜100.0 で表してる？」マスター追求から発覚
+- **真因**: `src/results_tracker.py:311` の二重クランプ `max(20.0, ...)` で DEVIATION["ability"]["min"]=-50 拡張を潰していた
+- **修正**: 1 行リテラル変更 `max(20.0, ...)` → `max(-50.0, ...)`
+- **検証**: 4/28 pred.json で ability_total=20.0 張り付き 176 件 (53%) → 0 件、min 20.00 → -36.42
+- **委託**: Sonnet 0 (Opus 直接修正、1 行のため) / python-reviewer 1
+- **APPROVE**: HIGH/CRITICAL なし、MEDIUM 3 件 (DEVIATION 参照化、テスト追加) は別タスク化
+
+### Plan-γ Phase 1: race_log.relative_dev カラム + 全期間バックフィル ✅ 2026-04-27 17:50 (commit 5b9ebbc)
+- **指示**: 「能力指数を他馬比較に変えたら？」マスター提案から ハイブリッド設計へ
+- **設計**: plans/plan-gamma-hybrid-relative-dev.md（マスター承認 4 件取得、解釈 A: フェーズ承認制で進行）
+- **Phase 1 内容**:
+  - DB: race_log に `relative_dev REAL` カラム + index 追加
+  - 計算式: z-score (σ_floor=5.0, ±3σ クランプ) → 範囲 20.0〜80.0
+  - 帯広(venue_code=65): 順位ベースフォールバック
+  - field_count<5 / run_dev=NULL はスキップ (NULL のまま)
+- **バックフィル結果**: 723,046 行中 710,439 行 NON-NULL (97.5%)
+- **張り付き解消**: 帯広 >=100 / <=-50 各 24,905/25,219 件 → 各 0 件 (★完全解消)
+- **副次バグ**: 99=失格 で異常値 -420.1 → 防御 + テスト 2 件追加
+- **テスト**: 20 件全 pass (tests/test_backfill_relative_dev.py)
+- **委託**: Sonnet 1
+- **次**: Phase 2 (engine.py で当該レース内の race_relative_dev 計算)
+
 ---
 
-## 🔁 次セッション持ち越し（2026-04-27 朝セッション完了時点）
+## 🔁 次セッション持ち越し（2026-04-27 17:10 時点・全 P1〜P3、P0 ゼロ）
 
 ### 詳細
-`~/.claude/projects/C--Users-dsuzu-keiba-keiba-v3/memory/handoff_2026-04-27_v2.md` を**次セッション開始時に必ず Read**。
+`~/.claude/projects/C--Users-dsuzu-keiba-keiba-v3/memory/handoff_2026-04-27_v3.md` を**次セッション開始時に必ず Read**（v2 ではなく v3）。
 
-### 残候補タスク（全て P1〜P3、P0 ゼロ）
+### 残候補タスク（マスター提示順）
 
-| 優先度 | 項目 | 状態 |
+| 優先度 | 項目 | 内容 / 対策 |
 |:---:|---|---|
-| P1 | Step 5 Phase 2: MultiSourceEnricher 呼出元統合 + 過去 race_log backfill | 設計済み、未実装 |
-| P1 | Step 5 Phase 3: 競馬ブック fallback 追加 | 未着手 |
-| P1 | Step 6 Phase 5: paraphrase 全期間 cache 生成 (--recent 30 実行) | スクリプト実装済み、実行待ち（GPU 60-90 分） |
-| P2 | LM Studio Auto-start (Windows スタートアップ登録) | 設定要 |
-| P2 | daily_maintenance.bat 内で `lms load` 自動化 | 設計余地あり |
-| P2 | e2e/responsive-check.spec.ts 実行環境 (`npm i -D @playwright/test`) | 雛形のみ |
-| P3 | Qwen 14B Q3_K_S 試行 | VRAM ギリギリ |
-| P3 | ELYZA-Japanese-Llama-3-8B 比較評価 | 検証余地 |
+| P1 | JRA 13 race の着差再取得 | JS レンダリング → Playwright / OfficialOddsScraper.get_jra_result 必要 |
+| P1 | race_log.horse_id 旧/新形式統一 | `2019100043`(旧) と `nar_xxx`(新) の混在を統一（6,742 行空・workaround 済） |
+| P1 | finish_time=0 残 5,118 行 段階バックフィル | 大半は古い NAR レース、netkeiba から再取得継続 |
+| P1 | 2025 年以前 race_log 不在 | speed_dev=20 残存 1 件はおそらくこれ |
+| P1 | paraphrase.ts MAP 598 件 マスター手動レビュー | Qwen 自動生成のため不自然なエントリあり |
+| P1 | Step 5 Phase 2: MultiSourceEnricher 呼出元統合 | 実装済み・呼出未統合 |
+| P1 | Step 5 Phase 3: 競馬ブック fallback | NAR 結果欠損時の追加 fallback |
+| P2 | LM Studio Auto-start 設定 | Windows スタートアップ登録 |
+| P2 | daily_maintenance.bat 内 `lms load` 自動化 | バッチ稼働時のモデルロード保証 |
+| P2 | e2e/responsive-check.spec.ts 実機実行 | `npm i -D @playwright/test` 必要 |
+| P3 | Qwen 14B Q3_K_S vs ELYZA Japanese 比較 | 品質検証 |
+
+### Plan-γ ハイブリッド設計 残 Phase (Phase 2-6)
+詳細: `plans/plan-gamma-hybrid-relative-dev.md`
+
+| Phase | 内容 | 工数 | 承認P |
+|---|---|---|:---:|
+| 2 | engine.py に `_calc_race_relative_dev()` + HorseEvaluation 拡張 + pred.json 出力 | 1-2h | |
+| 3 | hybrid_total プロパティ + USE_HYBRID_SCORING フラグ + 印付与切替 | 2-3h | 🔔 |
+| 4 | ML 特徴量追加 + 再学習 (旧モデル保持) | 半日〜1日 | 🔔 |
+| 5 | フロント表示 (絶対/相対 切替) + Plan-β (ZONE_BANDS -50 追従) を統合 | 1-2h | |
+| 6 | バックテスト (絶対 vs ハイブリッド ROI 比較) | 1日 | 🔔 最終 |
 
 ### 自動経過待ち項目
-- AutoOdds (DAI_Keiba_AutoOdds): 9:30 から稼働確認 → log/auto_fetch_odds_15min.log で確認
+- AutoOdds (DAI_Keiba_AutoOdds): Daily トリガー稼働 / NextRunTime 5 分後（log/auto_fetch_odds_15min.log で確認）
 - daily_maintenance.bat 23:00: 新ステップ [7b/9] [7c/9] の初稼働確認
-- LM Studio 永続稼働: マスター環境依存
+- LM Studio 永続稼働: マスター環境依存（Qwen2.5-7B Port 1234）
 
 ---
 
