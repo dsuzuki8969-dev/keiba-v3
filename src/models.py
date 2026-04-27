@@ -720,6 +720,9 @@ class HorseEvaluation:
     ml_composite_adj: float = 0.0     # ML偏差値補正 (-6〜+6 pt)
     market_anchor_adj: float = 0.0    # 市場アンカー補正 (-3〜+3 pt)
 
+    # Plan-γ Phase 2: 当該レース内 ability_total z-score 正規化偏差値 (50中心 σ=10, 範囲20〜80)
+    race_relative_dev: float = 50.0
+
     venue_name: str = ""  # 競馬場名 (場別重み適用用)
 
     ml_place_prob: Optional[float] = None  # LightGBM P(3着以内)

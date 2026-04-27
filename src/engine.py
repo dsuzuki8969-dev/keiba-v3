@@ -659,6 +659,57 @@ class RaceAnalysisEngine:
         }
         return _RANKER_BLEND_BY_LEVEL.get(level, 0.10)
 
+    # ------------------------------------------------------------------ #
+    # Plan-γ Phase 2: 同レース内 ability_total z-score 正規化               #
+    # ------------------------------------------------------------------ #
+
+    @staticmethod
+    def _calc_race_relative_dev(evaluations: list) -> None:
+        """
+        同レース内の HorseEvaluation 群について、ability_total を z-score 正規化して
+        race_relative_dev フィールドに設定する（in-place 更新）。
+
+        設計:
+        - 標準偏差下限: RELATIVE_DEV_SIGMA_FLOOR (config/settings.py)
+        - z-score クランプ: ±RELATIVE_DEV_Z_CLAMP
+        - field_count < RELATIVE_DEV_MIN_FIELD のレースはスキップ（race_relative_dev=50.0 のまま）
+        - ability_total = None の馬はスキップ（race_relative_dev=50.0 のまま）
+        - TODO Phase 3: 帯広（BANEI_VENUE_CODE=65）順位ベースフォールバック
+        """
+        import statistics as _stats
+        from config.settings import (
+            RELATIVE_DEV_SIGMA_FLOOR,
+            RELATIVE_DEV_Z_CLAMP,
+            RELATIVE_DEV_MIN_FIELD,
+        )
+
+        # ability.total が有効な馬のみ抽出
+        valid_pairs = []
+        for ev in evaluations:
+            if ev.ability is not None:
+                try:
+                    val = float(ev.ability.total)
+                    valid_pairs.append((ev, val))
+                except (TypeError, ValueError):
+                    pass
+
+        n = len(valid_pairs)
+        if n < RELATIVE_DEV_MIN_FIELD:
+            # 出走頭数不足 → 全馬 50.0 のまま（デフォルト値）
+            return
+
+        abilities = [val for _, val in valid_pairs]
+        mu = _stats.mean(abilities)
+        sigma = max(
+            _stats.stdev(abilities) if n >= 2 else 0.0,
+            RELATIVE_DEV_SIGMA_FLOOR,
+        )
+
+        for ev, val in valid_pairs:
+            z = (val - mu) / sigma
+            z = max(-RELATIVE_DEV_Z_CLAMP, min(RELATIVE_DEV_Z_CLAMP, z))
+            ev.race_relative_dev = round(50.0 + 10.0 * z, 2)
+
     def analyze(
         self,
         race: RaceInfo,
@@ -2006,6 +2057,10 @@ class RaceAnalysisEngine:
             w = ev.win_prob or 0.0
             ev.place2_prob = max(ev.place2_prob or 0.0, w)
             ev.place3_prob = max(ev.place3_prob or 0.0, ev.place2_prob)
+
+        # ---- Plan-γ Phase 2: 同レース内 ability_total z-score 正規化 ----
+        # ability/pace/course/composite 計算が全て終わった後に実施する
+        self._calc_race_relative_dev(evaluations)
 
         # ---- Step 8: 印付け（composite 降順で ◉◎○▲△★ + 穴馬☆/危険馬×）----
         evaluations = assign_marks(evaluations, is_jra=self.is_jra)
