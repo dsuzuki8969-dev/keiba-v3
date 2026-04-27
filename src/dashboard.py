@@ -87,9 +87,15 @@ _WEATHER_CACHE_TTL = 1800  # 秒（天気データ: 30分）
 _auto_fetch_lock = threading.Lock()
 _auto_fetch_busy_dates: set = set()         # 現在 fetch 処理中の日付
 _auto_fetch_cooldown: dict = {}             # race_id → last_attempt_timestamp
-_AUTO_FETCH_COOLDOWN_SEC = 60               # T-001 (2026-04-25): 5分→1分。リアルタイム性確保のため短縮
+_AUTO_FETCH_COOLDOWN_SEC = 30               # T-017 (2026-04-27): 60→30秒。フロント polling 2分と相性改善・5R遅延解消
 _AUTO_FETCH_MAX_PER_CALL = 50               # T-001 (2026-04-25): 5R→50R。70R/日規模に追従、netkeiba 1.5s × 50R ≒ 75秒で完了
 _AUTO_FETCH_COOLDOWN_MAX = 1000             # cooldown_max も拡張（race_id 蓄積防止用、cooldown_sec×2 の余裕）
+
+# ── T-017 (2026-04-27): 手動強制更新 /api/force_refresh_today 用 state ──
+_FORCE_REFRESH_LOCK = threading.Lock()      # 連打防止用排他ロック
+_force_refresh_ip_rate: dict = {}           # IP → last_request_timestamp（簡易レートリミット）
+_FORCE_REFRESH_RATE_LIMIT_SEC = 5           # 同一 IP 5秒以内の再リクエストは 429 返す
+_FORCE_REFRESH_MAX_PER_CALL = 100           # force=True 時の1回あたり最大処理数
 
 
 def _cleanup_cooldown_if_needed() -> None:
@@ -5319,7 +5325,49 @@ function dNavRefreshOdds(date){{
             logger.warning("high_confidence failed: %s", e)
             return jsonify(date=date, races=[], error=str(e))
 
-    def _auto_fetch_post_races(date: str) -> None:
+    def _count_pending_races(date: str) -> int:
+        """発走+10分経過かつ結果未取得のレース数を返す。
+
+        T-017 (2026-04-27): pending_before/pending_after の重複計算を共通化。
+        """
+        try:
+            from src.results_tracker import load_prediction as _lp_cp
+            pred = _lp_cp(date)
+            if not pred:
+                return 0
+            date_key = date.replace("-", "")
+            rfp = os.path.join(PROJECT_ROOT, "data", "results", f"{date_key}_results.json")
+            existing_rids: set = set()
+            if os.path.isfile(rfp):
+                try:
+                    with open(rfp, "r", encoding="utf-8") as _f:
+                        _rd = json.load(_f)
+                    existing_rids = {
+                        rid for rid, entry in _rd.items()
+                        if isinstance(entry, dict) and entry.get("order")
+                    }
+                except Exception:
+                    pass
+            now_dt = datetime.now()
+            count = 0
+            for _race in pred.get("races", []):
+                _rid = str(_race.get("race_id", ""))
+                if not _rid or _rid in existing_rids:
+                    continue
+                _pt = _race.get("post_time", "") or ""
+                if not _pt:
+                    continue
+                try:
+                    _pdt = datetime.strptime(f"{date} {_pt}", "%Y-%m-%d %H:%M")
+                except Exception:
+                    continue
+                if now_dt >= _pdt + timedelta(minutes=10):
+                    count += 1
+            return count
+        except Exception:
+            return 0
+
+    def _auto_fetch_post_races(date: str, force: bool = False) -> dict:
         """当日の発走+10分経過かつ未取得レースを バックグラウンドで順次 fetch。
 
         マスター指示 2026-04-23 (案 A):
@@ -5327,11 +5375,18 @@ function dNavRefreshOdds(date){{
           - 発走+10分経過 & results.json 未登録のレースを最大 5R 取得
           - クールダウン 5分（同 race_id の多重試行防止）
           - netkeiba レートリミット 1.5秒 を NetkeibaClient 内で尊守
+
+        T-017 (2026-04-27): force=True 追加:
+          - force=True の場合、race_id 単位のクールダウンチェックを bypass
+          - force=True の場合、最大処理数を _FORCE_REFRESH_MAX_PER_CALL (100) に緩和
+          - 戻り値: fetched/aggregated/skipped/errors の統計辞書
         """
-        # 多重起動防止
+        stats: dict = {"fetched": 0, "skipped": 0, "errors": 0}
+        # 多重起動防止（force でも排他は維持する）
         with _auto_fetch_lock:
             if date in _auto_fetch_busy_dates:
-                return
+                stats["skipped"] = -1  # busy を示す特殊値（呼び出し側で判断）
+                return stats
             _auto_fetch_busy_dates.add(date)
         # T-001 reviewer HIGH 対応: cooldown dict のメモリリーク対策（拡張済み 1000 件で
         # 期限切れエントリを削除）。50R 上限拡張により race_id 蓄積速度が増したため必須。
@@ -5339,11 +5394,11 @@ function dNavRefreshOdds(date){{
         try:
             # 当日のみ対象（過去日は nightly batch に任せる）
             if date != datetime.now().strftime("%Y-%m-%d"):
-                return
+                return stats
             from src.results_tracker import load_prediction
             pred = load_prediction(date)
             if not pred:
-                return
+                return stats
             date_key = date.replace("-", "")
             rfp = os.path.join(PROJECT_ROOT, "data", "results", f"{date_key}_results.json")
             existing_rids: set = set()
@@ -5361,6 +5416,8 @@ function dNavRefreshOdds(date){{
             now = datetime.now()
             now_ts = time.time()
             targets: list = []
+            # force=True 時は上限を _FORCE_REFRESH_MAX_PER_CALL に緩和
+            max_per_call = _FORCE_REFRESH_MAX_PER_CALL if force else _AUTO_FETCH_MAX_PER_CALL
             for race in pred.get("races", []):
                 rid = str(race.get("race_id", ""))
                 if not rid or rid in existing_rids:
@@ -5375,26 +5432,27 @@ function dNavRefreshOdds(date){{
                 # 発走+10分経過していること
                 if now < post_dt + timedelta(minutes=10):
                     continue
-                # クールダウン: 5分以内に試行済ならスキップ
-                last_attempt = _auto_fetch_cooldown.get(rid, 0)
-                if now_ts - last_attempt < _AUTO_FETCH_COOLDOWN_SEC:
-                    continue
+                # クールダウン: force=True の場合は bypass
+                if not force:
+                    last_attempt = _auto_fetch_cooldown.get(rid, 0)
+                    if now_ts - last_attempt < _AUTO_FETCH_COOLDOWN_SEC:
+                        stats["skipped"] += 1
+                        continue
                 targets.append(rid)
-                if len(targets) >= _AUTO_FETCH_MAX_PER_CALL:
+                if len(targets) >= max_per_call:
                     break
 
             if not targets:
-                return
+                return stats
 
             # 早発の post_time が古い順（= 古い race から）を優先
-            logger.info("auto-fetch: %s 対象 %d レース開始", date, len(targets))
+            logger.info("auto-fetch: %s 対象 %d レース開始 (force=%s)", date, len(targets), force)
 
             from src.results_tracker import fetch_single_race_result
             from src.scraper.netkeiba import NetkeibaClient
             client = NetkeibaClient(no_cache=True)
             official = _get_official_odds_scraper()
 
-            success_cnt = 0
             for rid in targets:
                 # クールダウンを先に記録（失敗時も再試行を抑制）。Lock で TOCTOU 保護
                 with _auto_fetch_lock:
@@ -5404,24 +5462,125 @@ function dNavRefreshOdds(date){{
                         date, rid, client, official_scraper=official
                     )
                     if entry and entry.get("order"):
-                        success_cnt += 1
+                        stats["fetched"] += 1
                         logger.info("auto-fetch: %s 取得成功", rid)
+                    else:
+                        stats["skipped"] += 1
                 except Exception as e:
+                    stats["errors"] += 1
                     logger.warning("auto-fetch: %s 失敗 %s", rid, e)
 
-            if success_cnt > 0:
+            if stats["fetched"] > 0:
                 # 集計キャッシュを無効化（次回 today_stats 呼び出しで再計算）
                 try:
                     from src.results_tracker import invalidate_aggregate_cache
                     invalidate_aggregate_cache()
                 except Exception:
                     pass
-                logger.info("auto-fetch: %s 完了 %d/%d 取得", date, success_cnt, len(targets))
+                logger.info(
+                    "auto-fetch: %s 完了 fetched=%d skipped=%d errors=%d",
+                    date, stats["fetched"], stats["skipped"], stats["errors"],
+                )
+            return stats
         except Exception as e:
             logger.warning("auto-fetch 全体失敗: %s", e, exc_info=True)
+            stats["errors"] += 1
+            return stats
         finally:
             with _auto_fetch_lock:
                 _auto_fetch_busy_dates.discard(date)
+
+    @app.route("/api/force_refresh_today", methods=["POST"])
+    def api_force_refresh_today():
+        """成績の手動強制更新 endpoint。
+
+        T-017 (2026-04-27):
+          - 手動ボタンから呼び出し、未取得レースを即時 fetch + 集計再計算
+          - 連打防止: _FORCE_REFRESH_LOCK で排他（busy 時 409）
+          - レートリミット: 同一 IP 5秒以内の再リクエストは 429
+          - date body パラメータ未指定時は本日 JST を使用
+          - セキュリティ: 127.0.0.1 or Cloudflare ヘッダなし (admin) のみ許可
+        """
+        t_start = time.time()
+
+        # ── セキュリティ: 管理者（ローカル）のみ許可 ──
+        if not _is_admin(request):
+            return jsonify(status="error", message="この操作は管理者のみ実行できます", code="FORBIDDEN"), 403
+
+        # ── レートリミット: 同一 IP 5秒以内の再リクエストは 429 ──
+        client_ip = request.remote_addr or "unknown"
+        now_ts = time.time()
+        with _auto_fetch_lock:
+            last_ip_req = _force_refresh_ip_rate.get(client_ip, 0)
+            if now_ts - last_ip_req < _FORCE_REFRESH_RATE_LIMIT_SEC:
+                remaining = int(_FORCE_REFRESH_RATE_LIMIT_SEC - (now_ts - last_ip_req))
+                return jsonify(
+                    status="error",
+                    message=f"リクエスト頻度が高すぎます。{remaining}秒後に再試行してください",
+                    code="RATE_LIMITED",
+                    retry_after=remaining,
+                ), 429
+            _force_refresh_ip_rate[client_ip] = now_ts
+
+        # ── body の date 取得・バリデーション ──
+        body = request.get_json(force=True, silent=True) or {}
+        date = body.get("date") or datetime.now().strftime("%Y-%m-%d")
+        if not re.match(r"^\d{4}-\d{2}-\d{2}$", date):
+            return jsonify(status="error", message="date は YYYY-MM-DD 形式で指定してください", code="INVALID_DATE"), 400
+
+        # ── 連打防止: _FORCE_REFRESH_LOCK で排他 ──
+        if not _FORCE_REFRESH_LOCK.acquire(blocking=False):
+            return jsonify(status="error", message="他の更新処理が実行中です。しばらく待ってから再試行してください", code="BUSY"), 409
+
+        logger.info("force_refresh_today: date=%s start", date)
+        try:
+            from src.results_tracker import invalidate_aggregate_cache, compare_and_aggregate
+
+            # pending 数（処理前）を計算（共通ヘルパー使用）
+            pending_before = _count_pending_races(date)
+
+            # ── 強制 fetch 実行 ──
+            fetch_stats = _auto_fetch_post_races(date, force=True)
+
+            # ── 集計キャッシュ無効化 + 強制再集計 ──
+            aggregated = 0
+            try:
+                invalidate_aggregate_cache()
+                agg = compare_and_aggregate(date, _skip_disk_cache=True)
+                if agg:
+                    aggregated = fetch_stats.get("fetched", 0)
+            except Exception:
+                logger.exception("force_refresh_today: 集計失敗 date=%s", date)
+                # 集計エラーは fetch の成果は失わない
+
+            # pending 数（処理後）を再計算（共通ヘルパー使用）
+            try:
+                pending_after = _count_pending_races(date)
+            except Exception:
+                pending_after = max(0, pending_before - fetch_stats.get("fetched", 0))
+
+            elapsed_ms = int((time.time() - t_start) * 1000)
+            logger.info(
+                "force_refresh_today: date=%s done fetched=%d aggregated=%d elapsed=%dms",
+                date, fetch_stats.get("fetched", 0), aggregated, elapsed_ms,
+            )
+            return jsonify(
+                status="ok",
+                date=date,
+                fetched=fetch_stats.get("fetched", 0),
+                aggregated=aggregated,
+                skipped=max(0, fetch_stats.get("skipped", 0)),
+                errors=fetch_stats.get("errors", 0),
+                pending_before=pending_before,
+                pending_after=pending_after,
+                elapsed_ms=elapsed_ms,
+            )
+        except Exception:
+            logger.exception("force_refresh_today failed date=%s", date)
+            elapsed_ms = int((time.time() - t_start) * 1000)
+            return jsonify(status="error", message="internal error", code="INTERNAL", elapsed_ms=elapsed_ms), 500
+        finally:
+            _FORCE_REFRESH_LOCK.release()
 
     @app.route("/api/home/today_stats")
     def api_home_today_stats():
