@@ -809,6 +809,24 @@ class HorseEvaluation:
             and (self.horse.popularity or 99) <= 3
         )
 
+    @property
+    def hybrid_total(self) -> float:
+        """Plan-γ Phase 3: ハイブリッド合算指数
+
+        hybrid_total = ability_total × (1-β) + race_relative_dev × β
+        β = HYBRID_BETA (デフォルト 0.30)
+
+        USE_HYBRID_SCORING=True 時に印付与・順位判定で採用される。
+        False (default) では参考値として算出のみ、印付与には影響しない。
+
+        返値は DEVIATION["ability"]["min"] 〜 DEVIATION["ability"]["max"] にクランプ。
+        """
+        from config.settings import HYBRID_BETA, DEVIATION
+        at = self.ability.total if self.ability else 50.0
+        rrd = self.race_relative_dev
+        blended = at * (1 - HYBRID_BETA) + rrd * HYBRID_BETA
+        return max(DEVIATION["ability"]["min"], min(DEVIATION["ability"]["max"], blended))
+
 
 # ============================================================
 # レース情報
