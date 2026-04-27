@@ -5326,10 +5326,14 @@ function dNavRefreshOdds(date){{
             logger.warning("high_confidence failed: %s", e)
             return jsonify(date=date, races=[], error=str(e))
 
-    def _count_pending_races(date: str) -> int:
-        """発走+10分経過かつ結果未取得のレース数を返す。
+    def _count_pending_races(date: str, force: bool = False) -> int:
+        """発走済み (or +10分経過) かつ結果未取得のレース数を返す。
 
         T-017 (2026-04-27): pending_before/pending_after の重複計算を共通化。
+        T-020 (2026-04-27): force 引数追加。
+          - force=False (default): 発走+10分経過後のみカウント (自動 fetch 用)
+          - force=True: 発走済み全 race をカウント (手動更新ボタン用)
+            → ホーム LIVE STATS の pending_fetch (発走直後カウント) と一致させる
         """
         try:
             from src.results_tracker import load_prediction as _lp_cp
@@ -5351,6 +5355,8 @@ function dNavRefreshOdds(date){{
                     pass
             now_dt = datetime.now()
             count = 0
+            # force=True: 発走後即カウント / force=False: 発走+10分経過後のみ
+            threshold = timedelta(minutes=0) if force else timedelta(minutes=10)
             for _race in pred.get("races", []):
                 _rid = str(_race.get("race_id", ""))
                 if not _rid or _rid in existing_rids:
@@ -5362,7 +5368,7 @@ function dNavRefreshOdds(date){{
                     _pdt = datetime.strptime(f"{date} {_pt}", "%Y-%m-%d %H:%M")
                 except Exception:
                     continue
-                if now_dt >= _pdt + timedelta(minutes=10):
+                if now_dt >= _pdt + threshold:
                     count += 1
             return count
         except Exception:
@@ -5430,8 +5436,13 @@ function dNavRefreshOdds(date){{
                     post_dt = datetime.strptime(f"{date} {post_time}", "%Y-%m-%d %H:%M")
                 except Exception:
                     continue
-                # 発走+10分経過していること
-                if now < post_dt + timedelta(minutes=10):
+                # 発走+10分経過していること（force=True なら発走後即対象、ただし結果未掲載なら取得失敗）
+                # T-020 (2026-04-27): 手動更新ボタンは「即座に取れるもの全部」の意図のため
+                # force=True で 10 分閾値解除。netkeiba 未掲載なら errors+= で報告
+                if not force and now < post_dt + timedelta(minutes=10):
+                    continue
+                if force and now < post_dt:
+                    # 発走前 race は force でも対象外
                     continue
                 # クールダウン: force=True の場合は bypass
                 if not force:
@@ -5537,8 +5548,10 @@ function dNavRefreshOdds(date){{
         try:
             from src.results_tracker import invalidate_aggregate_cache, compare_and_aggregate
 
-            # pending 数（処理前）を計算（共通ヘルパー使用）
-            pending_before = _count_pending_races(date)
+            # pending 数（処理前）を計算（共通ヘルパー使用、force=True で 10 分閾値解除）
+            # T-020 (2026-04-27): 手動更新ボタンは「発走済み全 race を即取得したい」意図のため、
+            # 発走+10分待たずに発走後即カウント（ホーム LIVE STATS の pending_fetch と一致）
+            pending_before = _count_pending_races(date, force=True)
 
             # ── 強制 fetch 実行 ──
             fetch_stats = _auto_fetch_post_races(date, force=True)
@@ -5554,9 +5567,9 @@ function dNavRefreshOdds(date){{
                 logger.exception("force_refresh_today: 集計失敗 date=%s", date)
                 # 集計エラーは fetch の成果は失わない
 
-            # pending 数（処理後）を再計算（共通ヘルパー使用）
+            # pending 数（処理後）を再計算（共通ヘルパー使用、同じく force=True）
             try:
-                pending_after = _count_pending_races(date)
+                pending_after = _count_pending_races(date, force=True)
             except Exception:
                 pending_after = max(0, pending_before - fetch_stats.get("fetched", 0))
 
