@@ -31,6 +31,8 @@ data/models/*.bin
 data/models/*.pt
 data/models/*.txt
 data/models/*.onnx
+# Plan-γ Phase 4 バックアップ (371MB、巨大なため git 管理外)
+data/models/.bak_*/
 data/predictions/
 data/results/
 data/analysis/

@@ -747,6 +747,11 @@ FEATURE_COLS = [
     "train_partner_margin", "train_partner_win_rate",
     "train_stable_mark", "train_comment_sentiment",
     "train_state_score", "train_readiness_index",
+    # Plan-γ Phase 4: 過去走の同レース内相対偏差値集約
+    # ※ IMPORTANT: lgbm_model.py の FEATURE_COLUMNS と同期必須 (feedback_feature_cols_sync.md ★)
+    "relative_dev_mean_5",   # 過去5走のrelative_dev平均 (NULL→50.0 fill)
+    "relative_dev_max_5",    # 過去5走のrelative_dev最高値
+    "relative_dev_recent",   # 直近1走のrelative_dev (前走相対実力)
 ]
 
 # ばんえい専用特徴量カラム（使えない特徴量を除外 + 固有特徴量を追加）

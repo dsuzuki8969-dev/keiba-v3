@@ -181,6 +181,10 @@ FEATURE_COLUMNS = [
     # H: 複合・状態推定系
     "train_state_score",
     "train_readiness_index",
+    # Plan-γ Phase 4: 過去走の同レース内相対偏差値集約 (159 → 162 features)
+    "relative_dev_mean_5",      # 過去5走のrelative_dev平均 (NULL→50.0 fill)
+    "relative_dev_max_5",       # 過去5走のrelative_dev最高値
+    "relative_dev_recent",      # 直近1走のrelative_dev (前走相対実力)
 ]
 
 # ばんえい専用: コーナー/ペース/上がり3F/SMILE/脚質/スピード指数など存在しない概念を除外
@@ -251,7 +255,9 @@ FEATURE_CATEGORY_7: Dict[str, List[str]] = {
                "horse_pr_2y", "horse_venue_pr", "horse_dist_pr",
                "horse_jockey_pr", "horse_context_pr",
                "past_avg_outer_ratio", "past_corner_loss_sec_avg",
-               "past_corner_loss_sec_last"],
+               "past_corner_loss_sec_last",
+               # Plan-γ Phase 4: 過去走相対偏差値集約
+               "relative_dev_mean_5", "relative_dev_max_5", "relative_dev_recent"],
     "展開":   ["ml_pos_est", "horse_running_style",
                "front_runner_count_in_race", "pace_pressure_index",
                "style_pace_affinity", "pace_count_fast"],
@@ -735,7 +741,8 @@ class _HorseStats:
                speed_index: Optional[float] = None,
                race_pace_norm: Optional[float] = None,
                gate_no: Optional[int] = None,
-               positions_corners: Optional[List] = None):
+               positions_corners: Optional[List] = None,
+               relative_dev: Optional[float] = None):
         self.wins += int(is_win)
         self.runs += 1
         self.places += int(is_place)
@@ -746,12 +753,13 @@ class _HorseStats:
             self.venue_runs.append((venue, surface, finish_pos))
             if len(self.venue_runs) > 30:
                 self.venue_runs.pop(0)
-        # Phase 11+距離ロス: 22-tuple (旧19-tuple + n_corners, avg_corner_rel_pos, corner_spread)
+        # Plan-γ Phase 4: 23-tuple (旧22-tuple + relative_dev)
         # idx: 0=date, 1=finish_pos, 2=field_count, 3=pos4c, 4=margin_behind,
         #      5=condition, 6=jockey_id, 7=last_3f_sec, 8=run_distance,
         #      9=win_odds, 10=grade_code, 11=finish_time_sec, 12=pos1c, 13=pos3c,
         #      14=speed_index, 15=race_pace_norm, 16=venue, 17=surface, 18=gate_no,
-        #      19=n_corners, 20=avg_corner_rel_pos, 21=corner_spread
+        #      19=n_corners, 20=avg_corner_rel_pos, 21=corner_spread,
+        #      22=relative_dev (race_log.relative_dev: 同レース内z-score正規化偏差値)
         _n_corners = None
         _avg_corner_rel = None
         _corner_spread = None
@@ -767,7 +775,8 @@ class _HorseStats:
                                   win_odds, grade_code, finish_time_sec,
                                   pos1c, pos3c, speed_index, race_pace_norm,
                                   venue, surface, gate_no,
-                                  _n_corners, _avg_corner_rel, _corner_spread))
+                                  _n_corners, _avg_corner_rel, _corner_spread,
+                                  relative_dev))
         if len(self.run_details) > 20:
             self.run_details.pop(0)
         if jockey_id:
@@ -1294,6 +1303,10 @@ class RollingStatsTracker:
                 # ③ スピード指数用 finish_time_sec
                 _raw_ft = h.get("finish_time_sec")
                 _finish_time = float(_raw_ft) if isinstance(_raw_ft, (int, float)) else None
+                # Plan-γ Phase 4: relative_devをhorse dictから取得
+                # 学習時は_collect_all_rows()でDBから注入済み、推論時はNone（50.0 fill）
+                _raw_rel_dev = h.get("relative_dev")
+                _rel_dev = float(_raw_rel_dev) if isinstance(_raw_rel_dev, (int, float)) else None
                 self.horses[hid].update(
                     date_str, fp, is_win, is_place,
                     venue=venue,
@@ -1314,6 +1327,7 @@ class RollingStatsTracker:
                     race_pace_norm=_race_pace_norm,
                     gate_no=h.get("gate_no") or h.get("horse_no"),
                     positions_corners=h.get("positions_corners"),
+                    relative_dev=_rel_dev,
                 )
 
             if jid and tid:
@@ -1790,6 +1804,10 @@ class RollingStatsTracker:
             "pace_count_slow": None,
             "pace_norm_last": None,
             "pace_norm_avg3": None,
+            # Plan-γ Phase 4: 過去走の同レース内相対偏差値集約特徴量
+            "relative_dev_mean_5": None,   # 過去5走のrelative_dev平均 (NULL→50.0 fill)
+            "relative_dev_max_5": None,    # 過去5走のrelative_dev最高値
+            "relative_dev_recent": None,   # 直近1走のrelative_dev (前走相対実力)
         }
         s = self.horses.get(hid)
         if not s:
@@ -2031,6 +2049,18 @@ class RollingStatsTracker:
         pace_norm_avg3 = (sum(_valid_pnorms[-3:]) / len(_valid_pnorms[-3:])
                           if len(_valid_pnorms) >= 2 else _valid_pnorms[-1] if _valid_pnorms else None)
 
+        # Plan-γ Phase 4: 過去5走のrelative_dev集約 (idx=22)
+        # NULLは50.0（中央値）でフィル → ハイブリッド設計の哲学に合致
+        _RELATIVE_DEV_DEFAULT = 50.0
+        _recent5 = details[-5:]  # 直近5走（最大）
+        _rel_devs_raw = [d[22] if len(d) > 22 else None for d in _recent5]
+        _rel_devs_filled = [v if v is not None else _RELATIVE_DEV_DEFAULT for v in _rel_devs_raw]
+        relative_dev_mean_5 = sum(_rel_devs_filled) / len(_rel_devs_filled) if _rel_devs_filled else None
+        relative_dev_max_5 = max(_rel_devs_filled) if _rel_devs_filled else None
+        # 直近1走のrelative_dev（前走相対実力指標）
+        _last_rel_dev_raw = (details[-1][22] if details and len(details[-1]) > 22 else None)
+        relative_dev_recent = _last_rel_dev_raw if _last_rel_dev_raw is not None else _RELATIVE_DEV_DEFAULT
+
         return {
             "trend_position_slope": trend_pos,
             "trend_deviation_slope": trend_dev,
@@ -2071,6 +2101,10 @@ class RollingStatsTracker:
             "pace_count_slow": slow_runs if slow_runs > 0 else None,
             "pace_norm_last": pace_norm_last,
             "pace_norm_avg3": pace_norm_avg3,
+            # Plan-γ Phase 4: 過去走の同レース内相対偏差値集約特徴量
+            "relative_dev_mean_5": relative_dev_mean_5,
+            "relative_dev_max_5": relative_dev_max_5,
+            "relative_dev_recent": relative_dev_recent,
         }
 
     def get_horse_stacking_features(self, hid: str, date_str: str = "") -> dict:
@@ -3561,6 +3595,40 @@ def train_model(
     return metrics
 
 
+def _load_relative_dev_map() -> dict:
+    """
+    Plan-γ Phase 4: race_log から (race_id, horse_id) → relative_dev のマッピングを一括取得。
+
+    全レースのrelative_devをメモリに乗せる（～1GB以下、OK）。
+    学習時にのみ呼ばれ、推論時はNone（50.0 fill）になる設計。
+
+    Returns:
+        {(race_id, horse_id): relative_dev_float, ...}
+    """
+    rel_dev_map: Dict[tuple, float] = {}
+    try:
+        import sqlite3 as _sqlite3
+        _db_path = os.path.join(_BASE, "data", "keiba.db")
+        if not os.path.exists(_db_path):
+            logger.warning("keiba.db が見つかりません。relative_dev は全て None になります")
+            return rel_dev_map
+        conn = _sqlite3.connect(_db_path)
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT race_id, horse_id, relative_dev FROM race_log "
+            "WHERE relative_dev IS NOT NULL"
+        )
+        for row in cur.fetchall():
+            race_id_db, horse_id_db, rd = row
+            if race_id_db and horse_id_db:
+                rel_dev_map[(race_id_db, horse_id_db)] = float(rd)
+        conn.close()
+        logger.info("relative_dev マップ読込完了: %d エントリ", len(rel_dev_map))
+    except Exception as e:
+        logger.warning("relative_dev マップ読込失敗（スキップ）: %s", e)
+    return rel_dev_map
+
+
 def _collect_all_rows(valid_days: int = 30):
     """
     全レースデータを一度だけ走査して行を収集する。
@@ -3582,6 +3650,9 @@ def _collect_all_rows(valid_days: int = 30):
     sire_tracker = RollingSireTracker()
     all_train_rows: List[Tuple] = []
     all_valid_groups: List[Tuple] = []
+
+    # Plan-γ Phase 4: race_log から relative_dev マップを一括取得
+    relative_dev_map = _load_relative_dev_map()
 
     # 調教特徴量抽出器をロード
     training_extractor = None
@@ -3622,8 +3693,14 @@ def _collect_all_rows(valid_days: int = 30):
                 continue
             hid = h.get("horse_id", "")
             sid, bid = sire_map.get(hid, ("", ""))
-            feat = _extract_features(dict(h, sire_id=sid, bms_id=bid),
-                                     race, tracker, sire_tracker)
+            # Plan-γ Phase 4: race_log.relative_dev をhorse dictに注入
+            # tracker.update_race(race) の前に呼ぶため、update_race内でrun_detailsに追加される
+            _rd_key = (race_id, hid)
+            _rel_dev_val = relative_dev_map.get(_rd_key)  # 未登録=None (50.0 fill)
+            _h_injected = dict(h, sire_id=sid, bms_id=bid)
+            if _rel_dev_val is not None:
+                _h_injected["relative_dev"] = _rel_dev_val
+            feat = _extract_features(_h_injected, race, tracker, sire_tracker)
             # 調教特徴量をマージ
             hname = h.get("horse_name", "")
             if hname in train_feats_map:
@@ -3640,6 +3717,16 @@ def _collect_all_rows(valid_days: int = 30):
             else:
                 for feat, lbl in zip(race_feats, race_labels):
                     all_train_rows.append((feat, lbl, *meta))
+
+        # Plan-γ Phase 4: tracker.update_race前にracのhorse dictへrelative_devを注入
+        # これにより run_details[22] に relative_dev が保存され、次レース以降の特徴量計算に使われる
+        if relative_dev_map and race_id:
+            for h in race.get("horses", []):
+                hid_upd = h.get("horse_id", "")
+                if hid_upd:
+                    _rd = relative_dev_map.get((race_id, hid_upd))
+                    if _rd is not None:
+                        h["relative_dev"] = _rd
 
         tracker.update_race(race)
         sire_tracker.update_race(race, sire_map)
