@@ -47,7 +47,8 @@ SYSTEM_PROMPT = (
     "「○○あり」「○○良好」「○○問題なし」「○○傾向」「○○○○」など。\n"
     "3. 以下の語尾は **絶対禁止**：「ね」「です」「ます」「ですね」「いる」「いない」"
     "「見られる」「思われる」「考えられる」「らしい」「だろう」「でしょう」。\n"
-    "4. 出力は日本語のみ。英単語・記号（？！…）の混入は厳禁。\n"
+    "4. 出力は日本語のみ。英単語・記号（？！…）の混入は厳禁。"
+    "**ハングル（韓国語）・中国語簡体字・その他外国語の混入は絶対に禁止**。\n"
     "5. 競馬専門用語（鞍上、追切、調教、馬体、仕上がり、上がり、ゲート、叩き、ハナ、"
     "差し、追込、距離、馬場、稍重、ダート、芝、内枠、外枠 等）は保持。\n"
     "6. 元コメントと同じ意味を保つこと。誇張・縮減・新情報の追加は禁止。\n\n"
@@ -132,6 +133,19 @@ def paraphrase_one(client: OpenAI, original: str) -> str:
             except Exception:
                 pass
             return original
+        # ハングル（韓国語）・キリル文字・タイ文字等が 1 文字でも含まれれば原文採用
+        # 範囲: ハングル U+AC00-U+D7A3 / U+3131-U+318E / U+1100-U+11FF
+        # キリル U+0400-U+04FF / タイ U+0E00-U+0E7F / アラビア U+0600-U+06FF
+        for ch in out:
+            cp = ord(ch)
+            if (0xAC00 <= cp <= 0xD7A3) or (0x3131 <= cp <= 0x318E) or (0x1100 <= cp <= 0x11FF) \
+                    or (0x0400 <= cp <= 0x04FF) or (0x0E00 <= cp <= 0x0E7F) \
+                    or (0x0600 <= cp <= 0x06FF):
+                try:
+                    print(f"  [WARN] non-japanese script detected (U+{cp:04X}) -> use original")
+                except Exception:
+                    pass
+                return original
         return out
     except Exception as e:
         # cp932 console での日本語混入時の UnicodeEncodeError を防ぐため、
