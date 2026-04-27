@@ -1,5 +1,67 @@
 # D-AI Keiba v3 — CHANGELOG
 
+## v6.2.0-phase3 （2026-04-27）— Plan-γ Phase 3: hybrid_total + USE_HYBRID_SCORING フラグ
+
+**commit**: b3f045a
+
+### 🎯 背景
+Phase 1/2 完了 (race_log.relative_dev / pred.json.race_relative_dev) を受けて、
+ability_total と race_relative_dev を β=0.30 でブレンドした hybrid_total プロパティを追加。
+USE_HYBRID_SCORING フラグで印付与の判定値を切替可能 (default False で従来動作維持)。
+
+### ✨ 新機能
+- `config/settings.py`: `USE_HYBRID_SCORING: bool = False`, `HYBRID_BETA: float = 0.30`
+- `HorseEvaluation.hybrid_total` @property: `at*(1-β) + rrd*β` で DEVIATION クランプ
+- `pred.json` に `hybrid_total` 出力
+- `src/output/formatter.py` の `_scoring_value()` で USE_HYBRID_SCORING 切替 (※git 管理外、別 commit で救済)
+
+### 🛡 動作仕様
+- USE_HYBRID_SCORING=False (default): 従来動作完全維持 (composite ベース印付与)
+- USE_HYBRID_SCORING=True: hybrid_total 採用 (※本番切替は Phase 6 バックテスト後)
+
+### ⚠ 既知の漏れ
+`src/output/formatter.py` 含む src/output/ 7 ファイル (3,301 行) が `.gitignore` の
+`output/` パターンで git 管理外。翌朝マスター承認後に .gitignore 例外指定 + 救済 commit 予定。
+
+### 🚧 残 Phase
+- Phase 4: ML 特徴量追加 + 再学習
+- Phase 5: フロント表示 (絶対/相対 切替) + Plan-β 統合
+- Phase 6: バックテスト ROI 比較
+
+---
+
+## v6.1.39 （2026-04-27）— T-021: 調教 (追切) 印 全頭◎固定 → データなし時「−」表示
+
+**commit**: 18ea149
+
+### 🎯 背景
+マスター指摘「調教記載がない競馬場で調教（追切）の印が全頭◎固定になっている。これは微妙だから「−」にしよう」
+
+### 🐛 真因
+1. INDEX_DEFS 追切軸: `getValue: (h) => h.training_dev ?? 0` (null→0)
+2. `calcRanks()` で全頭 value=0 → 全員ランク 1 位
+3. `rankToAxisMark(1) = "◎"` を hasVal チェックなしに無条件表示
+4. → 調教データなし会場 (門別 等) で全頭◎固定
+
+### 🔧 修正
+- `frontend/src/pages/TodayPage/HorseCardPC.tsx:397-399` (AxisCell)
+- `frontend/src/pages/TodayPage/HorseCardMobile.tsx:527-531` (インライン 8 軸)
+
+```diff
+- const axMark = rankToAxisMark(rank);
++ const axMark = hasVal ? rankToAxisMark(rank) : "−";
+```
+
+### 📊 検証
+- 門別 (training_dev=None): 全頭「−」表示確認
+- 大井 (training_dev あり): ◎/○/▲ 従来表示維持
+
+### 副次発見
+バックエンド (engine.py の `_compute_training_devs`) は既に正しく
+「3 頭未満なら _training_dev=None」を実装済み。問題はフロントのみで完結。
+
+---
+
 ## v6.1.38 （2026-04-27）— T-020: force_refresh_today pending 不整合解消
 
 **commit**: 50adc1e

@@ -170,10 +170,26 @@
 - **副次バグ**: 99=失格 で異常値 -420.1 → 防御 + テスト 2 件追加
 - **テスト**: 20 件全 pass
 
-### Plan-γ Phase 2: engine.py に race_relative_dev 出力 🔄 2026-04-27 進行中 (Sonnet.8 委託)
+### Plan-γ Phase 2: engine.py に race_relative_dev 出力 ✅ 2026-04-27 (commit 8089a3f, v6.2.0-phase2)
 - **指示**: 「次着手 C → A だね」マスター承認
-- **実装範囲**: HorseEvaluation に `race_relative_dev` 追加 / engine.py に `_calc_race_relative_dev()` ヘルパー / pred.json 出力
-- **進行中**: Sonnet.8 がバックグラウンドで実装中
+- **実装**: HorseEvaluation に `race_relative_dev` / engine.py に `_calc_race_relative_dev()` / pred.json 出力
+- **検証**: 4/28 大井 12 race / 146 馬で μ=50.00 ピッタリ完璧、SIGMA_FLOOR=5.0 適切作動
+
+### T-020 force_refresh_today pending 不整合解消 ✅ 2026-04-27 (commit 50adc1e, v6.1.38)
+- **発端**: T-017 ボタンが画面 LIVE STATS と乖離 (pending=0 で「変化なし」)
+- **真因**: `_get_pending_fetch_stats` (発走直後) と `_count_pending_races` (発走+10分後) で判定基準が違う
+- **修正**: `_count_pending_races(date, force=False)` に force 追加 / force=True で 10 分閾値解除 / `_auto_fetch_post_races` line 5440 も同様
+
+### T-021 調教 (追切) 印 全頭◎固定 → 「−」表示 ✅ 2026-04-27 (commit 18ea149, v6.1.39)
+- **指示**: 「調教記載がない競馬場で調教（追切）の印が全頭◎固定になっていること。これはなんだか微妙だから「ー」にしよう」
+- **真因**: フロント側 `rankToAxisMark(rank)` を `hasVal` チェックなしに呼出 → 全頭 value=0 で全員 rank 1 → ◎固定
+- **修正**: HorseCardPC.tsx + HorseCardMobile.tsx で `hasVal ? rankToAxisMark(rank) : "−"` に
+- **副次発見**: バック側 `_compute_training_devs` は既に正しく None を渡していた
+
+### Plan-γ Phase 3: hybrid_total + USE_HYBRID_SCORING フラグ ✅ 2026-04-27 (commit b3f045a, v6.2.0-phase3)
+- **実装**: USE_HYBRID_SCORING=False / HYBRID_BETA=0.30 / `HorseEvaluation.hybrid_total` プロパティ / pred.json 出力
+- **動作**: フラグ False (default) で従来動作維持、True で印付与に hybrid_total 採用
+- **既知の漏れ**: `src/output/formatter.py` 含む src/output/ 7 ファイル (3,301 行) が `.gitignore` の `output/` パターンで git 管理外 → 翌朝マスター承認後に救済予定
 
 ### Plan-α: ability_total -50 拡張に results_tracker 追従 ✅ 2026-04-27 17:30 (commit 7f434a8)
 - **指示**: 「もう全て変更したの？-50.0〜100.0 で表してる？」マスター追求から発覚
