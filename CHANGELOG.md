@@ -1,5 +1,40 @@
 # D-AI Keiba v3 — CHANGELOG
 
+## v6.1.40 （2026-04-28）— P0: src/output/ 8 ファイル (3,301 行) git 管理外救済
+
+**commit**: 5bb7aac
+
+### 🚨 真因
+`.gitignore` の `output/` パターンが root ディレクトリの output/ (HTML 生成物) を意図したものだったが、`src/output/` (本実装ソースコード) も巻き込んで git 管理外になっていた。
+
+### 影響範囲（全て git 管理対象に救済）
+
+| ファイル | 行数 | 役割 |
+|---|---:|---|
+| src/output/formatter.py | 1,925 | 印付与 (assign_marks) / Plan-γ Phase 3 _scoring_value 含む |
+| src/output/marks.py | 354 | 印マーク定義 |
+| src/output/betting.py | 283 | 買い目生成 |
+| src/output/past_runs.py | 245 | 前三走表示 |
+| src/output/narrative.py | 219 | レースナラティブ |
+| src/output/css.py | 206 | HTML CSS |
+| src/output/grade_helpers.py | 68 | グレード判定 |
+| src/output/__init__.py | 1 | パッケージ |
+| **合計** | **3,301 行** | |
+
+### 🔧 修正
+- `.gitignore`: `output/` → `/output/` に変更 (root only に限定)
+- `.gitignore`: `!src/output/` 例外指定追加
+- `git add -f` 不要、通常 add で 8 ファイル全て stage 可能になった
+
+### ⚠ 経緯と教訓
+- 2026-04-27 深夜に Plan-γ Phase 3 を Sonnet.9 へ委託
+- Sonnet.9 は formatter.py を編集したと報告するも `git status` に出ず
+- Opus が `git check-ignore -v` で原因特定 → P0 案件としてマスター承認待ち
+- 2026-04-28 朝マスター A 案承認 → 即実施
+- 教訓: 新規ファイル追加時は `git status` 確認、何も出なければ `git check-ignore -v` で確認
+
+---
+
 ## v6.2.0-phase3 （2026-04-27）— Plan-γ Phase 3: hybrid_total + USE_HYBRID_SCORING フラグ
 
 **commit**: b3f045a
