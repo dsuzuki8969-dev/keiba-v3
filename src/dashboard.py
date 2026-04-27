@@ -1424,6 +1424,57 @@ def create_app():
                        total=total, odds_updated_at=odds_ts,
                        ana_horses=result.get("ana_horses", []))
 
+    def _apply_paraphrase_cache(race: dict) -> int:
+        """
+        race.horses[].training_records[0].stable_comment_bullets を
+        DB cache の paraphrase で上書きする。
+        pred.json が他プロセスで上書きされても paraphrase 表示が維持される。
+        Returns: 更新した training_records 数
+        """
+        import hashlib as _hashlib
+        updated = 0
+        try:
+            from src.database import get_db as _get_db
+            conn = _get_db()
+        except Exception:
+            return 0
+        for horse in race.get("horses", []):
+            tr_recs = horse.get("training_records") or []
+            if not tr_recs:
+                continue
+            rec = tr_recs[0]
+            stable = rec.get("stable_comment") or ""
+            if not stable:
+                continue
+            # 句点・改行で分割（local_llm_paraphrase.py の split_bullets と同等）
+            parts: list[str] = []
+            for p in stable.replace("。", "。\n").split("\n"):
+                p = p.strip().rstrip("。").strip()
+                if p:
+                    parts.append(p)
+            if not parts:
+                continue
+            new_bullets: list[str] = []
+            any_paraphrased = False
+            for b in parts:
+                h = _hashlib.sha256(b.encode("utf-8")).hexdigest()
+                try:
+                    row = conn.execute(
+                        "SELECT paraphrased FROM stable_comment_paraphrase_cache WHERE input_hash=?",
+                        (h,)
+                    ).fetchone()
+                except Exception:
+                    row = None
+                if row and row[0]:
+                    new_bullets.append(row[0])
+                    any_paraphrased = True
+                else:
+                    new_bullets.append(b)
+            if any_paraphrased:
+                rec["stable_comment_bullets"] = new_bullets
+                updated += 1
+        return updated
+
     @app.route("/api/race_prediction")
     def api_race_prediction():
         date = request.args.get("date", "")
@@ -1451,6 +1502,9 @@ def create_app():
                 data = json.load(f)
             for race in data.get("races", []):
                 if race.get("venue") == venue and race.get("race_no") == race_no:
+                    # パラフレーズ cache を適用（pred.json 上書き対策）
+                    _apply_paraphrase_cache(race)
+
                     # odds があるのに乖離率未計算の馬を補完
                     patched = False
                     for h in race.get("horses", []):
