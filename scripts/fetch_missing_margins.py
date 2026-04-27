@@ -89,9 +89,23 @@ def fetch_result(race_id: str, session: requests.Session) -> list:
                 continue
             finish = int(finish_text)
             horse_no = int(cells[2].get_text(strip=True))
+            time_text = cells[7].get_text(strip=True)
             margin_text = cells[8].get_text(strip=True)
+            # タイム秒換算: "M:SS.s" → 秒
+            time_sec = None
+            tm = re.match(r"^(\d+):(\d+)\.(\d+)$", time_text)
+            if tm:
+                time_sec = int(tm.group(1)) * 60 + int(tm.group(2)) + int(tm.group(3)) / 10
+            else:
+                tm2 = re.match(r"^(\d+)\.(\d+)$", time_text)
+                if tm2:
+                    time_sec = float(time_text)
             margin_sec = _parse_margin_text(margin_text) if finish > 1 else None
-            out.append({"horse_no": horse_no, "finish": finish, "margin": margin_sec, "margin_text": margin_text})
+            out.append({
+                "horse_no": horse_no, "finish": finish,
+                "time": time_sec, "time_text": time_text,
+                "margin": margin_sec, "margin_text": margin_text,
+            })
         except Exception:
             continue
     return out
@@ -163,13 +177,32 @@ def main() -> int:
 
         # race_log UPDATE
         for r in results:
-            if r["margin"] is None:
-                continue
             try:
-                cur = conn.execute(
-                    "UPDATE race_log SET margin_ahead=? WHERE race_id=? AND horse_no=?",
-                    (r["margin"], rid, r["horse_no"]),
-                )
+                # margin_ahead と finish_time_sec を同時更新
+                if r["time"] is not None and r["time"] > 0 and r["margin"] is not None:
+                    cur = conn.execute(
+                        "UPDATE race_log SET margin_ahead=?, finish_time_sec=? "
+                        "WHERE race_id=? AND horse_no=? AND finish_time_sec = 0",
+                        (r["margin"], r["time"], rid, r["horse_no"]),
+                    )
+                    if cur.rowcount == 0:
+                        # finish_time_sec が既に入っている場合は margin のみ
+                        cur = conn.execute(
+                            "UPDATE race_log SET margin_ahead=? WHERE race_id=? AND horse_no=?",
+                            (r["margin"], rid, r["horse_no"]),
+                        )
+                elif r["time"] is not None and r["time"] > 0:
+                    cur = conn.execute(
+                        "UPDATE race_log SET finish_time_sec=? WHERE race_id=? AND horse_no=? AND finish_time_sec = 0",
+                        (r["time"], rid, r["horse_no"]),
+                    )
+                elif r["margin"] is not None:
+                    cur = conn.execute(
+                        "UPDATE race_log SET margin_ahead=? WHERE race_id=? AND horse_no=?",
+                        (r["margin"], rid, r["horse_no"]),
+                    )
+                else:
+                    continue
                 if cur.rowcount > 0:
                     updated_rows += 1
             except Exception:
