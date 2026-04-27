@@ -1,5 +1,120 @@
 # D-AI Keiba v3 — CHANGELOG
 
+## v6.1.38 （2026-04-27）— T-020: force_refresh_today pending 不整合解消
+
+**commit**: 50adc1e
+
+### 🎯 背景
+T-017 (v6.1.34) で実装した手動更新ボタンが、画面 LIVE STATS の「集計 X / 終了 Y」と乖離していた。マスター指摘「お前の目には」級の確認漏れ防止のため、Playwright で実機検証時に発見された pending 計算不整合を解消。
+
+### 🐛 真因
+- `_get_pending_fetch_stats` (LIVE STATS) = 発走時刻直後から pending
+- `_count_pending_races` (force_refresh_today) = 発走+10分経過後のみ pending
+- → ボタン押下時 force_refresh の pending=0 で「変化なし」を返していた
+
+### 🔧 修正
+- `_count_pending_races(date, force=False)` に force 引数追加
+  - `force=True` で 10 分閾値解除 (LIVE STATS と一致)
+- `_auto_fetch_post_races` line 5440 の 10 分閾値も force=True で bypass
+- `/api/force_refresh_today` で `_count_pending_races(date, force=True)` を呼ぶ
+
+### 🛡 安全性
+- USE_HYBRID_SCORING=False / 自動 fetch (force=False) は完全従来動作維持
+- netkeiba 未掲載 race への試行は errors+= で記録、レートリミットは独立制御
+
+---
+
+## v6.2.0-phase2 （2026-04-27）— Plan-γ Phase 2: race_relative_dev (当該レース内 z-score) 出力
+
+**commit**: 8089a3f
+
+### 🎯 背景
+Phase 1 で `race_log.relative_dev` (過去走の同 race_id 内 z-score) 全期間バックフィル完了。Phase 2 では当該レースの `ability_total` を同レース内で z-score 正規化した `race_relative_dev` を pred.json に出力。
+
+### ✨ 新機能
+- `HorseEvaluation.race_relative_dev: float = 50.0` フィールド追加
+- `engine._calc_race_relative_dev(evaluations, ...)` ヘルパー追加
+  - σ_floor=5.0, ±3σ クランプ → 範囲 20.0〜80.0
+  - field_count<5 / ability=None はスキップ (50.0 維持)
+- `pred.json` に `race_relative_dev` フィールド出力
+- `scripts/verify_phase2_race_relative_dev.py` 新規
+
+### 📊 検証結果 (4/28 大井 12 race / 146 馬)
+- 全 race で μ=50.00 ピッタリ (z-score 正規化完璧)
+- SIGMA_FLOOR=5.0 が横並びレース (R1 σ=2.78) で適切に作動
+- 全 146 馬で race_relative_dev フィールド NOT NULL (100%)
+
+### 🚧 残 Phase
+- Phase 3: hybrid_total + USE_HYBRID_SCORING フラグ
+- Phase 4: ML 特徴量追加 + 再学習
+- Phase 5: フロント表示 (絶対/相対 切替)
+- Phase 6: バックテスト ROI 比較
+
+---
+
+## v6.1.37 （2026-04-27）— T-019 リトライ: TOP3 内部要素サイズ完全統一
+
+**commit**: bff455d
+
+### 🐛 経緯
+v6.1.36 (03d982a) で `padding="lg"→"md"` だけ変更したが、内部 CardContent の `large=true` プロパティで筆頭だけ高さ膨らみが残っていた。マスター指摘「お前の目にはこれは高さが揃って見えるのか？」を受けて完全リトライ。
+
+### 🔧 修正
+- `<CardContent r={first} large />` から `large` プロパティ削除
+- 全 3 枚で内部要素 (タイトル/レース名/馬名/数字) サイズ完全統一
+
+### 📐 ピクセル単位検証
+| カード | width | height | top | bottom |
+|---|---:|---:|---:|---:|
+| 筆頭 | 292 | 189 | 201 | 389 |
+| 次点 | 292 | 189 | 201 | 389 |
+| 第3候補 | 292 | 189 | 201 | 389 |
+
+→ 全 3 枚 width/height/top/bottom 完全一致
+
+### ⚠ 反省
+- `feedback_test_verification_strict.md ★` 違反 1 件
+- 教訓: UI 揃いの判定は `getBoundingClientRect()` ピクセル測定が標準
+
+---
+
+## v6.1.36 （2026-04-27）— T-019 不完全版（v6.1.37 で完全解消）
+
+**commit**: 03d982a (リトライで上書き)
+
+`padding="lg"→"md"` のみで対応したが、内部要素サイズ差を見落とした。
+
+---
+
+## v6.1.35 （2026-04-27）— T-018: 帯広/大井 行揃いズレ修正 (表層+中層)
+
+**commit**: e6f769d
+
+### 🎯 背景
+ホーム「本日の開催競馬場」カードで大井に「大雨」表示があるのに帯広は天気欄が空 → カード行高ズレ。
+
+### 🐛 真因
+帯広の venue_code 不一致:
+- venue_master.py = "帯広": "65" (netkeiba race_id 準拠)
+- dashboard.py VENUE_COORDS = "52" のみ (SPAT4 互換)
+- → `VENUE_COORDS.get("65")=None` で天気取得スキップ
+
+### 🔧 修正
+- 表層 (HomePage.tsx): 天気行を `min-h-[1rem]` プレースホルダ化
+- 中層 (dashboard.py): `VENUE_COORDS["65"] = (42.93, 143.20)` 追加
+
+### 📊 実機検証
+- Flask 再起動後 `/api/home_info` で `weather["帯広"] = "くもり"` 取得確認
+- Playwright で UI 反映確認
+
+---
+
+## v6.1.34 （2026-04-27）— T-017: リアルタイム成績 手動更新ボタン + 自動更新高速化
+
+(v6.1.34 詳細は v6.1.34 セクションへ)
+
+---
+
 ## v6.2.0-phase1 （2026-04-27）— Plan-γ Phase 1: ハイブリッド能力指数（絶対 × 他馬比較）
 
 **commit**: 5b9ebbc
