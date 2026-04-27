@@ -551,10 +551,10 @@ class TrainingScraper:
             "仕掛": "やや速い", "仕上": "やや速い", "本調教": "通常",
             "軽め": "軽め", "極軽め": "極軽め",
         }
-        intensity = _INTENSITY_MAP.get(intensity_raw, intensity_raw or "馬なり")
-        # TrainingLoadが空の場合はラップから推定
-        if not intensity_raw and splits:
-            intensity = self._infer_intensity(splits, course)
+        # マスター指示 2026-04-23 v6.0.1: 原典に無い時は勝手に付与しない
+        #   旧: マップ未ヒット → デフォルト「馬なり」、空なら _infer_intensity でラップ推定
+        #   新: 原典文字列をそのまま採用。マップのみ正規化。記載なし → 空文字
+        intensity = _INTENSITY_MAP.get(intensity_raw, intensity_raw)
 
         # 短評（td[11] Training_Critic）
         critic_td = row.select_one("td.Training_Critic")
@@ -1111,7 +1111,8 @@ class PremiumNetkeibaScraper:
         oikiri_by_name = {}
         missing = [h for h in horses if not training_map.get(h.horse_name)]
         # NAR調教対応会場: keibabook_training.py _NAR_TRAINING_SUPPORTED 準拠
-        _NAR_TRAINING_VENUES = {"30", "42", "43", "44", "45", "50", "51"}
+        # マスター指摘 2026-04-23: 2026 年から園田 netkeiba コードが "49" に変更
+        _NAR_TRAINING_VENUES = {"30", "42", "43", "44", "45", "49", "50", "51"}
         has_oikiri = is_jra or (venue_code in _NAR_TRAINING_VENUES)
         if missing and self.client.is_logged_in and has_oikiri:
             try:

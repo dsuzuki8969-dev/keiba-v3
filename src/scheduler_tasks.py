@@ -15,6 +15,7 @@ from config.settings import (
     PROJECT_ROOT,
 )
 from src.log import get_logger
+from src.utils.atomic_json import atomic_write_json
 
 logger = get_logger(__name__)
 
@@ -205,14 +206,23 @@ def run_odds_update(date_key: str, cancel_event: threading.Event | None = None,
                 except Exception:
                     pass
             if san_map:
-                for t in race.get("tickets", []):
+                # 買い目指南 Phase 1-a: tickets + formation_tickets 両方を処理
+                _all_tickets = list(race.get("tickets", [])) + list(race.get("formation_tickets", []))
+                for t in _all_tickets:
                     if t.get("type") != "三連複":
                         continue
                     combo = t.get("combo", [])
+                    # combo が無い場合は a/b/c で代用（formation_tickets 由来）
+                    if not combo and t.get("a") is not None and t.get("b") is not None and t.get("c") is not None:
+                        combo = [t["a"], t["b"], t["c"]]
                     if len(combo) == 3:
-                        key = tuple(sorted(int(x) for x in combo))
+                        try:
+                            key = tuple(sorted(int(x) for x in combo))
+                        except (ValueError, TypeError):
+                            continue
                         if key in san_map:
                             t["odds"] = round(san_map[key], 1)
+                            t["odds_source"] = "real"
                             prob = t.get("prob", 0)
                             if prob > 0:
                                 t["ev"] = round(prob * san_map[key] * 100, 1)
@@ -392,11 +402,11 @@ def run_odds_update(date_key: str, cancel_event: threading.Event | None = None,
         pred["top10_odds_updated_at"] = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
 
     # pred.json にオッズ・馬体重 + タイムスタンプを書き戻し
+    # 原子書き込み + プロセス間ロックで dashboard 並行書き込みからの破損を防止
     ts = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
     pred["odds_updated_at"] = ts
     try:
-        with open(pred_file, "w", encoding="utf-8") as wf:
-            json.dump(pred, wf, ensure_ascii=False, indent=2)
+        atomic_write_json(pred_file, pred)
     except Exception as e:
         logger.warning("pred.json 書き戻し失敗: %s", e)
 
@@ -434,9 +444,9 @@ def run_db_update(date_str: str, progress_callback=None):
         logger.warning("コースDB更新失敗: %s", e, exc_info=True)
         log_entries.append(f"✗ コースDB更新失敗: {e}")
 
-    # [2/3] レース戦績DB更新
+    # [2/4] レース戦績DB更新
     if progress_callback:
-        progress_callback(2, 3, "レース戦績DB更新中...")
+        progress_callback(2, 4, "レース戦績DB更新中...")
     log_entries.append("race_log更新開始")
     try:
         from src.database import populate_race_log_from_predictions
@@ -446,9 +456,49 @@ def run_db_update(date_str: str, progress_callback=None):
         logger.warning("race_log更新失敗: %s", e, exc_info=True)
         log_entries.append(f"⚠ race_log更新失敗: {e}")
 
-    # [3/3] キャッシュクリア
+    # [3/4] 走破偏差値（run_dev）バックフィル — 馬指数グラフ用
+    # 当日分のみ計算（NULL のまま残った行はバッチで再計算）
     if progress_callback:
-        progress_callback(3, 3, "キャッシュ再構築中...")
+        progress_callback(3, 4, "走破偏差値計算中...")
+    log_entries.append("run_dev更新開始")
+    try:
+        from scripts.backfill_run_dev import run_backfill
+        result = run_backfill(since=date_str, show_progress=False)
+        log_entries.append(
+            f"✓ run_dev更新完了 (計算{result['calc']:,}/スキップ{result['skip']:,})"
+        )
+    except Exception as e:
+        logger.warning("run_dev更新失敗: %s", e, exc_info=True)
+        log_entries.append(f"⚠ run_dev更新失敗: {e}")
+
+    # [4/5] レースレベル偏差値（race_level_dev）バックフィル — 当日分
+    if progress_callback:
+        progress_callback(4, 5, "レースレベル偏差値計算中...")
+    log_entries.append("race_level_dev更新開始")
+    try:
+        from scripts.backfill_race_level_dev import run_backfill as run_race_level_backfill
+        result = run_race_level_backfill(since=date_str, show_progress=False)
+        log_entries.append(
+            f"✓ race_level_dev更新完了 (計算{result['calc_races']:,}レース/更新{result['updated_rows']:,}件)"
+        )
+    except Exception as e:
+        logger.warning("race_level_dev更新失敗: %s", e, exc_info=True)
+        log_entries.append(f"⚠ race_level_dev更新失敗: {e}")
+
+    # [5/6] 集計キャッシュ invalidate（backfill で値が変わったため）
+    if progress_callback:
+        progress_callback(5, 6, "集計キャッシュ invalidate 中...")
+    try:
+        from src.results_tracker import invalidate_aggregate_cache
+        invalidate_aggregate_cache()
+        log_entries.append("[OK] 集計キャッシュ invalidate 完了")
+    except Exception as e:
+        logger.warning("invalidate_aggregate_cache 失敗: %s", e, exc_info=True)
+        log_entries.append(f"[警告] キャッシュ invalidate 失敗: {e}")
+
+    # [6/6] キャッシュクリア
+    if progress_callback:
+        progress_callback(6, 6, "キャッシュ再構築中...")
     log_entries.append("✓ キャッシュ再構築完了")
 
     logger.info("DB更新完了: %s", date_str)

@@ -41,6 +41,7 @@ from data.masters.venue_master import (
 )
 from src.log import get_logger
 from src.models import CourseMaster, Horse, PastRun, RaceInfo, TrainingRecord
+from src.scraper._layout_check import check_cell_count, check_required_classes
 
 logger = get_logger(__name__)
 
@@ -64,6 +65,44 @@ RACE_URL = "https://race.netkeiba.com"
 NAR_URL = "https://nar.netkeiba.com"  # 地方競馬
 ODDS_URL = "https://race.netkeiba.com/odds"
 REQUEST_INTERVAL = 1.5  # 秒 (礼儀あるスクレイピング)
+
+# マスター指示 2026-04-23: netkeiba レート制限 (HTTP 429) の明示検知 + cooldown
+# 制限発動中は即座に None を返してフォールバック（公式→競馬ブック→楽天）へ誘導。
+# 15秒タイムアウトを何度も食らって全体をハングさせない。
+import threading as _threading
+_NETKEIBA_COOLDOWN_UNTIL: float = 0.0   # 0 なら通常運用、非0 なら time.time() < この値 で全リクエスト skip
+_NETKEIBA_COOLDOWN_LOCK = _threading.Lock()
+_DEFAULT_RETRY_AFTER = 300              # Retry-After 未提供時のデフォルト cooldown（5分）
+
+
+class NetkeibaRateLimited(Exception):
+    """netkeiba が HTTP 429 を返した時に raise（上位で即フォールバック用）"""
+    def __init__(self, retry_after: int = _DEFAULT_RETRY_AFTER):
+        self.retry_after = retry_after
+        super().__init__(f"netkeiba rate limited, retry after {retry_after}s")
+
+
+def _set_netkeiba_cooldown(retry_after: int) -> None:
+    """cooldown を設定（複数スレッドからの同時 429 を安全に処理）"""
+    global _NETKEIBA_COOLDOWN_UNTIL
+    with _NETKEIBA_COOLDOWN_LOCK:
+        new_until = time.time() + retry_after
+        # より長い cooldown を優先（小さい値で上書きしない）
+        if new_until > _NETKEIBA_COOLDOWN_UNTIL:
+            _NETKEIBA_COOLDOWN_UNTIL = new_until
+
+
+def _is_netkeiba_cooldown_active() -> bool:
+    """現在 netkeiba cooldown 中か"""
+    with _NETKEIBA_COOLDOWN_LOCK:
+        return time.time() < _NETKEIBA_COOLDOWN_UNTIL
+
+
+def _get_netkeiba_cooldown_remaining() -> int:
+    """netkeiba cooldown の残り秒数（0 なら非アクティブ）"""
+    with _NETKEIBA_COOLDOWN_LOCK:
+        remaining = int(_NETKEIBA_COOLDOWN_UNTIL - time.time())
+    return max(0, remaining)
 
 HEADERS = {
     "User-Agent": (
@@ -333,6 +372,16 @@ class NetkeibaClient:
             self._stats_skip += 1
             return None
 
+        # マスター指示 2026-04-23: netkeiba 制限中は即 None 返してフォールバックへ
+        if _is_netkeiba_cooldown_active():
+            remaining = _get_netkeiba_cooldown_remaining()
+            logger.warning(
+                "netkeiba 制限中（残 %ds）→ リクエスト skip: %s",
+                remaining, url,
+            )
+            self._stats_skip += 1
+            return None
+
         self._stats_fetch += 1
         elapsed = time.time() - self._last_request
         if elapsed < self.request_interval:
@@ -369,6 +418,26 @@ class NetkeibaClient:
 
         try:
             resp = self.session.get(full_url, timeout=15, headers=headers)
+
+            # マスター指示 2026-04-23: HTTP 429 (Too Many Requests) の明示検知
+            if resp.status_code == 429:
+                try:
+                    retry_after = int(resp.headers.get("Retry-After", _DEFAULT_RETRY_AFTER))
+                except (TypeError, ValueError):
+                    retry_after = _DEFAULT_RETRY_AFTER
+                _set_netkeiba_cooldown(retry_after)
+                logger.warning(
+                    "netkeiba 429 検知 → cooldown %d秒 (Retry-After=%s): %s",
+                    retry_after, resp.headers.get("Retry-After", "N/A"), full_url,
+                )
+                return None  # 即 None でフォールバック誘導
+
+            # HTTP 503 (Service Unavailable) もレート制限の一種として扱う
+            if resp.status_code == 503:
+                logger.warning("netkeiba 503 → 短期 cooldown 60秒: %s", full_url)
+                _set_netkeiba_cooldown(60)
+                return None
+
             resp.raise_for_status()
             if encoding:
                 resp.encoding = encoding
@@ -385,9 +454,21 @@ class NetkeibaClient:
             return BeautifulSoup(resp.text, "lxml")
         except Exception as e:
             # 400/404 は恒久的に存在しないページなのでスキップリストに登録
-            if hasattr(e, "response") and getattr(e.response, "status_code", 0) in (400, 404):
+            status = getattr(getattr(e, "response", None), "status_code", 0)
+            if status in (400, 404):
                 self._known_404.add(cache_key)
                 logger.debug("404/400スキップ登録: %s", full_url)
+            elif status == 429:
+                # 例外経由でも 429 は cooldown 発動
+                try:
+                    retry_after = int(e.response.headers.get("Retry-After", _DEFAULT_RETRY_AFTER))
+                except Exception:
+                    retry_after = _DEFAULT_RETRY_AFTER
+                _set_netkeiba_cooldown(retry_after)
+                logger.warning(
+                    "netkeiba 429 例外検知 → cooldown %d秒: %s",
+                    retry_after, full_url,
+                )
             else:
                 logger.warning("GET failed: %s → %s: %s", full_url, type(e).__name__, e, exc_info=True)
             return None
@@ -1012,10 +1093,24 @@ class RaceEntryParser:
         """shutuba.html 用（レガシー・フォールバック）"""
         horses = []
         rows = soup.select("table.ShutubaTable tr.HorseList")
+        # ★ 構造チェック: テーブル自体の存在確認
+        check_required_classes(
+            soup,
+            ["table.ShutubaTable"],
+            parser_name="RaceEntryParser._parse_horses",
+            url=f"shutuba.html?race_id={race_id}",
+        )
 
         for row in rows:
             try:
                 cells = row.select("td")
+                # ★ 構造チェック: 枠・馬番・馬名・性齢・斤量・騎手など最低 10 セル必要
+                _EXPECTED_CELLS_SHUTUBA = 10
+                check_cell_count(
+                    cells, _EXPECTED_CELLS_SHUTUBA,
+                    parser_name="RaceEntryParser._parse_horses",
+                    url=f"shutuba.html?race_id={race_id}",
+                )
                 if len(cells) < 10:
                     continue
 
@@ -1313,6 +1408,8 @@ class HorseHistoryParser:
     def parse(self, horse_id: str, horse: Optional[Horse] = None) -> List[PastRun]:
         # 過去走: horse/result/{id}/ に戦績テーブル。horse/{id}/ はAjax読み込みのため不可
         result_url = f"{BASE_URL}/horse/result/{horse_id}/"
+        # layout-check: _parse_row から URL を参照できるよう保持
+        self._last_url = result_url
         result_soup = self.client.get(result_url)
         if not result_soup:
             return []
@@ -1457,6 +1554,14 @@ class HorseHistoryParser:
     def _parse_row(self, row) -> Optional[PastRun]:
         """horse/result/{id}/ の戦績テーブル行をパース"""
         cells = row.select("td")
+        # ★ 構造チェック: cells[18]=タイム / [19]=着差 / [21]=通過順 / [22]=ペース / [23]=上り3F
+        # これらが取れないとスピード偏差値が欠損する。最低 24 必要（[23] まで使用）。
+        _EXPECTED_CELLS_HISTORY = 24
+        check_cell_count(
+            cells, _EXPECTED_CELLS_HISTORY,
+            parser_name="HorseHistoryParser._parse_row",
+            url=getattr(self, "_last_url", "?"),
+        )
         if len(cells) < 18:
             return None
 
@@ -1581,9 +1686,13 @@ class HorseHistoryParser:
         time_text = cells[18].get_text(strip=True) if len(cells) > 18 else ""
         finish_time = self._parse_time(time_text)
         margin_text = cells[19].get_text(strip=True) if len(cells) > 19 else ""
-        margin_ahead = self._parse_margin(margin_text)
-        if margin_ahead is None:
-            margin_ahead = 0.0
+        # 1着馬は着差なし（NULL）。2着以降のみ着差を格納
+        if finish_pos == 1:
+            margin_ahead = None
+        else:
+            margin_ahead = self._parse_margin(margin_text)
+            if margin_ahead is None:
+                margin_ahead = 0.0
         # 取消・除外馬（finish_pos=99）は通過データなし
         if finish_pos == 99:
             pos_text = ""
@@ -1827,11 +1936,21 @@ class OddsScraper:
 
     def _get_tansho_from_odds_page(self, race_id: str) -> Dict[int, Tuple[float, int]]:
         """odds/index.html から単勝オッズを取得"""
-        base = NAR_URL if get_venue_code_from_race_id(race_id) not in JRA_CODES else RACE_URL
+        venue_code = get_venue_code_from_race_id(race_id)
+        base = NAR_URL if venue_code not in JRA_CODES else RACE_URL
         url = f"{base}/odds/index.html"
         soup = self.client.get(url, params={"race_id": race_id, "type": "b1"}, use_cache=False)
         if not soup:
             return {}
+
+        # 帯広（ばんえい）は odds ページに RaceOdds_HorseList_Table が存在しないため構造チェックをスキップ
+        if venue_code not in ("52", "65"):
+            check_required_classes(
+                soup,
+                ["table.RaceOdds_HorseList_Table"],
+                parser_name="OddsScraper._get_tansho_from_odds_page",
+                url=f"{url}?race_id={race_id}&type=b1",
+            )
 
         result = {}
         # JRA: tr.HorseList or tr[id^='odds-']
@@ -1884,6 +2003,14 @@ class OddsScraper:
         if not soup:
             return {}
 
+        # ★ 構造チェック: 結果テーブルの存在確認
+        check_required_classes(
+            soup,
+            [".ResultTableWrap table"],
+            parser_name="OddsScraper._get_tansho_from_result_page",
+            url=f"{url}?race_id={race_id}",
+        )
+
         result = {}
         table = soup.select_one(".ResultTableWrap table")
         if not table:
@@ -1900,9 +2027,16 @@ class OddsScraper:
                     pop_col = i
         if odds_col is None or pop_col is None:
             odds_col, pop_col = 9, 8
+        # result.html の想定最小セル数: 馬番(2) + 単勝オッズ + 人気 = 最低 10
+        _EXPECTED_CELLS_RESULT = 10
         for row in rows:
             try:
                 cells = row.select("td")
+                check_cell_count(
+                    cells, _EXPECTED_CELLS_RESULT,
+                    parser_name="OddsScraper._get_tansho_from_result_page",
+                    url=f"{url}?race_id={race_id}",
+                )
                 if len(cells) <= max(odds_col, pop_col):
                     continue
                 no_el = cells[2] if len(cells) > 2 else None

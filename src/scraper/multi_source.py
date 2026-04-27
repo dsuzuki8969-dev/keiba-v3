@@ -42,9 +42,11 @@ class MultiSourceEnricher:
         self,
         official_odds=None,        # OfficialOddsScraper instance
         keibabook_client=None,     # KeibabookClient instance (optional)
+        nar_scraper=None,          # OfficialNARScraper instance（NAR 結果補完用、新規）
     ):
         self._official = official_odds
         self._kb_client = keibabook_client
+        self._nar = nar_scraper
 
     # ================================================================
     # メインエンリッチメント
@@ -116,6 +118,98 @@ class MultiSourceEnricher:
                 "マルチソース補完: %s — odds=%d, weight=%d, id=%d, owner=%d",
                 race_id, stats["odds"], stats["weights"],
                 stats["ids"], stats["owners"],
+            )
+        return stats
+
+    # ================================================================
+    # NAR 公式 結果補完
+    # ================================================================
+
+    def enrich_results(
+        self,
+        race_id: str,
+        race_date: str,
+        horses: List[Horse],
+    ) -> Dict[str, int]:
+        """
+        NAR 公式から race_results を取得し、horses[] に焼き込む。
+        JRA レース（venue 01-10）はスキップ。Horse モデルに属性がない場合は
+        setattr で動的追加する（models.py は変更しない）。
+
+        Args:
+            race_id:   netkeiba race_id（例: "202644030806"）
+            race_date: "YYYY-MM-DD"
+            horses:    補完対象の Horse[]
+
+        Returns:
+            {"finish_time": N, "last_3f": N, "corners": N}  各項目の更新馬数
+        """
+        stats = {"finish_time": 0, "last_3f": 0, "corners": 0}
+
+        if not self._nar:
+            return stats
+
+        # JRA レース（venue コード 01-10）はスキップ
+        venue_code = race_id[4:6] if len(race_id) >= 6 else ""
+        JRA_CODES = {"01", "02", "03", "04", "05", "06", "07", "08", "09", "10"}
+        if venue_code in JRA_CODES:
+            return stats
+
+        try:
+            result = self._nar.get_result(race_id, race_date)
+        except Exception as e:
+            logger.debug("NAR get_result 失敗 race_id=%s: %s", race_id, e)
+            return stats
+
+        if not result or not result.get("order"):
+            return stats
+
+        # horse_no → result entry のマップ
+        by_no = {entry["horse_no"]: entry for entry in result["order"]}
+
+        for h in horses:
+            entry = by_no.get(h.horse_no)
+            if not entry:
+                continue
+
+            # finish_time_sec（走破タイム秒）
+            ts = entry.get("time_sec")
+            if ts is not None and ts > 0:
+                current = getattr(h, "finish_time_sec", None)
+                if current != ts:
+                    setattr(h, "finish_time_sec", ts)
+                    stats["finish_time"] += 1
+
+            # last_3f_sec（上がり3F秒）
+            l3f = entry.get("last_3f")
+            if l3f is not None and l3f > 0:
+                current = getattr(h, "last_3f_sec", None)
+                if current != l3f:
+                    setattr(h, "last_3f_sec", l3f)
+                    stats["last_3f"] += 1
+
+            # corners（通過順位リスト）— passing または corners 属性に設定
+            corners = entry.get("corners")
+            if corners and isinstance(corners, list) and len(corners) > 0:
+                if hasattr(h, "passing"):
+                    existing = h.passing  # type: ignore[attr-defined]
+                    if corners != existing:
+                        h.passing = corners  # type: ignore[attr-defined]
+                        stats["corners"] += 1
+                elif hasattr(h, "corners"):
+                    existing = h.corners  # type: ignore[attr-defined]
+                    if corners != existing:
+                        h.corners = corners  # type: ignore[attr-defined]
+                        stats["corners"] += 1
+                else:
+                    # 属性なし → 動的追加
+                    setattr(h, "passing", corners)
+                    stats["corners"] += 1
+
+        if any(v > 0 for v in stats.values()):
+            logger.info(
+                "NAR 結果補完: %s — finish_time=%d, last_3f=%d, corners=%d",
+                race_id, stats["finish_time"], stats["last_3f"], stats["corners"],
             )
         return stats
 

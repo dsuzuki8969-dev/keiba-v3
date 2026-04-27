@@ -215,6 +215,45 @@ def _make_tickets(pred_horses: list) -> list:
     return tickets
 
 
+def _make_tickets_by_mode(pred_horses: list) -> dict:
+    """簡易 3モード別チケット生成（walk_forward バックテスト用）
+
+    engine を通さないため EV・Kelly 配分・トリガミ回避は行わず、
+    点数レンジだけモード別に変えて的中率/回収率の相対比較を可能にする。
+
+    - accuracy: ◎軸 馬連5点 + 三連複10点 = 15点
+    - balanced: ◎軸 馬連4点 + 三連複6点  = 10点
+    - recovery: ◎軸 馬連2点 + 三連複3点  =  5点
+    """
+    honmei_no = next(
+        (h["horse_no"] for h in pred_horses if h["mark"] in ("◉", "◎")), None
+    )
+    others = [h["horse_no"] for h in pred_horses if h["mark"] in ("○", "▲", "△", "☆")]
+
+    modes = {
+        "accuracy": {"umaren": 5, "sanfuku_base": 5},
+        "balanced": {"umaren": 4, "sanfuku_base": 4},
+        "recovery": {"umaren": 2, "sanfuku_base": 3},
+    }
+    result = {"accuracy": [], "balanced": [], "recovery": []}
+    if not (honmei_no and others):
+        return result
+    for mode, cfg in modes.items():
+        bet_list = []
+        for o in others[: cfg["umaren"]]:
+            bet_list.append({
+                "type": "馬連", "combo": [honmei_no, o],
+                "ev": 0, "stake": 100, "signal": "簡易", "mode": mode,
+            })
+        for b, c in combinations(others[: cfg["sanfuku_base"]], 2):
+            bet_list.append({
+                "type": "三連複", "combo": [honmei_no, b, c],
+                "ev": 0, "stake": 100, "signal": "簡易", "mode": mode,
+            })
+        result[mode] = bet_list
+    return result
+
+
 # ============================================================
 # 1ヶ月分の処理
 # ============================================================
@@ -356,6 +395,7 @@ def _process_month(
             pred_horses.append(_build_horse_entry(hd, hid, prob, mk, ru, field_count))
 
         tickets = _make_tickets(pred_horses)
+        tickets_by_mode = _make_tickets_by_mode(pred_horses)
 
         pred_race = {
             "race_id": race_id,
@@ -374,6 +414,7 @@ def _process_month(
             "tickets": tickets,
             "formation_tickets": [],
             "value_bets": [],
+            "tickets_by_mode": tickets_by_mode,
         }
         dates_data[date_str]["races"].append(pred_race)
 

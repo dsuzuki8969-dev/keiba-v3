@@ -863,6 +863,14 @@ class RaceAnalysis:
     formation: Optional[Dict[str, List[Any]]] = None
     # {"col1": [...], "col2": [...], "col3": [...], "umaren": [...], "sanrenpuku": [...]}
 
+    # 買い目指南 Phase 1-b: 買う/買わない判定
+    bet_decision: Optional[Dict[str, Any]] = None
+    # {"skip": bool, "reason": str|None, "message": str, "reference_tickets": list}
+
+    # 買い目指南 Phase 1-c: 3モード（的中率/バランス/回収率）買い目
+    tickets_by_mode: Optional[Dict[str, List[Dict[str, Any]]]] = None
+    # {"accuracy": [...], "balanced": [...], "recovery": [...]}
+
     # 予想オッズ・期待値ランキング
     predicted_odds_umaren: List[Dict[str, Any]] = field(default_factory=list)
     predicted_odds_sanrenpuku: List[Dict[str, Any]] = field(default_factory=list)

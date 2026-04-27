@@ -474,6 +474,9 @@ def reassign_marks_dict(horses: List[dict], is_jra: bool = True) -> None:
     WP_FLOORS = {"○": _MIN_WP_TAIKOU, "▲": _MIN_WP_TANNUKE, "△": _MIN_WP_RENDASHI, "★": 0}
 
     # 既存の☆/×をメモ（×は現在のオッズ条件を再検証）
+    # Bug#3 修正: × 再検証条件を緩和（オッズ≥5倍 or pop>2位 で剥がす）
+    # 従来はオッズ≥10倍 or pop>3位で剥がしていたが、市場で人気薄に転落した
+    # 時点で × を維持すべき（4-17: 48R で 17件 → 4-21: 60R で 1件 の激減を防ぐ）
     special_marks = {}
     for h in horses:
         m = h.get("mark", "")
@@ -482,7 +485,8 @@ def reassign_marks_dict(horses: List[dict], is_jra: bool = True) -> None:
         elif m == "×":
             _odds = h.get("odds") or h.get("predicted_tansho_odds") or 999
             _pop = h.get("popularity") or 99
-            if _odds < 10.0 and _pop <= 3:
+            # オッズ < 5.0 かつ 人気 <= 2 のみ × を維持（人気上位で危険視されている馬）
+            if _odds < 5.0 and _pop <= 2:
                 special_marks[h.get("horse_no")] = m
 
     # composite 降順ソート
@@ -568,3 +572,15 @@ def reassign_marks_dict(horses: List[dict], is_jra: bool = True) -> None:
                 h["mark"] = req_mark
                 assigned_marks.add(req_mark)
                 break
+
+    # ---- Step 3b: 印付与拡張（廃止） ----
+    # マスター指示 2026-04-22: ☆ は 1頭のみ。補助印としての ☆ 追加付与は禁止。
+    # Phase 3（三連単フォーメーション）では rank3 に「同断層内の無印馬」を
+    # generate_sanrentan_formation 側で自動で拾うため補助印は不要になった。
+
+    # ---- 最終整形: 無印の "" を Mark.NONE ("－") に統一 ----
+    # pred.json / UI / 集計側と整合を取るため全角ダッシュに変換。
+    # (formatter.py は Mark.NONE="－" を使用、results_tracker by_mark は8種のみ集計)
+    for h in horses:
+        if not h.get("mark"):
+            h["mark"] = "－"

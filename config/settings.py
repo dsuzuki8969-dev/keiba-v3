@@ -60,7 +60,9 @@ DATASOURCE = {
 # 偏差値レンジ（設計書 第0章）
 # ============================================================
 DEVIATION = {
-    "ability": {"min": 20, "max": 100},
+    # 下限を -50 に拡張（A案: 2026-04-26 マスター承認）
+    # 旧下限 20 は「真の大敗」と「データ不足」を区別できなかった問題を解消
+    "ability": {"min": -50, "max": 100},
     "pace": {"min": 20, "max": 100},
     "course": {"min": 20, "max": 100},
     "composite": {"min": 20, "max": 100},
@@ -343,7 +345,7 @@ def get_wa_weights(distance: int) -> list:
 DISTANCE_BASE = 1600  # 距離係数の基準距離(m)
 CONVERSION_CONSTANT = 3.5  # レガシー互換用（デフォルト値）
 
-# 案1: 距離帯別変換定数（短距離ほど1秒の差が大きい）
+# 案1: 距離帯別変換定数（JRA用）（短距離ほど1秒の差が大きい）
 # 実データ・Walk-Forward CV AUC最大化から設定
 CONVERSION_CONSTANT_BY_DIST = {
     1000: 5.0,
@@ -361,17 +363,52 @@ CONVERSION_CONSTANT_BY_DIST = {
     3600: 2.2,
 }
 
+# NAR用 k 値テーブル（短距離帯の clamp=20 過多を防ぐため緩和）
+# 背景: 金沢ダ1400 で speed_dev=20 が87件（4-7着で日常的にフロア到達）
+#   JRA k=5.0(800m) → std+2.4秒で clamp 到達
+#   NAR k=3.0(800m) → std+4.0秒まで有効レンジを確保
+# 1700m以下は緩和、1800m以上はJRAと同一値を使用
+CONVERSION_CONSTANT_BY_DIST_NAR = {
+    800:  3.0,   # JRA 5.0 → NAR 3.0（clamp 到達を std+4.0秒まで拡張）
+    1000: 2.8,   # JRA 5.0 → NAR 2.8
+    1150: 2.7,   # JRA 4.8 → NAR 2.7
+    1200: 2.6,   # JRA 4.5 → NAR 2.6
+    1400: 2.5,   # JRA 4.0 → NAR 2.5（金沢ダ1400 主要ターゲット）
+    1500: 2.9,   # 中間帯（JRA 3.7 → NAR 2.9）
+    1600: 3.2,   # JRA 3.7 → NAR 3.2
+    1700: 3.3,   # JRA 3.7 → NAR 3.3
+    1800: 3.4,   # 1800m以上は JRA と同一
+    2000: 3.2,
+    2200: 3.0,
+    2400: 2.8,
+    2600: 2.7,
+    3000: 2.5,
+    3200: 2.4,
+    3600: 2.2,
+}
 
-def get_conversion_constant(distance: int) -> float:
-    """距離に最も近い帯の変換定数を返す"""
-    keys = sorted(CONVERSION_CONSTANT_BY_DIST.keys())
+# JRA会場コード（01〜10）。それ以外はNAR扱いとして NAR k 値テーブルを参照。
+_JRA_VENUE_CODES = {"01", "02", "03", "04", "05", "06", "07", "08", "09", "10"}
+
+
+def get_conversion_constant(distance: int, venue_code: str = "") -> float:
+    """距離に最も近い帯の変換定数を返す。
+
+    venue_code が NAR（JRA以外）の場合は CONVERSION_CONSTANT_BY_DIST_NAR を使用する。
+    venue_code が空または JRA コード（01-10）の場合は従来の JRA 用テーブルを使用。
+    """
+    # venue_code は "46" のような2桁コード、または "46_ダート_1400" の前部を想定
+    vc = venue_code.split("_")[0].strip() if venue_code else ""
+    is_nar = vc and vc not in _JRA_VENUE_CODES
+    table = CONVERSION_CONSTANT_BY_DIST_NAR if is_nar else CONVERSION_CONSTANT_BY_DIST
+    keys = sorted(table.keys())
     best = keys[0]
     for k in keys:
         if k <= distance:
             best = k
         else:
             break
-    return CONVERSION_CONSTANT_BY_DIST[best]
+    return table[best]
 
 # ============================================================
 # 斤量補正 (D-5)
@@ -561,6 +598,16 @@ MAX_FORMATION_TICKETS = 15  # EV上位N点に制限
 MIN_FORMATION_EV = 80  # 最低EV%（これ未満は買い目から除外）
 
 # ============================================================
+# 買い目印制約（買い目指南 Phase 1）
+# ============================================================
+# col1（軸）: ◎ と ◉ のみ。マスター指示「◎◉と心中」
+ALLOWED_COL1_MARKS = {"◉", "◎"}
+# col2（相手）: ×・無印は禁止。〇▲△★☆ まで許可
+ALLOWED_COL2_MARKS = {"◉", "◎", "○", "〇", "▲", "△", "★", "☆"}
+# col3（ヒモ）: 的中率重視モードでは無印まで許可、他モードでは col2 と同じ
+# モード別切替は generate_formation_tickets の allow_unmarked_col3 引数で制御
+
+# ============================================================
 # 自信度別賭け金デフォルト (5-3)
 # ============================================================
 STAKE_DEFAULT = {
@@ -570,6 +617,34 @@ STAKE_DEFAULT = {
     "B": 1500,
     "C": 500,
     "D": 0,
+}
+
+# ============================================================
+# 買い目指南 Phase 1-b: Kelly加重・トリガミ回避・bet_decision
+# ============================================================
+# 自信度別 Kelly係数（Fractional Kelly: 0.25 が基準）
+# SS級ほど大きく賭け、C級はそもそも買わない
+KELLY_FRACTION_BY_CONFIDENCE = {
+    "SS": 0.25,
+    "S":  0.20,
+    "A":  0.15,
+    "B":  0.10,
+    "C":  0.00,
+    "D":  0.00,
+}
+
+# トリガミ回避マージン: どの券種がヒットしても
+#   payout_i >= sum(stakes) * TORIGAMI_SAFETY_MARGIN
+# を満たさない券は除外対象
+TORIGAMI_SAFETY_MARGIN = 1.05
+
+# bet_decision 判定閾値
+BET_DECISION_THRESHOLDS = {
+    "low_ev_max_ev":           110,  # max_ev < 110% かつ confidence ∈ {B,C} で skip
+    "dispersed_ticket_count":  20,   # 候補 > 20 点 かつ max_place3_prob < 15% で skip
+    "dispersed_max_place3":    0.15,
+    "low_confidence_honmei_winprob": 0.15,  # C かつ ◎ win_prob < 15% で skip
+    "reference_ticket_count":  3,    # skip 時の参考ヒモ点数
 }
 
 # ============================================================

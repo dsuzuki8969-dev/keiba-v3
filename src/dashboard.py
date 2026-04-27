@@ -87,9 +87,9 @@ _WEATHER_CACHE_TTL = 1800  # 秒（天気データ: 30分）
 _auto_fetch_lock = threading.Lock()
 _auto_fetch_busy_dates: set = set()         # 現在 fetch 処理中の日付
 _auto_fetch_cooldown: dict = {}             # race_id → last_attempt_timestamp
-_AUTO_FETCH_COOLDOWN_SEC = 300              # 同一 race_id の再試行は 5 分に 1 回まで
-_AUTO_FETCH_MAX_PER_CALL = 5                # 1 API 呼び出しで最大 5R まで fetch
-_AUTO_FETCH_COOLDOWN_MAX = 300              # reviewer HIGH #4 対応: メモリリーク対策
+_AUTO_FETCH_COOLDOWN_SEC = 60               # T-001 (2026-04-25): 5分→1分。リアルタイム性確保のため短縮
+_AUTO_FETCH_MAX_PER_CALL = 50               # T-001 (2026-04-25): 5R→50R。70R/日規模に追従、netkeiba 1.5s × 50R ≒ 75秒で完了
+_AUTO_FETCH_COOLDOWN_MAX = 1000             # cooldown_max も拡張（race_id 蓄積防止用、cooldown_sec×2 の余裕）
 
 
 def _cleanup_cooldown_if_needed() -> None:
@@ -1230,6 +1230,48 @@ def _recalc_divergence(h: dict):
     h["divergence_signal"] = signal
 
 
+def _get_pending_fetch_stats(date: str, races: list) -> tuple:
+    """results.json を読み、発走済み・未取り込みレースの統計を返す。
+    今日stats と /api/health の両方から呼ばれる共通ロジック（M-1 DRY 解消）。
+
+    Returns: (finished_rids: set, pending_count: int, pending_age_max_min: int)
+    """
+    date_key = date.replace("-", "")
+    res_fp = os.path.join(PROJECT_ROOT, "data", "results", f"{date_key}_results.json")
+    finished_rids: set = set()
+    if os.path.isfile(res_fp):
+        try:
+            with open(res_fp, "r", encoding="utf-8") as _rf:
+                _rd = json.load(_rf)
+            finished_rids = {
+                rid for rid, entry in _rd.items()
+                if isinstance(entry, dict) and entry.get("order")
+            }
+        except Exception:
+            pass
+    now_dt = datetime.now()
+    pending_minutes = []
+    for r in races:
+        rid = str(r.get("race_id", ""))
+        if not rid or rid in finished_rids:
+            continue
+        pt = r.get("post_time", "") or ""
+        if not pt:
+            continue
+        try:
+            post_dt = datetime.strptime(f"{date} {pt}", "%Y-%m-%d %H:%M")
+        except Exception:
+            continue
+        if now_dt < post_dt:
+            continue
+        pending_minutes.append(int((now_dt - post_dt).total_seconds() // 60))
+    return (
+        finished_rids,
+        len(pending_minutes),
+        max(pending_minutes) if pending_minutes else 0,
+    )
+
+
 def create_app():
     _frontend_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "frontend")
     app = Flask(
@@ -1576,6 +1618,67 @@ def create_app():
             return jsonify({"ok": False, "error": "Race not found"})
         except Exception as e:
             return jsonify({"ok": False, "error": str(e)})
+
+    @app.route("/api/horse_history/<horse_id>")
+    def api_horse_history(horse_id: str):
+        """馬1頭の過去成績（race_log から直近N走）+ run_dev を返す。
+        馬指数グラフ（HorseHistoryChart）用。
+        """
+        try:
+            limit = max(1, min(int(request.args.get("limit", 12)), 30))
+        except (ValueError, TypeError):
+            limit = 12
+        if not horse_id or len(horse_id) > 32:
+            return jsonify({"ok": False, "error": "invalid horse_id"}), 400
+        try:
+            from src.database import get_db
+            from config.settings import _CALIB_VC_TO_NAME as _VC_MAP
+            conn = get_db()
+            rows = conn.execute(
+                """SELECT race_date, race_id, venue_code, surface, distance,
+                          grade, race_name, field_count, finish_pos, jockey_name,
+                          win_odds, finish_time_sec, last_3f_sec,
+                          run_dev, race_level_dev, horse_name
+                   FROM race_log
+                   WHERE horse_id = ? AND finish_pos < 90
+                   ORDER BY race_date DESC
+                   LIMIT ?""",
+                (horse_id, limit),
+            ).fetchall()
+            if not rows:
+                return jsonify({"ok": True, "horse_id": horse_id, "horse_name": "", "runs": []})
+            runs = []
+            for r in rows:
+                vc = str(r["venue_code"] or "").zfill(2)
+                venue_name = _VC_MAP.get(vc, r["venue_code"] or "")
+                runs.append({
+                    "race_date": r["race_date"] or "",
+                    "race_id": r["race_id"] or "",
+                    "venue": venue_name,
+                    "surface": r["surface"] or "",
+                    "distance": r["distance"] or 0,
+                    "grade": r["grade"] or "",
+                    "race_name": r["race_name"] or "",
+                    "field_count": r["field_count"] or 0,
+                    "finish_pos": r["finish_pos"] or 0,
+                    "jockey_name": r["jockey_name"] or "",
+                    "win_odds": r["win_odds"],
+                    "finish_time_sec": r["finish_time_sec"],
+                    "last_3f_sec": r["last_3f_sec"],
+                    "run_dev": r["run_dev"],
+                    "race_level_dev": r["race_level_dev"],
+                })
+            # 古い順に並び替えて返す（グラフX軸が左→右で時系列順）
+            runs.reverse()
+            return jsonify({
+                "ok": True,
+                "horse_id": horse_id,
+                "horse_name": rows[0]["horse_name"] or "",
+                "runs": runs,
+            })
+        except Exception as e:
+            logger.exception("api_horse_history failed: %s", e)
+            return jsonify({"ok": False, "error": "internal error"}), 500
 
     @app.route("/api/race_odds", methods=["POST"])
     def api_race_odds():
@@ -5176,6 +5279,9 @@ function dNavRefreshOdds(date){{
             if date in _auto_fetch_busy_dates:
                 return
             _auto_fetch_busy_dates.add(date)
+        # T-001 reviewer HIGH 対応: cooldown dict のメモリリーク対策（拡張済み 1000 件で
+        # 期限切れエントリを削除）。50R 上限拡張により race_id 蓄積速度が増したため必須。
+        _cleanup_cooldown_if_needed()
         try:
             # 当日のみ対象（過去日は nightly batch に任せる）
             if date != datetime.now().strftime("%Y-%m-%d"):
@@ -5286,16 +5392,17 @@ function dNavRefreshOdds(date){{
 
         try:
             from src.results_tracker import compare_and_aggregate, load_prediction
+            # T-001 reviewer MEDIUM 対応: pred を一度だけ load して使い回す（disk I/O 削減）
+            pred_cached = load_prediction(date)
             # まず当日の集計（キャッシュ有効）
             agg = compare_and_aggregate(date)
             if not agg:
                 # 予想はあるが結果がまだ → 枠を返す
-                pred = load_prediction(date)
-                if not pred:
+                if not pred_cached:
                     return jsonify(date=date, found=False)
                 return jsonify(
                     date=date, found=True, results_pending=True,
-                    total_races=len(pred.get("races", [])),
+                    total_races=len(pred_cached.get("races", [])),
                     honmei={"total": 0, "win": 0, "place2": 0, "place3": 0,
                             "win_rate": 0, "place2_rate": 0, "place_rate": 0,
                             "tansho_stake": 0, "tansho_ret": 0, "tansho_roi": 0},
@@ -5333,7 +5440,7 @@ function dNavRefreshOdds(date){{
                 from src.calculator.betting import SANRENTAN_SKIP_CONFIDENCES
                 from config.settings import RESULTS_DIR as _RDIR
                 import os as _os
-                pred = load_prediction(date)
+                pred = pred_cached  # T-001 reviewer MEDIUM: 上部 load の結果を再利用
                 if pred:
                     date_key = date.replace("-", "")
                     res_fp = _os.path.join(_RDIR, f"{date_key}_results.json")
@@ -5386,9 +5493,41 @@ function dNavRefreshOdds(date){{
             except Exception as _e:
                 logger.debug("today_stats sanrentan 計算失敗: %s", _e)
 
+            # T-001 (2026-04-25): UI 3 段表記用のメタ情報を計算
+            # total_races (pred.json 全数) / finished_races (results.json 取り込み済み)
+            # / eligible_for_sanrentan (S/A/B のレース数) / pending_fetch / pending_age_max_min
+            meta = {
+                "total_races": 0,
+                "finished_races": 0,
+                "eligible_for_sanrentan": 0,
+                "pending_fetch": 0,
+                "pending_age_max_min": 0,
+            }
+            try:
+                from src.calculator.betting import SANRENTAN_SKIP_CONFIDENCES
+                pred2 = pred_cached  # T-001 reviewer MEDIUM: 上部 load の結果を再利用
+                if pred2:
+                    races2 = pred2.get("races", [])
+                    meta["total_races"] = len(races2)
+                    meta["eligible_for_sanrentan"] = sum(
+                        1 for r in races2
+                        if r.get("confidence", "B") not in SANRENTAN_SKIP_CONFIDENCES
+                    )
+                    # results.json 取り込み済み件数・未取り込み統計（M-1 共通ヘルパー）
+                    finished_rids, _pf, _pa = _get_pending_fetch_stats(date, races2)
+                    meta["finished_races"] = len(finished_rids)
+                    meta["pending_fetch"] = _pf
+                    meta["pending_age_max_min"] = _pa
+            except Exception as _me:
+                logger.debug("today_stats meta 計算失敗: %s", _me)
+
             return jsonify(
                 date=date, found=True,
-                total_races=agg.get("total_races", 0),
+                total_races=meta["total_races"] or agg.get("total_races", 0),
+                finished_races=meta["finished_races"],
+                eligible_for_sanrentan=meta["eligible_for_sanrentan"],
+                pending_fetch=meta["pending_fetch"],
+                pending_age_max_min=meta["pending_age_max_min"],
                 honmei=honmei,
                 sanrentan=sanrentan,
                 last_updated=datetime.now().strftime("%H:%M"),
@@ -6090,7 +6229,9 @@ function dNavRefreshOdds(date){{
 
     @app.route("/api/health")
     def api_health():
-        """ヘルスチェック: uptime, メモリ使用量, DB接続状態を返す"""
+        """ヘルスチェック: uptime, メモリ使用量, DB接続状態, 当日取り込み遅延状況を返す。
+        T-001 Phase 2 (B1) で pending_fetch / pending_age_max_min / match_results_today / auto_fetch_busy 追加。
+        """
         mem_mb = None
         try:
             import psutil
@@ -6099,10 +6240,8 @@ function dNavRefreshOdds(date){{
             pass
         db_ok = False
         try:
-            import sqlite3
-            conn = sqlite3.connect(os.path.join("data", "keiba.db"), timeout=2)
-            conn.execute("SELECT 1")
-            conn.close()
+            from src.database import get_db as _get_db
+            _get_db().execute("SELECT 1")
             db_ok = True
         except Exception:
             pass
@@ -6121,6 +6260,60 @@ function dNavRefreshOdds(date){{
                 }
         except Exception:
             pass
+
+        # T-001 Phase 2 (B1): 当日のリアルタイム性メトリクス
+        today_str = datetime.now().strftime("%Y-%m-%d")
+        today_metrics = {
+            "date": today_str,
+            "total_races": 0,
+            "finished_races": 0,
+            "pending_fetch": 0,
+            "pending_age_max_min": 0,
+            "match_results_today": 0,
+            "auto_fetch_busy": today_str in _auto_fetch_busy_dates,
+        }
+        try:
+            # pred.json から当日の総レース数と発走時刻
+            pred_fp = os.path.join(PROJECT_ROOT, "data", "predictions",
+                                    f"{today_str.replace('-', '')}_pred.json")
+            races_today = []
+            if os.path.isfile(pred_fp):
+                with open(pred_fp, "r", encoding="utf-8") as _pf:
+                    _pdata = json.load(_pf)
+                races_today = _pdata.get("races", []) or []
+                today_metrics["total_races"] = len(races_today)
+
+            # results.json 取り込み済み件数・未取り込み統計（M-1 共通ヘルパー）
+            _frids, _pf2, _pa2 = _get_pending_fetch_stats(today_str, races_today)
+            today_metrics["finished_races"] = len(_frids)
+            today_metrics["pending_fetch"] = _pf2
+            today_metrics["pending_age_max_min"] = _pa2
+
+            # match_results テーブル当日件数（get_db() でスレッドローカル接続を再利用）
+            try:
+                from src.database import get_db as _get_db
+                _hconn = _get_db()
+                _row = _hconn.execute(
+                    "SELECT COUNT(*) FROM match_results WHERE date = ?", (today_str,)
+                ).fetchone()
+                today_metrics["match_results_today"] = int(_row[0]) if _row else 0
+            except Exception:
+                pass
+        except Exception as _e:
+            logger.debug("/api/health today_metrics 計算失敗: %s", _e)
+
+        # スクレイパーレイアウト変更検知: 本日の警告件数を返す
+        try:
+            from src.scraper._layout_check import (
+                get_layout_warning_count,
+                get_layout_warning_details,
+            )
+            _layout_count = get_layout_warning_count()
+            _layout_details = get_layout_warning_details()
+        except Exception:
+            _layout_count = 0
+            _layout_details = {}
+
         return jsonify({
             "status": "ok",
             "uptime_sec": round(time.time() - _start_time),
@@ -6128,7 +6321,103 @@ function dNavRefreshOdds(date){{
             "db_connected": db_ok,
             "pid": os.getpid(),
             "results_cache": {**results_cache, "manifest": results_cache_manifest},
+            "today": today_metrics,
+            "layout_warnings": _layout_count,
+            "layout_warnings_detail": _layout_details,
         })
+
+    # ── データ品質チェック API ────────────────────────────────────────────
+    @app.route("/api/data_quality")
+    def api_data_quality():
+        """データ品質チェック最終結果を返す。
+        daily_data_quality_check.py が生成した logs/data_quality_latest.json を読み込む。
+        未実行の場合は status='not_run' を返す。
+        フロントエンドの警告バナー表示に使用。
+        """
+        result_path = os.path.join(PROJECT_ROOT, "logs", "data_quality_latest.json")
+        if not os.path.isfile(result_path):
+            return jsonify({
+                "status": "not_run",
+                "checked_at": None,
+                "has_violation": False,
+                "message": "daily_data_quality_check.py 未実行",
+                "race_log": [],
+                "pred_json": [],
+            })
+        try:
+            with open(result_path, "r", encoding="utf-8") as _f:
+                data = json.load(_f)
+            # 違反項目のみを抽出してフロントエンドに渡す
+            violations = [
+                r for r in (data.get("race_log") or []) + (data.get("pred_json") or [])
+                if r.get("violated")
+            ]
+            return jsonify({
+                "status": "ok",
+                "checked_at": data.get("checked_at"),
+                "target_date": data.get("target_date"),
+                "has_violation": data.get("has_violation", False),
+                "violations": violations,
+                "race_log": data.get("race_log", []),
+                "pred_json": data.get("pred_json", []),
+            })
+        except Exception as _e:
+            logger.error("/api/data_quality 読み込みエラー: %s", _e)
+            return jsonify({
+                "status": "error",
+                "has_violation": False,
+                "message": str(_e),
+            }), 500
+
+    # ── A4: 発走+10分タイマー（イベント駆動フェッチ）──────────────────────
+    def _schedule_post_race_timers(date: str) -> None:
+        """当日の各レースに発走+10分タイマーをセット。Flask 起動時に一度呼ぶ。
+        delay=0（既発走済み）はほぼ即時発火→起動時 catch-up として機能する。
+        """
+        pred_fp = os.path.join(PROJECT_ROOT, "data", "predictions",
+                               f"{date.replace('-', '')}_pred.json")
+        if not os.path.isfile(pred_fp):
+            return
+        try:
+            with open(pred_fp, "r", encoding="utf-8") as _tf:
+                _races_a4 = json.load(_tf).get("races", []) or []
+        except Exception as _e4:
+            logger.warning("A4 タイマーセット: pred.json 読み込み失敗 %s", _e4)
+            return
+
+        _now4 = datetime.now()
+        _n4 = 0
+        for _r4 in _races_a4:
+            _pt4 = _r4.get("post_time", "") or ""
+            if not _pt4:
+                continue
+            try:
+                _fire4 = (
+                    datetime.strptime(f"{date} {_pt4}", "%Y-%m-%d %H:%M")
+                    + timedelta(minutes=10)
+                )
+            except Exception:
+                continue
+            _delay4 = max(0.0, (_fire4 - _now4).total_seconds())
+
+            def _make_cb(d: str = date) -> None:
+                def _cb() -> None:
+                    threading.Thread(
+                        target=_auto_fetch_post_races,
+                        args=(d,),
+                        daemon=True,
+                        name=f"post_race_timer_{d}",
+                    ).start()
+                return _cb
+
+            _t4 = threading.Timer(_delay4, _make_cb())
+            _t4.daemon = True
+            _t4.start()
+            _n4 += 1
+
+        logger.info("A4 発走+10分タイマー: %d 件セット（%s）", _n4, date)
+
+    _schedule_post_race_timers(datetime.now().strftime("%Y-%m-%d"))
 
     return app
 

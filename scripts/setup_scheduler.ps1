@@ -1,4 +1,4 @@
-# D-AI競馬 タスクスケジューラ登録スクリプト
+﻿# D-AI競馬 タスクスケジューラ登録スクリプト
 # 管理者権限で実行してください
 # 使い方: powershell -ExecutionPolicy Bypass -File scripts\setup_scheduler.ps1
 
@@ -146,6 +146,38 @@ Register-ScheduledTask `
 
 Write-Host "OK: DAI_Keiba_Watchdog (every 5 min)" -ForegroundColor Green
 
+# ── 7. 発走 15 分前 オッズ+馬体重自動取得（09:30〜21:00 の間 5 分間隔）──
+# 09:30 開始、Duration=11.5h(41400s)、RepetitionInterval=5min
+# MultipleInstances=IgnoreNew でスクリプト重複起動を防止
+# ※ Windows Task Scheduler は「UTC で実行」オプションを使わない（スクリプト内部が JST 前提）
+$AutoOddsSettings = New-ScheduledTaskSettingsSet `
+    -ExecutionTimeLimit (New-TimeSpan -Minutes 2) `
+    -StartWhenAvailable `
+    -MultipleInstances IgnoreNew
+
+$AutoOddsAction = New-ScheduledTaskAction `
+    -Execute "wscript.exe" `
+    -Argument "`"$ScriptDir\scripts\auto_fetch_odds_15min_hidden.vbs`"" `
+    -WorkingDirectory $ScriptDir
+
+# 09:30 を開始点とし、毎日 11.5 時間（09:30〜21:00）繰り返す（PS 5.1/7 両対応）
+$AutoOddsTrigger = New-ScheduledTaskTrigger -Daily -At "09:30"
+$RepetitionTemplate = New-ScheduledTaskTrigger -Once -At "09:30" `
+    -RepetitionInterval (New-TimeSpan -Minutes 5) `
+    -RepetitionDuration (New-TimeSpan -Hours 11 -Minutes 30)
+$AutoOddsTrigger.Repetition = $RepetitionTemplate.Repetition
+
+Register-ScheduledTask `
+    -TaskName "DAI_Keiba_AutoOdds" `
+    -Description "D-AI Keiba: 発走15分前オッズ+馬体重自動取得 09:30〜21:00 の間 5分間隔" `
+    -Action $AutoOddsAction `
+    -Trigger $AutoOddsTrigger `
+    -Settings $AutoOddsSettings `
+    -RunLevel Highest `
+    -Force | Out-Null
+
+Write-Host "OK: DAI_Keiba_AutoOdds (09:30-21:00 every 5 min)" -ForegroundColor Green
+
 # ── 登録済みタスク一覧 ────────────────────────────────────────
 Write-Host ""
 Write-Host "登録済みタスク:" -ForegroundColor Yellow
@@ -162,3 +194,4 @@ Write-Host "  23:00  DAI_Keiba_Maintenance      - 払戻バックフィル + 整
 Write-Host "                                      (日曜: VACUUM, 月初: CSV更新)" -ForegroundColor Gray
 Write-Host "  logon  DAI_Keiba_Dashboard        - ダッシュボード常駐 (自動再起動)" -ForegroundColor White
 Write-Host "  5min   DAI_Keiba_Watchdog         - dashboard+cloudflared watchdog" -ForegroundColor White
+Write-Host "  5min   DAI_Keiba_AutoOdds         - 発走15分前オッズ+馬体重 (09:30-21:00)" -ForegroundColor White

@@ -159,8 +159,14 @@ CREATE INDEX IF NOT EXISTS idx_result_race_id  ON race_results(race_id);
 """
 
 
+_SCHEMA_INITIALIZED = False
+
+
 def init_schema() -> None:
     """テーブルを初期化する（冪等・既存データ保持）"""
+    global _SCHEMA_INITIALIZED
+    if _SCHEMA_INITIALIZED:
+        return
     conn = get_db()
     conn.executescript(_SCHEMA_SQL)
     # 既存DBへの列追加・インデックス追加（ALTER TABLE/CREATE INDEX は IF NOT EXISTS 非対応なので try/except）
@@ -204,6 +210,7 @@ def init_schema() -> None:
         "ALTER TABLE race_log ADD COLUMN pace TEXT",
         "ALTER TABLE race_log ADD COLUMN is_generation INTEGER DEFAULT 0",
         "ALTER TABLE race_log ADD COLUMN race_level_dev REAL",
+        "ALTER TABLE race_log ADD COLUMN run_dev REAL",  # 走破偏差値（馬指数グラフ用、バックフィル＋日次更新）
         "ALTER TABLE race_log ADD COLUMN source TEXT DEFAULT ''",
         # training_recordsテーブル
         """CREATE TABLE IF NOT EXISTS training_records (
@@ -230,6 +237,7 @@ def init_schema() -> None:
         "CREATE INDEX IF NOT EXISTS idx_racelog_venue   ON race_log(venue_code)",
         "CREATE INDEX IF NOT EXISTS idx_racelog_surface ON race_log(surface)",
         "CREATE INDEX IF NOT EXISTS idx_racelog_horseid ON race_log(horse_id)",
+        "CREATE INDEX IF NOT EXISTS idx_racelog_horseid_date ON race_log(horse_id, race_date DESC)",
         "CREATE INDEX IF NOT EXISTS idx_racelog_finish  ON race_log(finish_pos)",
         # 追加インデックス（jockey_name検索の高速化、venue×surface×distance集計）
         "CREATE INDEX IF NOT EXISTS idx_racelog_jockeyname ON race_log(jockey_name)",
@@ -242,6 +250,19 @@ def init_schema() -> None:
         "CREATE INDEX IF NOT EXISTS idx_personnel_type  ON personnel(person_type)",
         "CREATE INDEX IF NOT EXISTS idx_pred_race_id    ON predictions(race_id)",
         "CREATE INDEX IF NOT EXISTS idx_result_race_id  ON race_results(race_id)",
+        # UNIQUE INDEX 追加（重複行再発防止 2026-04-27）
+        # predictions: 同一 race_id × 異なる date の重複を禁止（save_prediction の OR REPLACE を確実に動かす）
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_predictions_race_id_unique ON predictions(race_id)",
+        # race_log: INSERT OR IGNORE の dedupe 動作保証（重複行混入防止）
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_racelog_race_horse_unique ON race_log(race_id, horse_no)",
+        # LLM パラフレーズキャッシュ（ローカル Qwen2.5-7B by LM Studio）
+        """CREATE TABLE IF NOT EXISTS stable_comment_paraphrase_cache (
+            input_hash TEXT PRIMARY KEY,
+            original TEXT NOT NULL,
+            paraphrased TEXT NOT NULL,
+            created_at TEXT DEFAULT (datetime('now','localtime'))
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_paraphrase_created ON stable_comment_paraphrase_cache(created_at)",
     ]:
         try:
             conn.execute(ddl)
@@ -251,9 +272,15 @@ def init_schema() -> None:
             if "duplicate column" in _msg or "already exists" in _msg:
                 continue
             logger.debug("マイグレーション失敗 (継続): %s → %s", ddl[:60], _e)
+    # 冗長インデックス削除（UNIQUE(date, race_id) でカバー済み）
+    try:
+        conn.execute("DROP INDEX IF EXISTS idx_match_date")
+    except Exception:
+        pass
     conn.commit()
     # executescript() が PRAGMA をリセットするため再設定
     conn.execute("PRAGMA foreign_keys=ON")
+    _SCHEMA_INITIALIZED = True
 
 
 # ============================================================
@@ -516,34 +543,63 @@ def results_exist(date: str) -> bool:
 # ============================================================
 
 
+def _stats_to_row(date: str, race_id: str, stats: dict) -> tuple:
+    """save_match_result(s) 共通: stats dict → INSERT/UPDATE 用タプル"""
+    return (
+        date,
+        race_id,
+        stats.get("venue", ""),
+        stats.get("race_no", 0),
+        stats.get("hit_tickets", 0),
+        stats.get("total_tickets", 0),
+        stats.get("stake", 0),
+        stats.get("ret", 0),
+        stats.get("honmei_placed", 0),
+        stats.get("honmei_win", 0),
+        json.dumps(stats.get("by_mark", {}), ensure_ascii=False),
+        json.dumps(stats.get("by_ticket", {}), ensure_ascii=False),
+        json.dumps(stats.get("by_ana", {}), ensure_ascii=False),
+        json.dumps(stats.get("by_kiken", {}), ensure_ascii=False),
+    )
+
+
+# T-001 (2026-04-25 reviewer HIGH-1): INSERT OR REPLACE は AUTOINCREMENT id と
+# created_at を毎回破棄するため、created_at（最初の保存時刻）の監査ログが失われる。
+# ON CONFLICT DO UPDATE で UPSERT し、created_at は再照合時も保持する。
+_MATCH_RESULTS_UPSERT_SQL = """
+INSERT INTO match_results
+  (date, race_id, venue, race_no, hit_tickets, total_tickets,
+   stake, ret, honmei_placed, honmei_win,
+   by_mark_json, by_ticket_json, by_ana_json, by_kiken_json)
+VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+ON CONFLICT(date, race_id) DO UPDATE SET
+  venue=excluded.venue, race_no=excluded.race_no,
+  hit_tickets=excluded.hit_tickets, total_tickets=excluded.total_tickets,
+  stake=excluded.stake, ret=excluded.ret,
+  honmei_placed=excluded.honmei_placed, honmei_win=excluded.honmei_win,
+  by_mark_json=excluded.by_mark_json, by_ticket_json=excluded.by_ticket_json,
+  by_ana_json=excluded.by_ana_json, by_kiken_json=excluded.by_kiken_json
+"""
+
+
 def save_match_result(date: str, race_id: str, stats: dict) -> None:
-    """照合済み集計を 1 レース分保存"""
+    """照合済み集計を 1 レース分保存（単発用、created_at 保持）"""
     with transaction() as conn:
-        conn.execute(
-            """
-            INSERT OR REPLACE INTO match_results
-              (date, race_id, venue, race_no, hit_tickets, total_tickets,
-               stake, ret, honmei_placed, honmei_win,
-               by_mark_json, by_ticket_json, by_ana_json, by_kiken_json)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-            """,
-            (
-                date,
-                race_id,
-                stats.get("venue", ""),
-                stats.get("race_no", 0),
-                stats.get("hit_tickets", 0),
-                stats.get("total_tickets", 0),
-                stats.get("stake", 0),
-                stats.get("ret", 0),
-                stats.get("honmei_placed", 0),
-                stats.get("honmei_win", 0),
-                json.dumps(stats.get("by_mark", {}), ensure_ascii=False),
-                json.dumps(stats.get("by_ticket", {}), ensure_ascii=False),
-                json.dumps(stats.get("by_ana", {}), ensure_ascii=False),
-                json.dumps(stats.get("by_kiken", {}), ensure_ascii=False),
-            ),
-        )
+        conn.execute(_MATCH_RESULTS_UPSERT_SQL, _stats_to_row(date, race_id, stats))
+
+
+def save_match_results_bulk(date: str, rows: list) -> int:
+    """照合済み集計をバッチで一括保存（reviewer HIGH-2 対応）。
+    results_tracker.compare_and_aggregate からの呼び出し用。
+    rows: List[Tuple[race_id, stats_dict]]
+    Returns: 保存件数
+    """
+    if not rows:
+        return 0
+    payload = [_stats_to_row(date, rid, s) for rid, s in rows]
+    with transaction() as conn:
+        conn.executemany(_MATCH_RESULTS_UPSERT_SQL, payload)
+    return len(payload)
 
 
 def aggregate_results(from_date: str = "2026-01-01", to_date: str = "2099-12-31") -> dict:
@@ -1747,14 +1803,16 @@ def populate_race_log_from_predictions() -> int:
             _time_entries.sort(key=lambda x: x[1])  # 着順ソート
             _winner_time = _time_entries[0][2] if _time_entries else 0
             _margin_map = {}
-            for _idx, (_hno, _fp, _ft) in enumerate(_time_entries):
-                _ma = round(_ft - _winner_time, 3) if _winner_time > 0 else 0.0
-                _mb = 0.0
-                if _idx + 1 < len(_time_entries):
-                    _next_t = _time_entries[_idx + 1][2]
-                    if _next_t > _ft:
-                        _mb = round(_next_t - _ft, 3)
-                _margin_map[_hno] = (_ma, _mb)
+            # _winner_time=0 のとき（タイム取得失敗）は全馬 margin を NULL のまま残す
+            if _winner_time and _winner_time > 0:
+                for _idx, (_hno, _fp, _ft) in enumerate(_time_entries):
+                    _ma = round(_ft - _winner_time, 3)
+                    _mb = 0.0
+                    if _idx + 1 < len(_time_entries):
+                        _next_t = _time_entries[_idx + 1][2]
+                        if _next_t > _ft:
+                            _mb = round(_next_t - _ft, 3)
+                    _margin_map[_hno] = (_ma, _mb)
 
             for entry in orders:
                 horse_no  = entry.get("horse_no")

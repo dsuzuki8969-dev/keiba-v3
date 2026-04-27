@@ -713,16 +713,21 @@ def calc_run_deviation(
     finish_time_corrected: float,
     standard_time: float,
     distance: int,
+    venue_code: str = "",
 ) -> float:
     """
     走破偏差値 = 50 + (基準タイム - 走破タイム補正後) × 距離係数 × 換算定数
     (B-2: 案1 距離帯別CONVERSION_CONSTANT使用)
+
+    venue_code: JRAコード（01-10）以外は NAR 用 k 値テーブルを使用する。
+                省略または空文字列の場合は JRA 用テーブルにフォールバック（既存動作互換）。
     """
     from config.settings import get_conversion_constant
     if not distance or distance <= 0:
         return 50.0
     dist_coeff = DISTANCE_BASE / distance
-    _k = get_conversion_constant(distance)
+    # venue_code を渡して JRA/NAR を自動判別
+    _k = get_conversion_constant(distance, venue_code)
     dev = 50 + (standard_time - finish_time_corrected) * dist_coeff * _k
     return max(DEVIATION["ability"]["min"], min(DEVIATION["ability"]["max"], dev))
 
@@ -1422,7 +1427,7 @@ def calc_ability_deviation(
                 continue
             _banei_base = _get_banei_baseline(run.weight_kg, _banei_baselines)
             dev = 50.0 + (_banei_base - run.finish_time_sec) * _BANEI_TIME_COEFF
-            dev = max(20.0, min(100.0, dev))
+            dev = max(-50.0, min(100.0, dev))  # A案: 下限 -50 に拡張
             run_deviations.append(dev)
             run_records_list.append((run, dev, _banei_base))
         # ばんえいはStep 3のfor loopをスキップ（以下のelseブロックが通常馬用）
@@ -1496,7 +1501,10 @@ def calc_ability_deviation(
         weight_corr = (run.weight_kg - base_weight) * 0.15
         corrected_time += weight_corr
 
-        dev = calc_run_deviation(corrected_time, std_time, run.distance)
+        dev = calc_run_deviation(
+            corrected_time, std_time, run.distance,
+            venue_code=getattr(run, "venue_code", ""),
+        )
 
         # B-5: 中央↔地方クロス補正（全馬場種別）
         # 中央と地方はコース基準・競争レベルが異なるため交差実績に割引を適用
@@ -1672,7 +1680,10 @@ def calc_ability_deviation(
         if _st is None:
             run_records_list.append((run, None, None))
             continue
-        _dev = calc_run_deviation(run.finish_time_sec, _st, run.distance)
+        _dev = calc_run_deviation(
+            run.finish_time_sec, _st, run.distance,
+            venue_code=getattr(run, "venue_code", ""),
+        )
         run_records_list.append((run, _dev, _st))
 
     # 日付降順でソートし直して最大5走

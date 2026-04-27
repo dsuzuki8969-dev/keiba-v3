@@ -43,7 +43,10 @@ from src.calculator.betting import (
     _calc_confidence_score,
     calc_predicted_odds,
     generate_formation_tickets,
+    generate_reference_tickets,
+    generate_tickets_by_mode,
     judge_confidence,
+    make_bet_decision,
 )
 from src.calculator.calibration import (
     diagnose_deviations,
@@ -2029,6 +2032,24 @@ class RaceAnalysisEngine:
         tickets = []
         total_budget = 0
 
+        # ---- Phase 3: 三連単フォーメーション買い目生成 ----
+        tickets_by_mode = generate_tickets_by_mode(evaluations, race, confidence.value)
+
+        # ---- bet_decision 判定（Phase 3: 三連単 skip 情報を優先利用） ----
+        _fixed_tickets = (tickets_by_mode or {}).get("fixed", []) if isinstance(tickets_by_mode, dict) else []
+        _meta = (tickets_by_mode or {}).get("_meta", {}) if isinstance(tickets_by_mode, dict) else {}
+        if _meta.get("skipped"):
+            # 三連単フォーメーションが skip 判定（SS/C/D など）→ 買わない
+            bet_decision = {
+                "skip": True,
+                "reasons": ["sanrentan_skip"],
+                "message": _meta.get("skip_reason", "三連単フォーメーション 見送り"),
+                "max_ev": 0.0,
+                "reference_tickets": [],
+            }
+        else:
+            bet_decision = make_bet_decision(evaluations, _fixed_tickets, confidence.value)
+
         has_any_odds = any(ev.horse.odds is not None for ev in evaluations)
         is_pre_day = not has_any_odds
 
@@ -2079,6 +2100,8 @@ class RaceAnalysisEngine:
             estimated_front_3f=front_3f_est,
             estimated_last_3f=last_3f_est,
             formation=formation,
+            bet_decision=bet_decision,
+            tickets_by_mode=tickets_by_mode,
             predicted_odds_umaren=predicted_umaren,
             predicted_odds_sanrenpuku=predicted_sanrenpuku,
             value_bets=value_bets,
@@ -2142,6 +2165,19 @@ class RaceAnalysisEngine:
             else:
                 _base_f3f = front_3f_est or 35.0
                 _base_mid = 0.0
+
+            # ---- NEW: 今回レースの predicted_race_time にベース時間を整合 ----
+            # _raw_speeds は過去走平均速度のため、今回レースのクラス補正が効かない。
+            # predicted_race_time は _estimate_race_time でクラス・ペース補正済の値なので、
+            # これをターゲットに (front+mid+last) 合計をスケール揃えする。
+            # 異常スケール防止のため ±15% にクランプ。
+            if predicted_race_time and predicted_race_time > 0:
+                _base_total = _base_f3f + _base_mid + (last_3f_est or 0)
+                if _base_total > 0:
+                    _sc = predicted_race_time / _base_total
+                    _sc = max(0.85, min(1.15, _sc))
+                    _base_f3f = _base_f3f * _sc
+                    _base_mid = _base_mid * _sc
 
             # ---- ステップ2: 各馬のfront3f = 基準 + position_initialオフセット ----
             # X座標（predicted_corners）と同じ方向に連動するため矛盾が解消
@@ -3566,8 +3602,11 @@ def _compute_race_level_devs(
             margin = max(0.0, min(margin, 10.0))  # 異常値クランプ
             winner_t = run.finish_time_sec - margin
 
-            lvl = calc_run_deviation(winner_t, std_time, run.distance)
-            lvl = max(20.0, min(100.0, lvl))
+            lvl = calc_run_deviation(
+                winner_t, std_time, run.distance,
+                venue_code=getattr(run, "venue_code", ""),
+            )
+            lvl = max(-50.0, min(100.0, lvl))
 
             race_cache[rk] = lvl
             run.race_level_dev = lvl
@@ -3625,7 +3664,56 @@ def enrich_course_aptitude_with_style_bias(
                 ev.place3_prob *= _s3
 
     from src.output.formatter import assign_marks as _assign_marks
+    # 再 assign_marks 前の印を記憶（変化検出で再生成の要否判断）
+    _prev_marks = {
+        getattr(ev.horse, "horse_no", -1): (ev.mark.value if getattr(ev, "mark", None) else "")
+        for ev in analysis.evaluations
+    }
     analysis.evaluations[:] = _assign_marks(analysis.evaluations, is_jra=engine.is_jra)
+    _curr_marks = {
+        getattr(ev.horse, "horse_no", -1): (ev.mark.value if getattr(ev, "mark", None) else "")
+        for ev in analysis.evaluations
+    }
+    _marks_changed = _prev_marks != _curr_marks
+
+    # 印が変化した場合、engine.analyze() 内で古い印で生成した formation / tickets_by_mode /
+    # bet_decision を最新印で再生成（印と買い目の不整合 = col1/col2 違反の根本原因）
+    if _marks_changed:
+        try:
+            from src.calculator.betting import (
+                generate_formation_tickets as _gen_formation,
+                generate_tickets_by_mode as _gen_tbm,
+                make_bet_decision as _make_bd,
+            )
+            _conf_val = (
+                analysis.overall_confidence.value
+                if hasattr(analysis.overall_confidence, "value")
+                else str(analysis.overall_confidence)
+            )
+            analysis.formation = _gen_formation(
+                analysis.evaluations, analysis.race, _conf_val,
+            )
+            analysis.tickets_by_mode = _gen_tbm(
+                analysis.evaluations, analysis.race, _conf_val,
+            )
+            # Phase 3: 三連単フォーメーション + skip 判定
+            _fix = (analysis.tickets_by_mode or {}).get("fixed", []) if isinstance(analysis.tickets_by_mode, dict) else []
+            _m = (analysis.tickets_by_mode or {}).get("_meta", {}) if isinstance(analysis.tickets_by_mode, dict) else {}
+            if _m.get("skipped"):
+                analysis.bet_decision = {
+                    "skip": True,
+                    "reasons": ["sanrentan_skip"],
+                    "message": _m.get("skip_reason", "三連単フォーメーション 見送り"),
+                    "max_ev": 0.0,
+                    "reference_tickets": [],
+                }
+            else:
+                analysis.bet_decision = _make_bd(analysis.evaluations, _fix, _conf_val)
+        except Exception as _e:
+            import logging
+            logging.getLogger(__name__).warning(
+                "印変化に伴う買い目再生成失敗: %s", _e,
+            )
 
     return analysis
 

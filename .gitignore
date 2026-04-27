@@ -18,6 +18,10 @@ data/keiba.db
 data/keiba.db-shm
 data/keiba.db-wal
 data/keiba_v3.db
+# DB バックアップ（手動 cleanup 等で生成、巨大ファイル・誤 commit 防止）
+data/keiba.db.bak_*
+data/keiba.db-shm.bak_*
+data/keiba.db-wal.bak_*
 data/cache/
 data/backup/
 data/export/

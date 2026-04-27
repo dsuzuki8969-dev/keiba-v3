@@ -74,6 +74,39 @@ def _run_predict_mode(date: str, official: bool) -> bool:
     return proc.returncode == 0
 
 
+def _run_stable_paraphrase(date: str) -> None:
+    """
+    予想生成成功後に厩舎コメント（stable_comment）を LLM パラフレーズして
+    pred.json へ注入する。失敗しても後段を止めない（フロント側で原文フォールバック）。
+
+    内部的に Claude Code CLI (`claude -p`) サブプロセスを叩く。
+    MAX プラン OAuth を利用するため ANTHROPIC_API_KEY は不要。
+    CLI 未導入環境では claude コマンド解決に失敗 → そのレコードは失敗扱いで
+    箇条書き無しになるが、フロント側で原文表示されるため致命ではない。
+
+    タイムアウトは 1件 90 秒 × 最大 ~490 件 ≒ 75 分想定で 120 分(7200s)を上限。
+    """
+    log_path = _log_path("paraphrase", date)
+    cmd = [sys.executable, "scripts/paraphrase_stable_comments.py", date]
+    try:
+        with open(log_path, "w", encoding="utf-8") as lf:
+            lf.write(f"=== 厩舎コメントパラフレーズ {date} ===\n開始: {datetime.now()}\n\n")
+            lf.flush()
+            proc = subprocess.run(
+                cmd,
+                cwd=os.path.dirname(os.path.abspath(__file__)),
+                stdout=lf, stderr=lf,
+                encoding="utf-8",
+                timeout=7200,
+            )
+        status = "完了" if proc.returncode == 0 else f"エラー(code={proc.returncode})"
+        print(f"[PARAPHRASE] {date} {status}  ログ: {log_path}")
+    except subprocess.TimeoutExpired:
+        print(f"[PARAPHRASE] {date} タイムアウト（7200秒）")
+    except Exception as e:
+        print(f"[PARAPHRASE] {date} 例外: {e}")
+
+
 def run_predict(date: str, official: bool = False):
     """指定日の予想生成を実行（失敗時に公式モードへ自動フォールバック）"""
     mode_label = "公式のみ" if official else "通常"
@@ -99,6 +132,10 @@ def run_predict(date: str, official: bool = False):
     else:
         print(f"[PREDICT] {date} エラー")
         _notify("予想生成失敗", f"{date}: {mode_label}で予想生成失敗", "error")
+
+    # 予想生成成功時のみ、厩舎コメントパラフレーズを実行
+    if ok:
+        _run_stable_paraphrase(date)
 
     log_path = _log_path("predict", date)
     print(f"  ログ: {log_path}")

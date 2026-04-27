@@ -16,6 +16,9 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from config.settings import PREDICTIONS_DIR, RESULTS_DIR
 from data.masters.venue_master import is_banei
+from src.log import get_logger
+
+logger = get_logger(__name__)
 
 # SQLite DB（利用可能な場合のみ使用）
 try:
@@ -170,7 +173,69 @@ def save_prediction(date: str, analyses_by_venue: dict, *, lightweight: bool = F
                 "horses": [],
                 "tickets": [],
                 "formation_tickets": [],
+                "formation_columns": {"col1": [], "col2": [], "col3": []},
+                "bet_decision": None,
+                "tickets_by_mode": {
+                    "fixed": [],        # Phase 3: 三連単フォーメーション
+                    "accuracy": [],     # (deprecated) 後方互換
+                    "balanced": [],     # (deprecated)
+                    "recovery": [],     # (deprecated)
+                    "_meta": {},        # Phase 3 メタ情報 (skipped, skip_reason, race_ev_ratio 等)
+                },
             }
+
+            # ── 買い目指南 Phase 3: tickets_by_mode を JSON にシリアライズ ──
+            _tbm = getattr(analysis, "tickets_by_mode", None)
+            if _tbm and isinstance(_tbm, dict):
+                # fixed (Phase 3) + 旧モード (後方互換) を保存
+                for _mode in ("fixed", "accuracy", "balanced", "recovery"):
+                    _mode_tickets = _tbm.get(_mode, []) or []
+                    race_data["tickets_by_mode"][_mode] = [
+                        {k: v for k, v in t.items() if not k.startswith("_")}
+                        for t in _mode_tickets
+                    ]
+                # _meta（Phase 3 のスキップ情報・レース期待値倍率など）
+                _meta = _tbm.get("_meta", {}) or {}
+                if isinstance(_meta, dict):
+                    race_data["tickets_by_mode"]["_meta"] = {
+                        k: v for k, v in _meta.items() if not k.startswith("__")
+                    }
+                # [A2] tickets_json DB 保存用: 三連単F 固定買い目をフラット化
+                _ft = race_data["tickets_by_mode"].get("fixed") or []
+                if _ft:
+                    race_data["tickets"] = _ft
+
+            # ── 買い目指南 Phase 1-b: bet_decision を JSON にシリアライズ ──
+            _bd = getattr(analysis, "bet_decision", None)
+            if _bd and isinstance(_bd, dict):
+                race_data["bet_decision"] = {
+                    "skip": bool(_bd.get("skip", False)),
+                    "reason": _bd.get("reason"),
+                    "message": _bd.get("message", ""),
+                    "reference_tickets": [
+                        {k: v for k, v in t.items() if not k.startswith("_")}
+                        for t in (_bd.get("reference_tickets") or [])
+                    ],
+                }
+
+            # ── 買い目指南 Phase 1: formation 買い目を JSON にシリアライズ ──
+            # analysis.formation = {"col1":[ev,...], "col2":[ev,...], "col3":[ev,...],
+            #                        "sanrenpuku":[ticket_dict,...], "s_norm":float, "confidence":str}
+            _formation = getattr(analysis, "formation", None)
+            if _formation and isinstance(_formation, dict):
+                _sanrenpuku = _formation.get("sanrenpuku", []) or []
+                if _sanrenpuku:
+                    # 三連複チケットはそのまま JSON 化可能（dict のリスト）
+                    race_data["formation_tickets"] = [
+                        {k: v for k, v in t.items() if not k.startswith("_")}
+                        for t in _sanrenpuku
+                    ]
+                # col1/col2/col3 は HorseEvaluation のリスト → 馬番リストに変換
+                for _col_key in ("col1", "col2", "col3"):
+                    _col = _formation.get(_col_key, []) or []
+                    race_data["formation_columns"][_col_key] = [
+                        getattr(ev.horse, "horse_no", 0) for ev in _col
+                    ]
 
             # leading_horses に含まれる馬番セット（running_style整合用）
             _leading_set = set(analysis.leading_horses or [])
@@ -647,7 +712,19 @@ def save_prediction(date: str, analyses_by_venue: dict, *, lightweight: bool = F
         _hao = any(h.get("odds") is not None for h in _hl)
         if not _hao:
             continue
-        _sn = {h["horse_no"] for h in _hl if h.get("odds") is None and h.get("popularity") is None}
+        # マスター指示 2026-04-23: ML予測を持つ馬は取消扱いしない
+        # （部分オッズ取得で単に「実オッズが未取得」の馬を取消にしていたバグ）
+        def _is_truly_scratched(h: dict) -> bool:
+            if h.get("is_scratched"):
+                return True
+            if h.get("odds") is not None or h.get("popularity") is not None:
+                return False
+            if h.get("predicted_tansho_odds") is not None:
+                return False
+            if (h.get("win_prob") or 0) > 0:
+                return False
+            return True
+        _sn = {h["horse_no"] for h in _hl if _is_truly_scratched(h)}
         if not _sn:
             continue
         for _hd in _hl:
@@ -662,6 +739,65 @@ def save_prediction(date: str, analyses_by_venue: dict, *, lightweight: bool = F
             if _as > 0:
                 for h in _act:
                     h[_pk] = round(min(1.0, h[_pk] / _as * _ts), 4)
+
+        # 取消馬を含む formation_columns / tickets / formation を浄化
+        # （印は既に '' に置換済みのため、col2/col3 から取消馬を除外し、
+        #   取消馬を含むチケットは削除して stale データを残さない）
+        if _sn:
+            _fc = _race.get("formation_columns") or {}
+            for _col_key in ("col1", "col2", "col3"):
+                _col = _fc.get(_col_key)
+                if isinstance(_col, list):
+                    _fc[_col_key] = [h for h in _col if h not in _sn]
+            # col1 が空になった場合、買い目全体を無効化（軸が取消→買えない）
+            _col1_empty = not (_fc.get("col1") or [])
+            if _race.get("formation_columns") is not None:
+                _race["formation_columns"] = _fc
+
+            def _ticket_has_scratched(_t: dict) -> bool:
+                for k in ("a", "b", "c"):
+                    v = _t.get(k)
+                    if isinstance(v, int) and v in _sn:
+                        return True
+                    if isinstance(v, list) and any(x in _sn for x in v):
+                        return True
+                combo = _t.get("combo") or ""
+                if isinstance(combo, str) and combo:
+                    for token in combo.replace("=", "-").split("-"):
+                        try:
+                            if int(token) in _sn:
+                                return True
+                        except (ValueError, TypeError):
+                            pass
+                return False
+
+            _tbm = _race.get("tickets_by_mode")
+            if isinstance(_tbm, dict):
+                for _mode_k, _ts in list(_tbm.items()):
+                    if isinstance(_ts, list):
+                        _tbm[_mode_k] = [] if _col1_empty else [
+                            _t for _t in _ts if not _ticket_has_scratched(_t)
+                        ]
+
+            _form = _race.get("formation")
+            if isinstance(_form, dict):
+                for _k, _ts in list(_form.items()):
+                    if isinstance(_ts, list):
+                        _form[_k] = [] if _col1_empty else [
+                            _t for _t in _ts if not _ticket_has_scratched(_t)
+                        ]
+
+            # bet_decision を「取消により買い目なし」に更新
+            if _col1_empty or not any(
+                (_tbm.get(m) if isinstance(_tbm, dict) else None)
+                for m in ("accuracy", "balanced", "recovery")
+            ):
+                _bd = _race.get("bet_decision") or {}
+                if isinstance(_bd, dict):
+                    _bd["skip"] = True
+                    _bd["skip_reasons"] = list(set((_bd.get("skip_reasons") or []) + ["scratched"]))
+                    _bd["message"] = "取消馬により買い目無効"
+                    _race["bet_decision"] = _bd
 
     with open(fpath, "w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)
@@ -1487,13 +1623,14 @@ def _extract_past_runs(horse, count: int = 3, run_records=None) -> list:
             "last_3f": _round_or_none(getattr(run, "last_3f_sec", None), 1)
                        if (getattr(run, "last_3f_sec", None) or 0) <= 50
                        else None,  # 上がり3Fが50秒超は異常値 → 非表示
-            # 着差: 1着=-(margin_behind)で先着を表現、2着以降=+(margin_ahead)で遅れを表現
-            "margin": _round_or_none(
-                -(getattr(run, "margin_behind", 0) or 0)
+            # 着差: 1着=None（表示は「—」）、2着以降=+(margin_ahead)で遅れを表現
+            # ※ margin_behind は廃止方向。1着は常に NULL で格納
+            "margin": None
                 if getattr(run, "finish_pos", 0) == 1
-                else (getattr(run, "margin_ahead", None) or 0),
-                1,
-            ),
+                else _round_or_none(
+                    getattr(run, "margin_ahead", None) or 0,
+                    1,
+                ),
             "speed_dev": sd,
             # 新規フィールド
             "positions_corners": corners_str,
@@ -1695,15 +1832,13 @@ def fetch_single_race_result(
                                 _db.save_results(date, {race_id: cached_entry})
                             except Exception:
                                 pass
-                        import logging
-                        logging.getLogger(__name__).info(
+                        logger.info(
                             "既存結果に netkeiba 詳細を補完 %s (corners=%d, details=%d)",
                             race_id, n1, n2,
                         )
                 time.sleep(1.0)
             except Exception:
-                import logging
-                logging.getLogger(__name__).debug(
+                logger.debug(
                     "既存結果補完失敗 %s", race_id, exc_info=True,
                 )
         return cached_entry
@@ -1720,8 +1855,7 @@ def fetch_single_race_result(
                 lap_times = _r.get("lap_times")
                 source = "official"
         except Exception:
-            import logging
-            logging.getLogger(__name__).debug("公式結果取得失敗 %s", race_id, exc_info=True)
+            logger.debug("公式結果取得失敗 %s", race_id, exc_info=True)
 
     # 2nd: netkeiba
     if not order:
@@ -1742,8 +1876,7 @@ def fetch_single_race_result(
             if was_fetched:
                 time.sleep(1.5)
         except Exception:
-            import logging
-            logging.getLogger(__name__).debug("netkeiba結果取得失敗 %s", race_id, exc_info=True)
+            logger.debug("netkeiba結果取得失敗 %s", race_id, exc_info=True)
 
     # 公式で order 取れたが corners / time / popularity / odds が欠ける場合、
     # netkeiba 結果ページで一括補完（ページ取得は1回で済ませる）
@@ -1758,10 +1891,7 @@ def fetch_single_race_result(
                 _merge_result_details_from_soup(order, soup_nk)
             time.sleep(1.0)
         except Exception:
-            import logging
-            logging.getLogger(__name__).debug(
-                "netkeiba結果補完失敗 %s", race_id, exc_info=True,
-            )
+            logger.debug("netkeiba結果補完失敗 %s", race_id, exc_info=True)
 
     # 3rd: 競馬ブック
     if not order and kb_client:
@@ -1815,8 +1945,7 @@ def fetch_single_race_result(
         with open(fpath, "w", encoding="utf-8") as f:
             json.dump(existing, f, ensure_ascii=False, indent=2)
     except Exception:
-        import logging
-        logging.getLogger(__name__).warning("results.json 保存失敗 %s", race_id, exc_info=True)
+        logger.warning("results.json 保存失敗 %s", race_id, exc_info=True)
 
     # SQLite にもデュアルライト
     if _DB_AVAILABLE:
@@ -1825,8 +1954,7 @@ def fetch_single_race_result(
         except Exception:
             pass
 
-    import logging
-    logging.getLogger(__name__).info(
+    logger.info(
         "単一レース結果取得成功 (%s): %s (%d着順, source=%s)",
         date, race_id, len(order), source
     )
@@ -1973,13 +2101,11 @@ def fetch_actual_results(
     # ソース別統計をログ出力
     total = sum(source_stats.values())
     if total > 0:
-        import logging
-        _logger = logging.getLogger(__name__)
         parts = []
         for src, cnt in source_stats.items():
             if cnt > 0:
                 parts.append(f"{src}={cnt}")
-        _logger.info(f"結果取得ソース内訳 ({date}): {', '.join(parts)}")
+        logger.info("結果取得ソース内訳 (%s): %s", date, ", ".join(parts))
 
     # 全レースの結果が空（まだ開催前/開催中）の場合はファイルを保存しない
     has_any_order = any(v.get("order") for v in results.values() if isinstance(v, dict))
@@ -1989,11 +2115,9 @@ def fetch_actual_results(
     # 結果取得成功率が50%未満の場合は保存をスキップ（部分取得保護）
     success_count = sum(1 for v in results.values() if isinstance(v, dict) and v.get("order"))
     if results and success_count < len(results) * 0.5:
-        import logging
-        _logger = logging.getLogger(__name__)
-        _logger.warning(
-            f"結果取得成功率が低いため保存をスキップ ({date}): "
-            f"{success_count}/{len(results)} ({success_count/len(results)*100:.0f}%)"
+        logger.warning(
+            "結果取得成功率が低いため保存をスキップ (%s): %d/%d (%.0f%%)",
+            date, success_count, len(results), success_count / len(results) * 100,
         )
         return results
 
@@ -2427,6 +2551,9 @@ def compare_and_aggregate(date: str, *, _skip_disk_cache: bool = False) -> Optio
         "fukusho_stake": 0, "fukusho_ret": 0,
     }
     kiken_stats = {"total": 0, "fell_through": 0}
+    # T-001 (2026-04-25): per-race UPSERT 用のバッファ（reviewer HIGH-2 バッチ化対策）
+    from src.database import save_match_results_bulk
+    _match_rows: list = []
 
     for race in pred["races"]:
         race_id = race.get("race_id", "")
@@ -2454,23 +2581,26 @@ def compare_and_aggregate(date: str, *, _skip_disk_cache: bool = False) -> Optio
             pos = finish_map.get(h["horse_no"], 99)
 
             if mk in ("◉", "◎", "○", "▲", "△", "★", "☆", "×"):
-                if mk not in mark_stats:
-                    mark_stats[mk] = {
+                # マスター指示 2026-04-22: ◉鉄板バグ修正後、◉は234件の有効母数を持つため
+                # ◎とは分離して集計・表示する（独立シグナルとして機能）
+                _mk_key = mk
+                if _mk_key not in mark_stats:
+                    mark_stats[_mk_key] = {
                         "total": 0, "win": 0, "place2": 0, "placed": 0,
                         "tansho_stake": 0, "tansho_ret": 0,
                     }
-                mark_stats[mk]["total"] += 1
+                mark_stats[_mk_key]["total"] += 1
                 if pos == 1:
-                    mark_stats[mk]["win"] += 1
+                    mark_stats[_mk_key]["win"] += 1
                 if pos <= 2:
-                    mark_stats[mk]["place2"] += 1
+                    mark_stats[_mk_key]["place2"] += 1
                 if pos <= 3:
-                    mark_stats[mk]["placed"] += 1
+                    mark_stats[_mk_key]["placed"] += 1
                 # 各印の単勝100円シミュレーション（実際の払戻金額を使用）
-                mark_stats[mk]["tansho_stake"] += 100
+                mark_stats[_mk_key]["tansho_stake"] += 100
                 if pos == 1:
                     _tpay = _safe_tansho_payout(payouts, h["horse_no"])
-                    mark_stats[mk]["tansho_ret"] += _tpay
+                    mark_stats[_mk_key]["tansho_ret"] += _tpay
 
                 # ◉と◎はどちらも本命として通算カウント
                 if mk in ("◉", "◎"):
@@ -2595,6 +2725,41 @@ def compare_and_aggregate(date: str, *, _skip_disk_cache: bool = False) -> Optio
                 conf_ticket_stats[ct_key]["hits"] += 1
                 conf_ticket_stats[ct_key]["ret"] += ret_r
                 conf_ticket_stats[ct_key]["payouts"].append(ret_r)
+
+        # T-001 (2026-04-25): レース単位の集計を match_results テーブルに UPSERT 用バッファに蓄積。
+        # 永続化することで、ダッシュボード再起動でも履歴が残り、過去の分析クエリが可能になる。
+        # reviewer HIGH-2 対応: per-race commit を避けるため、ここではバッファに溜め、ループ後に一括保存
+        _honmei_pos_for_race = finish_map.get(honmei_hno, 99) if honmei_hno is not None else 99
+        # by_ticket の per-race 集計（hit キー欠損ケースも防御的に処理）
+        _by_ticket = {
+            tt: {
+                "stake": rg.get("stake", 0),
+                "ret": rg.get("ret", 0),
+                "hit": rg.get("hit", False),
+            }
+            for tt, rg in race_by_type.items()
+        }
+        _match_rows.append((race_id, {
+            "venue": race.get("venue", ""),
+            "race_no": race.get("race_no", 0),
+            "hit_tickets": 1 if race_any_hit else 0,
+            "total_tickets": sum(1 for _rg in race_by_type.values() if _rg.get("stake", 0) > 0),
+            "stake": race_total_stake,
+            "ret": race_total_ret,
+            "honmei_placed": 1 if (honmei_hno is not None and _honmei_pos_for_race <= 3) else 0,
+            "honmei_win": 1 if (honmei_hno is not None and _honmei_pos_for_race == 1) else 0,
+            "by_ticket": _by_ticket,
+            # by_mark/by_ana/by_kiken は date 全体集計に含まれるため、per-race では空 (将来詳細化用にキー保持)
+            "by_mark": {}, "by_ana": {}, "by_kiken": {},
+        }))
+
+    # T-001: ループ完了後に match_results を一括 UPSERT（HIGH-2: WAL 肥大対策）
+    try:
+        if _match_rows:
+            n_saved = save_match_results_bulk(date, _match_rows)
+            logger.info("match_results bulk upsert: %s, %d rows", date, n_saved)
+    except Exception:
+        logger.warning("match_results bulk upsert failed for %s", date, exc_info=True)
 
     roi = round(total_return / total_stake * 100, 1) if total_stake > 0 else 0.0
     hit_rate = round(hit_tickets / total_tickets * 100, 1) if total_tickets > 0 else 0.0
@@ -2853,7 +3018,19 @@ def _set_cached(func_name: str, year_filter: str, result: dict) -> None:
         pass
 
 def invalidate_aggregate_cache() -> None:
-    """外部から呼び出して集計キャッシュをクリアする"""
+    """外部から呼び出して集計キャッシュをクリアする
+
+    マスター指示 2026-04-23:
+      sanrentan_summary._CACHE（30分TTL）も連動クリアしないと、
+      backfill 完了後に 2024/2025/全期間 で三連単F セクションが
+      0 played のまま 30 分残り続ける。
+    """
+    # sanrentan_summary の独立キャッシュも同時クリア
+    try:
+        from src.analytics.sanrentan_summary import invalidate_cache as _sanrentan_invalidate
+        _sanrentan_invalidate()
+    except Exception:
+        pass
     _AGG_CACHE.clear()
     _DAILY_AGG_MEM.clear()
     _DETAIL_MEM.clear()
@@ -3334,27 +3511,30 @@ def _add_to_detail_stats(stats: dict, race_by_type: dict,
             s["payouts"].append(rg["ret"])
 
     # 印別成績 + 本命・穴馬・危険馬集計
+    # マスター指示 2026-04-22: ◉鉄板バグ修正後、◉は十分な母数（200件超/3年）を持つため
+    # ◎とは分離して集計・表示する（合計234件の ◉ 保証、勝率~79%の優良サイン）
     if race and finish_map:
         bm = stats["by_mark"]
         for h in race.get("horses", []):
             mk = h.get("mark", "")
             if mk not in ("◉", "◎", "○", "▲", "△", "★", "☆", "×"):
                 continue
+            _mk_key = mk  # ◉ / ◎ を分けて集計
             pos = finish_map.get(h["horse_no"], 99)
-            if mk not in bm:
-                bm[mk] = {"total": 0, "win": 0, "place2": 0, "placed": 0,
-                           "tansho_stake": 0, "tansho_ret": 0}
-            bm[mk]["total"] += 1
+            if _mk_key not in bm:
+                bm[_mk_key] = {"total": 0, "win": 0, "place2": 0, "placed": 0,
+                               "tansho_stake": 0, "tansho_ret": 0}
+            bm[_mk_key]["total"] += 1
             if pos == 1:
-                bm[mk]["win"] += 1
+                bm[_mk_key]["win"] += 1
             if pos <= 2:
-                bm[mk]["place2"] += 1
+                bm[_mk_key]["place2"] += 1
             if pos <= 3:
-                bm[mk]["placed"] += 1
+                bm[_mk_key]["placed"] += 1
             # 印別 単勝100円シミュレーション
-            bm[mk]["tansho_stake"] += 100
+            bm[_mk_key]["tansho_stake"] += 100
             if pos == 1:
-                bm[mk]["tansho_ret"] += h.get("tansho_ret", 0)
+                bm[_mk_key]["tansho_ret"] += h.get("tansho_ret", 0)
 
             # 本命（◉◎）統計
             if mk in ("◉", "◎"):
