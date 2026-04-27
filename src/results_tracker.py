@@ -307,8 +307,8 @@ def save_prediction(date: str, analyses_by_venue: dict, *, lightweight: bool = F
                     "mark": ev.mark.value if ev.mark else "-",
                     # assign_marks でスナップショットされた値を優先（印との整合性保証）— 20-100クランプ
                     "composite": round(max(20.0, min(100.0, getattr(ev, "_composite_snapshot", ev.composite))), 2),
-                    # 能力偏差値 (A-E章) — 20-100クランプ
-                    "ability_total": round(max(20.0, min(100.0, ev.ability.total)), 2),
+                    # 能力偏差値 (A-E章) — DEVIATION["ability"]["min"] = -50 / max = 100 に追従
+                    "ability_total": round(max(-50.0, min(100.0, ev.ability.total)), 2),
                     "ability_max": round(ev.ability.max_dev, 2),
                     "ability_wa": round(ev.ability.wa_dev, 2),
                     "ability_alpha": round(ev.ability.alpha, 3),
