@@ -263,6 +263,10 @@ def init_schema() -> None:
             created_at TEXT DEFAULT (datetime('now','localtime'))
         )""",
         "CREATE INDEX IF NOT EXISTS idx_paraphrase_created ON stable_comment_paraphrase_cache(created_at)",
+        # Plan-γ Phase 1: 相対偏差値カラム追加（2026-04-27）
+        # 同 race_id 内の run_dev を z-score 正規化した値（帯広は順位ベース）
+        "ALTER TABLE race_log ADD COLUMN relative_dev REAL",
+        "CREATE INDEX IF NOT EXISTS idx_racelog_relative_dev ON race_log(relative_dev)",
     ]:
         try:
             conn.execute(ddl)
