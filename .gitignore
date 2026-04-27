@@ -40,8 +40,9 @@ data/tunnel.log
 data/cleanup.log
 data/confidence_analysis.json
 
-# 出力
-output/
+# 出力（ルート output/ ディレクトリ = HTML 生成物のみ。src/output/ はソースコードなので除外しない）
+/output/
+!src/output/
 
 # OS
 .DS_Store
