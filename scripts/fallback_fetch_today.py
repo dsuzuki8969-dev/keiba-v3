@@ -10,6 +10,8 @@ netkeiba は一切使わない（本日 403 制限中のため絶対禁止）。
 使用法:
     python scripts/fallback_fetch_today.py --date 2026-04-28
     python scripts/fallback_fetch_today.py --date 2026-04-28 --dry-run
+    python scripts/fallback_fetch_today.py --date 2026-04-28 --refresh
+      --refresh: 取得済み keibabook エントリを削除して再取得（フィールド補完用）
 """
 
 import argparse
@@ -87,10 +89,47 @@ def _atomic_write_json(fpath: Path, data: dict) -> None:
 # 補助: 未取得 race_id の特定
 # ================================================================
 
-def _find_missing_race_ids(date: str) -> List[dict]:
+def _clear_keibabook_result_cache(date: str) -> int:
+    """
+    --refresh 時に keibabook 結果ページのキャッシュを削除する。
+    新規フェッチを強制して拡張フィールドを取得するために使用。
+
+    Returns: 削除したキャッシュファイル数
+    """
+    from pathlib import Path
+    import re
+
+    date_key = date.replace("-", "")  # 例: "20260428"
+    year = date_key[:4]               # 例: "2026"
+
+    kb_cache_dir = _PROJ_ROOT / "data" / "cache" / "keibabook"
+    if not kb_cache_dir.exists():
+        return 0
+
+    deleted = 0
+    # chihou_seiseki_{date_key}*.html にマッチするキャッシュを削除
+    pattern = re.compile(rf".*chihou_seiseki_{date_key}.*\.html$", re.IGNORECASE)
+    for f in kb_cache_dir.iterdir():
+        if f.is_file() and pattern.match(f.name):
+            try:
+                f.unlink()
+                logger.info("keibabook キャッシュ削除: %s", f.name)
+                deleted += 1
+            except Exception as e:
+                logger.warning("キャッシュ削除失敗 %s: %s", f.name, e)
+
+    print(f"[--refresh] keibabook キャッシュ {deleted} 件削除 (date={date_key})")
+    return deleted
+
+
+def _find_missing_race_ids(date: str, refresh: bool = False) -> List[dict]:
     """
     pred.json と results.json を比較して、
     着順データ (order) が未取得の NAR レースを返す。
+
+    Args:
+        refresh: True のとき、source="keibabook" の取得済みエントリも再取得対象に含める
+                 （フィールド補完目的）
 
     Returns:
         [{"race_id": str, "venue": str, "race_no": int, "post_time": str}, ...]
@@ -112,10 +151,16 @@ def _find_missing_race_ids(date: str) -> List[dict]:
         try:
             with open(results_path, "r", encoding="utf-8") as f:
                 results_data = json.load(f)
-            existing_ids = {
-                rid for rid, entry in results_data.items()
-                if isinstance(entry, dict) and entry.get("order")
-            }
+            for rid, entry in results_data.items():
+                if not isinstance(entry, dict):
+                    continue
+                if not entry.get("order"):
+                    continue
+                # --refresh 時は keibabook 取得済みも再取得対象にする（keibabook キャッシュを削除して再フェッチ）
+                if refresh and entry.get("source") == "keibabook":
+                    logger.info("--refresh: keibabook 取得済みを再取得対象に追加: %s", rid)
+                    continue
+                existing_ids.add(rid)
         except Exception as e:
             logger.warning("results.json 読み込み失敗: %s", e)
             existing_ids = set()
@@ -228,9 +273,11 @@ def _insert_race_log_if_available(
 # メイン処理
 # ================================================================
 
-def main(date: str, dry_run: bool = False) -> int:
+def main(date: str, dry_run: bool = False, refresh: bool = False) -> int:
     """
     メイン処理。
+    Args:
+        refresh: True のとき keibabook 取得済みエントリを削除して再取得
     Returns: 取得成功件数
     """
     date_key = date.replace("-", "")
@@ -238,9 +285,14 @@ def main(date: str, dry_run: bool = False) -> int:
 
     print(f"[fallback_fetch_today] 対象日: {date}")
     print(f"[fallback_fetch_today] dry_run: {dry_run}")
+    print(f"[fallback_fetch_today] refresh: {refresh}")
+
+    # ── --refresh 時: keibabook キャッシュを削除して新規フェッチを強制 ──
+    if refresh:
+        _clear_keibabook_result_cache(date)
 
     # ── 未取得レース特定 ──
-    missing = _find_missing_race_ids(date)
+    missing = _find_missing_race_ids(date, refresh=refresh)
     if not missing:
         print("[fallback_fetch_today] 未取得レースなし。終了。")
         return 0
@@ -378,7 +430,12 @@ if __name__ == "__main__":
         action="store_true",
         help="実際の HTTP リクエストを送らず、対象レースだけ表示する",
     )
+    parser.add_argument(
+        "--refresh",
+        action="store_true",
+        help="keibabook 取得済みエントリのキャッシュを削除して再取得する（フィールド補完用）",
+    )
     args = parser.parse_args()
 
-    success_count = main(args.date, dry_run=args.dry_run)
+    success_count = main(args.date, dry_run=args.dry_run, refresh=args.refresh)
     print(f"\n[完了] 取得成功: {success_count} レース")

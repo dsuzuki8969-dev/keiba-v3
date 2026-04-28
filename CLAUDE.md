@@ -255,7 +255,11 @@ def _load_model():
 
 ## 重要な制約
 
-- **netkeiba アクセス制限**: `time.sleep()` でレート制限。並列リクエスト禁止
+- **netkeiba アクセス制限**: `time.sleep()` でレート制限。**並列リクエスト禁止 (違反歴 1 回・2026-04-28・★★ 業務影響大)**
+  - **複数 Python プロセスが同時に netkeiba を叩くのも禁止** (本日 backfill + auto_fetch + Sonnet 委託の並列稼働で 403 エラー 10,398 回受信、結果取得 3 時間遅延)
+  - 詳細は `~/.claude/projects/.../memory/feedback_netkeiba_concurrent_throttle.md`
+  - レート制限は 2.0 秒/件以上 (1.0 秒では並列稼働時に IP 単位制限超過)
+  - 障害復旧手順: `scripts/fallback_fetch_today.py --date YYYY-MM-DD` で keibabook fallback 経由取得
 - **SQLite**: WAL モード。並列読み取りは安全だが書き込みはシリアル
 - **MLモデルファイル**: `data/models/` 配下。LightGBM `.txt` 形式
 - **LightGBM predict()**: GIL 解放するため ThreadPoolExecutor で実効並列化可能

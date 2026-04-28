@@ -36,7 +36,7 @@ KB_CHIHOU_SEISEKI = "https://s.keibabook.co.jp/chihou/seiseki"
 KB_CHIHOU_NITTEI = "https://s.keibabook.co.jp/chihou/nittei"
 KB_UMA_DB = "https://s.keibabook.co.jp/db/uma"
 
-# 券種名 → キー変換
+# 券種名 → キー変換（競馬ブックは「3連複」「3連単」表記を使う場合もある）
 _KB_TICKET_MAP = {
     "単勝": "tansho",
     "複勝": "fukusho",
@@ -46,7 +46,26 @@ _KB_TICKET_MAP = {
     "馬単": "umatan",
     "三連複": "sanrenpuku",
     "三連単": "sanrentan",
+    "3連複": "sanrenpuku",  # 競馬ブック地方レース表記
+    "3連単": "sanrentan",   # 競馬ブック地方レース表記
 }
+
+
+# 丸数字 (①〜⑳) → 整数変換テーブル (marusuji2keta 対応)
+_MARU_DIGIT_MAP: dict = {
+    chr(0x2460 + i): i + 1 for i in range(20)  # ①=1 〜 ⑳=20
+}
+
+
+def _maru_to_int(text: str) -> "int | None":
+    """丸数字 1 文字を整数に変換。変換不可なら None を返す。"""
+    text = text.strip()
+    if not text:
+        return None
+    val = _MARU_DIGIT_MAP.get(text[0])
+    if val is not None and len(text) == 1:
+        return val
+    return None
 
 
 class KeibabookResultScraper:
@@ -142,7 +161,18 @@ class KeibabookResultScraper:
         return None
 
     def _parse_result_table(self, soup: "BeautifulSoup") -> list:
-        """着順テーブル (table.default.seiseki) をパース"""
+        """着順テーブル (table.default.seiseki) をパース。
+
+        取得フィールド:
+          - horse_no  : 馬番
+          - finish    : 着順
+          - corners   : 通過順リスト [int, ...] (ul.tuka の li 要素を1つずつパース)
+          - last_3f   : 上がり3F (float, 秒)
+          - time_sec  : 走破タイム (float, 秒)
+          - margin    : 着差テキスト (str or None)
+          - win_odds  : 単勝オッズ (float or None)
+          - popularity: 人気 (int or None)
+        """
         table = soup.select_one("table.default.seiseki")
         if not table:
             for t in soup.select("table"):
@@ -160,6 +190,7 @@ class KeibabookResultScraper:
                 continue
 
             try:
+                # ── 着順 ──
                 finish_cell = row.select_one("td.cyakujun")
                 if not finish_cell:
                     finish_cell = cells[0] if cells else None
@@ -170,6 +201,7 @@ class KeibabookResultScraper:
                     continue
                 finish = int(finish_text)
 
+                # ── 馬番 (waku クラス) ──
                 horse_no = 0
                 for c in cells:
                     cls = " ".join(c.get("class", []))
@@ -181,6 +213,7 @@ class KeibabookResultScraper:
                 if horse_no == 0:
                     continue
 
+                # ── 通過順 (ul.tuka の li を1つずつ取得 → 連結防止) ──
                 left_cell = row.select_one("td.left")
                 last_3f = None
                 corners = []
@@ -188,28 +221,124 @@ class KeibabookResultScraper:
                 if left_cell:
                     tuka = left_cell.select_one("ul.tuka")
                     if tuka:
-                        tuka_text = tuka.get_text(strip=True)
-                        if tuka_text and "**" not in tuka_text and "※" not in tuka_text:
-                            corners = [int(x) for x in re.findall(r"\d+", tuka_text)]
+                        for li in tuka.select("li"):
+                            li_cls = " ".join(li.get("class", []))
+                            # "kara" クラス (空白プレースホルダー) はスキップ
+                            if "kara" in li_cls:
+                                continue
+                            li_text = li.get_text(strip=True)
+                            if li_text and li_text != "　" and li_text.strip():
+                                # span 内の数値を取得 (kakusuji1keta, kakusuji2keta 等)
+                                span = li.select_one("span")
+                                digit_text = span.get_text(strip=True) if span else li_text
+                                if digit_text.isdigit():
+                                    corners.append(int(digit_text))
+                                else:
+                                    # 丸数字 (①〜⑳) を整数に変換 (marusuji2keta 対応)
+                                    val = _maru_to_int(digit_text)
+                                    if val is not None:
+                                        corners.append(val)
 
-                time_sec = 0.0
+                # ── タイム + 上がり3F + 着差 (クラスなし td の p タグ構造を利用) ──
+                # HTML 構造: <td class=""><p>タイム秒</p><p>(上がり3F)</p><p>着差</p></td>
+                time_sec = None
+                margin = None
+
                 for c in cells:
-                    ct = c.get_text(strip=True)
-                    tm = re.match(r"^(\d):(\d{2})\.(\d)$", ct)
-                    if tm:
-                        time_sec = int(tm.group(1)) * 60 + int(tm.group(2)) + int(tm.group(3)) * 0.1
-                    l3m = re.search(r"\((\d{2}\.\d)\)", ct)
-                    if l3m:
-                        val = float(l3m.group(1))
-                        if 30.0 <= val <= 45.0:
-                            last_3f = val
+                    c_cls = " ".join(c.get("class", []))
+                    if c_cls.strip():
+                        continue  # クラスあり td はスキップ
+                    # p タグが 3 つある構造のみ対象
+                    ps = c.select("p")
+                    if len(ps) >= 2:
+                        # 1番目 p: 走破タイム
+                        # 対応形式:
+                        #   "1:25.4"  → 1分25.4秒 (標準)
+                        #   "2.15.0"  → 2分15.0秒 (地方NAR長距離の "m.ss.f" 表記)
+                        #   "50.2"    → 50.2秒 (短距離)
+                        time_text = ps[0].get_text(strip=True)
+                        tm_colon = re.match(r"^(\d):(\d{2})\.(\d)$", time_text)
+                        tm_dot3  = re.match(r"^(\d)\.(\d{2})\.(\d)$", time_text)  # m.ss.f 表記
+                        tm_sec   = re.match(r"^(\d{2,3})\.(\d)$", time_text)
+                        if tm_colon:
+                            time_sec = (int(tm_colon.group(1)) * 60
+                                        + int(tm_colon.group(2))
+                                        + int(tm_colon.group(3)) * 0.1)
+                        elif tm_dot3:
+                            # "2.15.0" → 2*60 + 15 + 0*0.1 = 135.0
+                            time_sec = (int(tm_dot3.group(1)) * 60
+                                        + int(tm_dot3.group(2))
+                                        + int(tm_dot3.group(3)) * 0.1)
+                        elif tm_sec:
+                            time_sec = float(time_text)
+
+                        # 2番目 p: 上がり3F "(36.8)" 形式
+                        l3f_text = ps[1].get_text(strip=True)
+                        l3m = re.search(r"\((\d{2}\.\d)\)", l3f_text)
+                        if l3m:
+                            val = float(l3m.group(1))
+                            if 30.0 <= val <= 45.0:
+                                last_3f = val
+
+                        # 3番目 p: 着差テキスト (空なら1着か同着)
+                        if len(ps) >= 3:
+                            margin_text = ps[2].get_text(strip=True)
+                            if margin_text:
+                                margin = margin_text
+                        break
+                    else:
+                        # p タグ構造がない場合: 旧式の get_text フォールバック
+                        ct = c.get_text(strip=True)
+                        tm_colon = re.match(r"^(\d):(\d{2})\.(\d)", ct)
+                        tm_dot3f = re.match(r"^(\d)\.(\d{2})\.(\d)", ct)
+                        if tm_colon:
+                            time_sec = (int(tm_colon.group(1)) * 60
+                                        + int(tm_colon.group(2))
+                                        + int(tm_colon.group(3)) * 0.1)
+                        elif tm_dot3f:
+                            time_sec = (int(tm_dot3f.group(1)) * 60
+                                        + int(tm_dot3f.group(2))
+                                        + int(tm_dot3f.group(3)) * 0.1)
+                        l3m = re.search(r"\((\d{2}\.\d)\)", ct)
+                        if l3m:
+                            val = float(l3m.group(1))
+                            if 30.0 <= val <= 45.0:
+                                last_3f = val
+
+                # ── 単勝オッズ + 人気 (td.center の p タグ構造) ──
+                # HTML 構造: <p>馬体重</p><p>オッズ</p><p>N人気</p>
+                win_odds = None
+                popularity = None
+
+                center_cell = row.select_one("td.center")
+                if center_cell:
+                    ps_c = center_cell.select("p")
+                    for idx, p_tag in enumerate(ps_c):
+                        p_text = p_tag.get_text(strip=True)
+                        # オッズ: 数字.数字 形式 (例: "3.6")
+                        if win_odds is None and re.match(r"^\d+\.\d$", p_text):
+                            try:
+                                win_odds = float(p_text)
+                            except ValueError:
+                                pass
+                        # 人気: "N人気" 形式
+                        if popularity is None:
+                            nm = re.match(r"^(\d+)人気$", p_text)
+                            if nm:
+                                try:
+                                    popularity = int(nm.group(1))
+                                except ValueError:
+                                    pass
 
                 entry = {
-                    "horse_no": horse_no,
-                    "finish": finish,
-                    "corners": corners if corners else None,
-                    "last_3f": last_3f,
-                    "time_sec": time_sec if time_sec > 0 else None,
+                    "horse_no":   horse_no,
+                    "finish":     finish,
+                    "corners":    corners if corners else None,
+                    "last_3f":    last_3f,
+                    "time_sec":   time_sec,
+                    "margin":     margin,
+                    "win_odds":   win_odds,
+                    "popularity": popularity,
                 }
                 results.append(entry)
 
