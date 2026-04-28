@@ -3057,7 +3057,18 @@ def _check_ticket_hit(
     elif ticket_type == "三連単":
         order = [h for h, f in sorted(finish_map.items(), key=lambda x: x[1]) if f <= 3]
         hit = list(int(x) for x in combo) == order
-        payout = payouts.get("三連単", {}).get("payout", 0)
+        # 2026-04-29 修正: results.json は日本語キー/英字キー混在 ('三連単' or 'sanrentan')
+        # かつ list 形式 (combo 別 entry) と dict 形式が混在するため両対応
+        bucket = payouts.get("三連単") or payouts.get("sanrentan") or {}
+        if isinstance(bucket, list):
+            nos = "-".join(str(x) for x in combo)
+            payout = 0
+            for it in bucket:
+                if isinstance(it, dict) and str(it.get("combo", "")) == nos:
+                    payout = int(it.get("payout", 0) or 0)
+                    break
+        else:
+            payout = bucket.get("payout", 0) if isinstance(bucket, dict) else 0
         return hit, payout
 
     return False, 0.0
