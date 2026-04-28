@@ -792,10 +792,12 @@ def save_prediction(date: str, analyses_by_venue: dict, *, lightweight: bool = F
                         ]
 
             # bet_decision を「取消により買い目なし」に更新
-            if _col1_empty or not any(
+            # Phase3 以降は "fixed" キーのみ使用するため、"fixed" を判定対象に追加
+            _has_any_tickets = any(
                 (_tbm.get(m) if isinstance(_tbm, dict) else None)
-                for m in ("accuracy", "balanced", "recovery")
-            ):
+                for m in ("accuracy", "balanced", "recovery", "fixed")
+            )
+            if _col1_empty or not _has_any_tickets:
                 _bd = _race.get("bet_decision") or {}
                 if isinstance(_bd, dict):
                     _bd["skip"] = True
