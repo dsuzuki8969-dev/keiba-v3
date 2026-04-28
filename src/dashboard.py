@@ -5511,13 +5511,12 @@ function dNavRefreshOdds(date){{
           - 連打防止: _FORCE_REFRESH_LOCK で排他（busy 時 409）
           - レートリミット: 同一 IP 5秒以内の再リクエストは 429
           - date body パラメータ未指定時は本日 JST を使用
-          - セキュリティ: 127.0.0.1 or Cloudflare ヘッダなし (admin) のみ許可
+
+        2026-04-28 マスター指示「ここは誰でも更新できるようにして」:
+          - admin 制限除去 (Cloudflare 経由の閲覧者からも実行可)
+          - DoS 対策は既存の _FORCE_REFRESH_LOCK (排他) + IP 5秒レートリミットで十分
         """
         t_start = time.time()
-
-        # ── セキュリティ: 管理者（ローカル）のみ許可 ──
-        if not _is_admin(request):
-            return jsonify(status="error", message="この操作は管理者のみ実行できます", code="FORBIDDEN"), 403
 
         # ── レートリミット: 同一 IP 5秒以内の再リクエストは 429 ──
         client_ip = request.remote_addr or "unknown"
