@@ -158,7 +158,7 @@ CREATE INDEX IF NOT EXISTS idx_pred_race_id    ON predictions(race_id);
 CREATE INDEX IF NOT EXISTS idx_result_race_id  ON race_results(race_id);
 
 CREATE TABLE IF NOT EXISTS horses (
-    horse_id         TEXT PRIMARY KEY,              -- 正規 horse_id (10桁数字 or nar_xxx)
+    horse_id         TEXT PRIMARY KEY,              -- 正規 horse_id (10桁数字 or nar_xxx or B_xxx)
     horse_name       TEXT NOT NULL,                 -- 馬名
     sire_name        TEXT,                          -- 父
     dam_name         TEXT,                          -- 母
@@ -172,11 +172,12 @@ CREATE TABLE IF NOT EXISTS horses (
     first_seen_date  TEXT,                          -- race_log 最古出走日
     last_seen_date   TEXT,                          -- race_log 最新出走日
     race_count       INTEGER DEFAULT 0,             -- 通算出走回数
+    netkeiba_id      TEXT,                          -- D Phase 2: netkeiba horse_id (10桁数字。old_10digitはhorse_id直値。nar/B_prefixはNULL)
     created_at       TEXT DEFAULT CURRENT_TIMESTAMP,
     updated_at       TEXT DEFAULT CURRENT_TIMESTAMP
 );
-CREATE INDEX IF NOT EXISTS idx_horses_name     ON horses(horse_name);
-CREATE INDEX IF NOT EXISTS idx_horses_lastseen ON horses(last_seen_date DESC);
+CREATE INDEX IF NOT EXISTS idx_horses_name        ON horses(horse_name);
+CREATE INDEX IF NOT EXISTS idx_horses_lastseen    ON horses(last_seen_date DESC);
 """
 
 
@@ -310,6 +311,10 @@ def init_schema() -> None:
         )""",
         "CREATE INDEX IF NOT EXISTS idx_horses_name     ON horses(horse_name)",
         "CREATE INDEX IF NOT EXISTS idx_horses_lastseen ON horses(last_seen_date DESC)",
+        # D Phase 2: netkeiba_id カラム追加（2026-04-28）
+        # old_10digit（10桁数字）の horse_id は netkeiba_id 直値。nar/B_prefix は NULL のまま（将来スクレイパー連携）
+        "ALTER TABLE horses ADD COLUMN netkeiba_id TEXT",
+        "CREATE INDEX IF NOT EXISTS idx_horses_netkeiba_id ON horses(netkeiba_id)",
     ]:
         try:
             conn.execute(ddl)
