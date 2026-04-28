@@ -14,7 +14,7 @@ import shutil
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
-from config.settings import PREDICTIONS_DIR, RESULTS_DIR
+from config.settings import DEVIATION, PREDICTIONS_DIR, RESULTS_DIR
 from data.masters.venue_master import is_banei
 from src.log import get_logger
 
@@ -307,8 +307,8 @@ def save_prediction(date: str, analyses_by_venue: dict, *, lightweight: bool = F
                     "mark": ev.mark.value if ev.mark else "-",
                     # assign_marks でスナップショットされた値を優先（印との整合性保証）— 20-100クランプ
                     "composite": round(max(20.0, min(100.0, getattr(ev, "_composite_snapshot", ev.composite))), 2),
-                    # 能力偏差値 (A-E章) — DEVIATION["ability"]["min"] = -50 / max = 100 に追従
-                    "ability_total": round(max(-50.0, min(100.0, ev.ability.total)), 2),
+                    # 能力偏差値 (A-E章) — DEVIATION["ability"] の min/max に追従（ハードコード排除）
+                    "ability_total": round(max(DEVIATION["ability"]["min"], min(DEVIATION["ability"]["max"], ev.ability.total)), 2),
                     # Plan-γ Phase 2: 同レース内 ability_total z-score 正規化偏差値（20〜80）
                     "race_relative_dev": round(getattr(ev, "race_relative_dev", 50.0), 2),
                     # Plan-γ Phase 3: ハイブリッド合算指数 = ability_total*(1-β) + race_relative_dev*β

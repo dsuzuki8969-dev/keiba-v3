@@ -91,6 +91,25 @@ if errorlevel 1 (
     echo  [OK] pred.json 再注入完了
 )
 
+REM ── 7b2. LM Studio: Qwen2.5-7B モデルロード ──────────────────
+REM  paraphrase 処理の前に lms CLI でモデルをロードする
+REM  lms が PATH にない / LM Studio 未起動の場合は警告のみ出してスキップ
+echo [7b2/9] Qwen2.5-7B モデルロード...
+where lms >nul 2>&1
+if %errorlevel% neq 0 (
+    echo  [WARN] lms コマンドが見つかりません - LM Studio の Auto-start 設定が必要です >> "%LOG%"
+    echo  [WARN] 詳細: docs\lm_studio_setup.md を参照してください >> "%LOG%"
+    echo  [WARN] lms コマンドが未検出 - LLM パラフレーズをスキップします
+    goto skip_paraphrase
+)
+lms load qwen2.5-7b-instruct >> "%LOG%" 2>&1
+if %errorlevel% neq 0 (
+    echo  [WARN] lms load 失敗（LM Studio が起動していない可能性） >> "%LOG%"
+    echo  [WARN] lms load 失敗 - LLM パラフレーズをスキップします
+    goto skip_paraphrase
+)
+echo  [OK] Qwen2.5-7B ロード完了
+
 REM ── 7c. ローカル LLM 厩舎コメントパラフレーズ（直近 7 日） ──────
 echo [7c/9] LLM パラフレーズ...
 python scripts\local_llm_paraphrase.py --recent 7 >> "%LOG%" 2>&1
@@ -99,6 +118,8 @@ if errorlevel 1 (
 ) else (
     echo  [OK] LLM パラフレーズ完了
 )
+
+:skip_paraphrase
 
 REM ── データ品質チェック（最後に実行、閾値超えで exit 1）────────
 echo [QC] データ品質チェック...
