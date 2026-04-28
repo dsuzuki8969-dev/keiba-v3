@@ -6,19 +6,40 @@
 
 ---
 
-## 🔴 作業中のタスク
+## 🔴 作業中のタスク (マスター起床時 commit 判断仰ぎ)
 
-### T-041 (P1 Opus 並走) — 三連単 F フォーメーション買い目最善化検討 (β1 ★ 2 着追加)
-- **指示元**: 2026-04-29 マスター提示の三連単印組合せ集計データ (1-2 着 / 馬単 / 三連単 順序固定 上位 30 通り)
-- **担当**: Opus が設計、後段で Sonnet 委託
-- **状態**: マスターと並列着手承認済 (2026-04-29)
-- **背景**: 上位 30 通り中 9 通り (約 11%) が現状フォーメーションで未カバー (◉◎ 3 着パターン / ▲ 1 着パターン / ★ 2 着パターン)
-- **検討シナリオ**:
-  - β1: ★ を 2 着候補に追加 (`SANRENTAN_RANK2_BASE` に "★" 追加) — 最小コスト改善
-  - β2: ▲ 1 着フォーメーション追加 (中コスト)
-  - γ: 三方向展開 (1⇔2⇔3 着) (高コスト)
-  - δ: 信頼度別最適化 (科学的・1日級)
-- **成果物想定**: `~/.claude/plans/sanrentan-formation-backtest-beta1.md` (新 plan)
+### T-041 commit 判断仰ぎ — 三連単 F 戦略最善化 本番反映 (`SANRENTAN_*` 修正 3 行)
+- 13 シナリオ × 4 月分バックテストで **`s_only_beta1_conservative` が ROI 88.6% / 純損 -52,980 円** (baseline 比 96.5% 圧縮) と最善確定
+- 本番反映 commit (3 行修正) 案: `src/calculator/betting.py:1359-1361` の `SANRENTAN_SKIP_CONFIDENCES` / `SANRENTAN_RANK2_BASE` / `SANRENTAN_MAX_UNMARKED_RANK3`
+- **マスター承認後** push する。詳細は `memory/handoff_2026-04-29.md`「本番反映 plan」セクション
+
+### T-042 commit 判断仰ぎ — 取消馬誤検知 1 行修正
+- `src/results_tracker.py` L795 の "fixed" key 追加 + `scripts/fix_stale_bet_decision.py` 実行で 4/28 9 races 修正済 (誤検知 9→0)
+- 本番反映 commit 案: `fix: 取消馬誤検知バグ修正 (results_tracker.py L795 fixed key 未対応 → 9R 誤フラグ解消)`
+- **マスター承認後** push する
+
+### T-043 (新規 P0) — scripts/monthly_backtest.py 等 git untracked スクリプト群を git add
+- 本セッション中に `?? scripts/monthly_backtest.py` (untracked) と判明
+- 今夜の Sonnet 改修 + Opus 編集が git 管理外でロストするリスク
+- 関連: 前 handoff_2026-04-27_v5.md「src/output/ 7 ファイル git 管理外問題」と同類
+- 推奨: `git status -u` で全 untracked 列挙 → 本来管理すべきものを `git add`
+
+---
+
+## 🟢 本セッション完了（2026-04-29）— T-040 P0 + T-041 + T-042 完了
+
+### T-041 (P1) — 三連単 F フォーメーション最善化 ✅ 2026-04-29 (commit 保留)
+- **手段**: monthly_backtest.py に 13 シナリオを SCENARIOS dict + `--scenario` フラグで実装、4 月分 (28 日) でバックテスト
+- **成果**: `s_only_beta1_conservative` が ROI 88.6% / 純損 -52,980 円 → baseline 比 96.5% 圧縮
+- **detail**: handoff_2026-04-29.md「全 13 シナリオ最終比較表」
+- **本番反映**: マスター起床後 commit 判断仰ぎ
+- **学び**: 「投資縮小 (買い目を絞る)」が圧倒的に正解、「★ 追加・▲ 1 着追加・三方向展開」など買い目を増やす方向は全て逆効果
+
+### T-042 (P1) — 取消馬誤検知 1 行修正 ✅ 2026-04-29 (commit 保留)
+- **真因**: `src/results_tracker.py` L795-797 の判定が `accuracy/balanced/recovery` のみで Phase 3 の `fixed` key 一本化に未対応
+- **修正**: 判定対象に "fixed" 追加 (3 行 → 5 行)
+- **検証**: 4/28 取消誤検知 9 件 → 0 件、pytest 7 passed
+- **本番反映**: マスター起床後 commit 判断仰ぎ
 
 ---
 

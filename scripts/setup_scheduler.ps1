@@ -178,6 +178,44 @@ Register-ScheduledTask `
 
 Write-Host "OK: DAI_Keiba_AutoOdds (09:30-21:00 every 5 min)" -ForegroundColor Green
 
+# ── 8. 厩舎コメント paraphrase 当日分（06:30 - Predict 直後）──────────
+$ParaphraseTodayAction = New-ScheduledTaskAction `
+    -Execute "wscript.exe" `
+    -Argument "`"$ScriptDir\scripts\daily_paraphrase_today_hidden.vbs`"" `
+    -WorkingDirectory $ScriptDir
+
+$ParaphraseTodayTrigger = New-ScheduledTaskTrigger -Daily -At "06:30"
+
+Register-ScheduledTask `
+    -TaskName "DAI_Keiba_Paraphrase_Today" `
+    -Description "D-AI Keiba: 厩舎コメント paraphrase 当日分 毎朝06:30 (Predict 直後)" `
+    -Action $ParaphraseTodayAction `
+    -Trigger $ParaphraseTodayTrigger `
+    -Settings $Settings `
+    -RunLevel Highest `
+    -Force | Out-Null
+
+Write-Host "OK: DAI_Keiba_Paraphrase_Today (daily 06:30)" -ForegroundColor Green
+
+# ── 9. 厩舎コメント paraphrase 翌日分（17:30 - Predict_Tomorrow 直後）──
+$ParaphraseTomorrowAction = New-ScheduledTaskAction `
+    -Execute "wscript.exe" `
+    -Argument "`"$ScriptDir\scripts\daily_paraphrase_tomorrow_hidden.vbs`"" `
+    -WorkingDirectory $ScriptDir
+
+$ParaphraseTomorrowTrigger = New-ScheduledTaskTrigger -Daily -At "17:30"
+
+Register-ScheduledTask `
+    -TaskName "DAI_Keiba_Paraphrase_Tomorrow" `
+    -Description "D-AI Keiba: 厩舎コメント paraphrase 翌日分 毎夕17:30 (Predict_Tomorrow 直後)" `
+    -Action $ParaphraseTomorrowAction `
+    -Trigger $ParaphraseTomorrowTrigger `
+    -Settings $Settings `
+    -RunLevel Highest `
+    -Force | Out-Null
+
+Write-Host "OK: DAI_Keiba_Paraphrase_Tomorrow (daily 17:30)" -ForegroundColor Green
+
 # ── 登録済みタスク一覧 ────────────────────────────────────────
 Write-Host ""
 Write-Host "登録済みタスク:" -ForegroundColor Yellow
@@ -187,11 +225,13 @@ Get-ScheduledTask -TaskName "DAI_Keiba_*" | Select-Object TaskName, State, @{N="
 
 Write-Host ""
 Write-Host "スケジュール:" -ForegroundColor Cyan
-Write-Host "  06:00  DAI_Keiba_Predict          - 当日予想生成" -ForegroundColor White
-Write-Host "  17:00  DAI_Keiba_Predict_Tomorrow - 翌日予想生成（公式のみ）" -ForegroundColor White
-Write-Host "  22:00  DAI_Keiba_Results          - 結果照合" -ForegroundColor White
-Write-Host "  23:00  DAI_Keiba_Maintenance      - 払戻バックフィル + 整合性チェック" -ForegroundColor White
-Write-Host "                                      (日曜: VACUUM, 月初: CSV更新)" -ForegroundColor Gray
-Write-Host "  logon  DAI_Keiba_Dashboard        - ダッシュボード常駐 (自動再起動)" -ForegroundColor White
-Write-Host "  5min   DAI_Keiba_Watchdog         - dashboard+cloudflared watchdog" -ForegroundColor White
-Write-Host "  5min   DAI_Keiba_AutoOdds         - 発走15分前オッズ+馬体重 (09:30-21:00)" -ForegroundColor White
+Write-Host "  06:00  DAI_Keiba_Predict              - 当日予想生成" -ForegroundColor White
+Write-Host "  06:30  DAI_Keiba_Paraphrase_Today     - 厩舎コメント paraphrase 当日分" -ForegroundColor White
+Write-Host "  17:00  DAI_Keiba_Predict_Tomorrow     - 翌日予想生成（公式のみ）" -ForegroundColor White
+Write-Host "  17:30  DAI_Keiba_Paraphrase_Tomorrow  - 厩舎コメント paraphrase 翌日分" -ForegroundColor White
+Write-Host "  22:00  DAI_Keiba_Results              - 結果照合" -ForegroundColor White
+Write-Host "  23:00  DAI_Keiba_Maintenance          - 払戻バックフィル + 整合性チェック" -ForegroundColor White
+Write-Host "                                          (日曜: VACUUM, 月初: CSV更新)" -ForegroundColor Gray
+Write-Host "  logon  DAI_Keiba_Dashboard            - ダッシュボード常駐 (自動再起動)" -ForegroundColor White
+Write-Host "  5min   DAI_Keiba_Watchdog             - dashboard+cloudflared watchdog" -ForegroundColor White
+Write-Host "  5min   DAI_Keiba_AutoOdds             - 発走15分前オッズ+馬体重 (09:30-21:00)" -ForegroundColor White

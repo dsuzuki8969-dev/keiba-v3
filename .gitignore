@@ -139,3 +139,15 @@ run_race.bat
 start_tunnel.bat
 start_dashboard_watchdog.bat
 open-in-cursor.bat
+
+# 2026-04-29 追加: 大容量バックアップ・一時ファイル除外
+data/*.bak_*
+data/keiba.bak_*
+data/ml.bak_*/
+data/predictions.bak_*/
+data/backups/
+data/backfill_*.pid
+data/*.pid
+data/masters/__pycache__/
+*.pyc
+tmp/
