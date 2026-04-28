@@ -156,6 +156,27 @@ CREATE INDEX IF NOT EXISTS idx_racelog_surface ON race_log(surface);
 CREATE INDEX IF NOT EXISTS idx_personnel_type  ON personnel(person_type);
 CREATE INDEX IF NOT EXISTS idx_pred_race_id    ON predictions(race_id);
 CREATE INDEX IF NOT EXISTS idx_result_race_id  ON race_results(race_id);
+
+CREATE TABLE IF NOT EXISTS horses (
+    horse_id         TEXT PRIMARY KEY,              -- 正規 horse_id (10桁数字 or nar_xxx)
+    horse_name       TEXT NOT NULL,                 -- 馬名
+    sire_name        TEXT,                          -- 父
+    dam_name         TEXT,                          -- 母
+    bms_name         TEXT,                          -- 母父
+    birth_year       INTEGER,                       -- 生年
+    sex              TEXT,                          -- 性別
+    color            TEXT,                          -- 毛色
+    breeder          TEXT,                          -- 生産者
+    owner            TEXT,                          -- 馬主
+    is_jra           INTEGER DEFAULT 1,             -- JRA 所属フラグ (1=JRA, 0=NAR)
+    first_seen_date  TEXT,                          -- race_log 最古出走日
+    last_seen_date   TEXT,                          -- race_log 最新出走日
+    race_count       INTEGER DEFAULT 0,             -- 通算出走回数
+    created_at       TEXT DEFAULT CURRENT_TIMESTAMP,
+    updated_at       TEXT DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_horses_name     ON horses(horse_name);
+CREATE INDEX IF NOT EXISTS idx_horses_lastseen ON horses(last_seen_date DESC);
 """
 
 
@@ -267,6 +288,28 @@ def init_schema() -> None:
         # 同 race_id 内の run_dev を z-score 正規化した値（帯広は順位ベース）
         "ALTER TABLE race_log ADD COLUMN relative_dev REAL",
         "CREATE INDEX IF NOT EXISTS idx_racelog_relative_dev ON race_log(relative_dev)",
+        # D Phase 1: horses マスターテーブル（2026-04-28）
+        # 既存 DB への確実な適用のため for ddl にも記載（_SCHEMA_SQL と冪等）
+        """CREATE TABLE IF NOT EXISTS horses (
+            horse_id         TEXT PRIMARY KEY,
+            horse_name       TEXT NOT NULL,
+            sire_name        TEXT,
+            dam_name         TEXT,
+            bms_name         TEXT,
+            birth_year       INTEGER,
+            sex              TEXT,
+            color            TEXT,
+            breeder          TEXT,
+            owner            TEXT,
+            is_jra           INTEGER DEFAULT 1,
+            first_seen_date  TEXT,
+            last_seen_date   TEXT,
+            race_count       INTEGER DEFAULT 0,
+            created_at       TEXT DEFAULT CURRENT_TIMESTAMP,
+            updated_at       TEXT DEFAULT CURRENT_TIMESTAMP
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_horses_name     ON horses(horse_name)",
+        "CREATE INDEX IF NOT EXISTS idx_horses_lastseen ON horses(last_seen_date DESC)",
     ]:
         try:
             conn.execute(ddl)

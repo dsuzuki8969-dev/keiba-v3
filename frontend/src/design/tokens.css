@@ -1,0 +1,230 @@
+/* ============================================================
+ * D-Aikeiba Design Tokens v6.1
+ * ============================================================
+ * CSS変数ベースのデザイントークン。Tailwind v4 `@theme inline` と連動。
+ * 変更時は design-system.md を合わせて更新すること。
+ * ------------------------------------------------------------ */
+
+:root {
+    /* ============================================
+     * カラー：ライトテーマ（ベース）
+     * ============================================ */
+    --background: #f5f6fa;
+    --foreground: #0b1326;
+    --card: #ffffff;
+    --card-foreground: #0b1326;
+    --popover: #ffffff;
+    --popover-foreground: #0b1326;
+    --primary: #0b1a3a;
+    --primary-foreground: #f8fafc;
+    --secondary: #eef1f6;
+    --secondary-foreground: #0b1326;
+    --muted: #eef1f6;
+    --muted-foreground: #5b6577;
+    --accent: #fff7e0;
+    --accent-foreground: #7a5210;
+    --destructive: #d93a3a;
+    --border: #d9dde6;
+    --input: #d9dde6;
+    --ring: #d4a853;
+    --radius: 0.625rem;
+
+    /* ============================================
+     * ブランドカラー
+     * ============================================ */
+    --brand-gold:       #d4a853;
+    --brand-gold-light: #f0d78c;
+    --brand-gold-dark:  #a97f2b;
+    --brand-gold-soft:  #f7eacb;
+    --brand-navy:       #0b1a3a;
+    --brand-navy-light: #1e2b52;
+    --brand-navy-dark:  #050c1e;
+
+    /* ============================================
+     * 信頼度バッジ（SS=緑, S=青, A=赤, B=墨, C/D=灰）
+     * ============================================ */
+    --conf-ss: #16a34a;
+    --conf-s:  #2563eb;
+    --conf-a:  #dc2626;
+    --conf-b:  #1f2937;
+    --conf-c:  #9ca3af;
+
+    /* ============================================
+     * 印カラー（◉◎=緑, ○=青, ▲=赤, △=紫, ★=墨, ☆=青, ×=赤）
+     * ============================================ */
+    --mark-tekipan:   #16a34a;
+    --mark-honmei:    #16a34a;
+    --mark-taikou:    #2563eb;
+    --mark-tannuke:   #dc2626;
+    --mark-rendashi:  #7c3aed;
+    --mark-rendashi2: #0f172a;
+    --mark-oana:      #2563eb;
+
+    /* ============================================
+     * 馬場カラー
+     * ============================================ */
+    --turf:     #16a34a;
+    --dirt:     #b45309;
+    --obstacle: #7c3aed;
+
+    /* ============================================
+     * セマンティックカラー
+     * ============================================ */
+    --positive: #10b981;
+    --negative: #dc2626;
+    --warning:  #f59e0b;
+    --info:     #2563eb;
+
+    /* ============================================
+     * ヘッダー
+     * ============================================ */
+    --header-bg:   #0b1a3a;
+    --header-text: #f8fafc;
+
+    /* ============================================
+     * チャート色
+     * ============================================ */
+    --chart-1: #0b1a3a;
+    --chart-2: #2563eb;
+    --chart-3: #d4a853;
+    --chart-4: #7c3aed;
+    --chart-5: #dc2626;
+
+    /* ============================================
+     * グレード配色（偏差値帯）— 背景用ソフトカラー
+     * SS/S は金箔グラデ、A=青、B=墨、C=灰、D=砂
+     * ============================================ */
+    --grade-ss-bg:   linear-gradient(135deg, #fff1b8 0%, #e0b34a 50%, #c48717 100%);
+    --grade-ss-fg:   #3a260a;
+    --grade-s-bg:    linear-gradient(135deg, #fde8b2 0%, #d4a853 100%);
+    --grade-s-fg:    #3a260a;
+    --grade-a-bg:    linear-gradient(135deg, #dbeafe 0%, #93c5fd 100%);
+    --grade-a-fg:    #1e3a8a;
+    --grade-b-bg:    linear-gradient(135deg, #e5e7eb 0%, #9ca3af 100%);
+    --grade-b-fg:    #111827;
+    --grade-c-bg:    linear-gradient(135deg, #f3f4f6 0%, #d1d5db 100%);
+    --grade-c-fg:    #374151;
+    --grade-d-bg:    linear-gradient(135deg, #f9fafb 0%, #e5e7eb 100%);
+    --grade-d-fg:    #6b7280;
+
+    /* ============================================
+     * タイポグラフィスケール
+     * ============================================ */
+    --fs-2xs: 0.6875rem;  /* 11px */
+    --fs-xs:  0.75rem;    /* 12px */
+    --fs-sm:  0.8125rem;  /* 13px */
+    --fs-md:  0.875rem;   /* 14px ベース */
+    --fs-base: 1rem;      /* 16px */
+    --fs-lg:  1.125rem;   /* 18px */
+    --fs-xl:  1.25rem;    /* 20px */
+    --fs-2xl: 1.5rem;     /* 24px */
+    --fs-3xl: 1.875rem;   /* 30px */
+    --fs-4xl: 2.25rem;    /* 36px */
+    --fs-5xl: 3rem;       /* 48px */
+
+    --lh-tight:   1.15;
+    --lh-snug:    1.35;
+    --lh-normal:  1.55;
+    --lh-relaxed: 1.75;
+
+    --fw-regular:  400;
+    --fw-medium:   500;
+    --fw-semibold: 600;
+    --fw-bold:     700;
+    --fw-extra:    800;
+
+    /* ============================================
+     * スペーシング（4pxベース）
+     * ============================================ */
+    --space-0:  0;
+    --space-1:  0.25rem;   /* 4px */
+    --space-2:  0.5rem;    /* 8px */
+    --space-3:  0.75rem;   /* 12px */
+    --space-4:  1rem;      /* 16px */
+    --space-5:  1.25rem;   /* 20px */
+    --space-6:  1.5rem;    /* 24px */
+    --space-8:  2rem;      /* 32px */
+    --space-10: 2.5rem;    /* 40px */
+    --space-12: 3rem;      /* 48px */
+    --space-16: 4rem;      /* 64px */
+    --space-20: 5rem;      /* 80px */
+
+    /* ============================================
+     * エレベーション（影）
+     * ============================================ */
+    --shadow-xs:   0 1px 2px 0 rgba(11, 19, 38, 0.04);
+    --shadow-sm:   0 1px 3px 0 rgba(11, 19, 38, 0.08), 0 1px 2px -1px rgba(11, 19, 38, 0.04);
+    --shadow-md:   0 4px 8px -2px rgba(11, 19, 38, 0.10), 0 2px 4px -2px rgba(11, 19, 38, 0.06);
+    --shadow-lg:   0 12px 20px -6px rgba(11, 19, 38, 0.12), 0 4px 8px -4px rgba(11, 19, 38, 0.08);
+    --shadow-xl:   0 20px 35px -8px rgba(11, 19, 38, 0.16), 0 8px 12px -6px rgba(11, 19, 38, 0.10);
+    --shadow-gold-glow: 0 0 0 1px rgba(212, 168, 83, 0.35), 0 8px 22px -6px rgba(212, 168, 83, 0.38);
+    --shadow-navy-glow: 0 0 0 1px rgba(30, 43, 82, 0.40), 0 8px 24px -6px rgba(11, 26, 58, 0.45);
+
+    /* ============================================
+     * モーション
+     * ============================================ */
+    --dur-fast: 120ms;
+    --dur-base: 180ms;
+    --dur-slow: 320ms;
+    --ease-out:    cubic-bezier(0.2, 0.8, 0.2, 1);
+    --ease-in-out: cubic-bezier(0.4, 0.0, 0.2, 1);
+    --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+/* ============================================
+ * ダークテーマ（D-Aikeiba プレミアム）
+ * 深藍 #0a0e1a / カード #121a2e をベースに、
+ * ゴールドアクセントが映える高コントラストを実現
+ * ============================================ */
+.dark {
+    --background: #0a0e1a;
+    --foreground: #e4e9f5;
+    --card: #121a2e;
+    --card-foreground: #e4e9f5;
+    --popover: #121a2e;
+    --popover-foreground: #e4e9f5;
+    --primary: #d4a853;
+    --primary-foreground: #0a0e1a;
+    --secondary: #1a2440;
+    --secondary-foreground: #e4e9f5;
+    --muted: #1a2440;
+    --muted-foreground: #9aa3b8;
+    --accent: #1f1a10;
+    --accent-foreground: #f0d78c;
+    --destructive: #ef4444;
+    --border: #27324d;
+    --input: #27324d;
+    --ring: #d4a853;
+
+    /* ダーク下のグレードは発光系グラデに差し替え */
+    --grade-ss-bg:   linear-gradient(135deg, #f0d78c 0%, #d4a853 45%, #a97f2b 100%);
+    --grade-ss-fg:   #1a1205;
+    --grade-s-bg:    linear-gradient(135deg, #d4a853 0%, #8a6a2a 100%);
+    --grade-s-fg:    #ffffff;
+    --grade-a-bg:    linear-gradient(135deg, #60a5fa 0%, #1e40af 100%);
+    --grade-a-fg:    #ffffff;
+    --grade-b-bg:    linear-gradient(135deg, #4b5563 0%, #1f2937 100%);
+    --grade-b-fg:    #e5e7eb;
+    --grade-c-bg:    linear-gradient(135deg, #4b5563 0%, #374151 100%);
+    --grade-c-fg:    #d1d5db;
+    --grade-d-bg:    linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
+    --grade-d-fg:    #94a3b8;
+
+    --header-bg:   #05091a;
+    --header-text: #e4e9f5;
+
+    --chart-1: #d4a853;
+    --chart-2: #60a5fa;
+    --chart-3: #f0d78c;
+    --chart-4: #a78bfa;
+    --chart-5: #f87171;
+
+    /* ダーク時のシャドウはglow寄りに */
+    --shadow-xs:   0 1px 2px 0 rgba(0, 0, 0, 0.4);
+    --shadow-sm:   0 1px 3px 0 rgba(0, 0, 0, 0.5), 0 1px 2px -1px rgba(0, 0, 0, 0.3);
+    --shadow-md:   0 4px 10px -2px rgba(0, 0, 0, 0.55), 0 2px 4px -2px rgba(0, 0, 0, 0.35);
+    --shadow-lg:   0 14px 24px -6px rgba(0, 0, 0, 0.60), 0 4px 10px -4px rgba(0, 0, 0, 0.40);
+    --shadow-xl:   0 24px 40px -8px rgba(0, 0, 0, 0.65), 0 10px 14px -6px rgba(0, 0, 0, 0.45);
+    --shadow-gold-glow: 0 0 0 1px rgba(212, 168, 83, 0.55), 0 10px 28px -6px rgba(212, 168, 83, 0.40);
+    --shadow-navy-glow: 0 0 0 1px rgba(96, 165, 250, 0.30), 0 10px 28px -6px rgba(30, 64, 175, 0.40);
+}

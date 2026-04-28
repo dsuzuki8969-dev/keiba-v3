@@ -1,0 +1,125 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+
+/* ============================================================
+ * D-Aikeiba Design System (v6.1)
+ *  - tokens.css: CSS変数（カラー/タイポ/スペース/影/モーション）
+ *  - utilities.css: 金箔グラデ・micro-bar・glass などユーティリティ
+ * ============================================================ */
+@import "./design/tokens.css";
+@import "./design/utilities.css";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+    /* メイリオ統一（A 案 2026-04-27）：
+     *   Windows ユーザーには「メイリオ」がネイティブ表示される。
+     *   Mac/iOS/Linux 等は順次フォールバック（Hiragino Sans → system-ui）。
+     *   数字（tabular-nums）は --font-mono の Geist Mono を維持し、
+     *   偏差値・オッズの読み違い（5 vs S 等）を防ぐ。 */
+    --font-sans: "Meiryo", "メイリオ", "Hiragino Sans", "ヒラギノ角ゴシック", "Yu Gothic", "游ゴシック", system-ui, sans-serif;
+    --font-heading: "Meiryo", "メイリオ", "Hiragino Sans", "ヒラギノ角ゴシック", "Yu Gothic", "游ゴシック", system-ui, sans-serif;
+
+    /* shadcn/ui テーマ変数マッピング */
+    --color-background: var(--background);
+    --color-foreground: var(--foreground);
+    --color-card: var(--card);
+    --color-card-foreground: var(--card-foreground);
+    --color-popover: var(--popover);
+    --color-popover-foreground: var(--popover-foreground);
+    --color-primary: var(--primary);
+    --color-primary-foreground: var(--primary-foreground);
+    --color-secondary: var(--secondary);
+    --color-secondary-foreground: var(--secondary-foreground);
+    --color-muted: var(--muted);
+    --color-muted-foreground: var(--muted-foreground);
+    --color-accent: var(--accent);
+    --color-accent-foreground: var(--accent-foreground);
+    --color-destructive: var(--destructive);
+    --color-border: var(--border);
+    --color-input: var(--input);
+    --color-ring: var(--ring);
+
+    --color-chart-1: var(--chart-1);
+    --color-chart-2: var(--chart-2);
+    --color-chart-3: var(--chart-3);
+    --color-chart-4: var(--chart-4);
+    --color-chart-5: var(--chart-5);
+
+    --radius-sm: calc(var(--radius) * 0.6);
+    --radius-md: calc(var(--radius) * 0.8);
+    --radius-lg: var(--radius);
+    --radius-xl: calc(var(--radius) * 1.4);
+    --radius-2xl: calc(var(--radius) * 1.8);
+
+    /* ブランドカラー */
+    --color-brand-gold: var(--brand-gold);
+    --color-brand-gold-light: var(--brand-gold-light);
+    --color-brand-gold-dark: var(--brand-gold-dark);
+    --color-brand-gold-soft: var(--brand-gold-soft);
+    --color-brand-navy: var(--brand-navy);
+    --color-brand-navy-light: var(--brand-navy-light);
+    --color-brand-navy-dark: var(--brand-navy-dark);
+
+    /* 競馬固有色 */
+    --color-conf-ss: var(--conf-ss);
+    --color-conf-s: var(--conf-s);
+    --color-conf-a: var(--conf-a);
+    --color-conf-b: var(--conf-b);
+    --color-conf-c: var(--conf-c);
+
+    --color-mark-tekipan: var(--mark-tekipan);
+    --color-mark-honmei: var(--mark-honmei);
+    --color-mark-taikou: var(--mark-taikou);
+    --color-mark-tannuke: var(--mark-tannuke);
+    --color-mark-rendashi: var(--mark-rendashi);
+    --color-mark-rendashi2: var(--mark-rendashi2);
+    --color-mark-oana: var(--mark-oana);
+
+    --color-turf: var(--turf);
+    --color-dirt: var(--dirt);
+    --color-obstacle: var(--obstacle);
+
+    --color-positive: var(--positive);
+    --color-negative: var(--negative);
+    --color-warning: var(--warning);
+    --color-info: var(--info);
+
+    --color-header-bg: var(--header-bg);
+    --color-header-text: var(--header-text);
+}
+
+@layer base {
+    * {
+        @apply border-border outline-ring/50;
+    }
+    body {
+        @apply bg-background text-foreground;
+        -webkit-font-smoothing: antialiased;
+        -moz-osx-font-smoothing: grayscale;
+        /* 数字は tabular-nums をデフォルト化（偏差値/オッズ/確率が桁揃え） */
+        font-variant-numeric: tabular-nums;
+        font-feature-settings: "tnum", "lnum";
+    }
+    html {
+        @apply font-sans;
+        font-size: 14px;
+    }
+
+    /* スクロールバー（ダーク時にゴールド微発光） */
+    ::-webkit-scrollbar {
+        width: 10px;
+        height: 10px;
+    }
+    ::-webkit-scrollbar-track {
+        background: transparent;
+    }
+    ::-webkit-scrollbar-thumb {
+        background: color-mix(in srgb, var(--muted-foreground) 30%, transparent);
+        border-radius: 6px;
+    }
+    ::-webkit-scrollbar-thumb:hover {
+        background: color-mix(in srgb, var(--brand-gold) 60%, transparent);
+    }
+}

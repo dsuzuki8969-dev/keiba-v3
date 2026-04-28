@@ -1,0 +1,82 @@
+name: E2E Tests
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+
+    steps:
+      # ソースコードをチェックアウト
+      - uses: actions/checkout@v4
+
+      # Node.js セットアップ (package-lock.json ベースでキャッシュ)
+      - name: Node.js セットアップ
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      # npm 依存パッケージインストール
+      - name: npm 依存インストール
+        working-directory: frontend
+        run: npm ci
+
+      # Playwright ブラウザ (chromium のみ) インストール
+      - name: Playwright ブラウザインストール
+        working-directory: frontend
+        run: npx playwright install --with-deps chromium
+
+      # フロントエンドビルド
+      - name: フロントエンドビルド
+        working-directory: frontend
+        run: npm run build
+
+      # Python セットアップ
+      - name: Python セットアップ
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      # Python 依存パッケージインストール
+      - name: Python 依存インストール
+        run: pip install -r requirements.txt
+
+      # Flask バックエンド起動 (MLモデルなしのダミーモードで起動)
+      # ビルド成果物を src/static/ にコピーしてから起動
+      - name: Flask バックエンド起動
+        run: |
+          cp -r frontend/dist/. src/static/
+          KEIBA_HOST=127.0.0.1 KEIBA_PORT=5051 PYTHONIOENCODING=utf-8 python src/dashboard.py &
+          echo "Flask バックエンド起動中... 60秒待機"
+          sleep 60
+        env:
+          PYTHONUNBUFFERED: "1"
+          # CI 環境では DB・モデルが存在しないため軽量起動モード
+          CI: "true"
+
+      # Flask の起動確認
+      - name: Flask ヘルスチェック
+        run: |
+          curl -f http://127.0.0.1:5051/ || (echo "Flask 起動失敗" && exit 1)
+
+      # E2E テスト実行
+      - name: E2E テスト実行
+        working-directory: frontend
+        run: npx playwright test e2e/responsive-check.spec.ts --project=chromium --reporter=list
+        env:
+          E2E_BASE_URL: "http://127.0.0.1:5051"
+
+      # テスト失敗時にスクリーンショットをアーティファクトとしてアップロード
+      - name: スクリーンショット保存 (失敗時)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-screenshots
+          path: frontend/e2e-screenshots/
+          retention-days: 7

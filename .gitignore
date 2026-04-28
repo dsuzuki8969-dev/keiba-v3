@@ -98,8 +98,12 @@ desktop.ini
 data/*.json
 !data/masters/**
 
-# フロントエンド（別リポジトリ）
-frontend/
+# フロントエンド — ソースコードは git 管理、ビルド成果物・依存パッケージは除外
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+frontend/e2e-screenshots/
+frontend/playwright-report/
 
 # ルートの一時ファイル
 keiba.db

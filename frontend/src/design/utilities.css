@@ -1,0 +1,313 @@
+/* ============================================================
+ * D-Aikeiba プレミアムユーティリティ
+ * ============================================================
+ * Tailwind では表現しにくい装飾パーツをクラスで提供。
+ * 使いどころ: カード/バッジのハイライト、見出し、フォーカス。
+ * ------------------------------------------------------------ */
+
+/* 金箔グラデテキスト（◉・SS・大見出し用） */
+.gold-gradient {
+    background: linear-gradient(135deg, #f0d78c 0%, #d4a853 45%, #a97f2b 100%);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+    -webkit-text-fill-color: transparent;
+}
+
+/* 金箔グラデ背景（ヒーローカード、金アクセントCTA用） */
+.gold-gradient-bg {
+    background: linear-gradient(135deg, #f0d78c 0%, #d4a853 50%, #a97f2b 100%);
+}
+
+/* 銀/銅（2位/3位のランキング装飾） */
+.silver-gradient-bg {
+    background: linear-gradient(135deg, #e5e7eb 0%, #9ca3af 50%, #6b7280 100%);
+}
+.bronze-gradient-bg {
+    background: linear-gradient(135deg, #f5cba7 0%, #c27c3c 50%, #8b5a2b 100%);
+}
+
+/* プレミアムボーダー：金箔の内側ハイライト */
+.premium-border {
+    position: relative;
+    border: 1px solid var(--border);
+    background-clip: padding-box;
+}
+.premium-border::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    padding: 1px;
+    background: linear-gradient(135deg, rgba(212, 168, 83, 0.5), rgba(212, 168, 83, 0) 55%);
+    -webkit-mask: linear-gradient(#fff, #fff) content-box, linear-gradient(#fff, #fff);
+    -webkit-mask-composite: xor;
+            mask-composite: exclude;
+    pointer-events: none;
+}
+
+/* ガラスモーフィズム（ヘッダー/モーダル用） */
+.glass {
+    background: color-mix(in srgb, var(--card) 80%, transparent);
+    backdrop-filter: blur(12px) saturate(1.2);
+    -webkit-backdrop-filter: blur(12px) saturate(1.2);
+}
+
+/* ゴールドフォーカスリング */
+.focus-ring-gold:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 2px var(--background), 0 0 0 4px var(--brand-gold);
+    border-radius: inherit;
+}
+
+/* 数字桁揃え（偏差値/確率/オッズ） */
+.tnum {
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: "tnum", "lnum";
+}
+
+/* micro-bar（セル背景で相対値を可視化。--pct で埋め率を渡す） */
+.micro-bar {
+    position: relative;
+    overflow: hidden;
+}
+.micro-bar::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    width: var(--pct, 0%);
+    background: linear-gradient(90deg, rgba(212, 168, 83, 0.20), rgba(212, 168, 83, 0.06));
+    pointer-events: none;
+    transition: width var(--dur-slow) var(--ease-out);
+}
+
+/* ダークモード時の micro-bar は青寄りに */
+.dark .micro-bar::after {
+    background: linear-gradient(90deg, rgba(96, 165, 250, 0.22), rgba(96, 165, 250, 0.06));
+}
+
+/* 金アンダーライン（アクティブタブ用） */
+.gold-underline {
+    position: relative;
+}
+.gold-underline::after {
+    content: "";
+    position: absolute;
+    left: 0.5rem;
+    right: 0.5rem;
+    bottom: -1px;
+    height: 2px;
+    border-radius: 2px;
+    background: linear-gradient(90deg, transparent 0%, var(--brand-gold) 20%, var(--brand-gold-light) 50%, var(--brand-gold) 80%, transparent 100%);
+    box-shadow: 0 0 10px rgba(212, 168, 83, 0.5);
+}
+
+/* 微細スパーク（1位馬のホバー） */
+@keyframes gold-pulse {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(212, 168, 83, 0.4); }
+    50%      { box-shadow: 0 0 0 6px rgba(212, 168, 83, 0); }
+}
+.gold-pulse {
+    animation: gold-pulse 2.4s var(--ease-out) infinite;
+}
+
+/* Skeleton shimmer（ローディング中プレースホルダ用） */
+@keyframes shimmer {
+    100% { transform: translateX(100%); }
+}
+
+/* グレードセル（背景＋文字色をトークンから一括） */
+.grade-cell {
+    background: var(--grade-bg, var(--muted));
+    color: var(--grade-fg, var(--foreground));
+    font-weight: var(--fw-bold);
+}
+
+/* typography ヘルパー */
+.heading-display {
+    font-family: var(--font-heading);
+    font-weight: var(--fw-extra);
+    letter-spacing: -0.02em;
+    line-height: var(--lh-tight);
+}
+
+.heading-section {
+    font-family: var(--font-heading);
+    font-weight: var(--fw-bold);
+    letter-spacing: -0.01em;
+    line-height: var(--lh-snug);
+}
+
+/* ============================================
+ * モバイル最適化 — タップ領域 44px 保証
+ * ============================================
+ * Apple HIG / Material Design 共通推奨値 44×44px をあらゆる
+ * 操作要素に保証する。`touch-target` を付けるだけで OK。
+ *
+ * 使用例:
+ *   <button class="touch-target px-2 py-1">...</button>
+ *
+ * コンパクト版 `.touch-target-sm` は 40px（タブバー等）。
+ */
+.touch-target {
+    min-width: 44px;
+    min-height: 44px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+}
+.touch-target-sm {
+    min-width: 40px;
+    min-height: 40px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+}
+
+/* モバイル限定（〜640px）でボタンの最小タップ領域を自動昇格 */
+@media (max-width: 640px) {
+    button,
+    a[role="button"],
+    [role="tab"],
+    [role="menuitem"] {
+        min-height: 40px;
+    }
+    /* 横スクロール可能な table コンテナ用シャドウヒント */
+    .mobile-scroll-hint {
+        position: relative;
+    }
+    .mobile-scroll-hint::after {
+        content: "";
+        position: absolute;
+        top: 0;
+        right: 0;
+        bottom: 0;
+        width: 24px;
+        pointer-events: none;
+        background: linear-gradient(
+            to left,
+            color-mix(in srgb, var(--background) 80%, transparent),
+            transparent
+        );
+    }
+    /* iOS Safari のスクロール慣性 */
+    .mobile-scroll-inertia {
+        -webkit-overflow-scrolling: touch;
+    }
+}
+
+/* ============================================
+ * セーフエリア（iPhone のノッチ / ダイナミックアイランド回避）
+ * ============================================ */
+.safe-pad-top {
+    padding-top: max(var(--space-2), env(safe-area-inset-top));
+}
+.safe-pad-bottom {
+    padding-bottom: max(var(--space-2), env(safe-area-inset-bottom));
+}
+
+/* ============================================
+ * コントラスト AA 保証
+ * ============================================ */
+/* ダーク時のカード内テキストが低コントラストにならないよう、
+   muted-foreground の最小コントラスト確保 */
+.dark .text-muted-foreground {
+    color: color-mix(in srgb, var(--muted-foreground) 85%, white 15%);
+}
+
+/* ============================================
+ * ヒーローグリッドパターン（Bloomberg ターミナル風）
+ * タイトルブロック背景に重ねて使用。4-6% opacity の細い金色格子。
+ * ============================================ */
+.hero-grid-pattern {
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='40' height='40'%3E%3Cpath d='M 40 0 L 0 0 0 40' fill='none' stroke='rgba(212,168,83,0.08)' stroke-width='0.5'/%3E%3C/svg%3E");
+    background-size: 40px 40px;
+}
+
+/* 強化版グリッドパターン（opacity 20% — ヒーロータイトルブロック内側用） */
+.hero-grid-pattern-strong {
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='40' height='40'%3E%3Cpath d='M 40 0 L 0 0 0 40' fill='none' stroke='rgba(212,168,83,0.20)' stroke-width='0.5'/%3E%3C/svg%3E");
+    background-size: 40px 40px;
+}
+
+/* ============================================
+ * 1位カード常時ソフトパルスアニメ（gold-pulse-soft）
+ * gold-pulse より振幅大きく存在感を増幅しつつ「うるさくない」振り幅。
+ * ============================================ */
+@keyframes gold-pulse-soft {
+    0%, 100% { box-shadow: var(--shadow-gold-glow); }
+    50%       { box-shadow: 0 0 0 1px rgba(212,168,83,0.6), 0 18px 38px -8px rgba(212,168,83,0.55); }
+}
+.gold-pulse-soft {
+    animation: gold-pulse-soft 3.2s ease-in-out infinite;
+}
+
+/* アクセシビリティ: 動きを減らす設定が有効な場合はアニメを停止 */
+@media (prefers-reduced-motion: reduce) {
+    .gold-pulse-soft {
+        animation: none;
+        box-shadow: var(--shadow-gold-glow);
+    }
+    .gold-pulse {
+        animation: none;
+    }
+}
+
+/* ネオンカードホバー強化（2/3 位カード用）
+ * PremiumCard の hover シャドウをさらに増幅し translate も -2px に強化。
+ * group クラスと併用して子要素アイコンに scale を伝播させる。 */
+.neon-card-hover {
+    transition: transform var(--dur-base) var(--ease-out),
+                box-shadow var(--dur-base) var(--ease-out);
+}
+.neon-card-hover:hover {
+    transform: translateY(-2px);
+}
+.neon-card-hover:active {
+    transform: translateY(0);
+}
+
+/* ========================================================
+ * Stylish Page Utilities (Phase B)
+ * ====================================================== */
+
+/* セクション小ラベル（eyebrow） */
+.section-eyebrow {
+    font-size: 0.6875rem;
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+    font-weight: 700;
+    color: var(--brand-gold);
+    text-shadow: 0 0 8px rgba(212, 168, 83, 0.4);
+}
+
+/* 強調数字（中型） */
+.stat-mono {
+    font-family: ui-monospace, SFMono-Regular, "Geist Mono", Menlo, Monaco, monospace;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.025em;
+    font-weight: 800;
+}
+
+/* 強調数字（大型・金箔） */
+.stat-mono-gold {
+    font-family: ui-monospace, SFMono-Regular, "Geist Mono", Menlo, Monaco, monospace;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.025em;
+    font-weight: 800;
+    background: linear-gradient(135deg, #d4a853 0%, #f4d27a 50%, #d4a853 100%);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+}
+
+/* 統一カードホバー */
+.stylish-card-hover {
+    transition: all 200ms cubic-bezier(0.4, 0, 0.2, 1);
+    will-change: transform, box-shadow;
+}
+.stylish-card-hover:hover {
+    box-shadow: var(--shadow-gold-glow);
+    transform: translateY(-1px);
+    border-color: rgba(212, 168, 83, 0.4);
+}
