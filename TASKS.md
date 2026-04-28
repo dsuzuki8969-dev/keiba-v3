@@ -136,13 +136,35 @@
     - 10〜12月: 全 105 日 未取得 → skipped 6,609 件の主体
 - **副次効果**: 2023H2 参照馬の speed_dev=20 張り付き残存 1 件の再校正試行が可能化
 
+### speed_dev=20 残 1 件 解消 ✅ 2026-04-28 17:xx (commit b1ef530)
+- **対象**: race_id=202647042806 (4/28 笠松 8R) ジュールスレーヴ
+- **真因**: 当初想定 (2023H2 race_log 不在) ではなかった。
+  実際は `refresh_pred_speed_dev.py` が `Predict_Tomorrow` バッチで自動実行されておらず
+  pred.json への注入処理が漏れていた構造的問題
+- **最小修正**: `python scripts/refresh_pred_speed_dev.py 20260428` で 1,040 件 UPDATE
+  (20.0 → 47.0)、バックアップ取得済 (`*.bak_refresh`)
+- **検証**: 4/28 pred.json speed_dev=20.0 件数 = 1 → 0 件
+
+### 構造的バグ修正: refresh_pred_speed_dev 自動実行統合 ✅ 2026-04-28 (commit 4fcbc52)
+- **対応**: `run_analysis_date.py` L926 直後に subprocess 呼び出しブロック (+33 行) 追加
+- **効果**: 翌日予想生成 (Predict_Tomorrow) 完了時に自動で refresh が走る → speed_dev 張り付き再発を恒久阻止
+- **動作確認**: 構文確認のみ (PID 15016 稼働中で重複起動回避)。明朝 06:00 Predict 自動実行で初回検証
+
+### 同名異形式 horse_id 再評価 ✅ 2026-04-28 17:xx (DB UPDATE のみ、commit 不要)
+- **背景**: B 完走 +34,477 行で B_prefix 2,051 件 / nar_prefix 993 件追加 → 同名突合の再評価
+- **再 dry-run 結果**: 検出ペア 0 件 (前回 531 件マージで完全)
+- **horses 件数**: 52,050 → 52,093 件 (+43 件、本日中の自然増)
+- **残 B_prefix 1,253 件**: 変化なし (同名 nar_prefix なし、別馬扱いとして正常)
+- **判定**: 追加マージ不要、DB 完全整合
+
 ## 🟡 将来課題（次セッション以降）
 
 | 優先度 | 項目 | 状態 / 条件 |
 |:---:|---|---|
-| P1 | B_prefix 1,253 件の対応 | NAR 公式コードとの突合 or netkeiba 馬詳細スクレイピング等、別アプローチ要検討 |
+| P1 | B_prefix 1,253 件の対応 | NAR 公式コードとの突合 or netkeiba 馬詳細スクレイピング等、別アプローチ要検討（B 完走副次効果なし確定） |
 | P1 | 2023 年生まれ若駒 339 件 | netkeiba 403 エラー → 自動補完待ち（馬 DB に存在しない可能性あり） |
 | P1 | B skipped 6,609 件の再 apply | キャッシュ蓄積後に `restart_backfill_b.ps1` で再実行（2023-10〜12月が主体） |
+| P1 | ML 47 モデル再学習 (retrain_all.py) | B 完走 +34,477 行で AUC 向上余地、半日〜1日タスク。GPU 計算 + 旧モデル比較バックテスト要 |
 | P2 | B_prefix race_log 残存 33,779 件 | 整合済みだが将来的に netkeiba_id 統合の余地あり |
 
 ---
