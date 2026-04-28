@@ -159,13 +159,51 @@
 
 ## 🟡 将来課題（次セッション以降）
 
+### P0 (即着手・最優先)
+
 | 優先度 | 項目 | 状態 / 条件 |
 |:---:|---|---|
+| **P0** | **LIVE STATS 三連単 F 集計修正** | 真値 (40R/5R) と表示 (27R/3R) の乖離。`src/dashboard.py L5685-5730` を T-039 (`/api/race_card_results` の `_build_race_card_results`) ロジックに統一。工数 30-60 分。詳細: `handoff_2026-04-28_v2.md` |
+
+### P1
+
+| 優先度 | 項目 | 状態 / 条件 |
+|:---:|---|---|
+| P1 | 取消馬誤検知 (水沢 12R 等) 真因究明 | 「取消馬により買い目無効」テキストの出所特定 (frontend/src grep ヒットなし、src/output/ や別経路の可能性) |
+| P1 | build_sanrentan_tickets vs pred.json fixed 整合性検証 | LIVE STATS 修正完了後にバックテストで突合 |
 | P1 | B_prefix 1,253 件の対応 | NAR 公式コードとの突合 or netkeiba 馬詳細スクレイピング等、別アプローチ要検討（B 完走副次効果なし確定） |
 | P1 | 2023 年生まれ若駒 339 件 | netkeiba 403 エラー → 自動補完待ち（馬 DB に存在しない可能性あり） |
 | P1 | B skipped 6,609 件の再 apply | キャッシュ蓄積後に `restart_backfill_b.ps1` で再実行（2023-10〜12月が主体） |
 | P1 | ML 47 モデル再学習 (retrain_all.py) | B 完走 +34,477 行で AUC 向上余地、半日〜1日タスク。GPU 計算 + 旧モデル比較バックテスト要 |
+
+### P2
+
+| 優先度 | 項目 | 状態 / 条件 |
+|:---:|---|---|
+| P2 | netkeiba 並列リクエスト禁止の構造強化 | feedback_netkeiba_concurrent_throttle 関連 |
 | P2 | B_prefix race_log 残存 33,779 件 | 整合済みだが将来的に netkeiba_id 統合の余地あり |
+
+---
+
+## 📦 4/28 セッション後半 完了サマリ (5 commits)
+
+| commit | 内容 |
+|---|---|
+| `a82cd84` | T-039 レースカード的中バッジ + 赤外枠 (`/api/race_card_results`) |
+| `6d0939e` | RaceResultPanel 払戻金キー名英字対応 (フロント PayoutCard) |
+| `a065bab` | keibabook seiseki 取得に Referer 指定追加 (大井 11R/12R 取得対応) |
+| `8b04e0e` | 自己修繕プロトコル ★★★ (応答前 5 秒自己診断 + テンプレ脳トリガー語句) |
+
+### 累犯記録 (本日 13 回)
+
+詳細: `~/.claude/projects/.../memory/feedback_self_correction_protocol.md` ★★★
+
+主因 5 パターン:
+- subagent 委託中の Chat 沈黙 (4 回)
+- メリ/デメ提示義務違反 (2 回)
+- Sonnet 報告引き写し (3 回)
+- 憶測で断言 (2 回)
+- 小確認連続でトークン浪費 (2 回)
 
 ---
 
