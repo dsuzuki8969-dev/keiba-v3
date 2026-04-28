@@ -18,6 +18,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.ml.lgbm_model import LGBMPredictor, _load_horse_sire_map
 from src import database as db
+from src.scraper.kaisai_calendar_util import validate_race_against_calendar
+from data.masters.venue_master import VENUE_CODE_TO_NAME, JRA_VENUE_CODES as _JRA_VC
 
 ML_DATA_DIR = "data/ml"
 
@@ -142,10 +144,29 @@ def process_date(
     pred_payload = {"date": date_str, "version": 2, "races": []}
     results_data = {}  # race_id -> {order, payouts}
 
+    # ── [T-038] カレンダー突合 skip 集計 ──
+    calendar_skip_count = 0
+
     for race in races:
         race_id = race.get("race_id", "")
         if not race_id:
             continue
+
+        # ── [T-038] カレンダー突合検証 ──────────────────────────────
+        # race_id の場コードから会場名・JRA/NAR を判定してカレンダーと照合する。
+        # 不整合なら警告ログ + skip (data/ml への書き込み汚染を防止)。
+        _vc = race_id[4:6] if len(race_id) >= 6 else ""
+        _venue_for_cal = VENUE_CODE_TO_NAME.get(_vc, "")
+        _is_jra_for_cal = _vc in _JRA_VC
+        if _venue_for_cal:
+            _cal_ok, _cal_reason = validate_race_against_calendar(
+                race_id, date_str, _venue_for_cal, _is_jra_for_cal
+            )
+            if not _cal_ok:
+                print(f"  [T-038][WARN] カレンダー不整合 → skip: {_cal_reason}")
+                calendar_skip_count += 1
+                continue
+        # ─────────────────────────────────────────────────────────────
 
         horses = race.get("horses", [])
         if len(horses) < 3:
@@ -293,6 +314,10 @@ def process_date(
             results_saved = len(results_data)
         except Exception as e:
             print(f"  [WARN] results save failed {date_str}: {e}")
+
+    # [T-038] カレンダー不整合 skip 集計をログ表示
+    if calendar_skip_count > 0:
+        print(f"  [T-038] {date_str}: カレンダー不整合 skip={calendar_skip_count}件")
 
     return preds_saved, results_saved, False
 

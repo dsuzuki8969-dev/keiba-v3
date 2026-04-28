@@ -256,6 +256,42 @@ if not race_ids:
     sys.exit(1)
 P(f"  {len(race_ids)}レース: {race_ids}")
 
+# ─── [3b/N] カレンダー突合検証 (T-038) ──────────────────────────────
+# kaisai_calendar.json とのカレンダー整合チェック。
+# JRA race_id が NAR の元旦に配置される等の汚染 race_id を即時排除する。
+from src.scraper.kaisai_calendar_util import validate_race_against_calendar
+from data.masters.venue_master import VENUE_CODE_TO_NAME, JRA_VENUE_CODES as _JRA_VC
+
+_calendar_skipped: list = []
+_calendar_valid: list = []
+for _rid in race_ids:
+    _vc = _rid[4:6] if len(_rid) >= 6 else ""
+    _vname = VENUE_CODE_TO_NAME.get(_vc, "")
+    _is_jra = _vc in _JRA_VC
+    if not _vname:
+        # 場コード不明は検証できないためスルー（ログのみ）
+        logger.warning("[T-038] race_id=%s: 場コード=%s 不明 → カレンダー検証スキップ", _rid, _vc)
+        _calendar_valid.append(_rid)
+        continue
+    _ok, _reason = validate_race_against_calendar(_rid, DATE, _vname, _is_jra)
+    if not _ok:
+        logger.warning("[T-038] カレンダー不整合 → skip: %s", _reason)
+        _calendar_skipped.append(_rid)
+    else:
+        _calendar_valid.append(_rid)
+
+if _calendar_skipped:
+    P(f"  [bold yellow][T-038] カレンダー突合 skip: {len(_calendar_skipped)}件"
+      f" → {_calendar_skipped}[/]")
+    race_ids = _calendar_valid
+    P(f"  有効 race_ids: {len(race_ids)}件")
+else:
+    P(f"  [T-038] カレンダー突合: 全 {len(race_ids)}件 整合 (skip=0)")
+
+if not race_ids:
+    P(f"[bold red]{DATE} のレースが全件カレンダー不整合でスキップされました[/]")
+    sys.exit(1)
+
 # ─── 4. 各レースを分析 ────────────────────────────────────────────
 if not NO_HTML:
     os.makedirs("output", exist_ok=True)

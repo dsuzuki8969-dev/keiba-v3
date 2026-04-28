@@ -6553,6 +6553,24 @@ function dNavRefreshOdds(date){{
             "layout_warnings_detail": _layout_details,
         })
 
+    # ── T-038 開催カレンダーマスタ API ──────────────────────────────────────
+    @app.route("/api/kaisai_calendar")
+    def api_kaisai_calendar():
+        """T-038 開催カレンダーマスタを返す。
+        data/masters/kaisai_calendar.json を読み込んでそのまま返す。
+        """
+        master_path = os.path.join(PROJECT_ROOT, "data", "masters", "kaisai_calendar.json")
+        try:
+            with open(master_path, "r", encoding="utf-8") as _f:
+                data = json.load(_f)
+            return jsonify(data)
+        except FileNotFoundError:
+            logger.warning("kaisai_calendar.json が見つかりません: %s", master_path)
+            return jsonify({"error": "calendar_master_not_found"}), 500
+        except Exception as _e:
+            logger.error("/api/kaisai_calendar 読み込みエラー: %s", _e)
+            return jsonify({"error": str(_e)}), 500
+
     # ── データ品質チェック API ────────────────────────────────────────────
     @app.route("/api/data_quality")
     def api_data_quality():

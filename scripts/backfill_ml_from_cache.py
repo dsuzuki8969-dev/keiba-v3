@@ -25,7 +25,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import lz4.frame
 from bs4 import BeautifulSoup
 
-from data.masters.venue_master import JRA_VENUE_CODES
+from data.masters.venue_master import JRA_VENUE_CODES, VENUE_CODE_TO_NAME
+from src.scraper.kaisai_calendar_util import validate_race_against_calendar
 from src.scraper.ml_data_collector import ML_DATA_DIR, parse_result_page
 
 CACHE_DIR = "data/cache"
@@ -192,6 +193,8 @@ def main():
         items = by_date[date_str]
         day_races = []
         day_errors = 0
+        # [T-038] カレンダー突合 skip 集計
+        day_cal_skip = 0
 
         for rid, fpath in sorted(items):
             try:
@@ -205,11 +208,29 @@ def main():
                 soup = BeautifulSoup(html, "html.parser")
                 parsed = parse_result_page(soup, rid)
                 if parsed:
+                    # ── [T-038] カレンダー突合検証 ─────────────────────────
+                    # parse_result_page() が返した venue と date_str で整合確認。
+                    # False の場合は警告ログ + skip (data/ml に書き込まない)。
+                    _p_venue = parsed.get("venue", "")
+                    _p_vc = rid[4:6] if len(rid) >= 6 else ""
+                    _p_is_jra = _p_vc in JRA_VENUE_CODES
+                    if _p_venue:
+                        _cal_ok, _cal_reason = validate_race_against_calendar(
+                            rid, date_str, _p_venue, _p_is_jra
+                        )
+                        if not _cal_ok:
+                            print(f"  [T-038][WARN] カレンダー不整合 → skip: {_cal_reason}")
+                            day_cal_skip += 1
+                            continue
+                    # ─────────────────────────────────────────────────────
                     day_races.append(parsed)
             except Exception as e:
                 print(f"  [WARN] {fpath}: {e}")
                 day_errors += 1
                 continue
+
+        if day_cal_skip:
+            print(f"  [T-038] {date_str}: カレンダー不整合 skip={day_cal_skip}件")
 
         if day_races:
             data = {"date": date_str, "race_count": len(day_races), "races": day_races}
