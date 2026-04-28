@@ -113,13 +113,36 @@
 
 ---
 
+### B (持ち越し) — 2023 下半期 race_log バックフィル 完走 ✅ 2026-04-28 16:49
+
+- **指示元**: 本日朝マスター指示「OK」(B も他も再開して)
+- **手段**: scripts/backfill_2026_gaps.py + restart_backfill_b.ps1 (PID ファイル方式)
+- **完走サマリ**:
+  * inserted: 34,477 行
+  * fetched: 3,429 件 (新規 netkeiba 取得)
+  * skipped: 6,609 件 (キャッシュ未確定 / 403 等 → 主に 2023-10〜12月分)
+  * errors: 0 件
+  * 総所要時間: 103.5 分
+- **DB 検証** (log/b_completion_verify.log):
+  * race_log 2023H2 DISTINCT race_id = 3,321 件 ✅ (完走サマリ一致)
+  * race_log 2023H2 total rows = 34,477 行 ✅ (完走サマリ一致)
+  * JRA: 607 races / 8,177 rows
+  * NAR: 2,714 races / 26,300 rows
+  * finish_time_sec=0 or NULL: 466 件
+  * horse_id: old_10digit=31,433 / B_prefix=2,051 / nar_prefix=993
+  * kaisai_calendar 充足率: 79/184 日 = **42.9%**
+    - 7月・8月: JRA+NAR フル取得済
+    - 9月: 前半 17 日のみ (9/17 まで)
+    - 10〜12月: 全 105 日 未取得 → skipped 6,609 件の主体
+- **副次効果**: 2023H2 参照馬の speed_dev=20 張り付き残存 1 件の再校正試行が可能化
+
 ## 🟡 将来課題（次セッション以降）
 
 | 優先度 | 項目 | 状態 / 条件 |
 |:---:|---|---|
 | P1 | B_prefix 1,253 件の対応 | NAR 公式コードとの突合 or netkeiba 馬詳細スクレイピング等、別アプローチ要検討 |
 | P1 | 2023 年生まれ若駒 339 件 | netkeiba 403 エラー → 自動補完待ち（馬 DB に存在しない可能性あり） |
-| P1 | B (PID 7600) 完走確認 | 19:00 頃に完走予定。ログ確認後 TASKS.md 更新 |
+| P1 | B skipped 6,609 件の再 apply | キャッシュ蓄積後に `restart_backfill_b.ps1` で再実行（2023-10〜12月が主体） |
 | P2 | B_prefix race_log 残存 33,779 件 | 整合済みだが将来的に netkeiba_id 統合の余地あり |
 
 ---
