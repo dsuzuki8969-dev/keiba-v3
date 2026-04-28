@@ -1714,13 +1714,19 @@ def _fetch_from_official(
     date: str,
     *,
     nar_scraper=None,
+    keibabook_result_scraper=None,
 ) -> Optional[dict]:
     """JRA/NAR公式から結果を取得（1段目フォールバック）
 
+    NAR レースで公式取得が失敗した場合、keibabook_result_scraper が渡されていれば
+    競馬ブック経由で fallback 取得を試みる（Phase 3 統合）。
+
     Args:
-        official_scraper: JRA公式スクレイパー (OfficialOddsScraper)
-        nar_scraper:      NAR公式スクレイパー (OfficialNARScraper)。
-                          省略時は MultiSourceEnricher 経由で自動生成する。
+        official_scraper:         JRA公式スクレイパー (OfficialOddsScraper)
+        nar_scraper:              NAR公式スクレイパー (OfficialNARScraper)。
+                                  省略時は自動生成する。
+        keibabook_result_scraper: KeibabookResultScraper（NAR 失敗時の fallback）。
+                                  省略時は keibabook fallback をスキップ。
     """
     try:
         if not _is_nar_race(race_id):
@@ -1736,19 +1742,43 @@ def _fetch_from_official(
                 from src.scraper.multi_source import MultiSourceEnricher
                 from src.scraper.official_nar import OfficialNARScraper
                 _nar = nar_scraper if nar_scraper is not None else OfficialNARScraper()
-                enricher = MultiSourceEnricher(nar_scraper=_nar)
+                # keibabook_result_scraper を渡して Phase 3 fallback を有効化
+                enricher = MultiSourceEnricher(
+                    nar_scraper=_nar,
+                    keibabook_result_scraper=keibabook_result_scraper,
+                )
                 # enrich_results は Horse[] を in-place 更新するAPIのため、
                 # dict形式が必要な呼出元向けに NAR scraper を直接呼び出す
                 result = _nar.get_result(race_id, date)
                 if result and result.get("order"):
                     logger.debug(
-                        "NAR公式結果取得成功 (MultiSourceEnricher経由): %s", race_id
+                        "NAR公式結果取得成功: %s", race_id
                     )
                     return result
                 else:
                     logger.debug(
-                        "NAR公式結果なし (MultiSourceEnricher経由) race_id=%s", race_id
+                        "NAR公式結果なし race_id=%s → 競馬ブック fallback 試行", race_id
                     )
+                    # NAR 公式が失敗した場合: 競馬ブック fallback を試みる
+                    if keibabook_result_scraper is not None:
+                        try:
+                            kb_result = keibabook_result_scraper.fetch_result(
+                                race_id, race_date=date
+                            )
+                            if kb_result and kb_result.get("order"):
+                                logger.info(
+                                    "競馬ブック fallback 成功 (results_tracker経由): %s (%d頭)",
+                                    race_id, len(kb_result["order"]),
+                                )
+                                return kb_result
+                            else:
+                                logger.debug(
+                                    "競馬ブック fallback: 着順なし race_id=%s", race_id
+                                )
+                        except Exception as kb_e:
+                            logger.debug(
+                                "競馬ブック fallback 例外 race_id=%s: %s", race_id, kb_e
+                            )
             except ImportError:
                 pass
     except Exception:
@@ -1797,6 +1827,7 @@ def fetch_single_race_result(
     nar_scraper=None,
     kb_client=None,
     rakuten_client=None,
+    keibabook_result_scraper=None,
 ) -> Optional[dict]:
     """単一レースの結果（着順・払戻）を取得して results.json に追記保存する。
 
@@ -1804,16 +1835,19 @@ def fetch_single_race_result(
     と違い、指定1レースだけ取りに行くので軽量。
 
     フォールバック: 公式 → netkeiba → 競馬ブック → 楽天競馬(NAR)
+    NAR レースで公式失敗時は keibabook_result_scraper による直接 fallback も試みる。
 
     Args:
-        date:              YYYY-MM-DD
-        race_id:           対象レースID
-        client:            NetkeibaClient（2段目）
-        official_scraper:  JRA公式スクレイパー (OfficialOddsScraper)（1段目、推奨）
-        nar_scraper:       NAR公式スクレイパー (OfficialNARScraper)（NAR 1段目）。
-                           省略時は自動生成（都度インスタンス化）。
-        kb_client:         KeibabookClient（3段目）
-        rakuten_client:    RakutenKeibaScraper（4段目・NAR限定）
+        date:                     YYYY-MM-DD
+        race_id:                  対象レースID
+        client:                   NetkeibaClient（2段目）
+        official_scraper:         JRA公式スクレイパー (OfficialOddsScraper)（1段目、推奨）
+        nar_scraper:              NAR公式スクレイパー (OfficialNARScraper)（NAR 1段目）。
+                                  省略時は自動生成（都度インスタンス化）。
+        kb_client:                KeibabookClient（3段目）
+        rakuten_client:           RakutenKeibaScraper（4段目・NAR限定）
+        keibabook_result_scraper: KeibabookResultScraper（NAR 公式失敗時の直接 fallback）。
+                                  省略時は kb_client から自動生成を試みる。
 
     Returns:
         {"order": [...], "payouts": {...}, "source": "..."} もしくは None
@@ -1867,7 +1901,8 @@ def fetch_single_race_result(
                             "既存結果に netkeiba 詳細を補完 %s (corners=%d, details=%d)",
                             race_id, n1, n2,
                         )
-                time.sleep(1.0)
+                # レートリミット緩和: 1.0s → 2.0s（netkeiba 並列負荷削減）
+                time.sleep(2.0)
             except Exception:
                 logger.debug(
                     "既存結果補完失敗 %s", race_id, exc_info=True,
@@ -1876,16 +1911,28 @@ def fetch_single_race_result(
 
     order, payouts, lap_times, source = None, None, None, ""
 
-    # 1st: JRA/NAR公式（NAR は MultiSourceEnricher 経由で nar_scraper を使用）
+    # keibabook_result_scraper の解決: 直接渡しを優先、次に kb_client から生成
+    _kb_result_scraper = keibabook_result_scraper
+    if _kb_result_scraper is None and kb_client is not None and _is_nar_race(race_id):
+        try:
+            from src.scraper.keibabook_result import KeibabookResultScraper as _KbRS
+            _kb_result_scraper = _KbRS(kb_client)
+        except Exception:
+            pass
+
+    # 1st: JRA/NAR公式（NAR 失敗時は keibabook_result_scraper fallback あり）
     if official_scraper or nar_scraper:
         try:
             _r = _fetch_from_official(
-                race_id, official_scraper, date, nar_scraper=nar_scraper
+                race_id, official_scraper, date,
+                nar_scraper=nar_scraper,
+                keibabook_result_scraper=_kb_result_scraper,
             )
             if _r and _r.get("order"):
                 order = _r["order"]
                 payouts = _r.get("payouts", {})
                 lap_times = _r.get("lap_times")
+                # NAR 公式が失敗して競馬ブック fallback で取れた場合もソースを適切に記録
                 source = "official"
         except Exception:
             logger.debug("公式結果取得失敗 %s", race_id, exc_info=True)
@@ -1922,7 +1969,8 @@ def fetch_single_race_result(
             if soup_nk:
                 _merge_corner_passing_from_soup(order, soup_nk)
                 _merge_result_details_from_soup(order, soup_nk)
-            time.sleep(1.0)
+            # レートリミット緩和: 1.0s → 2.0s（netkeiba 並列負荷削減）
+            time.sleep(2.0)
         except Exception:
             logger.debug("netkeiba結果補完失敗 %s", race_id, exc_info=True)
 
@@ -2002,19 +2050,24 @@ def fetch_actual_results(
     nar_scraper=None,
     kb_client=None,
     rakuten_client=None,
+    keibabook_result_scraper=None,
 ) -> dict:
     """
     指定日の全レース結果（着順・確定オッズ）を取得して保存。
     4段フォールバック: 公式 → netkeiba → 競馬ブック → 楽天競馬(NAR)
 
+    NAR レースで公式失敗時は keibabook_result_scraper による直接 fallback も試みる。
+
     Args:
-        date:              YYYY-MM-DD
-        client:            NetkeibaClient（2段目フォールバック）
-        official_scraper:  JRA公式スクレイパー (OfficialOddsScraper)（1段目、省略可）
-        nar_scraper:       NAR公式スクレイパー (OfficialNARScraper)（NAR 1段目）。
-                           省略時は自動生成（NAR レース毎に都度インスタンス化）。
-        kb_client:         KeibabookClient（3段目、省略可）
-        rakuten_client:    RakutenKeibaScraper（4段目・NAR限定、省略可）
+        date:                     YYYY-MM-DD
+        client:                   NetkeibaClient（2段目フォールバック）
+        official_scraper:         JRA公式スクレイパー (OfficialOddsScraper)（1段目、省略可）
+        nar_scraper:              NAR公式スクレイパー (OfficialNARScraper)（NAR 1段目）。
+                                  省略時は自動生成（NAR レース毎に都度インスタンス化）。
+        kb_client:                KeibabookClient（3段目、省略可）
+        rakuten_client:           RakutenKeibaScraper（4段目・NAR限定、省略可）
+        keibabook_result_scraper: KeibabookResultScraper（NAR 公式失敗時の直接 fallback）。
+                                  省略時は kb_client から自動生成を試みる。
 
     Returns: {race_id: {"order": [...], "payouts": {...}, "source": "...", "lap_times": {...}}}
     """
@@ -2046,6 +2099,15 @@ def fetch_actual_results(
     results = {}
     source_stats = {"official": 0, "netkeiba": 0, "keibabook": 0, "rakuten": 0, "failed": 0}
 
+    # keibabook_result_scraper の解決: 直接渡しを優先、次に kb_client から生成
+    _kb_result_scraper_shared = keibabook_result_scraper
+    if _kb_result_scraper_shared is None and kb_client is not None:
+        try:
+            from src.scraper.keibabook_result import KeibabookResultScraper as _KbRS
+            _kb_result_scraper_shared = _KbRS(kb_client)
+        except Exception:
+            pass
+
     for race in pred["races"]:
         race_id = race.get("race_id", "")
         if not race_id:
@@ -2053,10 +2115,12 @@ def fetch_actual_results(
 
         order, payouts, lap_times, source = None, None, None, ""
 
-        # 1st: JRA/NAR公式（NAR は MultiSourceEnricher 経由で nar_scraper を使用）
+        # 1st: JRA/NAR公式（NAR 失敗時は keibabook_result_scraper fallback あり）
         if (official_scraper or nar_scraper) and not order:
             result = _fetch_from_official(
-                race_id, official_scraper, date, nar_scraper=nar_scraper
+                race_id, official_scraper, date,
+                nar_scraper=nar_scraper,
+                keibabook_result_scraper=_kb_result_scraper_shared,
             )
             if result and result.get("order"):
                 order = result["order"]
@@ -2093,7 +2157,8 @@ def fetch_actual_results(
                 if soup_nk:
                     _merge_corner_passing_from_soup(order, soup_nk)
                     _merge_result_details_from_soup(order, soup_nk)
-                time.sleep(1.0)
+                # レートリミット緩和: 1.0s → 2.0s（netkeiba 並列負荷削減）
+                time.sleep(2.0)
             except Exception:
                 pass
 
