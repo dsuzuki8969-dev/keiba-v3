@@ -1,12 +1,9 @@
 /**
- * RaceCardOddsLine.sample.tsx — T-034 サンプル実装
+ * RaceCardOddsLine.tsx — T-034 本実装（マスター承認済み）
  *
- * レースカードの本命馬行に「オッズ（人気）」を併記する試作コンポーネント。
- *
- * ⚠️ これはサンプル隔離実装です。
- *   - featureFlags.ts の SHOW_ODDS_ON_RACE_CARD フラグ OFF 時は未使用。
- *   - マスター承認後に既存カードへ正式統合する。
- *   - このファイルは本実装確定後に削除する。
+ * レースカードの本命馬行に「オッズ（人気）」を併記するコンポーネント。
+ * サンプル隔離（RaceCardOddsLine.sample.tsx）からの正式昇格。
+ * featureFlags.ts の SHOW_ODDS_ON_RACE_CARD は削除済み。
  *
  * 表示仕様:
  *   PC:      「ニシノブライアント   勝31.6%   3.2倍 / 1番人気」

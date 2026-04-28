@@ -6,9 +6,8 @@ import { ConfidenceBadge } from "./ConfidenceBadge";
 import { MarkBadge } from "./MarkBadge";
 import { surfShort } from "@/lib/constants";
 import { Clock3, Users } from "lucide-react";
-// T-034 サンプル: featureFlags + オッズ行コンポーネント
-import { FEATURE_FLAGS } from "@/lib/featureFlags";
-import RaceCardOddsLine from "./RaceCardOddsLine.sample";
+// T-034 本実装: オッズ行コンポーネント（マスター承認済み正式統合）
+import RaceCardOddsLine from "./RaceCardOddsLine";
 import { BREAKPOINTS } from "@/lib/breakpoints";
 
 /**
@@ -74,16 +73,6 @@ interface Props {
   onClick: () => void;
   /** 競馬場内の勝率ランク (1=最高) */
   winPctRank?: number;
-}
-
-/** 勝率ランク別カラークラス (1位=金, 2位=青, 3位=赤) */
-function winPctColorCls(rank?: number): string {
-  switch (rank) {
-    case 1: return "gold-gradient";
-    case 2: return "text-blue-500 dark:text-blue-400";
-    case 3: return "text-red-500 dark:text-red-400";
-    default: return "text-muted-foreground";
-  }
 }
 
 /** ランク別 PremiumCard variant */
@@ -154,42 +143,22 @@ export function RaceCard({ race, onClick, winPctRank }: Props) {
         )}
       </div>
 
-      {/* 本命行（Accent） */}
+      {/* 本命行（Accent） — T-034 本実装: 馬名 + 勝率 + オッズ（人気）を 1 行で表示 */}
       {race.honmei_name && (
         <div className="pt-2 border-t border-border/60">
-          {FEATURE_FLAGS.SHOW_ODDS_ON_RACE_CARD ? (
-            // T-034 サンプル: 馬名 + 勝率 + オッズ（人気）を 1 行で表示
-            // フラグ false 時は下の既存コードが使われる（既存 UI に変化なし）
-            <div className="flex items-center gap-2">
-              {markKey && <MarkBadge mark={markKey} size="md" subtle={winPctRank !== 1} />}
-              {/* [HIGH-1 修正] isMobile を prop として渡す。PC/モバイル分岐が正しく機能する。 */}
-              <RaceCardOddsLine
-                horseName={race.honmei_name}
-                mark={race.honmei_mark}
-                winPct={race.honmei_win_pct}
-                odds={race.honmei_odds}
-                popularity={race.honmei_popularity}
-                isMobile={isMobile}
-                className="flex-1 min-w-0"
-              />
-            </div>
-          ) : (
-            /* 既存コード — フラグ OFF 時はここが使われる（ノータッチ） */
-            <div className="flex items-center gap-2">
-              {markKey && <MarkBadge mark={markKey} size="md" subtle={winPctRank !== 1} />}
-              <span className="font-bold text-sm truncate text-left">{race.honmei_name}</span>
-              {race.honmei_win_pct != null && race.honmei_win_pct > 0 && (
-                <span
-                  className={[
-                    "text-[15px] font-extrabold ml-auto whitespace-nowrap tnum",
-                    winPctColorCls(winPctRank),
-                  ].join(" ")}
-                >
-                  勝{race.honmei_win_pct.toFixed(1)}%
-                </span>
-              )}
-            </div>
-          )}
+          <div className="flex items-center gap-2">
+            {markKey && <MarkBadge mark={markKey} size="md" subtle={winPctRank !== 1} />}
+            {/* [HIGH-1 修正] isMobile を prop として渡す。PC/モバイル分岐が正しく機能する。 */}
+            <RaceCardOddsLine
+              horseName={race.honmei_name}
+              mark={race.honmei_mark}
+              winPct={race.honmei_win_pct}
+              odds={race.honmei_odds}
+              popularity={race.honmei_popularity}
+              isMobile={isMobile}
+              className="flex-1 min-w-0"
+            />
+          </div>
         </div>
       )}
     </PremiumCard>
