@@ -77,13 +77,38 @@ SYSTEM_PROMPT = (
     "【悪い例 (禁止パターン)】\n"
     "「〜と思う」→ NG / 「〜だなあ」→ NG / 「〜かもしれない」→ NG\n"
     "「〜してきた」→ NG / 「〜してくれれば」→ NG\n"
-    "語順NG: 「距離は問題ない、自分のリズムで運べれば」（条件が後ろ）→ NG"
+    "語順NG: 「距離は問題ない、自分のリズムで運べれば」（条件が後ろ）→ NG\n\n"
+    "【話者明示の削除 (必須)】\n"
+    "「山崎助手――」「平松師――」「大林助手――」「近藤助手――」のような\n"
+    "話者の冒頭明示は全て削除して、本文のみを bullets 化する。\n"
+    "出力に『○○師』『○○助手』『○○厩務員』『○○マネジャー』を含めない。\n"
+    "例: 「山崎助手――気が高ぶらないように調整」→「気が高ぶらないよう調整」\n"
+    "例: 「平松師――追い切りの動きは上々」→「追い切りの動き上々」"
 )
 
 
 # 「○馬名【XX師】」「●馬名【XX師】」等の冒頭 prefix を除去するパターン
-# 印 (任意) + 馬名 (ひらがな・カタカナ・漢字・英数字) + 【…師/助手…】
-PREFIX_RE = re.compile(r"^[○●◯◎▲△★☆×]?[ぁ-ゟ゠-ヿ一-鿿！-￯A-Za-z0-9]+【[^】]+】")
+# PREFIX_RE_HEADER: 印 (任意) + 馬名 + 【...】 or （...） 形式
+PREFIX_RE_HEADER = re.compile(
+    r"^[○●◯◎▲△★☆×]?[ぁ-ゟ゠-ヿ一-鿿！-￯A-Za-z0-9]+(【[^】]+】|（[^）]+）)"
+)
+# PREFIX_RE_INLINE: 改行後/冒頭 の「XX師――」「XX助手――」「XX厩務員――」「XXマネジャー――」
+# verify_parse_stable_comment.py L55 と同等のロジックを統合
+PREFIX_RE_INLINE = re.compile(
+    r"(^|\n)[\s　]*[^\s　\n。．]*?(師|厩務員|助手|マネジャー)[—―－\-]+\s*"
+)
+
+
+def strip_prefix(text: str) -> str:
+    """raw コメントの話者 prefix を除去する (二重防御)。
+
+    対象パターン:
+      1. 「○馬名【XX師】」「○馬名（前で捌ければ）」等の header prefix
+      2. 「山崎助手――」「平松師――」等の inline 話者明示 (改行後・冒頭)
+    """
+    text = PREFIX_RE_HEADER.sub("", text)
+    text = PREFIX_RE_INLINE.sub(r"\1", text)
+    return text.strip()
 
 # 中国語簡体字: 日本語では使わない特定コードポイント（则/每/应/优/说/过/时/还/对/没/种 等）
 # 関数呼び出しごとの辞書作成を避けるためモジュールレベルで定義
@@ -149,6 +174,10 @@ def paraphrase_one(client: OpenAI, original: str) -> str:
     1 文をパラフレーズ。
     失敗・Latin 文字混入時は原文をそのまま返す（エラー耐性設計）。
     """
+    # 修正 (T-044.fix): LLM 入力前に prefix strip (話者明示を事前除去)
+    original = strip_prefix(original)
+    if not original:
+        return ""
     try:
         res = client.chat.completions.create(
             model=MODEL_ID,
