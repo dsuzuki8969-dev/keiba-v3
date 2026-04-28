@@ -3,6 +3,18 @@ import { useRaceResult } from "@/api/hooks";
 import { WAKU_BG, posCls, markCls, rankCls } from "@/lib/constants";
 import type { RaceResultEntry, RaceResultPayout } from "@/api/client";
 
+/** 走破タイム秒を「m:ss.f」形式に変換 (例: 89.8 → "1:29.8" / 65.4 → "1:05.4")
+ *  バック API は time_sec で秒数を返すが、表示は分秒形式
+ *  null/undefined/NaN は呼出側で「—」表示するため空文字を返す
+ */
+function formatTime(sec: number | null | undefined): string {
+  if (sec == null || Number.isNaN(sec)) return "";
+  const m = Math.floor(sec / 60);
+  const s = sec - m * 60;
+  // 秒部分を 2 桁ゼロ詰め + 小数 1 桁: 89.8 → "1:29.8" / 65.4 → "1:05.4"
+  return `${m}:${s.toFixed(1).padStart(4, "0")}`;
+}
+
 /** 順位配列を計算（値の降順 or 昇順で 1-based rank を返す）
  *  lowerIsBetter=true なら値が小さいほど高順位（後3F 等タイム系）
  */
@@ -67,9 +79,12 @@ export function RaceResultPanel({ date, raceId }: Props) {
   const hasLast3F = order.some((o) => (o as any).last_3f != null);
 
   // 結果データの完全性チェック
-  const hasAnyTime = order.some((o) => (o as any).time);
+  // バック API (`/api/results/race`) のフィールド名:
+  //   time_sec (秒数), win_odds (単勝オッズ), popularity (人気)
+  // 旧フロント実装は time/odds を期待しており不一致だった (2026-04-28 修正)
+  const hasAnyTime = order.some((o) => (o as any).time_sec != null);
   const hasAnyPopularity = order.some((o) => (o as any).popularity != null);
-  const hasAnyOdds = order.some((o) => o.odds != null);
+  const hasAnyOdds = order.some((o) => (o as any).win_odds != null);
   const hasAnyPayouts = Object.keys(payouts).length > 0;
   // 全部欠落 → 着順のみ（試合直後で詳細未反映）
   const isFullyPartial = !hasAnyTime && !hasAnyPopularity && !hasAnyOdds && !hasAnyPayouts;
@@ -123,9 +138,12 @@ export function RaceResultPanel({ date, raceId }: Props) {
                 const mCls = markSym ? markCls(markSym) : "";
                 const corners = (o as any).corners as number[] | undefined;
                 const last3f = (o as any).last_3f as number | null | undefined;
-                const time = (o as any).time as string | null | undefined;
+                // バック API は time_sec (秒数) で返すため formatTime で "m:ss.f" に変換
+                const timeSec = (o as any).time_sec as number | null | undefined;
                 const margin = (o as any).margin as string | null | undefined;
                 const popularity = (o as any).popularity as number | null | undefined;
+                // バック API は win_odds で返す (旧フロント実装は odds を期待していて不一致)
+                const winOdds = (o as any).win_odds as number | null | undefined;
                 const compRank = compositeRanks[i];
                 const l3fRank = last3fRanks[i];
                 return (
@@ -150,7 +168,7 @@ export function RaceResultPanel({ date, raceId }: Props) {
                       {o.composite != null ? o.composite.toFixed(1) : "—"}
                     </td>
                     <td className="py-1.5 px-1.5 text-right tabular-nums text-[12px]">
-                      {time || "—"}
+                      {timeSec != null ? formatTime(timeSec) : "—"}
                     </td>
                     <td className="py-1.5 px-1.5 text-right tabular-nums text-[12px] text-muted-foreground">
                       {margin || "—"}
@@ -169,7 +187,7 @@ export function RaceResultPanel({ date, raceId }: Props) {
                       {popularity != null ? `${popularity}人気` : "—"}
                     </td>
                     <td className="py-1.5 px-1.5 text-right tabular-nums text-[13px] font-semibold">
-                      {o.odds != null ? `${o.odds.toFixed(1)}倍` : "—"}
+                      {winOdds != null ? `${winOdds.toFixed(1)}倍` : "—"}
                     </td>
                   </tr>
                 );
