@@ -1786,6 +1786,7 @@ def populate_race_log_from_predictions() -> int:
                         "sire_name":    h.get("sire", "") or "",
                         "bms_name":     h.get("maternal_grandsire", "") or "",
                         "horse_id":     h.get("horse_id", "") or "",
+                        "horse_name":   h.get("horse_name", "") or "",
                     }
 
             orders = json.loads(pred["order_json"])
@@ -1876,8 +1877,9 @@ def populate_race_log_from_predictions() -> int:
                        sire_name, bms_name,
                        positions_corners, position_4c,
                        finish_time_sec, last_3f_sec, horse_id,
-                       margin_ahead, margin_behind)
-                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                       margin_ahead, margin_behind,
+                       horse_name)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                     """,
                     (race_date, race_id, venue_code, surface, distance,
                      horse_no, finish,
@@ -1890,7 +1892,8 @@ def populate_race_log_from_predictions() -> int:
                      hinfo.get("bms_name", ""),
                      _corners_json, _p4c,
                      _ft_sec, _l3f, _horse_id,
-                     _margins[0], _margins[1]),
+                     _margins[0], _margins[1],
+                     hinfo.get("horse_name", "")),
                 )
                 inserted += 1
 

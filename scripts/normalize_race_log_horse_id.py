@@ -137,10 +137,9 @@ def analyze_mapping_feasibility(con: sqlite3.Connection) -> dict:
     """
     旧→新マッピングの可否を調査する。
 
-    結論: horses マスターテーブルが存在せず、nar_prefix レコードは horse_name も空のため
-    自動マッピングは現時点では不可能。
-    将来的には official_nar.py スクレイパーが horse_name を取得するよう修正し、
-    同一 race_id × horse_no での結合でマッピングを構築する必要がある。
+    horse_name ベースのマッピング:
+      - nar_prefix レコードに horse_name が補完された (backfill_nar_horse_name.py 実行後)
+      - 同一馬名で old_10digit ↔ nar_prefix の対応付けが可能
     """
     cur = con.cursor()
 
@@ -169,12 +168,106 @@ def analyze_mapping_feasibility(con: sqlite3.Connection) -> dict:
     """)
     nar_with_name = cur.fetchone()[0]
 
+    # horse_name ベースのマッピング可能数を計算
+    # (old_10digit NAR レコードと nar_prefix レコードで同じ horse_name を持つ馬の数)
+    name_based_mappable = 0
+    name_based_race_log_rows = 0
+    if nar_with_name > 0:
+        cur.execute("""
+            SELECT COUNT(*) as cnt FROM (
+                SELECT DISTINCT old_h.horse_name, old_h.horse_id AS old_id, nar_h.horse_id AS nar_id
+                FROM (
+                    SELECT DISTINCT horse_name, horse_id FROM race_log
+                    WHERE horse_id GLOB '[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]'
+                      AND horse_name != ''
+                ) AS old_h
+                JOIN (
+                    SELECT DISTINCT horse_name, horse_id FROM race_log
+                    WHERE horse_id LIKE 'nar_%'
+                      AND horse_name != ''
+                ) AS nar_h ON old_h.horse_name = nar_h.horse_name
+            )
+        """)
+        name_based_mappable = cur.fetchone()["cnt"]
+
     return {
         "has_horse_master": has_horse_master,
         "tables": tables,
         "cross_joinable_pairs": cross_joinable,
         "nar_with_name": nar_with_name,
+        "name_based_mappable": name_based_mappable,
+        "name_based_race_log_rows": name_based_race_log_rows,
         "mapping_possible": cross_joinable > 0 or nar_with_name > 0,
+    }
+
+
+def build_horse_id_name_map(con: sqlite3.Connection) -> dict:
+    """
+    horse_name → nar_horse_id のマッピング辞書を構築する。
+
+    nar_prefix レコードから horse_name → horse_id (nar形式) を抽出。
+    同一馬名で複数の nar_id がある場合は最新を採用する。
+
+    Returns:
+        {horse_name: nar_horse_id, ...}
+    """
+    cur = con.cursor()
+    cur.execute("""
+        SELECT horse_name, horse_id, MAX(race_date) as latest_date
+        FROM race_log
+        WHERE horse_id LIKE 'nar_%'
+          AND horse_name != ''
+        GROUP BY horse_name
+        HAVING COUNT(DISTINCT horse_id) = 1  -- 1対1対応の馬名のみ採用（同名異馬を除外）
+    """)
+    return {r["horse_name"]: r["horse_id"] for r in cur.fetchall()}
+
+
+def apply_horse_id_mapping(
+    con: sqlite3.Connection,
+    name_to_nar_id: dict,
+) -> dict:
+    """
+    old_10digit NAR レコードの horse_id を nar_prefix に置換する。
+
+    horse_name を照合キーとして使用。
+    JRA レコードは変更しない (is_jra = 0 のみ対象)。
+
+    Returns:
+        {"updated": int, "skipped_ambiguous": int, "skipped_no_map": int}
+    """
+    cur = con.cursor()
+
+    # 更新対象: is_jra=0 かつ old_10digit かつ horse_name あり
+    cur.execute("""
+        SELECT race_id, horse_no, horse_name, horse_id
+        FROM race_log
+        WHERE horse_id GLOB '[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]'
+          AND is_jra = 0
+          AND horse_name != ''
+    """)
+    rows = cur.fetchall()
+
+    updates = []
+    skipped_no_map = 0
+
+    for row in rows:
+        nar_id = name_to_nar_id.get(row["horse_name"])
+        if nar_id:
+            updates.append((nar_id, row["race_id"], row["horse_no"]))
+        else:
+            skipped_no_map += 1
+
+    if updates:
+        con.executemany(
+            "UPDATE race_log SET horse_id = ? WHERE race_id = ? AND horse_no = ?",
+            updates
+        )
+        con.commit()
+
+    return {
+        "updated": len(updates),
+        "skipped_no_map": skipped_no_map,
     }
 
 
@@ -254,24 +347,25 @@ def print_report(state: dict, mapping: dict, empty: dict) -> None:
     print("【2】 旧→新マッピング可能性調査")
     print(sep)
     print(f"  horses マスターテーブル存在: {mapping['has_horse_master']}")
-    print(f"  既存テーブル一覧: {', '.join(mapping['tables'])}")
-    print(f"  race_id × horse_no 照合可能ペア: {mapping['cross_joinable_pairs']:,} 件")
-    print(f"  nar_prefix で horse_name あり: {mapping['nar_with_name']:,} 件")
+    print(f"  race_id × horse_no 直接照合可能ペア: {mapping['cross_joinable_pairs']:,} 件")
+    print(f"  nar_prefix で horse_name あり:        {mapping['nar_with_name']:,} 件")
+    print(f"  horse_name ベース マッピング可能 馬名: {mapping['name_based_mappable']:,} 件")
     print()
-    if not mapping["mapping_possible"]:
+    if mapping['name_based_mappable'] > 0:
+        print("  【判定】horse_name ベースマッピング 可能")
+        print("  方針: nar_prefix の horse_name と old_10digit の horse_name を照合")
+        print("        → old_10digit NAR レコードを nar_prefix 形式に置換")
+        print("  ※ 同名異馬（1対1対応でない馬名）は安全のためスキップ")
+    elif not mapping["mapping_possible"]:
         print("  【判定】自動マッピング 不可能")
         print("  理由:")
         print("    - horses マスターテーブルが DB に存在しない")
-        print("    - nar_prefix 全レコードの horse_name が空 (0件)")
+        print("    - nar_prefix レコードの horse_name が空（backfill_nar_horse_name.py 未実行）")
         print("    - 同一 race_id × horse_no の old_10digit ↔ nar_prefix 重複なし")
         print()
-        print("  【将来の対応方針】")
-        print("    ① official_nar.py の horse_name 取得を修正し、")
-        print("       nar_prefix レコードに horse_name を補完する (バックフィル)")
-        print("    ② 同一 race_id × horse_no でのクロス結合で")
-        print("       old_10digit ↔ nar_lineage_code のマッピングを構築")
-        print("    ③ UPDATE で旧形式を新形式に一括置換")
-        print("    ④ B_prefix (netkeiba NAR ID) は現状維持 (重複なし確認後)")
+        print("  【対応方針】")
+        print("    ① scripts/backfill_nar_horse_name.py --apply を先に実行する")
+        print("    ② 再実行する")
     else:
         print(f"  【判定】マッピング可能: {mapping['cross_joinable_pairs']:,} ペア")
 
@@ -297,13 +391,16 @@ def print_dryrun_summary(state: dict, mapping: dict, empty: dict) -> None:
     print("=" * 60)
     print("【dry-run サマリ】")
     print("=" * 60)
-    print(f"  変更対象件数 (旧→新マッピング可能): {mapping['cross_joinable_pairs']:,} 件")
-    print(f"  空 horse_id のうち復元可能:          {empty['empty_with_name']:,} 件")
-    print(f"  変更不可 (マスター照合不可):          "
-          f"{state['dist'].get('old_10digit', 0):,} 件 (old_10digit 全量)")
+    print(f"  horse_name ベース マッピング可能 馬名: {mapping['name_based_mappable']:,} 件")
+    print(f"  race_id × horse_no 直接照合可能:       {mapping['cross_joinable_pairs']:,} 件")
+    print(f"  空 horse_id のうち復元可能:             {empty['empty_with_name']:,} 件")
     print()
-    print("  → 現時点では apply モードでも DB 変更は行いません。")
-    print("    官公式スクレイパーの horse_name 取得修正後に再実行してください。")
+    if mapping['name_based_mappable'] > 0:
+        print("  → --apply で old_10digit NAR レコードを nar_prefix 形式に置換できます。")
+        print("    (同名異馬は安全のためスキップ)")
+    else:
+        print("  → 現時点では apply モードでも DB 変更は行いません。")
+        print("    先に scripts/backfill_nar_horse_name.py --apply を実行してください。")
 
 
 # ── メイン ──────────────────────────────────────────────────────────────────
@@ -318,7 +415,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--apply", action="store_true",
-        help="マッピング適用（現時点では dry-run と同等）"
+        help="horse_name ベースで old_10digit NAR レコードを nar_prefix 形式に置換"
     )
     parser.add_argument(
         "--resolve-empty", action="store_true",
@@ -372,13 +469,44 @@ def main() -> None:
     if args.apply:
         print()
         print("【apply モード】")
-        if not mapping["mapping_possible"]:
-            print("  マッピング可能ペアが 0 件のため、DB への変更は行いませんでした。")
-            print("  バックアップは作成済みです。将来の apply 時に使用できます。")
+        if mapping["name_based_mappable"] == 0:
+            print("  horse_name ベースのマッピング可能件数が 0 件のため、DB への変更は行いませんでした。")
+            print("  先に scripts/backfill_nar_horse_name.py --apply を実行してください。")
         else:
-            # 将来: ここにマッピング適用ロジックを実装
-            print(f"  {mapping['cross_joinable_pairs']:,} 件のマッピングを適用します...")
-            print("  ※ 実装予定（現時点では未実装）")
+            # horse_name ベースで old_10digit NAR レコードを nar_prefix 形式に置換
+            print(f"  horse_name ベースマッピングを適用中... (対象: {mapping['name_based_mappable']:,} 馬名)")
+            con2 = _connect(db_path)
+            try:
+                name_to_nar_id = build_horse_id_name_map(con2)
+                result = apply_horse_id_mapping(con2, name_to_nar_id)
+                print(f"  UPDATE 完了: {result['updated']:,} 件")
+                print(f"  スキップ (マップなし): {result['skipped_no_map']:,} 件")
+
+                # 適用後の内訳確認
+                cur2 = con2.cursor()
+                cur2.execute("""
+                    SELECT
+                      CASE
+                        WHEN horse_id IS NULL OR horse_id = '' THEN 'empty'
+                        WHEN horse_id LIKE 'nar_%'             THEN 'nar_prefix'
+                        WHEN horse_id LIKE 'B%'                THEN 'B_prefix'
+                        WHEN horse_id GLOB '[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]'
+                                                               THEN 'old_10digit'
+                        ELSE 'other'
+                      END AS kind,
+                      COUNT(*) AS cnt
+                    FROM race_log
+                    GROUP BY kind
+                    ORDER BY cnt DESC
+                """)
+                print()
+                print("  [apply 後の horse_id 分布]")
+                total2 = con2.execute("SELECT COUNT(*) FROM race_log").fetchone()[0]
+                for row in cur2.fetchall():
+                    pct = row["cnt"] / total2 * 100 if total2 else 0
+                    print(f"    {row['kind']:<15} {row['cnt']:>8,} 件  ({pct:5.1f}%)")
+            finally:
+                con2.close()
 
     if args.resolve_empty:
         print()
