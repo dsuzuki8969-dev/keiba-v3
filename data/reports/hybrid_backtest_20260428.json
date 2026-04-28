@@ -1,0 +1,350 @@
+{
+  "generated_at": "20260428",
+  "start": "2026-04-01",
+  "end": "2026-04-28",
+  "venues_filter": null,
+  "results_by_beta": {
+    "0.3": {
+      "n_races": 1285,
+      "n_banei": 96,
+      "tansho": {
+        "abs_hits": 279,
+        "hyb_hits": 279,
+        "abs_hit_rate": 21.71206225680934,
+        "hyb_hit_rate": 21.71206225680934,
+        "abs_roi": 73.57976653696498,
+        "hyb_roi": 73.57976653696498
+      },
+      "fukusho": {
+        "abs_hits": 625,
+        "hyb_hits": 625,
+        "abs_hit_rate": 48.63813229571984,
+        "hyb_hit_rate": 48.63813229571984,
+        "abs_roi": 77.97665369649806,
+        "hyb_roi": 77.97665369649806
+      },
+      "sanrentan": {
+        "abs_hits": 307,
+        "hyb_hits": 309,
+        "abs_hit_rate": 23.891050583657588,
+        "hyb_srt_rate": 24.04669260700389,
+        "abs_roi": 89.00350194552529,
+        "hyb_roi": 89.58145265888456,
+        "abs_stake": 7710000,
+        "hyb_stake": 7710000
+      },
+      "mark_change": {
+        "◎": 1,
+        "◎_rate": 0.07782101167315175,
+        "○": 3,
+        "○_rate": 0.23346303501945526,
+        "▲": 4,
+        "▲_rate": 0.311284046692607,
+        "△": 4,
+        "△_rate": 0.311284046692607,
+        "★": 4,
+        "★_rate": 0.311284046692607
+      },
+      "banei_sticky": {
+        "abs": 0,
+        "hyb": 0
+      },
+      "by_conf": {
+        "A": {
+          "n": 307,
+          "abs_tan_hits": 77,
+          "hyb_tan_hits": 77,
+          "abs_tan_pb": 20460,
+          "hyb_tan_pb": 20460,
+          "abs_fuk_hits": 167,
+          "hyb_fuk_hits": 167,
+          "abs_fuk_pb": 26050,
+          "hyb_fuk_pb": 26050
+        },
+        "B": {
+          "n": 625,
+          "abs_tan_hits": 103,
+          "hyb_tan_hits": 103,
+          "abs_tan_pb": 44800,
+          "hyb_tan_pb": 44800,
+          "abs_fuk_hits": 260,
+          "hyb_fuk_hits": 260,
+          "abs_fuk_pb": 44060,
+          "hyb_fuk_pb": 44060
+        },
+        "C": {
+          "n": 131,
+          "abs_tan_hits": 26,
+          "hyb_tan_hits": 26,
+          "abs_tan_pb": 12070,
+          "hyb_tan_pb": 12070,
+          "abs_fuk_hits": 62,
+          "hyb_fuk_hits": 62,
+          "abs_fuk_pb": 12250,
+          "hyb_fuk_pb": 12250
+        },
+        "D": {
+          "n": 12,
+          "abs_tan_hits": 2,
+          "hyb_tan_hits": 2,
+          "abs_tan_pb": 1940,
+          "hyb_tan_pb": 1940,
+          "abs_fuk_hits": 2,
+          "hyb_fuk_hits": 2,
+          "abs_fuk_pb": 420,
+          "hyb_fuk_pb": 420
+        },
+        "S": {
+          "n": 161,
+          "abs_tan_hits": 51,
+          "hyb_tan_hits": 51,
+          "abs_tan_pb": 11960,
+          "hyb_tan_pb": 11960,
+          "abs_fuk_hits": 99,
+          "hyb_fuk_hits": 99,
+          "abs_fuk_pb": 13210,
+          "hyb_fuk_pb": 13210
+        },
+        "SS": {
+          "n": 49,
+          "abs_tan_hits": 20,
+          "hyb_tan_hits": 20,
+          "abs_tan_pb": 3320,
+          "hyb_tan_pb": 3320,
+          "abs_fuk_hits": 35,
+          "hyb_fuk_hits": 35,
+          "abs_fuk_pb": 4210,
+          "hyb_fuk_pb": 4210
+        }
+      }
+    },
+    "0.5": {
+      "n_races": 1285,
+      "n_banei": 96,
+      "tansho": {
+        "abs_hits": 279,
+        "hyb_hits": 279,
+        "abs_hit_rate": 21.71206225680934,
+        "hyb_hit_rate": 21.71206225680934,
+        "abs_roi": 73.57976653696498,
+        "hyb_roi": 73.57976653696498
+      },
+      "fukusho": {
+        "abs_hits": 625,
+        "hyb_hits": 624,
+        "abs_hit_rate": 48.63813229571984,
+        "hyb_hit_rate": 48.56031128404669,
+        "abs_roi": 77.97665369649806,
+        "hyb_roi": 77.87548638132296
+      },
+      "sanrentan": {
+        "abs_hits": 307,
+        "hyb_hits": 309,
+        "abs_hit_rate": 23.891050583657588,
+        "hyb_srt_rate": 24.04669260700389,
+        "abs_roi": 89.00350194552529,
+        "hyb_roi": 89.58145265888456,
+        "abs_stake": 7710000,
+        "hyb_stake": 7710000
+      },
+      "mark_change": {
+        "◎": 2,
+        "◎_rate": 0.1556420233463035,
+        "○": 4,
+        "○_rate": 0.311284046692607,
+        "▲": 5,
+        "▲_rate": 0.38910505836575876,
+        "△": 5,
+        "△_rate": 0.38910505836575876,
+        "★": 5,
+        "★_rate": 0.38910505836575876
+      },
+      "banei_sticky": {
+        "abs": 0,
+        "hyb": 0
+      },
+      "by_conf": {
+        "A": {
+          "n": 307,
+          "abs_tan_hits": 77,
+          "hyb_tan_hits": 77,
+          "abs_tan_pb": 20460,
+          "hyb_tan_pb": 20460,
+          "abs_fuk_hits": 167,
+          "hyb_fuk_hits": 167,
+          "abs_fuk_pb": 26050,
+          "hyb_fuk_pb": 26050
+        },
+        "B": {
+          "n": 625,
+          "abs_tan_hits": 103,
+          "hyb_tan_hits": 103,
+          "abs_tan_pb": 44800,
+          "hyb_tan_pb": 44800,
+          "abs_fuk_hits": 260,
+          "hyb_fuk_hits": 260,
+          "abs_fuk_pb": 44060,
+          "hyb_fuk_pb": 44060
+        },
+        "C": {
+          "n": 131,
+          "abs_tan_hits": 26,
+          "hyb_tan_hits": 26,
+          "abs_tan_pb": 12070,
+          "hyb_tan_pb": 12070,
+          "abs_fuk_hits": 62,
+          "hyb_fuk_hits": 61,
+          "abs_fuk_pb": 12250,
+          "hyb_fuk_pb": 12120
+        },
+        "D": {
+          "n": 12,
+          "abs_tan_hits": 2,
+          "hyb_tan_hits": 2,
+          "abs_tan_pb": 1940,
+          "hyb_tan_pb": 1940,
+          "abs_fuk_hits": 2,
+          "hyb_fuk_hits": 2,
+          "abs_fuk_pb": 420,
+          "hyb_fuk_pb": 420
+        },
+        "S": {
+          "n": 161,
+          "abs_tan_hits": 51,
+          "hyb_tan_hits": 51,
+          "abs_tan_pb": 11960,
+          "hyb_tan_pb": 11960,
+          "abs_fuk_hits": 99,
+          "hyb_fuk_hits": 99,
+          "abs_fuk_pb": 13210,
+          "hyb_fuk_pb": 13210
+        },
+        "SS": {
+          "n": 49,
+          "abs_tan_hits": 20,
+          "hyb_tan_hits": 20,
+          "abs_tan_pb": 3320,
+          "hyb_tan_pb": 3320,
+          "abs_fuk_hits": 35,
+          "hyb_fuk_hits": 35,
+          "abs_fuk_pb": 4210,
+          "hyb_fuk_pb": 4210
+        }
+      }
+    },
+    "0.7": {
+      "n_races": 1285,
+      "n_banei": 96,
+      "tansho": {
+        "abs_hits": 279,
+        "hyb_hits": 279,
+        "abs_hit_rate": 21.71206225680934,
+        "hyb_hit_rate": 21.71206225680934,
+        "abs_roi": 73.57976653696498,
+        "hyb_roi": 73.57976653696498
+      },
+      "fukusho": {
+        "abs_hits": 625,
+        "hyb_hits": 625,
+        "abs_hit_rate": 48.63813229571984,
+        "hyb_hit_rate": 48.63813229571984,
+        "abs_roi": 77.97665369649806,
+        "hyb_roi": 77.97665369649806
+      },
+      "sanrentan": {
+        "abs_hits": 307,
+        "hyb_hits": 309,
+        "abs_hit_rate": 23.891050583657588,
+        "hyb_srt_rate": 24.04669260700389,
+        "abs_roi": 89.00350194552529,
+        "hyb_roi": 89.58145265888456,
+        "abs_stake": 7710000,
+        "hyb_stake": 7710000
+      },
+      "mark_change": {
+        "◎": 1,
+        "◎_rate": 0.07782101167315175,
+        "○": 3,
+        "○_rate": 0.23346303501945526,
+        "▲": 4,
+        "▲_rate": 0.311284046692607,
+        "△": 4,
+        "△_rate": 0.311284046692607,
+        "★": 4,
+        "★_rate": 0.311284046692607
+      },
+      "banei_sticky": {
+        "abs": 0,
+        "hyb": 0
+      },
+      "by_conf": {
+        "A": {
+          "n": 307,
+          "abs_tan_hits": 77,
+          "hyb_tan_hits": 77,
+          "abs_tan_pb": 20460,
+          "hyb_tan_pb": 20460,
+          "abs_fuk_hits": 167,
+          "hyb_fuk_hits": 167,
+          "abs_fuk_pb": 26050,
+          "hyb_fuk_pb": 26050
+        },
+        "B": {
+          "n": 625,
+          "abs_tan_hits": 103,
+          "hyb_tan_hits": 103,
+          "abs_tan_pb": 44800,
+          "hyb_tan_pb": 44800,
+          "abs_fuk_hits": 260,
+          "hyb_fuk_hits": 260,
+          "abs_fuk_pb": 44060,
+          "hyb_fuk_pb": 44060
+        },
+        "C": {
+          "n": 131,
+          "abs_tan_hits": 26,
+          "hyb_tan_hits": 26,
+          "abs_tan_pb": 12070,
+          "hyb_tan_pb": 12070,
+          "abs_fuk_hits": 62,
+          "hyb_fuk_hits": 62,
+          "abs_fuk_pb": 12250,
+          "hyb_fuk_pb": 12250
+        },
+        "D": {
+          "n": 12,
+          "abs_tan_hits": 2,
+          "hyb_tan_hits": 2,
+          "abs_tan_pb": 1940,
+          "hyb_tan_pb": 1940,
+          "abs_fuk_hits": 2,
+          "hyb_fuk_hits": 2,
+          "abs_fuk_pb": 420,
+          "hyb_fuk_pb": 420
+        },
+        "S": {
+          "n": 161,
+          "abs_tan_hits": 51,
+          "hyb_tan_hits": 51,
+          "abs_tan_pb": 11960,
+          "hyb_tan_pb": 11960,
+          "abs_fuk_hits": 99,
+          "hyb_fuk_hits": 99,
+          "abs_fuk_pb": 13210,
+          "hyb_fuk_pb": 13210
+        },
+        "SS": {
+          "n": 49,
+          "abs_tan_hits": 20,
+          "hyb_tan_hits": 20,
+          "abs_tan_pb": 3320,
+          "hyb_tan_pb": 3320,
+          "abs_fuk_hits": 35,
+          "hyb_fuk_hits": 35,
+          "abs_fuk_pb": 4210,
+          "hyb_fuk_pb": 4210
+        }
+      }
+    }
+  }
+}
