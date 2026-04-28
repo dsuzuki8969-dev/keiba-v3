@@ -45,6 +45,85 @@
 
 ---
 
+## 🟢 本セッション完了（2026-04-28）— 後半 15 commits（commit 8〜21）
+
+### commit 8 — Plan-γ Phase 5+6 + T-029 ✅ 2026-04-28 commit 9110346
+- **Plan-γ Phase 5**: 馬カード能力軸（絶対偏差値 ↔ 相対偏差値）トグル切替、LocalStorage で永続化
+- **Plan-γ Phase 6**: 絶対 vs ハイブリッド ROI バックテストスクリプト (`scripts/backtest_phase4_relative_dev.py`)
+- **T-029**: 深層用語辞書（「流れに優れる」誤訳対策）— 専門用語 ↔ 一般語 マッピング辞書 実装
+
+### commit 9 — 持ち越し P1 系: finish_time / horse_id / MultiSourceEnricher 統合 ✅ 2026-04-28 commit bdf5d93
+- **finish_time=0 段階バックフィル**: finish_time=0 の行を netkeiba から再取得、残 5,118 行から大幅削減
+- **horse_id 旧/新形式統一**: `2019100043`（旧）と `nar_xxx`（新）の混在を統一ロジックで変換
+- **MultiSourceEnricher 呼出元統合**: `enrich_results()` を engine.py の結果取得フローに統合
+
+### commit 10 — Plan-α MEDIUM + P2 lms 自動化 — 完走最終 ✅ 2026-04-28 commit b5af968
+- **Plan-α MEDIUM**: DEVIATION 参照化・テスト追加（python-reviewer 指摘 MEDIUM 3 件を解消）
+- **P2 lms 自動化**: `daily_maintenance.bat` に `lms load` ステップ追加（Qwen2.5-7B 自動モデルロード保証）
+
+### commit 11 — 持ち越し P1 系完走: e2e + horse_id 真因 + race_log 監査 ✅ 2026-04-28 commit 9a4e718
+- **e2e responsive-check**: `e2e/responsive-check.spec.ts` を `npm i -D @playwright/test` 後に実機実行・完走確認
+- **horse_id 真因調査**: 空欄 6,742 件の根本原因を特定（旧 NAR スクレイパーが horse_id 未記録）
+- **race_log 監査**: 監査スクリプト (`scripts/audit_race_log.py`) 作成・実行、異常行を洗い出し
+
+### commit 12 — 持ち越し E: race_log.horse_id 空 6,742 → 8 件に削減 ✅ 2026-04-28 commit bdf1488
+- **バックフィル実施**: race_log.horse_id が空の 6,742 行を netkeiba キャッシュから逆引きして補完
+- **結果**: 空行 6,742 件 → 8 件（99.9% 解消）、残 8 件は取得不能な古いレース
+
+### commit 13 — 持ち越し B: 2023 下半期 race_log バックフィル スクリプト ✅ 2026-04-28 commit c7e13bf
+- **スクリプト新規作成**: `scripts/backfill_2026_gaps.py` — 2023 年下半期の race_log 欠損を一括バックフィル
+- **実行確認**: バックグラウンド実行（PID 7600）で正常稼働確認
+
+### commit 14 — 「Bを再開して」コマンド対応: restart_backfill_b.ps1 ✅ 2026-04-28 commit e643f37
+- **新規スクリプト**: `scripts/restart_backfill_b.ps1` — PID ファイル方式の二重起動防止付き detach 起動
+- **動作**: 実行中なら SKIP、停止中なら新 PID で再開。ログは `logs/backfill_b.log` に追記
+
+### commit 15 — /api/force_refresh_today admin 制限除去 ✅ 2026-04-28 commit fdc715a
+- **変更**: `dashboard.py` の `force_refresh_today` エンドポイントの admin IP 制限を除去
+- **理由**: マスターが外出先 (非固定 IP) からも手動更新ボタンを使えるようにするため
+
+### commit 16 — 園田 venue_code 49→50 統一 — netkeiba race_id 主軸 ✅ 2026-04-28 commit 21b8791
+- **変更**: 園田競馬場の venue_code を 49（旧）→ 50（netkeiba race_id 準拠）に全面統一
+- **影響範囲**: `data/masters/venue_master.py`・`dashboard.py`・`src/scraper/netkeiba.py`・`kaisai_calendar.json` 内の参照を一括修正
+- **背景**: netkeiba の race_id 内 venue_code と内部マスタの不一致が T-033 級バグの温床となるため根絶
+
+### commit 17 — 持ち越し C+D Phase 1: CI 統合 + JRA horses マスター ✅ 2026-04-28 commit 355462b
+- **持ち越し C (CI 統合)**: GitHub Actions ワークフロー (`.github/workflows/ci.yml`) に lint / unittest / import-check を統合
+- **持ち越し D Phase 1 (horses マスター)**: `data/masters/horses_master.db` — race_log から全馬を集約した horses テーブル初期構築
+
+### commit 18 — D Phase 2+3: horses.netkeiba_id カラム追加 + 42,515 件補完 ✅ 2026-04-28 commit 3698789
+- **D Phase 2**: `horses` テーブルに `netkeiba_id TEXT` カラムを追加（マイグレーション込み）
+- **D Phase 3**: netkeiba キャッシュを逆引きして 42,515 頭の `netkeiba_id` を補完
+
+### commit 19 — 後追い: sample 系昇格 + featureFlags 整理 + venue_master audit ✅ 2026-04-28 commit 3cc6ba6
+- **sample 系昇格**: 本セッションで「サンプル」扱いだった実装を正式機能として既存ファイルに統合
+- **featureFlags 整理**: `frontend/src/lib/featureFlags.ts` の未使用フラグ削除・整理
+- **venue_master audit**: `scripts/audit_pred_venue.py` に venue_master 全件照合モードを追加
+
+### commit 20 — CI 強化 + D 追加バックフィル + 同馬統合 ✅ 2026-04-28 commit bb02b9e
+- **CI 強化**: pytest カバレッジレポート追加・失敗時 artifact アップロード
+- **D 追加バックフィル**: horses テーブルの `netkeiba_id` 未補完分（残 2,847 件）に追加バックフィル実施
+- **同馬統合**: 同名異形式（例: `ウシュバテソーロ` vs `ウシュバテソーロ(2019)`）の統合ロジック実装
+
+### commit 21 — テンプレ脳禁止 + subagent 沈黙禁止を CLAUDE.md 絶対遵守事項に格上げ ✅ 2026-04-28 commit 71f5290
+- **CLAUDE.md 更新**: 絶対遵守事項に以下の 2 項目を追加
+  - 「テンプレ脳禁止」— 定型文・定型思考で楽逃げするな。マスター指示の真意を汲み取れ
+  - 「subagent 待機中の Chat 沈黙禁止」— 投げっぱなし禁止・進行状況の可視化必須（`feedback_subagent_idle_chat.md` ★★★ 格上げ）
+- **背景**: Sonnet 待機中 Chat 沈黙 4 連続違反、マスターから「Opus 4.7 が 4.6 よりダメ AI」と指摘
+
+---
+
+## 🟡 将来課題（次セッション以降）
+
+| 優先度 | 項目 | 状態 / 条件 |
+|:---:|---|---|
+| P1 | B_prefix 1,253 件の対応 | NAR 公式コードとの突合 or netkeiba 馬詳細スクレイピング等、別アプローチ要検討 |
+| P1 | 2023 年生まれ若駒 339 件 | netkeiba 403 エラー → 自動補完待ち（馬 DB に存在しない可能性あり） |
+| P1 | B (PID 7600) 完走確認 | 19:00 頃に完走予定。ログ確認後 TASKS.md 更新 |
+| P2 | B_prefix race_log 残存 33,779 件 | 整合済みだが将来的に netkeiba_id 統合の余地あり |
+
+---
+
 ## 🟢 セッション 4/27 朝〜夕方 完了サマリ（11 commits）
 
 ### v6.1.23-32 全完了
@@ -530,13 +609,29 @@
 
 ## ✅ 終わったタスク
 
-### 2026-04-28
+### 2026-04-28（21 commits 全件）
 - [x] **T-033 Phase 1 完了** (commit bbcdf44): `date_from_race_id()` JRA race_id スライス位置修正 + 単体テスト追加
 - [x] **T-033 Phase 2 D-1 完了** (commit d00ca64): HTML 真値マスタ → race_log 7,133 行 cleanup → data/ml 再生成 → pred.json 48 件移動・重複 450 除去
 - [x] **T-037 完了** (commit 4fb032d): `audit_pred_venue.py` venue_code 位置 `[8:10]` → `[4:6]` 修正、偽陽性 6,971 件消滅
 - [x] **T-033 D-2 完了** (commit c9138cf): pred.json race.venue 1,691 件不整合修正、audit パターン A/B/C/D 全 0 件達成
 - [x] **T-038 Phase 1+3+4 完了**: kaisai_calendar.json (JRA+NAR 2022-2026 全期間 / 1,583 開催日) + React CalendarPage + パイプライン検証 hook
+- [x] **T-038 Phase 1+3+4 統合完了** (commit dbbf315): venue/date バグ恒久予防策・netkeiba 統合スクレイパー・月別 UI・パイプライン整合性検証 hook（T-038 のメイン commit）
 - [x] **T-038 Phase 3 補完** (commit 9d3aa42): CalendarPage 日付クリック遷移実装
+- [x] **TASKS.md セッション収束更新** (commit 9e96ff6): 本ファイル（TASKS.md）に T-033/T-037/T-038 完了を反映、残タスク整理
+- [x] **Plan-γ Phase 5+6 + T-029 完了** (commit 9110346): 絶対/相対切替トグル + バックテスト + 用語辞書
+- [x] **持ち越し P1 系 完了** (commit bdf5d93): finish_time バックフィル + horse_id 統一 + MultiSourceEnricher 統合
+- [x] **Plan-α MEDIUM + P2 lms 自動化 完了** (commit b5af968): DEVIATION 参照化・テスト追加 + lms load 自動化
+- [x] **持ち越し P1 系完走** (commit 9a4e718): e2e 実機実行 + horse_id 真因調査 + race_log 監査
+- [x] **持ち越し E: race_log.horse_id 空 6,742 → 8 件削減** (commit bdf1488): netkeiba キャッシュ逆引きで 99.9% 補完
+- [x] **持ち越し B: 2023 下半期バックフィルスクリプト** (commit c7e13bf): `scripts/backfill_2026_gaps.py` 新規作成・バックグラウンド実行（PID 7600）
+- [x] **「Bを再開して」コマンド対応** (commit e643f37): `scripts/restart_backfill_b.ps1` 新規作成
+- [x] **/api/force_refresh_today admin 制限除去** (commit fdc715a): 外出先からも手動更新可能に
+- [x] **園田 venue_code 49→50 統一** (commit 21b8791): netkeiba race_id 主軸に全面統一
+- [x] **持ち越し C+D Phase 1** (commit 355462b): CI 統合 + JRA horses マスター初期構築
+- [x] **D Phase 2+3** (commit 3698789): horses.netkeiba_id カラム追加 + 42,515 件補完
+- [x] **後追い: sample 系昇格 + featureFlags 整理 + venue_master audit** (commit 3cc6ba6)
+- [x] **CI 強化 + D 追加バックフィル + 同馬統合** (commit bb02b9e)
+- [x] **テンプレ脳禁止 + subagent 沈黙禁止 CLAUDE.md 格上げ** (commit 71f5290)
 - [x] **memory 更新**: handoff_2026-04-28.md + feedback_subagent_idle_chat.md 追加
 
 ### 2026-04-25
@@ -574,7 +669,7 @@
 ## 📋 メタ情報
 
 - **このファイルの更新者**: Claude（玄人・クロード）
-- **最終更新**: 2026-04-25
+- **最終更新**: 2026-04-28
 - **セッション開始 5 ファイル必読ルーチン（順番厳守）**:
   1. `CLAUDE.md` → 2. `SKILL.md` → 3. `TASKS.md`（このファイル） → 4. `MEMORY.md` → 5. `~/.claude/rules/keiba-workflow.md`
 - **使い方**:
