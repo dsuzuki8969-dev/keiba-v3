@@ -295,11 +295,18 @@ def parse_result_page(soup: BeautifulSoup, race_id: str) -> Optional[dict]:
             m = re.search(r"(\d{4})年(\d{1,2})月(\d{1,2})日", title.get_text())
             if m:
                 race_date = f"{m.group(1)}-{int(m.group(2)):02d}-{int(m.group(3)):02d}"
-    if not race_date and len(race_id) >= 10:
-        if not is_jra:
-            race_date = f"{race_id[:4]}-{race_id[6:8]}-{race_id[8:10]}"
-        else:
-            race_date = f"{race_id[:4]}-01-01"
+    if not race_date and len(race_id) >= 10 and not is_jra:
+        # NAR は race_id[6:8]=MM, [8:10]=DD の構造的日付を持つ
+        mm, dd = race_id[6:8], race_id[8:10]
+        if mm.isdigit() and dd.isdigit() and 1 <= int(mm) <= 12 and 1 <= int(dd) <= 31:
+            race_date = f"{race_id[:4]}-{mm}-{dd}"
+    # JRA は HTML 抽出失敗時に race_id から日付を取得できない
+    # YYYY-01-01 フォールバック禁止: 汚染日付を DB に混入させない
+
+    if not race_date:
+        # 日付取得失敗: この race を skip する（汚染データの混入防止）
+        logger.warning("日付抽出失敗のため skip: race_id=%s", race_id)
+        return None
 
     grade = _infer_grade(race_name, is_jra)
     lap_data = _parse_full_lap_data(soup, distance)

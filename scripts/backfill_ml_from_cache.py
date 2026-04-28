@@ -75,18 +75,26 @@ def date_from_race_id(race_id: str) -> str:
 
 
 def _build_race_id_date_map(start_date: str, end_date: str) -> dict:
-    """race_logテーブルから race_id → date マッピングを構築（JRA race_idは日付を含まないため必要）"""
-    import sqlite3
-    db_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "keiba.db")
-    if not os.path.exists(db_path):
+    """race_id → date マッピングを構築（D-1a で生成された真値マスタを使用）
+
+    race_log DB は YYYY-01-01 汚染の可能性があるため使用禁止。
+    代わりに data/masters/race_id_date_master.json（D-1a で生成）を使用する。
+    マスタが存在しない場合は警告ログを出力して空 dict を返す。
+    引数・戻り値型は旧シグネチャを維持する。
+    """
+    master_path = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "data", "masters", "race_id_date_master.json"
+    )
+    if not os.path.exists(master_path):
+        print(f"[WARN] race_id_date_master.json 不在: {master_path}")
+        print("[WARN] 先に scripts/build_race_id_date_master.py を実行してください")
         return {}
-    conn = sqlite3.connect(db_path)
-    rows = conn.execute(
-        "SELECT DISTINCT race_id, race_date FROM race_log WHERE race_date >= ? AND race_date <= ?",
-        (start_date, end_date),
-    ).fetchall()
-    conn.close()
-    return {r[0]: r[1] for r in rows}
+    with open(master_path, "r", encoding="utf-8") as f:
+        master = json.load(f)
+    mapping = master.get("mapping", {})
+    # 期間でフィルタ（start_date <= date <= end_date）
+    return {rid: d for rid, d in mapping.items() if start_date <= d <= end_date}
 
 
 def collect_cache_files(start_date: str, end_date: str) -> list:

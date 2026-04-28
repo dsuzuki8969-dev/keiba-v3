@@ -403,18 +403,24 @@ def _parse_result_to_past_runs(
                 except ValueError:
                     pass
 
-        # JRA: race_id は開催ID形式。日付はHTMLまたはrace_idから
-        race_date = f"{race_id[:4]}-01-01"
-        if venue_code in ["01", "02", "03", "04", "05", "06", "07", "08", "09", "10"]:
-            # JRAのrace_idからは日付を取りにくい。HTMLのmetaから取得を試みる
-            for el in soup.select('meta[property="og:description"], meta[property="og:title"]'):
-                cnt = el.get("content", "")
-                m = re.search(r"(\d{4})年(\d{1,2})月(\d{1,2})日", cnt)
-                if m:
-                    race_date = f"{m.group(1)}-{int(m.group(2)):02d}-{int(m.group(3)):02d}"
-                    break
-        elif len(race_id) >= 10:
-            race_date = f"{race_id[:4]}-{race_id[6:8]}-{race_id[8:10]}"
+        # 日付: HTML meta タグから取得を試みる
+        race_date = ""
+        for el in soup.select('meta[property="og:description"], meta[property="og:title"]'):
+            cnt = el.get("content", "")
+            m = re.search(r"(\d{4})年(\d{1,2})月(\d{1,2})日", cnt)
+            if m:
+                race_date = f"{m.group(1)}-{int(m.group(2)):02d}-{int(m.group(3)):02d}"
+                break
+        if not race_date and venue_code not in ["01", "02", "03", "04", "05", "06", "07", "08", "09", "10"] and len(race_id) >= 10:
+            # NAR: race_id[6:8]=MM, [8:10]=DD の構造的日付を使用
+            mm, dd = race_id[6:8], race_id[8:10]
+            if mm.isdigit() and dd.isdigit() and 1 <= int(mm) <= 12 and 1 <= int(dd) <= 31:
+                race_date = f"{race_id[:4]}-{mm}-{dd}"
+        # JRA は HTML 抽出失敗時に race_id から日付を取得できない
+        # YYYY-01-01 フォールバック禁止: 汚染日付を DB に混入させない
+        if not race_date:
+            logger.warning("日付抽出失敗のため row skip: race_id=%s", race_id)
+            continue
 
         pos_text = cells[11].get_text() if len(cells) > 11 else ""
         corners = _parse_corners(pos_text)

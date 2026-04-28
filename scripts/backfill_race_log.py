@@ -8,7 +8,6 @@ import os
 import re
 import sys
 import time
-import sqlite3
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -50,17 +49,22 @@ def _parse_race_result(html: str, race_id: str):
     is_jra = venue_code in JRA_VENUE_CODES
 
     # 日付
+    race_date = None
     if is_jra:
         m = _RE_DATE_META.search(html)
         if m:
             race_date = f"{m.group(1)}-{int(m.group(2)):02d}-{int(m.group(3)):02d}"
-        else:
-            race_date = f"{race_id[:4]}-01-01"
+        # JRA は HTML 抽出失敗時に race_id から日付を取得できない
+        # YYYY-01-01 フォールバック禁止: 汚染日付を DB に混入させない
     elif len(race_id) >= 10:
-        # NAR: YYYYVVMMDD NN
-        race_date = f"{race_id[:4]}-{race_id[6:8]}-{race_id[8:10]}"
-    else:
-        race_date = f"{race_id[:4]}-01-01"
+        # NAR: YYYYVVMMDD NN — race_id[6:8]=MM, [8:10]=DD の構造的日付
+        mm, dd = race_id[6:8], race_id[8:10]
+        if mm.isdigit() and dd.isdigit() and 1 <= int(mm) <= 12 and 1 <= int(dd) <= 31:
+            race_date = f"{race_id[:4]}-{mm}-{dd}"
+    if race_date is None:
+        # 日付取得失敗: この race を skip する（汚染データの混入防止）
+        print(f"[WARN] 日付抽出失敗のため skip: race_id={race_id}")
+        return None
 
     # 馬場・距離（RaceData01）
     surface = ""
@@ -195,7 +199,12 @@ def backfill(start_year: int = 2024, dry_run: bool = False, verbose: bool = True
             skipped += 1
             continue
 
-        race_date, venue_code, surface, distance, rows = _parse_race_result(html, race_id)
+        result = _parse_race_result(html, race_id)
+        if result is None:
+            # 日付取得失敗（JRA HTML 抽出失敗）: skip
+            skipped += 1
+            continue
+        race_date, venue_code, surface, distance, rows = result
         if not rows:
             skipped += 1
             continue

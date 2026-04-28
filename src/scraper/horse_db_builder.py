@@ -216,13 +216,17 @@ def parse_result_page(
         if m:
             race_date = f"{m.group(1)}-{int(m.group(2)):02d}-{int(m.group(3)):02d}"
             break
+    if not race_date and not is_jra and len(race_id) >= 10:
+        # NAR: race_id[6:8]=MM, [8:10]=DD の構造的日付を使用
+        mm, dd = race_id[6:8], race_id[8:10]
+        if mm.isdigit() and dd.isdigit() and 1 <= int(mm) <= 12 and 1 <= int(dd) <= 31:
+            race_date = f"{race_id[:4]}-{mm}-{dd}"
+    # JRA は HTML 抽出失敗時に race_id から日付を取得できない
+    # YYYY-01-01 フォールバック禁止: 汚染日付を DB に混入させない
     if not race_date:
-        if not is_jra and len(race_id) >= 10:
-            mm, dd = race_id[6:8], race_id[8:10]
-            if mm.isdigit() and dd.isdigit() and 1 <= int(mm) <= 12 and 1 <= int(dd) <= 31:
-                race_date = f"{race_id[:4]}-{mm}-{dd}"
-        if not race_date:
-            race_date = f"{race_id[:4]}-01-01"
+        # 日付取得失敗: この race を skip する（汚染データの混入防止）
+        logger.warning("日付抽出失敗のため skip: race_id=%s", race_id)
+        return None, []
 
     # --- コース情報 ---
     surface, distance, condition = "芝", 2000, "良"
