@@ -405,7 +405,14 @@ class KeibabookClient:
         url: str,
         params: dict = None,
         use_cache: bool = True,
+        referer: Optional[str] = None,
     ) -> Optional[BeautifulSoup]:
+        """
+        2026-04-28 追加: referer 引数。
+        keibabook 大井 11R/12R 等で seiseki URL を直接 GET すると
+        syutuba (出馬表) にリダイレクトされる挙動を確認。
+        nittei ページからの自然遷移を模倣する Referer 指定で結果ページに到達できる。
+        """
         cache_key = self._cache_key(url, params)
         cache_path = os.path.join(self.cache_dir, cache_key + ".html")
 
@@ -424,9 +431,14 @@ class KeibabookClient:
         if elapsed < REQUEST_INTERVAL:
             time.sleep(REQUEST_INTERVAL - elapsed)
 
+        # Referer 指定 (URL 別ヘッダ上書き、session デフォルトは破壊しない)
+        get_headers = None
+        if referer:
+            get_headers = {"Referer": referer}
+
         for attempt in range(2):
             try:
-                resp = self.session.get(url, params=params, timeout=15)
+                resp = self.session.get(url, params=params, headers=get_headers, timeout=15)
                 resp.raise_for_status()
                 resp.encoding = "utf-8"
                 self._last_req = time.time()

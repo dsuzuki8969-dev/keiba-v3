@@ -89,6 +89,10 @@ class KeibabookResultScraper:
         venue_code = get_venue_code_from_race_id(netkeiba_race_id)
         is_jra = _is_jra_venue(venue_code)
 
+        # 2026-04-28 修正: 大井 11R/12R 等で seiseki 直接 GET だと syutuba に
+        # リダイレクトされる挙動への対策。nittei URL を Referer に指定し、
+        # ページ間の自然遷移を模倣して結果ページに到達する
+        referer = None
         if is_jra:
             kb_id = jra_netkeiba_to_kb_id(netkeiba_race_id)
             if not kb_id:
@@ -101,8 +105,22 @@ class KeibabookResultScraper:
                 logger.debug(f"KB変換失敗(NAR): {netkeiba_race_id}")
                 return None
             url = f"{KB_CHIHOU_SEISEKI}/{kb_id}"
+            # NAR の nittei URL を Referer として再構築
+            from datetime import date
+            _rd = race_date
+            if isinstance(_rd, str):
+                _rd = date.fromisoformat(_rd[:10])
+            if _rd:
+                _kb_venue = NAR_VENUE_TO_KB.get(get_venue_code_from_race_id(netkeiba_race_id))
+                if _kb_venue:
+                    referer = f"{KB_CHIHOU_NITTEI}/{_rd.strftime('%Y%m%d')}{_kb_venue}"
 
-        soup = self.client.get(url, use_cache=True)
+        # 既存キャッシュ (syutuba にリダイレクトされた古い HTML) を削除して再 fetch
+        try:
+            self.client.remove_cache(url)
+        except Exception:
+            pass
+        soup = self.client.get(url, use_cache=False, referer=referer)
         if not soup:
             return None
 
