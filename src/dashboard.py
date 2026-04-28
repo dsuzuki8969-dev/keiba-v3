@@ -734,13 +734,21 @@ def _scan_today_predictions(date_str: str) -> dict:
                     for _hd in _horses:
                         _has_ml = (_hd.get("predicted_tansho_odds") is not None
                                     or (_hd.get("win_prob") or 0) > 0)
-                        if (_hd.get("odds") is None and _hd.get("popularity") is None
-                                and not _hd.get("is_scratched") and not _has_ml):
+                        # T-045: is_scratched=True が明示済みの場合は _has_ml 保護を上書き
+                        # （前日取消馬: training_recordsに「出走取消」テキストがあり
+                        #   engine.py 側で既に is_scratched=True が設定済みのケース）
+                        _explicitly_scratched = _hd.get("is_scratched") is True
+                        if _explicitly_scratched or (
+                            _hd.get("odds") is None and _hd.get("popularity") is None
+                            and not _hd.get("is_scratched") and not _has_ml
+                        ):
                             _hd["is_scratched"] = True
                             _hd["win_prob"] = 0.0
                             _hd["place2_prob"] = 0.0
                             _hd["place3_prob"] = 0.0
                             _hd["mark"] = ""
+                            _hd["predicted_corners"] = ""
+                            _hd["running_style"] = ""
                         # 取消解除: オッズが復帰した馬はis_scratchedを解除
                         elif _hd.get("is_scratched") and _hd.get("odds") is not None and _hd.get("popularity") is not None:
                             _hd["is_scratched"] = False
@@ -1582,10 +1590,17 @@ def create_app():
                         _scratched_changed = False
                         for _hd in _race_horses:
                             # マスター指示 2026-04-23: ML予測がある馬は「取消」扱いしない
+                            # （部分オッズ取得失敗で odds=None になった馬を取消と誤判定するバグ対策）
                             _has_ml = (_hd.get("predicted_tansho_odds") is not None
                                         or (_hd.get("win_prob") or 0) > 0)
-                            if (_hd.get("odds") is None and _hd.get("popularity") is None
-                                    and not _hd.get("is_scratched") and not _has_ml):
+                            # T-045: is_scratched=True が明示済みの場合は _has_ml 保護を上書き
+                            # （前日取消馬: engine/scraper 側で既に is_scratched=True が
+                            #   設定済みのケース。_has_ml があっても取消を優先する）
+                            _explicitly_scratched = _hd.get("is_scratched") is True
+                            if _explicitly_scratched or (
+                                _hd.get("odds") is None and _hd.get("popularity") is None
+                                and not _hd.get("is_scratched") and not _has_ml
+                            ):
                                 _hd["is_scratched"] = True
                                 _hd["win_prob"] = 0.0
                                 _hd["place2_prob"] = 0.0
