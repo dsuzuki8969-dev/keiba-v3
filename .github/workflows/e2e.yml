@@ -1,14 +1,30 @@
 name: E2E Tests
 
+# 改善5: on セクション拡張 (workflow_dispatch + paths-ignore)
 on:
   push:
     branches: [master]
+    paths-ignore:
+      - 'docs/**'
+      - '*.md'
+      - 'plans/**'
   pull_request:
     branches: [master]
+    paths-ignore:
+      - 'docs/**'
+      - '*.md'
+      - 'plans/**'
+  workflow_dispatch:  # 手動トリガー追加
+
+# 改善4: 重複実行防止 concurrency
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   e2e:
     runs-on: ubuntu-latest
+    timeout-minutes: 15  # 改善2: job レベルタイムアウト (default 6 時間 → 15 分)
 
     steps:
       # ソースコードをチェックアウト
@@ -27,6 +43,13 @@ jobs:
         working-directory: frontend
         run: npm ci
 
+      # 改善1: Playwright ブラウザキャッシュ (実行時間短縮)
+      - name: Playwright ブラウザキャッシュ
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ runner.os }}-playwright-${{ hashFiles('frontend/package-lock.json') }}
+
       # Playwright ブラウザ (chromium のみ) インストール
       - name: Playwright ブラウザインストール
         working-directory: frontend
@@ -43,6 +66,15 @@ jobs:
         with:
           python-version: '3.11'
 
+      # 改善6: Python 依存キャッシュ追加
+      - name: Python 依存キャッシュ
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
       # Python 依存パッケージインストール
       - name: Python 依存インストール
         run: pip install -r requirements.txt
@@ -52,7 +84,7 @@ jobs:
       - name: Flask バックエンド起動
         run: |
           cp -r frontend/dist/. src/static/
-          KEIBA_HOST=127.0.0.1 KEIBA_PORT=5051 PYTHONIOENCODING=utf-8 python src/dashboard.py &
+          KEIBA_HOST=127.0.0.1 KEIBA_PORT=5051 PYTHONIOENCODING=utf-8 python src/dashboard.py > /tmp/dashboard.log 2>&1 &
           echo "Flask バックエンド起動中... 60秒待機"
           sleep 60
         env:
@@ -66,17 +98,37 @@ jobs:
           curl -f http://127.0.0.1:5051/ || (echo "Flask 起動失敗" && exit 1)
 
       # E2E テスト実行
+      # 改善2: step レベルタイムアウト 10 分
       - name: E2E テスト実行
         working-directory: frontend
+        timeout-minutes: 10
         run: npx playwright test e2e/responsive-check.spec.ts --project=chromium --reporter=list
         env:
           E2E_BASE_URL: "http://127.0.0.1:5051"
 
-      # テスト失敗時にスクリーンショットをアーティファクトとしてアップロード
+      # 改善3: テスト失敗時にスクリーンショット + Playwright レポートをアーティファクトとして保存
       - name: スクリーンショット保存 (失敗時)
         if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: playwright-screenshots
           path: frontend/e2e-screenshots/
-          retention-days: 7
+          retention-days: 14  # 7 → 14 日に拡張
+
+      # 改善3: Playwright HTML レポートをアーティファクトとして保存 (失敗時)
+      - name: Playwright レポート保存 (失敗時)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: frontend/playwright-report/
+          retention-days: 14
+
+      # 改善7: dashboard.log をアーティファクトとして保存 (Flask 起動失敗デバッグ用)
+      - name: ダッシュボードログ保存 (失敗時)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dashboard-log
+          path: /tmp/dashboard.log
+          retention-days: 14
