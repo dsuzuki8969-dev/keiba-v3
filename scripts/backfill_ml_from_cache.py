@@ -18,15 +18,15 @@ import os
 import re
 import sys
 from collections import defaultdict
-from datetime import date, timedelta
+from datetime import date
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import lz4.frame
 from bs4 import BeautifulSoup
 
-from src.scraper.ml_data_collector import parse_result_page, ML_DATA_DIR
-from data.masters.venue_master import get_venue_code_from_race_id, is_banei
+from data.masters.venue_master import JRA_VENUE_CODES
+from src.scraper.ml_data_collector import ML_DATA_DIR, parse_result_page
 
 CACHE_DIR = "data/cache"
 
@@ -47,13 +47,31 @@ def extract_race_id(fpath: str) -> str:
 
 
 def date_from_race_id(race_id: str) -> str:
-    """race_id (12桁) → 'YYYY-MM-DD'"""
-    if len(race_id) < 10:
+    """race_id (12桁) → 'YYYY-MM-DD'
+
+    NAR race_id 専用フォールバック。
+    NAR 形式: YYYY[venue_code:2][MM:2][DD:2][R:2]
+    JRA 形式: YYYY[venue_code:2][kai:2][nichi:2][R:2] (日付情報を含まない)
+
+    JRA race_id を渡された場合は '' を返す（race_log DB 逆引き必須）。
+    桁数不正・非数字・不正日付も '' を返す。
+    """
+    # 12桁・数字のみ以外はすべて不正（NAR も JRA も正規は 12 桁）
+    if len(race_id) != 12 or not race_id.isdigit():
         return ""
-    year = race_id[:4]
-    mm   = race_id[6:8]
-    dd   = race_id[8:10]
-    return f"{year}-{mm}-{dd}"
+    # JRA race_id は日付を含まないため、フォールバック不可
+    if race_id[4:6] in JRA_VENUE_CODES:
+        return ""
+    # NAR: [6:8]=MM, [8:10]=DD
+    year_int = int(race_id[:4])
+    mm_int   = int(race_id[6:8])
+    dd_int   = int(race_id[8:10])
+    # 日付バリデーション（不正月日は ValueError を捕捉して '' を返す）
+    try:
+        date(year_int, mm_int, dd_int)
+    except ValueError:
+        return ""
+    return f"{year_int:04d}-{mm_int:02d}-{dd_int:02d}"
 
 
 def _build_race_id_date_map(start_date: str, end_date: str) -> dict:
@@ -126,7 +144,7 @@ def main():
         args.end   = f"{args.year}-12-31"
 
     print(f"\n{'='*60}")
-    print(f"  ML データ バックフィル（キャッシュ→JSON）")
+    print("  ML データ バックフィル（キャッシュ→JSON）")
     print(f"  期間: {args.start} ～ {args.end}  force={args.force}")
     print(f"{'='*60}\n")
 
@@ -171,6 +189,7 @@ def main():
             try:
                 html = _read_cache_file(fpath)
             except Exception as e:
+                print(f"  [WARN] {fpath}: {e}")
                 day_errors += 1
                 continue
 
@@ -180,6 +199,7 @@ def main():
                 if parsed:
                     day_races.append(parsed)
             except Exception as e:
+                print(f"  [WARN] {fpath}: {e}")
                 day_errors += 1
                 continue
 
