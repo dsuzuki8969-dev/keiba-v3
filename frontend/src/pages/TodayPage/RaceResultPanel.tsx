@@ -197,23 +197,27 @@ export function RaceResultPanel({ date, raceId }: Props) {
         </div>
       </div>
 
-      {/* 払戻金 */}
+      {/* 払戻金
+       *  バック API は英字キー (tansho/fukusho/...) で返す。
+       *  日本語キー (単勝/複勝/...) との互換性のため両方フォールバックで参照する。
+       *  2026-04-28 修正: フロント↔バック キー名不一致で全 PayoutCard が空欄だった真因解消
+       */}
       <div>
         <h4 className="text-sm font-bold text-foreground mb-2 border-l-[3px] border-emerald-500 pl-2">払戻金</h4>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
           {/* 単勝・複勝 */}
-          <PayoutCard title="単勝" data={payouts["単勝"]} />
-          <PayoutCard title="複勝" data={payouts["複勝"]} />
+          <PayoutCard title="単勝" data={(payouts as any).tansho ?? payouts["単勝"]} />
+          <PayoutCard title="複勝" data={(payouts as any).fukusho ?? payouts["複勝"]} />
           {/* 枠連・馬連 */}
-          <PayoutCard title="枠連" data={payouts["枠連"]} />
-          <PayoutCard title="馬連" data={payouts["馬連"]} />
+          <PayoutCard title="枠連" data={(payouts as any).wakuren ?? payouts["枠連"]} />
+          <PayoutCard title="馬連" data={(payouts as any).umaren ?? payouts["馬連"]} />
           {/* ワイド */}
-          <PayoutCard title="ワイド" data={payouts["ワイド"]} />
+          <PayoutCard title="ワイド" data={(payouts as any).wide ?? payouts["ワイド"]} />
           {/* 馬単 */}
-          <PayoutCard title="馬単" data={payouts["馬単"]} />
+          <PayoutCard title="馬単" data={(payouts as any).umatan ?? payouts["馬単"]} />
           {/* 三連複・三連単 */}
-          <PayoutCard title="三連複" data={payouts["三連複"]} />
-          <PayoutCard title="三連単" data={payouts["三連単"]} />
+          <PayoutCard title="三連複" data={(payouts as any).sanrenpuku ?? payouts["三連複"]} />
+          <PayoutCard title="三連単" data={(payouts as any).sanrentan ?? payouts["三連単"]} />
         </div>
       </div>
     </div>
