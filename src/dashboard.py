@@ -1282,6 +1282,46 @@ def _get_pending_fetch_stats(date: str, races: list) -> tuple:
     )
 
 
+def _collect_sanrentan_tickets(race: dict) -> list:
+    """pred.json から三連単チケット集合を取得 (T-039 / LIVE STATS 共通)。
+
+    探索範囲:
+        race["tickets"] + race["formation_tickets"]
+        + race["tickets_by_mode"]["fixed"|"accuracy"|"balanced"|"recovery"]
+
+    Returns:
+        type == "三連単" のチケット dict の list (順不同)
+    """
+    all_tix = list(race.get("tickets", []) or [])
+    all_tix += list(race.get("formation_tickets", []) or [])
+    tbm = race.get("tickets_by_mode", {}) or {}
+    for mk in ("fixed", "accuracy", "balanced", "recovery"):
+        all_tix += list(tbm.get(mk, []) or [])
+    return [t for t in all_tix if t.get("type") == "三連単"]
+
+
+def _check_sanrentan_hit(
+    sanrentan_tix: list,
+    top3_ordered: list,
+):
+    """1-2-3 着 combo と完全一致するチケットがあるか判定。
+
+    Returns:
+        True  : combo の上位 3 つが top3_ordered と完全一致するチケットあり
+        False : チケットはあるが一致なし
+        None  : チケット空 (= 三連単対象外レース) または top3_ordered 不完全
+    """
+    if not sanrentan_tix:
+        return None
+    if len(top3_ordered) < 3:
+        return None
+    for t in sanrentan_tix:
+        combo = t.get("combo", [])
+        if combo and len(combo) >= 3 and [int(x) for x in combo[:3]] == top3_ordered:
+            return True
+    return False
+
+
 def create_app():
     _frontend_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "frontend")
     app = Flask(
@@ -3241,6 +3281,15 @@ def create_app():
                             entry["margin"] = ""
                         else:
                             entry["margin"] = f"+{_ma:.1f}" if _ma > 0 else f"{_ma:.1f}"
+                # results.json に time_sec / win_odds キーが直接ある場合のフォールバック
+                # （スクレイパー新形式: race_log 未格納の当日レースでも表示できるようにする）
+                if not entry.get("time") and entry.get("time_sec") is not None:
+                    _sec = entry["time_sec"]
+                    m = int(_sec // 60)
+                    s = _sec - m * 60
+                    entry["time"] = f"{m}:{s:04.1f}" if m > 0 else f"{s:.1f}"
+                if entry.get("odds") in (None, 0) and entry.get("win_odds") is not None:
+                    entry["odds"] = entry["win_odds"]
                 # 総合指数（composite）を horse_map 経由で補完 / horse_map 側を拡張
                 order.append(entry)
             return jsonify(
@@ -5662,11 +5711,10 @@ function dNavRefreshOdds(date){{
                 "tansho_roi":   round(h_ret / h_stake * 100, 1) if h_stake > 0 else 0.0,
             }
 
-            # 三連単Fリアルタイム計算（当日限定）
+            # 三連単F集計 — pred.json 永続値ベース (T-039 ロジックに統一)
             sanrentan = {"played": 0, "hit": 0, "stake": 0, "payback": 0, "roi_pct": 0.0}
             try:
-                from scripts.monthly_backtest import build_sanrentan_tickets, get_payout
-                from src.calculator.betting import SANRENTAN_SKIP_CONFIDENCES
+                from scripts.monthly_backtest import get_payout
                 from config.settings import RESULTS_DIR as _RDIR
                 import os as _os
                 pred = pred_cached  # T-001 reviewer MEDIUM: 上部 load の結果を再利用
@@ -5678,36 +5726,44 @@ function dNavRefreshOdds(date){{
                             results = json.load(_rf)
                         for r in pred.get("races", []):
                             rid = str(r.get("race_id", ""))
-                            conf = r.get("confidence", "C")
-                            n = r.get("field_count") or len(r.get("horses", []))
-                            is_jra = r.get("is_jra", True)
-                            horses = [h for h in r.get("horses", []) if not h.get("is_scratched")]
-                            if not horses:
-                                continue
                             rdata = results.get(rid)
                             if not rdata:
                                 continue
                             payouts = rdata.get("payouts", {})
-                            if "三連単" not in payouts:
+                            if "三連単" not in payouts and "sanrentan" not in payouts:
                                 continue
-                            if conf in SANRENTAN_SKIP_CONFIDENCES:
+
+                            # 1-2-3 着の馬番を確定 (T-039 と同じロジック)
+                            order = rdata.get("order") or []
+                            if len(order) < 3:
                                 continue
-                            try:
-                                tickets = build_sanrentan_tickets(horses, n, is_jra)
-                            except Exception:
+                            finish_map = {int(o["horse_no"]): int(o["finish"]) for o in order}
+                            top3_ordered = [
+                                h for h, f in sorted(finish_map.items(), key=lambda x: x[1])
+                                if f <= 3
+                            ]
+                            if len(top3_ordered) < 3:
                                 continue
-                            if not tickets:
-                                continue
+
+                            # 共通ヘルパーで三連単チケット集合を取得
+                            sanrentan_tix = _collect_sanrentan_tickets(r)
+                            if not sanrentan_tix:
+                                continue  # 三連単対象外レース (永続値に三連単無し = 予想時点 SS/C/D 等で skip 済)
+
+                            # ここまで来れば played にカウント (真値 40R 系列)
                             sanrentan["played"] += 1
-                            race_hit = False
-                            for t in tickets:
-                                stake = t["stake"]
-                                pp = get_payout(payouts, t)
-                                payback = pp * (stake // 100)
+                            race_hit = _check_sanrentan_hit(sanrentan_tix, top3_ordered) is True
+                            for t in sanrentan_tix:
+                                stake = int(t.get("stake", 0) or 0)
+                                if stake <= 0:
+                                    continue
                                 sanrentan["stake"] += stake
-                                sanrentan["payback"] += payback
-                                if payback > 0:
-                                    race_hit = True
+                                if race_hit:
+                                    # 当該チケットが的中チケットか個別判定
+                                    combo = t.get("combo", [])
+                                    if combo and len(combo) >= 3 and [int(x) for x in combo[:3]] == top3_ordered:
+                                        pp = get_payout(payouts, t)
+                                        sanrentan["payback"] += pp * (stake // 100)
                             if race_hit:
                                 sanrentan["hit"] += 1
                         sanrentan["roi_pct"] = (
@@ -6693,39 +6749,18 @@ function dNavRefreshOdds(date){{
                     break
 
             # ── 三連単 チケット 的中判定 ──────────────────────────────────
-            # tickets + formation_tickets の「三連単」コンボを全部チェック
-            sanrentan_hit: bool | None = None
-            if len(top3_ordered) >= 3:
-                all_tix = (
-                    race.get("tickets", [])
-                    + race.get("formation_tickets", [])
-                )
-                # tickets_by_mode['fixed'] も確認（仕様書の三連単 F フォーメーション）
-                tbm = race.get("tickets_by_mode", {})
-                for _mode_key in ("fixed", "accuracy", "balanced", "recovery"):
-                    all_tix += tbm.get(_mode_key, [])
-
-                for t in all_tix:
-                    if t.get("type") != "三連単":
-                        continue
-                    combo = t.get("combo", [])
-                    if not combo or len(combo) < 3:
-                        continue
-                    if list(int(x) for x in combo) == top3_ordered:
-                        sanrentan_hit = True
-                        break
-                else:
-                    # 三連単チケット自体が存在した場合は False、なければ None
-                    has_sanrentan_tix = any(
-                        t.get("type") == "三連単"
-                        for t in (
-                            race.get("tickets", [])
-                            + race.get("formation_tickets", [])
-                            + [t2 for mk in ("fixed", "accuracy", "balanced", "recovery")
-                               for t2 in tbm.get(mk, [])]
-                        )
-                    )
-                    sanrentan_hit = False if has_sanrentan_tix else None
+            # 共通ヘルパーで三連単チケット集合を取得・判定 (LIVE STATS と single source of truth)
+            sanrentan_tix = _collect_sanrentan_tickets(race)
+            hit = _check_sanrentan_hit(sanrentan_tix, top3_ordered)
+            # T-039 既存仕様: 「チケットあるが top3 < 3」 → None
+            # 「チケットあるが combo 不一致」 → False
+            # 「チケットなし」 → None
+            if hit is True:
+                sanrentan_hit = True
+            elif sanrentan_tix and len(top3_ordered) >= 3:
+                sanrentan_hit = False
+            else:
+                sanrentan_hit = None
 
             race_results[race_id] = {
                 "win_hit": win_hit,
