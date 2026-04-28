@@ -156,9 +156,27 @@ Level 4: 面×距離帯×場×コース個別（品質フィルタ済み）
 
 ---
 
+## 主要機能（実装済み）
+
+| 機能 | 概要 |
+|------|------|
+| F-001 全頭見える化エンジン | netkeiba/JRA/NAR → SQLite → ML 分析 → 印付与 |
+| F-006 React + Vite SPA ダッシュボード | Flask API + React SPA、Cloudflare Tunnel で公開 |
+| F-008 全走行データ永続化 | race_log 49 カラム（finish_time, last_3f, run_dev 等） |
+| F-009 開催カレンダー | JRA + NAR 全開催日 (2022-01〜2026-12) / 1,583 開催日 |
+| F-010 馬指数絶対/相対切替 | 能力軸を「全馬比較」と「当該レース内比較」でトグル切替 |
+| F-011 オッズ表示 | 人気薄本命（◎ × 5 番人気以下）を金色ハイライト |
+| F-012 horses マスター | 42,515 頭 netkeiba_id 補完済 / 同名異形式を統合 |
+| F-013 「Bを再開して」コマンド | バックフィル安全再開スクリプト（PID 二重起動防止） |
+| F-014 深層用語辞書 | 競馬専門用語 ↔ 平易語マッピング（Qwen paraphrase 品質向上） |
+
+詳細は `SKILL.md` を参照。
+
 ## ドキュメント
 
 - `CLAUDE.md` — プロジェクト全体ガイド・コーディング規約
+- `SKILL.md` — 機能定義・成果物・到達目標（What）
+- `CHANGELOG.md` — バージョン別変更履歴
 - `docs/SYSTEM_ARCHITECTURE_FULL.md` — システムアーキテクチャ詳細
 - `WINDOWS_GUIDE.md` — Windows環境セットアップ
 

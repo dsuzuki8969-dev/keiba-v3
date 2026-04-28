@@ -1,5 +1,261 @@
 # D-AI Keiba v3 — CHANGELOG
 
+---
+
+## v6.2.14 （2026-04-28）— CI 強化 + D 追加バックフィル + 同馬統合
+
+**commit**: bb02b9e
+
+### 概要
+CI パイプライン（GitHub Actions）の安定化、horses マスターへの追加バックフィル、同名異馬の統合処理を一括実施。
+
+### 主な変更
+- CI: Python 環境ビルドキャッシュ追加 + テスト並列化
+- horses マスター: 追加バックフィルで `netkeiba_id` 補完率を向上
+- 同名異馬統合: `merge_duplicate_horses.py --apply` で重複 horse_id を統一
+- `audit_pred_venue.py`: 統合後の venue 整合性を全件確認
+
+---
+
+## v6.2.13 （2026-04-28）— sample 系昇格 + featureFlags 整理 + venue audit（後追い）
+
+**commit**: 3cc6ba6
+
+### 概要
+前セッションで「サンプル」として隔離していたコンポーネントをマスター承認後に本実装へ統合。featureFlags.ts の不要フラグを整理し、venue audit スクリプトを修正。
+
+### 主な変更
+- sample 系コンポーネント → 既存ファイルへ統合（`feedback_sample_vs_implementation.md` 準拠手順）
+- `frontend/src/lib/featureFlags.ts`: 廃止フラグ削除・整理
+- `scripts/audit_pred_venue.py`: JRA venue_code 位置誤読バグ修正（v6.2.13 で恒久修正）
+
+---
+
+## v6.1.50 （2026-04-28）— D Phase 2+3: horses.netkeiba_id カラム追加 + 42,515 件補完
+
+**commit**: 3698789
+
+### 概要
+horses マスターテーブルに `netkeiba_id` カラムを新設し、`backfill_horses_netkeiba_id.py` で全 42,515 頭の外部 ID を補完。残 2,847 件は 403 エラー（主に 2023 年若駒）で継続バックフィル中。
+
+### 主な変更
+- `data/masters/horses_master.db`: `netkeiba_id TEXT` カラム追加（ALTER TABLE）
+- `scripts/backfill_horses_netkeiba_id.py`: 新規。netkeiba 馬詳細ページから ID 取得・UPDATE
+- 補完率: 42,515 / 45,362 = 93.7%（残 2,847 件は追加バックフィル対象）
+
+---
+
+## v6.2.12 （2026-04-28）— 持ち越し C+D Phase 1: CI 統合 + JRA horses マスター
+
+**commit**: 355462b
+
+### 概要
+前セッション持ち越しの CI 統合（GitHub Actions workflow 新設）と JRA 馬マスター構築（Phase 1）を実施。`scripts/build_horses_master.py` で race_log から全競走馬を集約。
+
+### 主な変更
+- `.github/workflows/ci.yml`: 新規。Python lint + テスト + build 自動化
+- `scripts/build_horses_master.py`: 新規。race_log → horses マスター構築
+- `data/masters/horses_master.db`: 初期構築（git 管理対象に追加）
+
+---
+
+## v6.2.11 （2026-04-28）— 園田 venue_code 49→50 統一: netkeiba race_id 主軸
+
+**commit**: 21b8791
+
+### 概要
+園田競馬場の venue_code が 49（旧）と 50（新）で混在していたため、netkeiba race_id を主軸に 50 へ統一。2026 年度から新コード対応。
+
+### 主な変更
+- `src/scraper/venue_master.py`: 園田を `49 → 50` に変更
+- `config/settings.py`: 園田 venue_code 定数を 50 に統一
+- race_log の既存レコードは horse_id JOIN のため影響なし（新規取得分から適用）
+
+---
+
+## v6.2.10 （2026-04-28）— /api/force_refresh_today admin 制限除去
+
+**commit**: fdc715a
+
+### 概要
+`/api/force_refresh_today` エンドポイントのアクセス制限を `_is_admin()` から除去し、Cloudflare 経由の一般ユーザーでも手動更新ボタンが動作するよう修正。セキュリティは IP + Rate limit で維持。
+
+### 主な変更
+- `src/dashboard.py`: `force_refresh_today` の `_is_admin()` ガード削除
+- IP 単位 5 秒 Rate limit / threading.Lock 連打防止は継続維持
+
+---
+
+## v6.2.9 （2026-04-28）— 「Bを再開して」コマンド対応（restart_backfill_b.ps1）
+
+**commit**: e643f37
+
+### 概要
+バックフィル B（backfill_b）の中断再開を単一コマンドで安全に実行できる PowerShell スクリプトを新設。PID ファイル方式の二重起動防止を実装。
+
+### 主な変更
+- `scripts/restart_backfill_b.ps1`: 新規。PID 確認 → 生存なら SKIP、停止なら detach 起動
+- BOM 付き UTF-8 で保存（Windows PowerShell 5.1 対応）
+- ログ: `logs/backfill_b.log` に追記
+
+---
+
+## v6.2.8 （2026-04-28）— 持ち越し B: 2023 下半期 race_log バックフィルスクリプト
+
+**commit**: c7e13bf
+
+### 概要
+2023 年下半期の race_log データ欠損を補完するバックフィルスクリプトを新設。チェックポイント方式で中断再開可能。
+
+### 主な変更
+- `scripts/backfill_nar_course_db.py`: 2023 下半期 NAR データ補完
+- チェックポイント: `tmp/backfill_b_checkpoint.json`
+
+---
+
+## v6.2.7 （2026-04-28）— 持ち越し E: race_log.horse_id 空 6,742 → 8 件に削減
+
+**commit**: bdf1488
+
+### 概要
+race_log の `horse_id = NULL` または空文字レコードが 6,742 件存在していた問題を調査・修正。`scripts/refix_empty_course_id.py` で 6,734 件を正常値に復元。
+
+### 主な変更
+- `scripts/refix_empty_course_id.py`: 新規。horse_id 空レコードを horse_name × race_date の照合で復元
+- 復元率: 6,742 件 → 残 8 件（真の意味で不明な馬のみ残存）
+
+---
+
+## v6.2.6 （2026-04-28）— 持ち越し P1 系: e2e + horse_id 真因 + race_log 監査
+
+**commit**: 9a4e718
+
+### 概要
+e2e テストの追加、horse_id 空欄の真因調査（スクレイパーの INSERT 漏れ）、race_log 全件の整合性監査を実施。
+
+### 主な変更
+- `tests/test_e2e_pipeline.py`: 新規 e2e テスト
+- `src/scraper/netkeiba.py`: horse_id 取得漏れパターンを修正（429 エラー時の fallback）
+- `scripts/daily_data_quality_check.py`: 新規。race_log 整合性を毎日チェック
+
+---
+
+## v6.2.5 （2026-04-28）— Plan-α MEDIUM + P2 lms 自動化: 完走最終
+
+**commit**: b5af968
+
+### 概要
+Plan-α の MEDIUM 優先度タスク（ability_total レンジ拡張の後追い検証）と LM Studio の自動起動スクリプトを完成。
+
+### 主な変更
+- `scripts/local_llm_paraphrase.py`: LM Studio 未起動時に自動起動する前処理を追加
+- ability_total 分布検証: 4/28 pred.json で -36 〜 100 の連続分布を確認（張り付き 0 件）
+
+---
+
+## v6.2.4 （2026-04-28）— 持ち越し P1 系: finish_time / horse_id / Step 5
+
+**commit**: bdf5d93
+
+### 概要
+前セッション持ち越しの finish_time_sec 正規化、horse_id 統合ロジック、MultiSourceEnricher Step 5（血統データ注入）を実施。
+
+### 主な変更
+- `src/database.py`: `finish_time_sec` の異常値（99=失格コード）防御を強化
+- `src/scraper/horse_db_builder.py`: MultiSourceEnricher Step 5 — 血統データを horses テーブルに補完
+- horse_id 統合: `horses_master.db` の horse_id と race_log.horse_id を照合・整合
+
+---
+
+## v6.2.3 （2026-04-28）— Plan-γ Phase 5+6 + T-029 完了: 絶対/相対切替 + バックテスト + 用語辞書
+
+**commit**: 9110346
+
+### 概要
+Plan-γ の最終 Phase（5: フロント切替表示 / 6: ROI バックテスト）と T-029（深層用語辞書）を一括完了。
+
+### 主な変更
+- `frontend/src/pages/TodayPage/HorseCardPC.tsx` / `HorseCardMobile.tsx`: 絶対/相対偏差値トグルスイッチ追加
+- `frontend/src/lib/featureFlags.ts`: `USE_RELATIVE_DEV` フラグ追加
+- `scripts/backtest_phase4_relative_dev.py`: 旧モデル vs 新モデル ROI 比較バックテスト
+- `src/nlp/racing_term_dict.py`: 競馬専門用語辞書（新規）
+
+---
+
+## v6.2.2 （2026-04-28）— T-038 Phase 3 補完: 開催カレンダー日付クリック遷移実装
+
+**commit**: 9d3aa42
+
+### 概要
+開催カレンダー（v6.2.1）の UI 機能を補完。日付クリック時に成績ページまたは予想ページへ遷移するルーティングを追加。
+
+### 主な変更
+- `frontend/src/pages/CalendarPage.tsx`: 日付クリック → `/results?date=YYYY-MM-DD` or `/today?date=YYYY-MM-DD` へ遷移
+- 遷移先判定: カレンダーに予想 JSON が存在する日付は `today` ページ、それ以外は `results` ページ
+
+---
+
+## v6.2.1 （2026-04-28）— T-038 開催カレンダー機能（Phase 1+3+4）: venue/date バグ恒久予防
+
+**commit**: dbbf315
+
+### 概要
+JRA + NAR 全開催日（2022-01〜2026-12）をカレンダーマスタとして構築し、ダッシュボードに月別グリッド UI を追加。パイプライン整合性の ground truth として活用。
+
+### 主な変更
+- `data/masters/kaisai_calendar.json`: 新規（1,583 開催日 / 259KB）
+- `scripts/build_kaisai_calendar.py`: 新規。netkeiba カレンダーページから構築
+- `src/scraper/kaisai_calendar_util.py`: 新規。`validate_race_against_calendar` 関数
+- `frontend/src/pages/CalendarPage.tsx`: 新規。月別グリッド表示 UI
+- `src/dashboard.py`: `/api/kaisai_calendar` エンドポイント追加
+- `run_analysis_date.py` / `backfill_ml_from_cache.py`: カレンダー照合 hook 追加（非開催日 early exit）
+
+---
+
+## v6.2.0 （2026-04-28）— T-033 Phase 1+2: pred.json venue フルクリーニング
+
+**commit**: d00ca64 / bbcdf44
+
+### 概要
+T-033 (venue_code 不整合) の根本修正。`date_from_race_id()` の JRA race_id 誤判定を修正（Phase 1）し、過去全 pred.json の venue フィールドを一括クリーニング（Phase 2）。
+
+### Phase 1（commit: bbcdf44）
+- `src/scraper/netkeiba.py`: `date_from_race_id()` の JRA race_id パターンマッチを修正
+- 修正前: `race_id[0:2]` が NAR 形式と衝突するケースで venue_code を誤判定
+- 修正後: JRA race_id の構造（8 桁 + 先頭 2 桁が venue_code）を正しく解析
+
+### Phase 2（commit: d00ca64）
+- `scripts/fix_pred_json_venue.py`: 新規。過去 pred.json の `race.venue` フィールドを全件 UPDATE
+- 対象: 1,691 件の不整合レコードを修正
+
+---
+
+## v6.1.49 （2026-04-28）— T-032: モバイル馬カード「能力/展開/適性 + EV + 勝率」重複表示削除
+
+**commit**: adde812
+
+### 概要
+モバイル版馬カードで「能力/展開/適性」「EV」「勝率」が 2 箇所に重複表示されていたバグを修正。
+
+### 主な変更
+- `frontend/src/pages/TodayPage/HorseCardMobile.tsx`: 重複する JSX ブロックを削除
+
+---
+
+## v6.1.48 （2026-04-28）— T-031: 過去成績ページに選択日成績カード追加（StatsCard 共通化）
+
+**commit**: b1d07a4
+
+### 概要
+過去成績ページ（ResultsPage）に「選択日の成績サマリー」カードを追加。StatsCard コンポーネントを共通化し、ホーム画面と成績ページで同一コンポーネントを再利用。
+
+### 主な変更
+- `frontend/src/components/StatsCard.tsx`: 新規共通コンポーネント
+- `frontend/src/pages/ResultsPage.tsx`: 選択日成績カード追加
+- `frontend/src/pages/HomePage.tsx`: StatsCard に移行
+
+---
+
 ## v6.1.47 （2026-04-28）— T-027 中層: Qwen prompt 強化 + paraphrase 全 cache 再生成
 
 **commit**: d3c1e8d
