@@ -268,8 +268,8 @@ def process_pred_file(
 
             paraphrased_bullets: list[str] = []
             for b in bullets_raw:
-                # 冒頭 prefix (○馬名【XX師】) を除去してからキャッシュキー生成・paraphrase
-                b_clean = PREFIX_RE.sub("", b).strip()
+                # 冒頭 prefix (○馬名【XX師】/（）+ 話者名――) を除去してからキャッシュキー生成・paraphrase
+                b_clean = strip_prefix(b)
                 if not b_clean:
                     b_clean = b  # prefix 全消滅は使わない
                 h = hash_text(b_clean)
