@@ -42,11 +42,15 @@ class MultiSourceEnricher:
         self,
         official_odds=None,        # OfficialOddsScraper instance
         keibabook_client=None,     # KeibabookClient instance (optional)
-        nar_scraper=None,          # OfficialNARScraper instance（NAR 結果補完用、新規）
+        nar_scraper=None,          # OfficialNARScraper instance（NAR 結果補完用）
+        keibabook_result_scraper=None,  # KeibabookResultScraper instance（Phase 3 fallback）
     ):
         self._official = official_odds
         self._kb_client = keibabook_client
         self._nar = nar_scraper
+        # Phase 3: 競馬ブック結果スクレイパー（NAR 公式取得失敗時の fallback）
+        # KeibabookResultScraper を直接受け取る。keibabook_client のみの場合は遅延生成する。
+        self._kb_result = keibabook_result_scraper
 
     # ================================================================
     # メインエンリッチメント
@@ -133,8 +137,17 @@ class MultiSourceEnricher:
     ) -> Dict[str, int]:
         """
         NAR 公式から race_results を取得し、horses[] に焼き込む。
+        NAR 公式が失敗した場合、競馬ブックへ fallback する（Phase 3）。
         JRA レース（venue 01-10）はスキップ。Horse モデルに属性がない場合は
         setattr で動的追加する（models.py は変更しない）。
+
+        フォールバック優先度:
+          1. NAR 公式 (OfficialNARScraper.get_result)
+          2. 競馬ブック (KeibabookResultScraper.fetch_result) — NAR 公式失敗時のみ
+
+        フォールバック禁止ルール遵守:
+          - 取得失敗 → skip + ログ（推定での埋めはしない）
+          - 競馬ブックの結果が空（order なし）の場合も skip
 
         Args:
             race_id:   netkeiba race_id（例: "202644030806"）
@@ -146,20 +159,38 @@ class MultiSourceEnricher:
         """
         stats = {"finish_time": 0, "last_3f": 0, "corners": 0}
 
-        if not self._nar:
-            return stats
-
         # JRA レース（venue コード 01-10）はスキップ
         venue_code = race_id[4:6] if len(race_id) >= 6 else ""
         JRA_CODES = {"01", "02", "03", "04", "05", "06", "07", "08", "09", "10"}
         if venue_code in JRA_CODES:
             return stats
 
-        try:
-            result = self._nar.get_result(race_id, race_date)
-        except Exception as e:
-            logger.debug("NAR get_result 失敗 race_id=%s: %s", race_id, e)
-            return stats
+        result = None
+
+        # ── 1. NAR 公式 ──
+        if self._nar:
+            try:
+                result = self._nar.get_result(race_id, race_date)
+            except Exception as e:
+                logger.debug("NAR get_result 失敗 race_id=%s: %s", race_id, e)
+                result = None
+
+        # ── 2. 競馬ブック fallback（Phase 3: NAR 公式取得失敗時のみ） ──
+        if not result or not result.get("order"):
+            kb_result = self._try_keibabook_result(race_id, race_date)
+            if kb_result and kb_result.get("order"):
+                logger.info(
+                    "競馬ブック結果 fallback 成功: %s (NAR公式失敗後)", race_id
+                )
+                result = kb_result
+            else:
+                # 両方失敗 → skip（推定で埋めない）
+                if not result or not result.get("order"):
+                    logger.debug(
+                        "NAR 結果補完: 取得失敗 (NAR公式+競馬ブック両方失敗) race_id=%s",
+                        race_id,
+                    )
+                    return stats
 
         if not result or not result.get("order"):
             return stats
@@ -212,6 +243,52 @@ class MultiSourceEnricher:
                 race_id, stats["finish_time"], stats["last_3f"], stats["corners"],
             )
         return stats
+
+    # ================================================================
+    # Phase 3: 競馬ブック 結果 fallback
+    # ================================================================
+
+    def _try_keibabook_result(
+        self,
+        race_id: str,
+        race_date: str,
+    ) -> Dict:
+        """
+        競馬ブックからレース結果を取得する（NAR 公式失敗時の fallback）。
+
+        フォールバック禁止ルール遵守:
+          - 取得失敗 → None を返す（推定で埋めない）
+          - 信頼できる結果 (order あり) のみ返却
+
+        Returns:
+            {"order": [...], "payouts": {...}} もしくは None
+        """
+        # KeibabookResultScraper を取得（直接インスタンス渡し優先、次に keibabook_client から生成）
+        kb_scraper = self._kb_result
+        if kb_scraper is None and self._kb_client is not None:
+            try:
+                # keibabook_training が keibabook_result を re-export しているため
+                # 循環 import を避けて keibabook_training 経由で取得する
+                from src.scraper.keibabook_training import KeibabookResultScraper
+                kb_scraper = KeibabookResultScraper(self._kb_client)
+            except ImportError:
+                logger.debug("KeibabookResultScraper import 失敗")
+                return {}
+
+        if kb_scraper is None:
+            return {}
+
+        try:
+            result = kb_scraper.fetch_result(race_id, race_date=race_date)
+            if result and result.get("order"):
+                return result
+            logger.debug(
+                "競馬ブック結果: order なし race_id=%s", race_id
+            )
+        except Exception as e:
+            logger.debug("競馬ブック結果取得失敗 race_id=%s: %s", race_id, e)
+
+        return {}
 
     # ================================================================
     # JRA 公式 ID → netkeiba ID 変換・適用

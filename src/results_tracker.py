@@ -1708,8 +1708,20 @@ def _is_nar_race(race_id: str) -> bool:
         return race_id[4:6] not in {"01","02","03","04","05","06","07","08","09","10"}
 
 
-def _fetch_from_official(race_id: str, official_scraper, date: str) -> Optional[dict]:
-    """JRA/NAR公式から結果を取得（1段目フォールバック）"""
+def _fetch_from_official(
+    race_id: str,
+    official_scraper,
+    date: str,
+    *,
+    nar_scraper=None,
+) -> Optional[dict]:
+    """JRA/NAR公式から結果を取得（1段目フォールバック）
+
+    Args:
+        official_scraper: JRA公式スクレイパー (OfficialOddsScraper)
+        nar_scraper:      NAR公式スクレイパー (OfficialNARScraper)。
+                          省略時は MultiSourceEnricher 経由で自動生成する。
+    """
     try:
         if not _is_nar_race(race_id):
             # JRA公式（OfficialOddsScraper.get_jra_result）
@@ -1718,13 +1730,25 @@ def _fetch_from_official(race_id: str, official_scraper, date: str) -> Optional[
                 if result and result.get("order"):
                     return result
         else:
-            # NAR公式（OfficialNARScraper.get_result）
+            # NAR公式 — MultiSourceEnricher 経由で取得
+            # nar_scraper が渡されていれば使い回す（毎回インスタンス生成を回避）
             try:
+                from src.scraper.multi_source import MultiSourceEnricher
                 from src.scraper.official_nar import OfficialNARScraper
-                nar = OfficialNARScraper()
-                result = nar.get_result(race_id, date)
+                _nar = nar_scraper if nar_scraper is not None else OfficialNARScraper()
+                enricher = MultiSourceEnricher(nar_scraper=_nar)
+                # enrich_results は Horse[] を in-place 更新するAPIのため、
+                # dict形式が必要な呼出元向けに NAR scraper を直接呼び出す
+                result = _nar.get_result(race_id, date)
                 if result and result.get("order"):
+                    logger.debug(
+                        "NAR公式結果取得成功 (MultiSourceEnricher経由): %s", race_id
+                    )
                     return result
+                else:
+                    logger.debug(
+                        "NAR公式結果なし (MultiSourceEnricher経由) race_id=%s", race_id
+                    )
             except ImportError:
                 pass
     except Exception:
@@ -1770,6 +1794,7 @@ def fetch_single_race_result(
     client,
     *,
     official_scraper=None,
+    nar_scraper=None,
     kb_client=None,
     rakuten_client=None,
 ) -> Optional[dict]:
@@ -1784,7 +1809,9 @@ def fetch_single_race_result(
         date:              YYYY-MM-DD
         race_id:           対象レースID
         client:            NetkeibaClient（2段目）
-        official_scraper:  JRA/NAR公式スクレイパー（1段目、推奨）
+        official_scraper:  JRA公式スクレイパー (OfficialOddsScraper)（1段目、推奨）
+        nar_scraper:       NAR公式スクレイパー (OfficialNARScraper)（NAR 1段目）。
+                           省略時は自動生成（都度インスタンス化）。
         kb_client:         KeibabookClient（3段目）
         rakuten_client:    RakutenKeibaScraper（4段目・NAR限定）
 
@@ -1849,10 +1876,12 @@ def fetch_single_race_result(
 
     order, payouts, lap_times, source = None, None, None, ""
 
-    # 1st: JRA/NAR公式
-    if official_scraper:
+    # 1st: JRA/NAR公式（NAR は MultiSourceEnricher 経由で nar_scraper を使用）
+    if official_scraper or nar_scraper:
         try:
-            _r = _fetch_from_official(race_id, official_scraper, date)
+            _r = _fetch_from_official(
+                race_id, official_scraper, date, nar_scraper=nar_scraper
+            )
             if _r and _r.get("order"):
                 order = _r["order"]
                 payouts = _r.get("payouts", {})
@@ -1970,6 +1999,7 @@ def fetch_actual_results(
     client,
     *,
     official_scraper=None,
+    nar_scraper=None,
     kb_client=None,
     rakuten_client=None,
 ) -> dict:
@@ -1980,7 +2010,9 @@ def fetch_actual_results(
     Args:
         date:              YYYY-MM-DD
         client:            NetkeibaClient（2段目フォールバック）
-        official_scraper:  JRA/NAR公式スクレイパー（1段目、省略可）
+        official_scraper:  JRA公式スクレイパー (OfficialOddsScraper)（1段目、省略可）
+        nar_scraper:       NAR公式スクレイパー (OfficialNARScraper)（NAR 1段目）。
+                           省略時は自動生成（NAR レース毎に都度インスタンス化）。
         kb_client:         KeibabookClient（3段目、省略可）
         rakuten_client:    RakutenKeibaScraper（4段目・NAR限定、省略可）
 
@@ -2021,9 +2053,11 @@ def fetch_actual_results(
 
         order, payouts, lap_times, source = None, None, None, ""
 
-        # 1st: JRA/NAR公式
-        if official_scraper and not order:
-            result = _fetch_from_official(race_id, official_scraper, date)
+        # 1st: JRA/NAR公式（NAR は MultiSourceEnricher 経由で nar_scraper を使用）
+        if (official_scraper or nar_scraper) and not order:
+            result = _fetch_from_official(
+                race_id, official_scraper, date, nar_scraper=nar_scraper
+            )
             if result and result.get("order"):
                 order = result["order"]
                 payouts = result.get("payouts", {})
