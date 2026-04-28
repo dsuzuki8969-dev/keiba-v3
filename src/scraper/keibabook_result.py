@@ -147,16 +147,26 @@ class KeibabookResultScraper:
         if not soup:
             return None
 
+        # 2026-04-28 修正: 有料版 (use:smartpremium) では link_text="成績" 固定で
+        # R 番号がリンクテキストから取れない。kb_id 構造 (URL 末尾セグメント) で
+        # 末尾形式: 2026<kb_venue:4><kaisai:2><R:2><MMDD:4> = 16 桁
+        # → kb_id[10:12] が R 番号 (01〜12)
         for a in soup.select("a[href]"):
             href = a.get("href", "")
             if "/seiseki/" not in href and "/syutuba/" not in href:
                 continue
+            parts = href.rstrip("/").split("/")
+            if not parts:
+                continue
+            kb_id = parts[-1]
+            # 旧フォールバック: リンクテキスト "5R" 等の場合 (互換維持)
             link_text = a.get_text(strip=True)
             m = re.search(r"(\d+)\s*R", link_text)
             if m and m.group(1).zfill(2) == race_no:
-                parts = href.rstrip("/").split("/")
-                if parts:
-                    return parts[-1]
+                return kb_id
+            # 新ロジック: kb_id[10:12] が R 番号と一致
+            if len(kb_id) >= 12 and kb_id.isdigit() and kb_id[10:12] == race_no:
+                return kb_id
 
         return None
 
