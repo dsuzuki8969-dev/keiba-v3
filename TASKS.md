@@ -10,6 +10,41 @@
 
 （なし）
 
+---
+
+## 🟢 本セッション完了（2026-04-28）— T-033 P0 + T-037 + T-038 全完了
+
+### T-033 Phase 1 — date_from_race_id() 関数バグ修正 ✅ 2026-04-28 commit bbcdf44
+- **真因**: `scripts/backfill_ml_from_cache.py:date_from_race_id()` が JRA race_id のスライス位置誤り → 221 日分 / 7,029 件が誤パスへ配置
+- **対応**: スライス位置修正 + 単体テスト追加
+
+### T-033 Phase 2 D-1 — pred.json venue 異常 フルクリーニング ✅ 2026-04-28 commit d00ca64
+- **手順**: HTML 真値マスタ構築 → race_log cleanup (7,133 行) → data/ml 再生成 → pred.json race 再配置 (48 件移動 / 重複 450 除去)
+
+### T-033 D-2 — pred.json race.venue 1,691 件不整合修正 ✅ 2026-04-28 commit c9138cf
+- **対応**: T-037 audit バグ修正後に真の不整合 1,691 件確定 → pred.json race.venue を DB 値で一括上書き
+- **結果**: audit パターン A/B/C/D 全 0 件達成。Plan-γ Phase 5/6 凍結解除
+
+### T-037 — audit_pred_venue.py JRA venue_code 位置誤読修正 ✅ 2026-04-28 commit 4fb032d
+- **真因**: `race_id[8:10]`（誤）→ `race_id[4:6]`（正）
+- **影響**: 偽陽性 6,971 件 → 真の不整合 1,691 件に正常化
+
+### T-038 Phase 1+3+4 — 開催カレンダー機能 ✅ 2026-04-28 commit (T-038 統合)
+- **実装**: netkeiba 統合スクレイパーで JRA + NAR 全期間 (2022-01〜2026-12) 取得 → `data/masters/kaisai_calendar.json` (259KB / 1,583 開催日)
+- **UI**: React CalendarPage 月別グリッド + 日付クリックで成績/予想ページ遷移
+- **hook**: run_analysis_date / bulk_backfill_predictions / backfill_ml_from_cache にパイプライン整合性検証を追加
+
+### T-038 Phase 3 補完 — 日付クリック遷移 ✅ 2026-04-28 commit 9d3aa42
+- **対応**: CalendarPage の日付クリックで成績/予想ページへの遷移を実装
+
+### 本セッション教訓（memory 永続化済）
+- 真因は三重・四重あり得る（Phase 1 修正で終わりと思わず深層調査を継続）
+- subagent 待機中も Chat 反応必須（`feedback_subagent_idle_chat.md` 追加）
+- `schtasks /End` は子プロセス kill しない → `Stop-Process -Id <PID> -Force` 必要
+- ground truth = 外部公式（kaisai_calendar.json）> 内部推論型（race_id 構造解析）
+
+---
+
 ## 🟢 セッション 4/27 朝〜夕方 完了サマリ（11 commits）
 
 ### v6.1.23-32 全完了
@@ -448,6 +483,40 @@
 
 ## 🟡 今後のタスク
 
+> **最終更新: 2026-04-28** — T-033 完全クローズ。P0 ゼロ。
+
+### P1 — 重要（次セッション候補）
+
+| 優先度 | ID | タスク | 状態 |
+|:---:|---|---|---|
+| P1 | T-034 | オッズ表示 | マスター画面確認待ち → 確認後統合 commit |
+| P1 | Plan-γ Ph5 | フロント絶対/相対切替 | T-033 凍結解除 → 着手可 |
+| P1 | Plan-γ Ph6 | バックテスト (絶対 vs ハイブリッド ROI) | T-033 凍結解除 → 着手可 |
+| P1 | T-029 | 深層用語辞書（「流れに優れる」誤訳対策） | 後日 |
+| P1 | — | JRA 13 race 着差再取得 | JS → Playwright 必要 |
+| P1 | — | race_log.horse_id 旧/新形式統一 | `2019100043` / `nar_xxx` 混在 |
+| P1 | — | finish_time=0 残 5,118 行 段階バックフィル | 古い NAR、継続取得 |
+| P1 | — | paraphrase.ts MAP 598 件 マスター手動レビュー | Qwen 自動生成のため不自然エントリあり |
+| P1 | — | Step 5 Phase 2/3 (MultiSourceEnricher 呼出元統合 + 競馬ブック fallback) | 実装済み・呼出未統合 |
+
+> T-035 / T-036 はマスター指示で不要化（T-038 Phase 1 で netkeiba 経由カバー、公式直取得は不要）
+
+### P2
+
+| 優先度 | タスク | 状態 |
+|:---:|---|---|
+| P2 | LM Studio Auto-start (Windows スタートアップ登録) | 後日 |
+| P2 | `daily_maintenance.bat` 内 `lms load` 自動化 | 後日 |
+| P2 | e2e/responsive-check.spec.ts 実機実行 | `npm i -D @playwright/test` 必要 |
+
+### P3
+
+| 優先度 | タスク | 状態 |
+|:---:|---|---|
+| P3 | Qwen 14B Q3_K_S vs ELYZA Japanese 比較 | 余裕あれば |
+
+---
+
 ### T-004 南関東ナイター取り込み確認 ✅ 2026-04-25 22:58 完了（実害なし）
 - **問題**: 4/25(土) は南関東ナイター開催の可能性があるが pred.json には京都/東京/福島/佐賀/帯広/高知の 6 場のみ
 - **検証結果**:
@@ -460,6 +529,15 @@
 ---
 
 ## ✅ 終わったタスク
+
+### 2026-04-28
+- [x] **T-033 Phase 1 完了** (commit bbcdf44): `date_from_race_id()` JRA race_id スライス位置修正 + 単体テスト追加
+- [x] **T-033 Phase 2 D-1 完了** (commit d00ca64): HTML 真値マスタ → race_log 7,133 行 cleanup → data/ml 再生成 → pred.json 48 件移動・重複 450 除去
+- [x] **T-037 完了** (commit 4fb032d): `audit_pred_venue.py` venue_code 位置 `[8:10]` → `[4:6]` 修正、偽陽性 6,971 件消滅
+- [x] **T-033 D-2 完了** (commit c9138cf): pred.json race.venue 1,691 件不整合修正、audit パターン A/B/C/D 全 0 件達成
+- [x] **T-038 Phase 1+3+4 完了**: kaisai_calendar.json (JRA+NAR 2022-2026 全期間 / 1,583 開催日) + React CalendarPage + パイプライン検証 hook
+- [x] **T-038 Phase 3 補完** (commit 9d3aa42): CalendarPage 日付クリック遷移実装
+- [x] **memory 更新**: handoff_2026-04-28.md + feedback_subagent_idle_chat.md 追加
 
 ### 2026-04-25
 - [x] **T-001 Phase 1 完了** (21:35): A3+A1+C1 一括実装、reviewer HIGH/MEDIUM 全件対応
