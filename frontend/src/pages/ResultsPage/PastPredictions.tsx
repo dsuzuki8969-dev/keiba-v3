@@ -9,6 +9,7 @@ import { PremiumCard, PremiumCardHeader, PremiumCardTitle, PremiumCardAccent } f
 import { CalendarDays } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { RaceCard, computeWinPctRanks } from "@/components/keiba/RaceCard";
+import { useRaceCardResults } from "@/api/hooks";
 import { RaceDetailView } from "@/pages/TodayPage/RaceDetailView";
 import { ChevronLeft, ChevronRight } from "lucide-react";
 import { StatsCard } from "@/components/keiba/StatsCard";
@@ -237,6 +238,9 @@ export function PastPredictions({ initialDate }: { initialDate?: string }) {
     raceNo: number;
   } | null>(null);
 
+  // T-039: 選択日の的中バッジ情報
+  const { data: raceCardResults } = useRaceCardResults(selectedDate);
+
   // 予想済み日付一覧を取得
   const { data: datesData } = useQuery({
     queryKey: ["resultsDates"],
@@ -401,6 +405,12 @@ export function PastPredictions({ initialDate }: { initialDate?: string }) {
                           venue: venues[venueIdx],
                           raceNo: r.race_no,
                         })
+                      }
+                      hitResult={
+                        // T-039: race_id がある場合は的中バッジ情報を渡す
+                        r.race_id != null
+                          ? raceCardResults?.results?.[r.race_id as string] ?? null
+                          : undefined
                       }
                     />
                   ));

@@ -699,10 +699,11 @@ def _scan_today_predictions(date_str: str) -> dict:
         return {"races": races, "order": []}
 
     # pred JSONから馬券自信度 + 馬データ + チケットデータを取得
-    _pred_conf = {}  # {(venue, race_no): confidence}
-    _pred_horses = {}  # {(venue, race_no): [horse_dict, ...]}
+    _pred_conf = {}     # {(venue, race_no): confidence}
+    _pred_race_id = {}  # T-039: {(venue, race_no): race_id}
+    _pred_horses = {}   # {(venue, race_no): [horse_dict, ...]}
     _pred_tickets = {}  # {(venue, race_no): [ticket_dict, ...]}
-    _pred_is_jra = {}  # {(venue, race_no): bool}
+    _pred_is_jra = {}   # {(venue, race_no): bool}
     pred_json_path = os.path.join(PROJECT_ROOT, "data", "predictions", f"{date_key}_pred.json")
     if os.path.isfile(pred_json_path):
         try:
@@ -722,6 +723,7 @@ def _scan_today_predictions(date_str: str) -> dict:
                     continue
                 key = (venue, rno)
                 _pred_conf[key] = pr.get("confidence", "")
+                _pred_race_id[key] = _rid  # T-039: race_id を保存
                 _horses = pr.get("horses", [])
                 # 取消馬処理 + 印再割り当て（個別ページと同じロジック）
                 # マスター指示 2026-04-23: 実オッズ未取得だが ML 予測値を持つ馬を
@@ -777,6 +779,7 @@ def _scan_today_predictions(date_str: str) -> dict:
         races[venue].append(
             {
                 "race_no": race_no,
+                "race_id": _pred_race_id.get((venue, race_no), ""),  # T-039: 的中バッジ用
                 "file": name,
                 "url": f"/output/{name}",
                 "name": html_meta.get("race_name") or f"{race_no}R",
@@ -6612,6 +6615,152 @@ function dNavRefreshOdds(date){{
                 "has_violation": False,
                 "message": str(_e),
             }), 500
+
+    # ── T-039: レースカード的中バッジ用ヘルパー ─────────────────────────────
+    def _build_race_card_results(date: str) -> dict:
+        """
+        T-039: 指定日の全レースについて、単勝◎的中 / 三連単F的中 を race_id 別に返す。
+
+        処理概要:
+          1. data/predictions/<date>_pred.json を読み込む
+          2. data/results/<date>_results.json を読み込む（なければ DB fallback）
+          3. 各レースの ◎◉ 馬が 1 着 → win_hit=True
+          4. tickets / formation_tickets に「三連単」があり、1-2-3 着順序と combo が一致
+             → sanrentan_hit=True
+          5. 結果未取得のレースは win_hit/sanrentan_hit=None（フロントは非表示）
+
+        返り値:
+          {"date": "YYYY-MM-DD", "results": {"race_id": {"win_hit": bool|None, "sanrentan_hit": bool|None}}}
+        """
+        import os as _os
+        pred_fp = _os.path.join(PROJECT_ROOT, "data", "predictions",
+                                f"{date.replace('-', '')}_pred.json")
+        if not _os.path.isfile(pred_fp):
+            return {"date": date, "results": {}}
+
+        with open(pred_fp, "r", encoding="utf-8") as _f:
+            pred = json.load(_f)
+
+        # 結果ファイルを読み込む（RESULTS_DIR → DB fallback）
+        from config.settings import RESULTS_DIR
+        actual: dict = {}
+        res_fp = _os.path.join(RESULTS_DIR, f"{date.replace('-', '')}_results.json")
+        if _os.path.isfile(res_fp):
+            try:
+                with open(res_fp, "r", encoding="utf-8") as _rf:
+                    actual = json.load(_rf)
+            except Exception as _re:
+                logger.warning("race_card_results: results.json 読み込み失敗 %s", _re)
+
+        if not actual:
+            try:
+                from src import database as _db2
+                actual = _db2.load_results(date) or {}
+            except Exception:
+                pass
+
+        race_results: dict = {}
+        for race in pred.get("races", []):
+            race_id = race.get("race_id", "")
+            if not race_id:
+                continue
+
+            result = actual.get(race_id)
+            if not result:
+                # 結果未取得 → win_hit/sanrentan_hit は None（フロントは非表示）
+                race_results[race_id] = {"win_hit": None, "sanrentan_hit": None}
+                continue
+
+            order = result.get("order", [])
+            if not order:
+                # 着順データなし（中止等）→ None
+                race_results[race_id] = {"win_hit": None, "sanrentan_hit": None}
+                continue
+
+            # 1-2-3 着の馬番（int）を確定
+            finish_map = {int(r["horse_no"]): int(r["finish"]) for r in order}
+            top3_ordered = [
+                h for h, f in sorted(finish_map.items(), key=lambda x: x[1])
+                if f <= 3
+            ]
+
+            # ── 単勝 ◎◉ 的中判定 ─────────────────────────────────────────
+            win_hit: bool | None = None
+            for h in race.get("horses", []):
+                if h.get("mark") in ("◎", "◉"):
+                    winner = top3_ordered[0] if top3_ordered else None
+                    win_hit = (int(h["horse_no"]) == winner)
+                    break
+
+            # ── 三連単 チケット 的中判定 ──────────────────────────────────
+            # tickets + formation_tickets の「三連単」コンボを全部チェック
+            sanrentan_hit: bool | None = None
+            if len(top3_ordered) >= 3:
+                all_tix = (
+                    race.get("tickets", [])
+                    + race.get("formation_tickets", [])
+                )
+                # tickets_by_mode['fixed'] も確認（仕様書の三連単 F フォーメーション）
+                tbm = race.get("tickets_by_mode", {})
+                for _mode_key in ("fixed", "accuracy", "balanced", "recovery"):
+                    all_tix += tbm.get(_mode_key, [])
+
+                for t in all_tix:
+                    if t.get("type") != "三連単":
+                        continue
+                    combo = t.get("combo", [])
+                    if not combo or len(combo) < 3:
+                        continue
+                    if list(int(x) for x in combo) == top3_ordered:
+                        sanrentan_hit = True
+                        break
+                else:
+                    # 三連単チケット自体が存在した場合は False、なければ None
+                    has_sanrentan_tix = any(
+                        t.get("type") == "三連単"
+                        for t in (
+                            race.get("tickets", [])
+                            + race.get("formation_tickets", [])
+                            + [t2 for mk in ("fixed", "accuracy", "balanced", "recovery")
+                               for t2 in tbm.get(mk, [])]
+                        )
+                    )
+                    sanrentan_hit = False if has_sanrentan_tix else None
+
+            race_results[race_id] = {
+                "win_hit": win_hit,
+                "sanrentan_hit": sanrentan_hit,
+            }
+
+        return {"date": date, "results": race_results}
+
+    @app.route("/api/race_card_results")
+    def api_race_card_results():
+        """T-039: レースカード的中バッジ用 endpoint。
+
+        パラメータ:
+          date: YYYY-MM-DD (必須)
+
+        戻り値:
+          {
+            "date": "2026-04-28",
+            "results": {
+              "<race_id>": {
+                "win_hit": true/false/null,       # 単勝 ◎ 的中 (null=結果未取得)
+                "sanrentan_hit": true/false/null  # 三連単 F 的中 (null=未対象/結果未取得)
+              }
+            }
+          }
+        """
+        date = request.args.get("date", "")
+        if not date or not re.match(r"^\d{4}-\d{2}-\d{2}$", date):
+            return jsonify(error="date は YYYY-MM-DD 形式で指定してください"), 400
+        try:
+            result = _build_race_card_results(date)
+            return jsonify(result)
+        except Exception as _e:
+            logger.exception("race_card_results 失敗 date=%s", date)
+            return jsonify(error=str(_e)), 500
 
     # ── A4: 発走+10分タイマー（イベント駆動フェッチ）──────────────────────
     def _schedule_post_race_timers(date: str) -> None:

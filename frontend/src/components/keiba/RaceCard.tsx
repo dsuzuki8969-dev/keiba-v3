@@ -9,6 +9,9 @@ import { Clock3, Users } from "lucide-react";
 // T-034 本実装: オッズ行コンポーネント（マスター承認済み正式統合）
 import RaceCardOddsLine from "./RaceCardOddsLine";
 import { BREAKPOINTS } from "@/lib/breakpoints";
+import { cn } from "@/lib/utils";
+// T-039: 的中バッジ用型
+import type { RaceCardHitResult } from "@/api/hooks";
 
 /**
  * useIsMobile — window幅が md ブレークポイント未満かを検知する hook
@@ -73,6 +76,8 @@ interface Props {
   onClick: () => void;
   /** 競馬場内の勝率ランク (1=最高) */
   winPctRank?: number;
+  /** T-039: 的中バッジ情報（親 component が useRaceCardResults で取得して渡す） */
+  hitResult?: RaceCardHitResult | null;
 }
 
 /** ランク別 PremiumCard variant */
@@ -86,13 +91,19 @@ function cardVariantByRank(rank?: number): "gold" | "navy-glow" | "default" {
 // 既存の import 互換のため re-export する。
 export { computeWinPctRanks } from "@/lib/keibaUtils";
 
-export function RaceCard({ race, onClick, winPctRank }: Props) {
-  const conf = (race.overall_confidence || "C").replace(/\u207a/g, "+");
+export function RaceCard({ race, onClick, winPctRank, hitResult }: Props) {
+  const conf = (race.overall_confidence || "C").replace(/⁺/g, "+");
   const surf = surfShort(race.surface || "");
-  // [HIGH-1 \u4fee\u6b63] isMobile \u3092\u691c\u77e5\u3057\u3066 RaceCardOddsLine \u306b\u6e21\u3059
+  // [HIGH-1 修正] isMobile を検知して RaceCardOddsLine に渡す
   const isMobile = useIsMobile();
 
   const markKey = race.honmei_mark || "";
+
+  // T-039: 的中バッジ値（null = 結果未取得 → 非表示、undefined = prop 未渡し → 非表示）
+  const winHit = hitResult?.win_hit;          // true | false | null | undefined
+  const sanrentanHit = hitResult?.sanrentan_hit;   // true | false | null | undefined
+  // いずれかが true → カード外枠を赤系に強調
+  const isAnyHit = winHit === true || sanrentanHit === true;
 
   return (
     <PremiumCard
@@ -100,10 +111,10 @@ export function RaceCard({ race, onClick, winPctRank }: Props) {
       padding="md"
       interactive
       onClick={onClick}
-      className="group space-y-2.5"
+      className={cn("group space-y-2.5", isAnyHit && "border-red-500/40 ring-1 ring-red-500/30")}
       as="button"
     >
-      {/* 上段: レース番号 + グレード + 発走時刻（右寄せ） */}
+      {/* 上段: レース番号 + グレード + 自信度バッジ + T-039 的中バッジ + 発走時刻（右寄せ） */}
       <div className="flex items-center gap-2">
         <span
           className={[
@@ -116,6 +127,30 @@ export function RaceCard({ race, onClick, winPctRank }: Props) {
         </span>
         {race.grade && <GradeBadge grade={race.grade} />}
         <ConfidenceBadge rank={conf} className="ml-1" />
+        {/* T-039: 単勝◎的中バッジ（結果取得済み = true/false のみ表示。null/undefined は非表示） */}
+        {winHit !== null && winHit !== undefined && (
+          <span
+            className={cn(
+              "text-xs font-bold leading-none",
+              winHit ? "text-red-500" : "text-zinc-400 dark:text-zinc-500"
+            )}
+            aria-label={winHit ? "単勝 的中" : "単勝 不的中"}
+          >
+            単{winHit ? "◯" : "×"}
+          </span>
+        )}
+        {/* T-039: 三連単的中バッジ（結果取得済み = true/false のみ表示。null/undefined は非表示） */}
+        {sanrentanHit !== null && sanrentanHit !== undefined && (
+          <span
+            className={cn(
+              "text-xs font-bold leading-none",
+              sanrentanHit ? "text-red-500" : "text-zinc-400 dark:text-zinc-500"
+            )}
+            aria-label={sanrentanHit ? "三連単 的中" : "三連単 不的中"}
+          >
+            三{sanrentanHit ? "◯" : "×"}
+          </span>
+        )}
         {race.post_time && (
           <span className="ml-auto inline-flex items-center gap-1 text-xs font-medium text-muted-foreground tnum">
             <Clock3 size={12} />

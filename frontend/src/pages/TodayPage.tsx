@@ -1,6 +1,6 @@
 import { useState, useCallback, useEffect } from "react";
 import { useLocation, useSearchParams } from "react-router-dom";
-import { useTodayPredictions, useHomeInfo } from "@/api/hooks";
+import { useTodayPredictions, useHomeInfo, useRaceCardResults } from "@/api/hooks";
 import { localDate } from "@/lib/constants";
 import { VenueTabs } from "@/components/keiba/VenueTabs";
 import { RaceCard, computeWinPctRanks } from "@/components/keiba/RaceCard";
@@ -51,6 +51,8 @@ export default function TodayPage() {
 
   const { data: pred, isLoading, error, refetch } = useTodayPredictions(date);
   const { data: info } = useHomeInfo(date);
+  // T-039: 的中バッジ情報（30秒キャッシュ、結果未取得は null → RaceCard 側で非表示）
+  const { data: raceCardResults } = useRaceCardResults(date);
 
   const venues = pred?.order || [];
   const currentVenue = venues[venueIdx] || "";
@@ -178,6 +180,12 @@ export default function TodayPage() {
                   race={r}
                   winPctRank={rankMap.get(r.race_no)}
                   onClick={() => openRace(currentVenue, r.race_no)}
+                  hitResult={
+                    // T-039: race_id を持つ場合はバッジ情報を渡す。なければ undefined（非表示）
+                    r.race_id != null
+                      ? raceCardResults?.results?.[r.race_id as string] ?? null
+                      : undefined
+                  }
                 />
               ));
             })()}
@@ -198,6 +206,7 @@ export default function TodayPage() {
 // API応答の型（home.js互換）
 interface RaceSummaryItem {
   race_no: number;
+  race_id?: string;        // T-039: 的中バッジ用 race_id
   name?: string;
   race_name?: string;
   post_time?: string;

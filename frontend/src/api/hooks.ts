@@ -278,6 +278,36 @@ export function useKaisaiCalendar() {
   });
 }
 
+// T-039: レースカード的中バッジ用フック
+export interface RaceCardHitResult {
+  win_hit: boolean | null;        // 単勝 ◎ 的中 (null=結果未取得)
+  sanrentan_hit: boolean | null;  // 三連単 F 的中 (null=未対象/結果未取得)
+}
+
+export interface RaceCardResultsData {
+  date: string;
+  results: Record<string, RaceCardHitResult>;
+}
+
+/**
+ * useRaceCardResults — 指定日の全レースの的中バッジ情報を取得する
+ * 30 秒キャッシュ（当日レースの結果更新頻度に合わせる）
+ */
+export function useRaceCardResults(date: string | null) {
+  return useQuery<RaceCardResultsData>({
+    queryKey: ["race_card_results", date],
+    queryFn: async () => {
+      if (!date) return { date: "", results: {} };
+      const r = await fetch(`/api/race_card_results?date=${date}`);
+      if (!r.ok) throw new Error("race_card_results load failed");
+      return r.json() as Promise<RaceCardResultsData>;
+    },
+    enabled: !!date,
+    staleTime: 30 * 1000,  // 30 秒キャッシュ
+    gcTime: 2 * 60 * 1000,
+  });
+}
+
 // LIVE STATS 手動更新（POST /api/force_refresh_today）
 // マスター指示 2026-04-27: 「集計 xR / 終了 yR」の遅延解消のため手動更新ボタン追加
 export interface ForceRefreshTodayResult {
