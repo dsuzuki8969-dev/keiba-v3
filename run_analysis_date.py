@@ -924,4 +924,37 @@ cache_pct = (ne_c + kb_c) / max(total_req, 1) * 100
 P(f"\n[bold green]完了: {ok_count}/{len(results)}レース  総実行時間: {total_t:.0f}秒[/]")
 P(f"  リクエスト: netkeiba={ne_c}cache+{ne_f}fetch+{ne_s}skip  keibabook={kb_c}cache+{kb_f}fetch  キャッシュ率={cache_pct:.0f}%")
 abs_out = os.path.abspath(combined_path)
+
+# ────────────────────────────────────────────────────────────
+# refresh_pred_speed_dev: race_log の speed_dev を pred.json に注入
+# (2026-04-28 T-033 再発防止: 毎回 run_analysis_date.py 末尾で自動実行)
+# 失敗してもバッチ全体は止めない (warning のみで継続)
+# ────────────────────────────────────────────────────────────
+try:
+    import subprocess as _sp_spd
+    _refresh_spd = os.path.join(os.path.dirname(os.path.abspath(__file__)), "scripts", "refresh_pred_speed_dev.py")
+    if os.path.exists(_refresh_spd):
+        P(f"[bold cyan][N/N+3][/] speed_dev 再注入 (refresh_pred_speed_dev)...")
+        _r_spd = _sp_spd.run(
+            [sys.executable, _refresh_spd, DATE_KEY],
+            cwd=os.path.dirname(os.path.abspath(__file__)),
+            capture_output=True, text=True, encoding="utf-8",
+            timeout=180,  # 180 秒: 大量レース対応
+        )
+        if _r_spd.returncode == 0:
+            for _line in (_r_spd.stdout or "").strip().splitlines()[-5:]:
+                if _line.strip():
+                    P(f"  {_line}")
+            P(f"[green]  [refresh_pred_speed_dev] {DATE_KEY} 反映完了[/]")
+        else:
+            logger.warning("refresh_pred_speed_dev 失敗 (rc=%d): %s", _r_spd.returncode, _r_spd.stderr[:300])
+            P(f"[yellow]  [WARN] refresh_pred_speed_dev rc={_r_spd.returncode} → pred.json 未更新[/]")
+    else:
+        logger.warning("refresh_pred_speed_dev.py が見つかりません: %s", _refresh_spd)
+except _sp_spd.TimeoutExpired:
+    logger.warning("refresh_pred_speed_dev タイムアウト (180秒超過): pred.json speed_dev 未更新")
+    P("[yellow]  [WARN] refresh_pred_speed_dev タイムアウト → pred.json 未更新[/]")
+except Exception as _e_spd:
+    logger.warning("refresh_pred_speed_dev 統合エラー: %s", _e_spd, exc_info=True)
+    P(f"[yellow]  [WARN] refresh_pred_speed_dev 例外: {_e_spd}[/]")
 P(f"OUTPUT_FILE:{abs_out}")
