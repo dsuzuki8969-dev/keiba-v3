@@ -1111,7 +1111,7 @@ class PremiumNetkeibaScraper:
         oikiri_by_name = {}
         missing = [h for h in horses if not training_map.get(h.horse_name)]
         # NAR調教対応会場: keibabook_training.py _NAR_TRAINING_SUPPORTED 準拠
-        # マスター指摘 2026-04-23: 2026 年から園田 netkeiba コードが "49" に変更
+        # 2026-04-28 修正: 園田の正規コードは 50。49 は旧コード互換で両方含む
         _NAR_TRAINING_VENUES = {"30", "42", "43", "44", "45", "49", "50", "51"}
         has_oikiri = is_jra or (venue_code in _NAR_TRAINING_VENUES)
         if missing and self.client.is_logged_in and has_oikiri:
