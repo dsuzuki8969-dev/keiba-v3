@@ -455,12 +455,11 @@ export function TrainingSection({ records }: { records: TrainingRecord[] }) {
   if (!records || records.length === 0) return null;
 
   // 最初のレコードのコメントを総合評価として表示（著作権対応でパラフレーズ）
-  // マスター指示 (2026-04-30): 強度ラベルが未記載 (空 or "通常") なら summary も出さない
-  const firstIntensity = records[0]?.intensity_label || "";
-  const hasIntensity = firstIntensity !== "" && firstIntensity !== "通常";
-  const summaryComment = hasIntensity
-    ? paraphraseTrainingComment(records[0]?.comment || "")
-    : "";
+  // マスター指示 (2026-04-30):
+  //   - 「強度に記載がなければ何も書かない」 → 完コピ回避 + LLM 幻覚回避が真意
+  //   - paraphrase.ts の SAFE_MAP で辞書未登録時は空 "" を返す → 既に達成
+  //   - 強度ラベル不問で records[0].comment があれば paraphrase 試行 (元データあれば書く)
+  const summaryComment = paraphraseTrainingComment(records[0]?.comment || "");
 
   return (
     <div>
