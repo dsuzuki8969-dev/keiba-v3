@@ -249,7 +249,13 @@ function GapSeparator({ gap }: { gap: number }) {
   );
 }
 
-export function MarkSummary({ horses, race }: Props) {
+export function MarkSummary({ horses: rawHorses, race }: Props) {
+  // 取消馬は表示から除外 (マスター指示 2026-04-29)
+  const horses = useMemo(
+    () => rawHorses.filter((h) => (h as Record<string, unknown>).is_scratched !== true),
+    [rawHorses],
+  );
+
   // モバイルプレビューモードでも 2 行レイアウトに切替
   const isNarrow = useIsNarrowOrMobile();
 

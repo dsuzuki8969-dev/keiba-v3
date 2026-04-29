@@ -138,7 +138,13 @@ function Top10Table({
   );
 }
 
-export function OddsPanel({ horses, race }: Props) {
+export function OddsPanel({ horses: rawHorses, race }: Props) {
+  // 取消馬は表示から除外 (マスター指示 2026-04-29)
+  const horses = useMemo(
+    () => rawHorses.filter((h) => (h as Record<string, unknown>).is_scratched !== true),
+    [rawHorses],
+  );
+
   const [sortKey, setSortKey] = useState<SortKey>("odds");
   const [sortAsc, setSortAsc] = useState(true);
   // v6.1: 確率分布チャート開閉
