@@ -646,15 +646,16 @@ const MAP: Record<string, string> = {
  * - 辞書にある → 置換後フレーズ（D-AI 独自データ評価語）
  * - 辞書にない → 元文字列（句読点や括弧付き短評はそのまま、後段で処理）
  */
+// 緊急停止中だが履歴保持のため MAP を export (未使用警告回避兼ねる)。
+// 次セッションで辞書全体を再生成 (中国語混入排除 + 意味確認) してから再有効化予定。
+export const _PARAPHRASE_MAP_DISABLED = MAP;
+
 export function paraphraseTrainingComment(raw: string | null | undefined): string {
+  // 2026-04-30: 緊急停止 — 辞書 MAP に中国語簡体字混入 + 意味破壊マッピング多数
+  // (例: 「前走以上の気配」→「上がり好み见せる」 は中国語「见」混入 + 意味不明変換)
+  // マスター指示「意味のわからない変換するな」「強度未記載なら何も書かなくていい」に従い
+  // 原文をそのまま返す identity 動作に切り替え。
+  // 元データ (training_records[].comment) は既に短く自然 (例: 「終いの伸び良」「好気配保つ」)。
   if (!raw) return "";
-  const s = raw.trim();
-  if (!s) return "";
-  // 完全一致
-  if (MAP[s]) return MAP[s];
-  // 句読点・記号を除いて完全一致チェック
-  const stripped = s.replace(/[。、．，!！?？\s]+$/u, "");
-  if (MAP[stripped]) return MAP[stripped];
-  // 該当なしはそのまま
-  return s;
+  return raw.trim();
 }

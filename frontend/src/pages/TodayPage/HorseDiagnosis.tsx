@@ -455,7 +455,12 @@ export function TrainingSection({ records }: { records: TrainingRecord[] }) {
   if (!records || records.length === 0) return null;
 
   // 最初のレコードのコメントを総合評価として表示（著作権対応でパラフレーズ）
-  const summaryComment = paraphraseTrainingComment(records[0]?.comment || "");
+  // マスター指示 (2026-04-30): 強度ラベルが未記載 (空 or "通常") なら summary も出さない
+  const firstIntensity = records[0]?.intensity_label || "";
+  const hasIntensity = firstIntensity !== "" && firstIntensity !== "通常";
+  const summaryComment = hasIntensity
+    ? paraphraseTrainingComment(records[0]?.comment || "")
+    : "";
 
   return (
     <div>
