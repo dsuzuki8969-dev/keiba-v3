@@ -8,10 +8,22 @@
 
 ## 🔴 作業中のタスク
 
-### T-041 (P1, マスター持ち越し) — 三連単 F 戦略最善化 本番反映
-- マスター指示 2026-04-29: 「持ち越し、議論続行」
-- 最善シナリオ `s_only_beta1_conservative` (ROI 88.6% / 純損 -52,980 円) は `~/.claude/plans/sanrentan-formation-backtest-beta1.md` に永続化済
-- 議論完了後に `src/calculator/betting.py:1359-1361` 3 行修正で本番反映可能
+### T-050 + T-052 + T-053 (P0・次セッション最優先) — 3 券種ハイブリッド戦略 実装
+- **戦略確定** (2026-04-29 夜 マスター承認): 三連複動的フォーメーション + 馬単中拡張 + 単勝 T-4
+- **期待効果**: 年純利 **+862 万円** (846 日 Phase A 実証)
+  - 三連複動的 (中 7 点 / 広 10 点): +662 万 (5,787 R / ROI 242.1%)
+  - 馬単中拡張 (7 点): +38 万 (735 R / ROI 173.7%)
+  - 単勝 T-4 (◉◎+○ 2 点): +162 万 (26,736 R / ROI 130.3%)
+- **plan**: `~/.claude/plans/dynamic-formation-sanrenpuku-implementation.md` (T-050 のみ・拡張要)
+- **次セッション着手**:
+  1. plan 拡張 (3 券種統合)
+  2. 各券種の閾値詳細詰め (議論)
+  3. Sonnet 実装委託 (`src/calculator/betting.py` + engine.py + tests)
+  4. 4/30 17:00 Predict_Tomorrow から本番適用
+- **詳細**: `~/.claude/projects/.../memory/handoff_2026-04-29.md` 「2026-04-29 夜 戦略確定事項」
+
+### T-041 (棄却) — 三連単 F 戦略最善化 (旧)
+- 2026-04-29 棄却: Phase A v2 で ROI 49.8% 赤字確定 / 三連複動的 (T-050) で置換
 
 ### T-046 Phase 2 (P1) — DAI_Keiba_Predict 06:00 空振り 真因解消
 - Phase 1 完了: daily_predict.bat に trace ログ追加 (commit 9d43486)
