@@ -1,4 +1,5 @@
 @echo off
+echo [%date% %time%] BAT_START PID=%RANDOM% >> "C:\Users\dsuzu\keiba\keiba-v3\log\bat_trace.log"
 chcp 65001 > nul
 cd /d "c:\Users\dsuzu\keiba\keiba-v3"
 if errorlevel 1 (
