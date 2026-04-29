@@ -96,6 +96,41 @@ def setup_logger(log_path: Optional[str] = None) -> None:
 
 
 # ────────────────────────────────────────────────────────────────
+# EV フォールバック (T-049-fix: ev≤0 レースを skip しない核心修正)
+# ────────────────────────────────────────────────────────────────
+
+# 統計カウンタ (グローバル / スレッド非対応だが単純ループなので問題なし)
+_ev_stat = {
+    "ev_positive":    0,  # ev > 0 (そのまま使用)
+    "ev_fallback":    0,  # ev <= 0 → win_prob × odds で計算
+    "ev_invalid":     0,  # ev <= 0 かつ win_prob/odds も無効
+}
+
+
+def get_ev_with_fallback(horse: dict) -> float:
+    """ev フィールドの取得 + フォールバック計算。
+
+    - ev > 0 → 既存値をそのまま返す
+    - ev <= 0 → win_prob × odds で近似計算
+    - win_prob/odds も無効 → 0.0 を返す (見送り扱い)
+
+    2024-2025 の pred.json では ev フィールドが空のものが多いため、
+    win_prob × odds = 期待値の近似値でフォールバックする。
+    """
+    ev = horse.get("ev", 0) or 0
+    if ev > 0:
+        _ev_stat["ev_positive"] += 1
+        return float(ev)
+    win_prob = horse.get("win_prob", 0) or 0
+    odds = horse.get("odds") or horse.get("predicted_tansho_odds") or 0
+    if win_prob > 0 and odds > 0:
+        _ev_stat["ev_fallback"] += 1
+        return float(win_prob) * float(odds)
+    _ev_stat["ev_invalid"] += 1
+    return 0.0
+
+
+# ────────────────────────────────────────────────────────────────
 # 払戻ユーティリティ (phase_a_v3 と同じロジック)
 # ────────────────────────────────────────────────────────────────
 
@@ -174,15 +209,24 @@ def resolve_hoshi(horses: list[dict]) -> Optional[dict]:
 # Layer 1: 独立 EV 判定
 # ────────────────────────────────────────────────────────────────
 
-def layer1_sanrenpuku(horses: list[dict]) -> Optional[str]:
+def layer1_sanrenpuku(horses: list[dict], payouts: dict = None) -> Optional[str]:
     """三連複動的フォーメーション発動ケース判定。
     Returns: "絞り" / "中" / "広" / None (見送り)
+
+    phase_a_v3_fix との整合:
+      三連複払戻データが存在しないレースは即 None (見送り) を返す。
+      payouts を渡さない場合はチェックをスキップ (後方互換)。
     """
+    # ── 三連複払戻データ存在確認 (phase_a_v3_fix L329-331 と同等) ──
+    if payouts is not None:
+        if payouts.get("三連複") is None and payouts.get("sanrenpuku") is None:
+            return None
+
     pivot = get_pivot(horses)
     if pivot is None:
         return None
 
-    p_ev          = float(pivot.get("ev") or 0.0)
+    p_ev          = get_ev_with_fallback(pivot)
     p_place3_prob = float(pivot.get("place3_prob") or 0.0)
 
     if p_ev < 1.0:
@@ -214,7 +258,7 @@ def layer1_umatan(horses: list[dict]) -> bool:
     pivot = get_pivot(horses)
     if pivot is None:
         return False
-    p_ev       = float(pivot.get("ev") or 0.0)
+    p_ev       = get_ev_with_fallback(pivot)
     p_win_prob = float(pivot.get("win_prob") or 0.0)
     return p_ev >= 1.3 and p_win_prob >= 0.35
 
@@ -225,11 +269,11 @@ def layer1_tansho(horses: list[dict]) -> bool:
     """
     # ◉◎ の EV チェック
     honmei = get_mark_horses(horses, HONMEI_MARKS)
-    if honmei and float(honmei[0].get("ev") or 0.0) >= 1.0:
+    if honmei and get_ev_with_fallback(honmei[0]) >= 1.0:
         return True
     # ○ の EV チェック
     taikou = get_mark_horses(horses, TAIKOU_MARKS)
-    if taikou and float(taikou[0].get("ev") or 0.0) >= 1.0:
+    if taikou and get_ev_with_fallback(taikou[0]) >= 1.0:
         return True
     return False
 
@@ -589,7 +633,8 @@ def process_day(date_str: str, case_stats: dict[str, dict]) -> int:
         n_races += 1
 
         # Layer 1: 独立 EV 判定 (全ケース共通)
-        sanrenpuku_case = layer1_sanrenpuku(horses)
+        # payouts を渡して三連複データ存在確認を行う (phase_a_v3_fix 整合)
+        sanrenpuku_case = layer1_sanrenpuku(horses, payouts)
         umatan_active   = layer1_umatan(horses)
         tansho_active   = layer1_tansho(horses)
 
@@ -780,6 +825,21 @@ def main() -> None:
         json.dump(output_json, jf, ensure_ascii=False, indent=2)
 
     logger.info("JSON 保存: %s", json_path)
+
+    # ────────────────────────────────────
+    # EV フォールバック統計出力
+    # ────────────────────────────────────
+    ev_total = sum(_ev_stat.values())
+    if ev_total > 0:
+        ep  = _ev_stat["ev_positive"]
+        ef  = _ev_stat["ev_fallback"]
+        ei  = _ev_stat["ev_invalid"]
+        logger.info("=" * 70)
+        logger.info("EV フォールバック統計 (軸馬の ev 評価 全件):")
+        logger.info("  ev > 0 (既存値使用)        : %d (%5.1f%%)", ep, ep / ev_total * 100)
+        logger.info("  ev <= 0 → フォールバック   : %d (%5.1f%%)", ef, ef / ev_total * 100)
+        logger.info("  ev <= 0 かつ計算不能        : %d (%5.1f%%)", ei, ei / ev_total * 100)
+        logger.info("  合計                        : %d", ev_total)
     logger.info("=" * 70)
     logger.info("バックテスト完了")
 
