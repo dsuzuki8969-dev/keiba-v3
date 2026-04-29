@@ -412,20 +412,27 @@ export function HorseCardMobile({ horses, isBanei, dMarks, onDMarkSelect }: Prop
         const rowAccent = markRowAccent(h.mark);
         const isTekipan = h.mark === "tekipan";
 
+        // 出走取消判定 (pred.json `is_scratched` フラグ優先)
+        const isScratched = (h as Record<string, unknown>).is_scratched === true;
+
         // オッズ表示
         const realOdds = h.odds != null && h.odds > 0;
-        const oddsStr = realOdds
-          ? `${Number(h.odds).toFixed(1)}倍`
-          : h.predicted_tansho_odds != null
-            ? `${h.predicted_tansho_odds.toFixed(1)}倍*`
-            : "—";
+        const oddsStr = isScratched
+          ? "取消"
+          : realOdds
+            ? `${Number(h.odds).toFixed(1)}倍`
+            : h.predicted_tansho_odds != null
+              ? `${h.predicted_tansho_odds.toFixed(1)}倍*`
+              : "—";
 
         // 人気表示
-        const popStr = h.popularity != null && h.popularity > 0
-          ? `${h.popularity}人気`
-          : h.predicted_rank != null
-            ? `${h.predicted_rank}位*`
-            : "—";
+        const popStr = isScratched
+          ? ""
+          : h.popularity != null && h.popularity > 0
+            ? `${h.popularity}人気`
+            : h.predicted_rank != null
+              ? `${h.predicted_rank}位*`
+              : "—";
 
         // 脚質短縮
         const runStyle = STYLE_SHORT[h.running_style || ""] || h.running_style || "—";
@@ -487,10 +494,10 @@ export function HorseCardMobile({ horses, isBanei, dMarks, onDMarkSelect }: Prop
                 </span>
 
                 {/* 馬名 */}
-                <span className="text-sm font-bold truncate flex-1 ml-1 min-w-0">{h.horse_name}</span>
+                <span className={`text-sm font-bold truncate flex-1 ml-1 min-w-0 ${isScratched ? "line-through text-muted-foreground" : ""}`}>{h.horse_name}</span>
 
-                {/* 単勝オッズ */}
-                <span className={`shrink-0 text-[12px] font-bold tabular-nums ml-1 ${h.popularity != null && h.popularity > 0 ? (rankCls(h.popularity) || "text-foreground") : "text-foreground"}`}>
+                {/* 単勝オッズ (取消時は赤字「取消」) */}
+                <span className={`shrink-0 text-[12px] font-bold tabular-nums ml-1 ${isScratched ? "text-red-500 dark:text-red-400" : (h.popularity != null && h.popularity > 0 ? (rankCls(h.popularity) || "text-foreground") : "text-foreground")}`}>
                   {oddsStr}
                 </span>
               </div>

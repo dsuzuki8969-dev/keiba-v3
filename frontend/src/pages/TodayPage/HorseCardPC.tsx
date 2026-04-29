@@ -451,18 +451,23 @@ function HorseCard({
   const markSym = MARK_SYMBOL[mark] || mark;
   const rsShort = STYLE_SHORT[h.running_style || ""] || h.running_style || "—";
   const corners = estimatedCorners(h);
+  // 出走取消判定 (pred.json `is_scratched` フラグ優先 + 旧フォールバック)
+  const isScratched = (h as Record<string, unknown>).is_scratched === true
+    || (hasAnyOdds && (h.odds == null && h.popularity == null));
+
   const realOdds = h.odds != null && h.odds > 0;
   const oddsVal = realOdds ? h.odds! : h.predicted_tansho_odds;
-  const oddsStr = oddsVal != null ? oddsVal.toFixed(1) + "倍" + (realOdds ? "" : "*") : "—";
-  const popStr = h.popularity != null ? h.popularity + "人気" : h.predicted_rank != null ? h.predicted_rank + "位*" : "—";
+  const oddsStr = isScratched
+    ? "取消"
+    : (oddsVal != null ? oddsVal.toFixed(1) + "倍" + (realOdds ? "" : "*") : "—");
+  const popStr = isScratched
+    ? ""
+    : (h.popularity != null ? h.popularity + "人気" : h.predicted_rank != null ? h.predicted_rank + "位*" : "—");
   const ev = h.ev;
   const wp = ((h.win_prob || 0) * 100);
   const p2 = ((h.place2_prob || 0) * 100);
   const p3 = ((h.place3_prob || 0) * 100);
   const summary = generateHorseSummary(h);
-
-  // 出走取消判定
-  const isScratched = hasAnyOdds && (h.odds == null && h.popularity == null);
 
   // 行アクセント（印別）
   const rowAccent = (() => {
@@ -523,7 +528,7 @@ function HorseCard({
             <span className={`w-5 flex items-center justify-center shrink-0 text-[13px] font-bold ${markSym === "－" ? "text-muted-foreground/30" : markCls(markSym)}`}>
               {markSym}
             </span>
-            <span className="font-bold text-[15px] truncate leading-tight">{h.horse_name}</span>
+            <span className={`font-bold text-[15px] truncate leading-tight ${isScratched ? "line-through text-muted-foreground" : ""}`}>{h.horse_name}</span>
           </div>
 
           <div className="ml-[34px] space-y-px">
@@ -559,7 +564,7 @@ function HorseCard({
                 <span className={`px-1.5 py-0 rounded text-[12px] font-bold ${rsChipCls(h.running_style || "")}`}>{rsShort}</span>
               </span>
               <span className="flex items-center gap-1 whitespace-nowrap">
-                <span className={`text-[14px] tabular-nums font-bold ${oddsCls(h.popularity)}`}>{oddsStr}</span>
+                <span className={`text-[14px] tabular-nums font-bold ${isScratched ? "text-red-500 dark:text-red-400" : oddsCls(h.popularity)}`}>{oddsStr}</span>
                 <span className={`text-[12px] ${h.popularity != null ? rankCls(h.popularity) || "text-muted-foreground" : "text-muted-foreground"}`}>({popStr})</span>
               </span>
             </div>
