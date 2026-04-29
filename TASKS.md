@@ -6,27 +6,50 @@
 
 ---
 
-## 🔴 作業中のタスク (マスター起床時 commit 判断仰ぎ)
+## 🔴 作業中のタスク
 
-### T-041 commit 判断仰ぎ — 三連単 F 戦略最善化 本番反映 (`SANRENTAN_*` 修正 3 行)
-- 13 シナリオ × 4 月分バックテストで **`s_only_beta1_conservative` が ROI 88.6% / 純損 -52,980 円** (baseline 比 96.5% 圧縮) と最善確定
-- 本番反映 commit (3 行修正) 案: `src/calculator/betting.py:1359-1361` の `SANRENTAN_SKIP_CONFIDENCES` / `SANRENTAN_RANK2_BASE` / `SANRENTAN_MAX_UNMARKED_RANK3`
-- **マスター承認後** push する。詳細は `memory/handoff_2026-04-29.md`「本番反映 plan」セクション
+### T-041 (P1, マスター持ち越し) — 三連単 F 戦略最善化 本番反映
+- マスター指示 2026-04-29: 「持ち越し、議論続行」
+- 最善シナリオ `s_only_beta1_conservative` (ROI 88.6% / 純損 -52,980 円) は `~/.claude/plans/sanrentan-formation-backtest-beta1.md` に永続化済
+- 議論完了後に `src/calculator/betting.py:1359-1361` 3 行修正で本番反映可能
 
-### T-042 commit 判断仰ぎ — 取消馬誤検知 1 行修正
-- `src/results_tracker.py` L795 の "fixed" key 追加 + `scripts/fix_stale_bet_decision.py` 実行で 4/28 9 races 修正済 (誤検知 9→0)
-- 本番反映 commit 案: `fix: 取消馬誤検知バグ修正 (results_tracker.py L795 fixed key 未対応 → 9R 誤フラグ解消)`
-- **マスター承認後** push する
+### T-046 Phase 2 (P1) — DAI_Keiba_Predict 06:00 空振り 真因解消
+- Phase 1 完了: daily_predict.bat に trace ログ追加 (commit 9d43486)
+- 明朝 06:00 で空振り再発時、`log/daily_predict.log` の trace ログから真因特定
+  - 「cd /d 失敗」 → 絶対パス問題
+  - 「python 不在 / PATH 不足」 → PATH 修正
+  - 「当日予想生成開始」あるが run_daily_auto 早期 exit → run_daily_auto.py 側の調査
+- Phase 2 工数: 30 分 (真因に応じた修正 + 検証)
 
-### T-043 (新規 P0) — scripts/monthly_backtest.py 等 git untracked スクリプト群を git add
-- 本セッション中に `?? scripts/monthly_backtest.py` (untracked) と判明
-- 今夜の Sonnet 改修 + Opus 編集が git 管理外でロストするリスク
-- 関連: 前 handoff_2026-04-27_v5.md「src/output/ 7 ファイル git 管理外問題」と同類
-- 推奨: `git status -u` で全 untracked 列挙 → 本来管理すべきものを `git add`
+### T-047 (P0) — 結果自動取得不全 構造修正
+- 真因 (b) 確定 (Sonnet B 調査): `_auto_fetch_post_races` がブラウザ polling 依存の fire-and-forget で無人放置時に完全停止
+- 本日実例: 06:29 朝確認後 polling 停止 → 18:04 帰宅まで 11 時間 34 分 auto-fetch 未発火 → 11:40 発走の水沢 1R が 6+ 時間結果未取得
+- 暫定対応 (30 分): `DAI_Keiba_Watchdog` (5 分間隔) に `/api/home/today_stats` 自己 HTTP リクエスト追加
+- 構造修正 (60 分・推奨): `src/dashboard.py` に `_start_background_result_fetcher` スレッド追加 (Flask 起動時 10 分間隔で自律実行)
+- 次セッション最優先 (本日のような「日中ブラウザ閉じる」運用では必ず再発)
 
 ---
 
-## 🟢 本セッション完了（2026-04-29）— T-040 P0 + T-041 + T-042 完了
+## 🟢 本セッション完了（2026-04-29）— 7 commits push 完了
+
+### T-040 (P0) — LIVE STATS 三連単集計を T-039 ロジックに統一 ✅ commit 59b7213
+### T-042 (P1) — 取消馬誤検知 1 行修正 ✅ commit 4b4852f
+### T-042.fix — _check_ticket_hit 三連単 payouts 英字キー/list 形式対応 ✅ commit 114c73a
+### T-043 (P0) — untracked スクリプト 50+ ファイル git 管理化 ✅ commit 388bb69
+### T-044 (P0) — 厩舎コメント文体異常解消 (5 一括対応) ✅ Sonnet
+- (1) local_llm_paraphrase.py 4/29 paraphrase 実行済 (370 頭 100%)
+- (2) setup_scheduler.ps1 追記 (DAI_Keiba_Paraphrase_Today/Tomorrow) → **マスター手動 PowerShell 管理者再実行が必要**
+- (3) paraphrase_stable_comments.py prompt に常体指示追記
+### T-044.fix — prefix strip 漏れ修正 ✅ commit dfa2a2a + 19f93f0
+- local_llm_paraphrase.py に PREFIX_RE_HEADER (全角括弧対応) + PREFIX_RE_INLINE (改行後人名 strip) + LLM SYSTEM_PROMPT 話者明示削除指示
+- DB cache 19,822 行全消去 + 4/29 再 paraphrase 完了
+### T-045 (P1) — 取消馬反映構造バグ修正 ✅ commit 65c9100
+- src/dashboard.py L735-738 + L1590-1596 の 2 箇所修正
+- `is_scratched=True` を `_has_ml` 保護より優先
+- pytest 125 passed
+- T-046 Predict 再実行で 4/29 pred.json に効果反映予定
+
+## 🟢 本セッション完了 (旧) — T-040 P0 + T-033 等 (4/28 セッション分)
 
 ### T-041 (P1) — 三連単 F フォーメーション最善化 ✅ 2026-04-29 (commit 保留)
 - **手段**: monthly_backtest.py に 13 シナリオを SCENARIOS dict + `--scenario` フラグで実装、4 月分 (28 日) でバックテスト
