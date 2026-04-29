@@ -750,14 +750,27 @@ def _scan_today_predictions(date_str: str) -> dict:
                             _hd["predicted_corners"] = ""
                             _hd["running_style"] = ""
                         # 取消解除: オッズが復帰した馬はis_scratchedを解除
+                        # ただし training_records[0].comment が "出走取消" 等明示的な取消は維持
+                        # (T-045 続: Sonnet C 修正で残った逆動作を解消)
                         elif _hd.get("is_scratched") and _hd.get("odds") is not None and _hd.get("popularity") is not None:
-                            _hd["is_scratched"] = False
-                            # win_prob=0 のまま残っていると 0.0% 表示になるため、中間値から復元
-                            try:
-                                from src.calculator.popularity_blend import restore_win_prob_if_zero
-                                restore_win_prob_if_zero(_hd, field_count=len(_horses))
-                            except Exception:
-                                pass
+                            _real_scratched = any(
+                                "取消" in str(_tr.get("comment", "")) or "取消" in str(_tr.get("stable_comment", ""))
+                                for _tr in (_hd.get("training_records") or [])
+                            )
+                            if not _real_scratched:
+                                _hd["is_scratched"] = False
+                                # win_prob=0 のまま残っていると 0.0% 表示になるため、中間値から復元
+                                try:
+                                    from src.calculator.popularity_blend import restore_win_prob_if_zero
+                                    restore_win_prob_if_zero(_hd, field_count=len(_horses))
+                                except Exception:
+                                    pass
+                            else:
+                                # training_records に取消明示 → 取消維持 + 印・確率クリア
+                                _hd["mark"] = ""
+                                _hd["win_prob"] = 0.0
+                                _hd["place2_prob"] = 0.0
+                                _hd["place3_prob"] = 0.0
                 # 印はpred.json（formatter.py assign_marks）の値をそのまま使用
                 # （リアルタイムオッズ更新時は1412/1657行の reassign_marks_dict で再割り振り）
                 # 取消馬のみ印をクリア（既にis_scratched処理で対応済み）
@@ -1611,15 +1624,29 @@ def create_app():
                                 # 評価データ（ability_total等）は保持
                                 _scratched_changed = True
                             # 取消解除: オッズが復帰した馬はis_scratchedを解除
+                            # ただし training_records[0].comment が "出走取消" 等明示的な取消は維持
+                            # (T-045 続: Sonnet C 修正で残った逆動作を解消)
                             elif _hd.get("is_scratched") and _hd.get("odds") is not None and _hd.get("popularity") is not None:
-                                _hd["is_scratched"] = False
-                                # win_prob=0 のまま残っていると 0.0% 表示になるため、中間値から復元
-                                try:
-                                    from src.calculator.popularity_blend import restore_win_prob_if_zero
-                                    restore_win_prob_if_zero(_hd, field_count=len(_race_horses))
-                                except Exception:
-                                    pass
-                                _scratched_changed = True
+                                _real_scratched = any(
+                                    "取消" in str(_tr.get("comment", "")) or "取消" in str(_tr.get("stable_comment", ""))
+                                    for _tr in (_hd.get("training_records") or [])
+                                )
+                                if not _real_scratched:
+                                    _hd["is_scratched"] = False
+                                    # win_prob=0 のまま残っていると 0.0% 表示になるため、中間値から復元
+                                    try:
+                                        from src.calculator.popularity_blend import restore_win_prob_if_zero
+                                        restore_win_prob_if_zero(_hd, field_count=len(_race_horses))
+                                    except Exception:
+                                        pass
+                                    _scratched_changed = True
+                                else:
+                                    # training_records に取消明示 → 取消維持 + 印・確率クリア
+                                    _hd["mark"] = ""
+                                    _hd["win_prob"] = 0.0
+                                    _hd["place2_prob"] = 0.0
+                                    _hd["place3_prob"] = 0.0
+                                    _scratched_changed = True
                         if _scratched_changed:
                             # 確率再配分
                             _active = [h for h in _race_horses if not h.get("is_scratched")]
