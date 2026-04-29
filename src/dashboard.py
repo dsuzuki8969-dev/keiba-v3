@@ -5596,6 +5596,34 @@ function dNavRefreshOdds(date){{
             with _auto_fetch_lock:
                 _auto_fetch_busy_dates.discard(date)
 
+    def _start_background_result_fetcher():
+        """無人時 (ブラウザ閉) でも 10 分以内に結果取得を保証する daemon thread。
+
+        T-047 (2026-04-29):
+          - ブラウザ polling 駆動だった _auto_fetch_post_races を Flask 起動時から独立起動
+          - 既存 _auto_fetch_lock を再利用して多重起動を防止
+          - daemon=True で Flask shutdown 時に自動終了
+          - 環境変数 DAI_KEIBA_BACKGROUND_FETCHER_DISABLE=1 で無効化可能 (検証用)
+        """
+        import os as _os
+        import time as _t
+        if _os.getenv("DAI_KEIBA_BACKGROUND_FETCHER_DISABLE") == "1":
+            logger.info("[bg_fetcher] 環境変数で無効化されました")
+            return
+        interval_sec = 600  # 10 分
+        while True:
+            try:
+                today_date = datetime.now().strftime("%Y-%m-%d")
+                _auto_fetch_post_races(today_date)
+            except Exception as e:
+                logger.warning(f"[bg_fetcher] 例外発生 (継続): {e}")
+            _t.sleep(interval_sec)
+
+    # T-047 (2026-04-29): ブラウザ閉時でも 10 分以内に結果取得を保証する daemon thread を起動
+    # 起動位置は _start_background_result_fetcher 定義の直後 (前方参照 NameError 回避のため)
+    threading.Thread(target=_start_background_result_fetcher, daemon=True, name="bg_result_fetcher").start()
+    logger.info("[bg_fetcher] background thread を起動しました (10 分間隔)")
+
     @app.route("/api/force_refresh_today", methods=["POST"])
     def api_force_refresh_today():
         """成績の手動強制更新 endpoint。
