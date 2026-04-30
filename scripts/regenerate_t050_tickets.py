@@ -46,11 +46,37 @@ def regenerate_for_race(race: dict, payouts: dict) -> tuple[list, list, str]:
 
     Returns:
         (sanrenpuku_tickets, tansho_tickets, format_str)
-        各 ticket: {"type": "三連複"/"単勝", "combo": [..], "stake": 100, "payout": 0}
+        各 ticket: {"type": "三連複"/"単勝", "combo":[..], "horse_no":int(単勝のみ),
+                    "mark":str, "odds":float, "ev":float, "stake":100, "payout":0}
     """
     horses = _filter_active(race.get("horses", []))
     if not horses:
         return [], [], "T-050: NoActive"
+
+    # horse_no → horse dict マップ (mark/odds/ev 取得用)
+    h_by_no = {h.get("horse_no"): h for h in horses}
+
+    def _h_mark(no: int) -> str:
+        h = h_by_no.get(no)
+        return (h.get("mark") if h else "") or ""
+
+    def _h_odds(no: int) -> float:
+        h = h_by_no.get(no)
+        if not h:
+            return 0.0
+        v = h.get("odds") or h.get("predicted_tansho_odds") or 0
+        return float(v)
+
+    def _h_ev(no: int) -> float:
+        h = h_by_no.get(no)
+        if not h:
+            return 0.0
+        ev = h.get("ev") or 0
+        if ev:
+            return float(ev)
+        wp = h.get("win_prob") or 0
+        o = _h_odds(no)
+        return round(float(wp) * o, 4) if (wp and o) else 0.0
 
     sp_tickets: list[dict] = []
     case = _layer1_sanrenpuku(horses, payouts)
@@ -58,20 +84,29 @@ def regenerate_for_race(race: dict, payouts: dict) -> tuple[list, list, str]:
         # case == "中" or "広"
         raw = _build_sanrenpuku_tickets(horses, payouts, case)
         for combo, _pb in raw:
+            combo_list = list(combo)
             sp_tickets.append({
                 "type": "三連複",
-                "combo": list(combo),
+                "combo": combo_list,
+                "mark_a": _h_mark(combo_list[0]),
+                "mark_b": _h_mark(combo_list[1]),
+                "mark_c": _h_mark(combo_list[2]),
                 "stake": 100,
-                "payout": 0,  # 過去再生成では payout は results.json 経由で別途参照
+                "payout": 0,
             })
 
     tn_tickets: list[dict] = []
     if _layer1_tansho(horses):
         raw = _build_tansho_tickets(horses, payouts)
         for combo, _pb in raw:
+            no = combo[0]
             tn_tickets.append({
                 "type": "単勝",
-                "combo": list(combo),
+                "combo": [no],
+                "horse_no": no,
+                "mark": _h_mark(no),
+                "odds": _h_odds(no),
+                "ev": _h_ev(no),
                 "stake": 100,
                 "payout": 0,
             })
@@ -117,6 +152,17 @@ def process_pred_file(fp: Path, results_data: dict | None) -> tuple[int, int]:
 
         # フラット tickets フィールドも上書き (results_tracker L206 互換)
         r["tickets"] = all_t050
+
+        # bet_decision: T-050 で買い目ありなら skip=False に更新
+        # 買い目なしなら T-050 用 skip 表示に書き換え (旧三連単 skip 判定を上書き)
+        if all_t050:
+            r["bet_decision"] = {"skip": False, "reason": "", "message": ""}
+        else:
+            r["bet_decision"] = {
+                "skip": True,
+                "reason": "T-050 発動条件未充足",
+                "message": "三連複動的 + 単勝T-4 共に条件未満のため見送り",
+            }
 
         modified += 1
 
