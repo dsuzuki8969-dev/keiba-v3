@@ -3579,6 +3579,29 @@ def create_app():
             return _fallback()
         return _serve_results_cache("sanrentan_summary", year, _fallback)
 
+    @app.route("/api/results/hybrid_summary")
+    def api_results_hybrid_summary():
+        """新戦略ハイブリッド成績 (三連複動的 + 単勝 T-4 / A-NONE 2券種) を返す。
+        year=all/2024/2025/2026 の単位でキャッシュ（30分）。
+        """
+        year = _validate_year(request.args.get("year", "all"))
+        force = request.args.get("force", "") in ("1", "true")
+
+        def _fallback():
+            try:
+                from src.analytics.hybrid_summary import get_hybrid_summary
+
+                result = get_hybrid_summary(year_filter=year, force_refresh=force)
+                return jsonify(result)
+            except Exception as e:
+                logger.warning("results hybrid_summary failed: %s", e, exc_info=True)
+                return jsonify(error=str(e))
+
+        # force 指定時はキャッシュを無視してフルパスで再計算
+        if force:
+            return _fallback()
+        return _serve_results_cache("hybrid_summary", year, _fallback)
+
     @app.route("/api/results/detailed")
     def api_results_detailed():
         """詳細集計（競馬場別・コース別・距離区分別・高額配当TOP10）"""

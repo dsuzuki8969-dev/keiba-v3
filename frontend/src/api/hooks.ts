@@ -107,6 +107,19 @@ export function useResultsSummary(year: string) {
   });
 }
 
+// 新戦略ハイブリッド成績サマリー (三連複動的 + 単勝 T-4)
+// 5 分キャッシュ + ウィンドウフォーカスで再取得
+export function useHybridSummary(year: string) {
+  return useQuery({
+    queryKey: ["hybridSummary", year],
+    queryFn: () => api.resultsHybridSummary(year),
+    enabled: !!year,
+    staleTime: 5 * 60 * 1000,
+    gcTime: HOUR_1,
+    refetchOnWindowFocus: true,
+  });
+}
+
 // 三連単フォーメーション成績サマリー（Phase 3）
 // マスター指示 2026-04-23: backfill/結果再取得の反映が 1 時間遅れるのは NG。
 //   5 分に短縮 + ウィンドウフォーカスで再取得。

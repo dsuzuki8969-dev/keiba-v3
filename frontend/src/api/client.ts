@@ -60,6 +60,8 @@ export const api = {
   resultsSummary: (year: string) => get<ResultsSummaryResponse>(`/api/results/summary?year=${year}`),
   resultsSanrentanSummary: (year: string) =>
     get<SanrentanSummaryResponse>(`/api/results/sanrentan_summary?year=${year}`),
+  resultsHybridSummary: (year: string) =>
+    get<HybridSummaryResponse>(`/api/results/hybrid_summary?year=${year}`),
   resultsTrend: (year: string) => get<ResultsTrendResponse>(`/api/results/trend?year=${year}`),
   resultsDetailed: (year: string) => get<ResultsDetailedResponse>(`/api/results/detailed?year=${year}`),
   resultsFetch: (body: ResultsFetchRequest) => post<{ status: string }>("/api/results/fetch", body),
@@ -358,6 +360,67 @@ export interface SanrentanSummaryResponse {
   by_confidence: SanrentanByConfidence[];
   top10_payouts: SanrentanTopPayout[];
   monthly: SanrentanMonthly[];
+  error?: string;
+}
+
+// ────────────────────────────────────────────────────────────────
+// 新戦略ハイブリッド成績 (三連複動的 + 単勝 T-4)
+// ────────────────────────────────────────────────────────────────
+
+export interface HybridMonthly {
+  month: string;         // "YYYY-MM"
+  played: number;
+  hit: number;
+  stake: number;
+  payback: number;
+  balance: number;
+  roi_pct: number;
+  cum_roi_pct: number;
+}
+
+export interface TanshoT4Summary {
+  races_played: number;
+  races_hit: number;
+  total_stake: number;
+  total_payback: number;
+  balance: number;
+  roi_pct: number;
+  hit_rate_pct: number;
+  date_from: string;
+  date_to: string;
+  monthly: HybridMonthly[];
+}
+
+export interface SanrenpukuVariant {
+  races: number;
+  hit: number;
+  stake: number;
+  payback: number;
+  roi_pct: number;
+  hit_rate_pct: number;
+}
+
+export interface SanrenpukuDynamicSummary {
+  races_played: number;
+  races_hit: number;
+  total_stake: number;
+  total_payback: number;
+  balance: number;
+  roi_pct: number;
+  hit_rate_pct: number;
+  date_from: string;
+  date_to: string;
+  by_variant: {
+    絞り: SanrenpukuVariant;
+    中: SanrenpukuVariant;
+    広: SanrenpukuVariant;
+  };
+  monthly: HybridMonthly[];
+}
+
+export interface HybridSummaryResponse {
+  tansho_t4: TanshoT4Summary;
+  sanrenpuku_dynamic: SanrenpukuDynamicSummary;
   error?: string;
 }
 

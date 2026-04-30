@@ -12,11 +12,18 @@
   Layer 3: 信頼度ガード 3 種
 
 使い方:
+  # 通常 (馬単あり・6 ケース)
   python scripts/dispatch_backtest.py \\
       --start-date 20231201 \\
       --end-date   20260428 \\
       --output-csv tmp/dispatch_backtest_results.csv \\
       --output-json tmp/dispatch_backtest_results.json
+
+  # 馬単なし (2 券種: 三連複 + 単勝のみ・6 ケース)
+  python scripts/dispatch_backtest.py \\
+      --no-umatan \\
+      --output-csv tmp/dispatch_backtest_v3_no_umatan_results.csv \\
+      --output-json tmp/dispatch_backtest_v3_no_umatan_results.json
 """
 from __future__ import annotations
 
@@ -251,10 +258,16 @@ def layer1_sanrenpuku(horses: list[dict], payouts: dict = None) -> Optional[str]
     return "広"
 
 
-def layer1_umatan(horses: list[dict]) -> bool:
+def layer1_umatan(horses: list[dict], force_disabled: bool = False) -> bool:
     """馬単中拡張発動判定。
     EV≥1.3 AND ◉◎ win_prob≥0.35
+
+    Args:
+        horses: 馬リスト
+        force_disabled: True の場合は常に False を返す (--no-umatan フラグ用)
     """
+    if force_disabled:
+        return False
     pivot = get_pivot(horses)
     if pivot is None:
         return False
@@ -598,8 +611,15 @@ def finalize_stat(stat: dict) -> dict:
 # 1 日処理
 # ────────────────────────────────────────────────────────────────
 
-def process_day(date_str: str, case_stats: dict[str, dict]) -> int:
-    """1 日分を処理し、各ケースの stat を更新。処理レース数を返す。"""
+def process_day(date_str: str, case_stats: dict[str, dict],
+                no_umatan: bool = False) -> int:
+    """1 日分を処理し、各ケースの stat を更新。処理レース数を返す。
+
+    Args:
+        date_str: 日付文字列 (YYYYMMDD)
+        case_stats: ケース別集計 dict
+        no_umatan: True の場合は馬単を完全無効化 (--no-umatan フラグ用)
+    """
     pred_fp = Path(f"data/predictions/{date_str}_pred.json")
     res_fp  = Path(f"data/results/{date_str}_results.json")
     if not pred_fp.exists() or not res_fp.exists():
@@ -635,7 +655,8 @@ def process_day(date_str: str, case_stats: dict[str, dict]) -> int:
         # Layer 1: 独立 EV 判定 (全ケース共通)
         # payouts を渡して三連複データ存在確認を行う (phase_a_v3_fix 整合)
         sanrenpuku_case = layer1_sanrenpuku(horses, payouts)
-        umatan_active   = layer1_umatan(horses)
+        # no_umatan=True の場合は layer1_umatan を force_disabled で無効化
+        umatan_active   = layer1_umatan(horses, force_disabled=no_umatan)
         tansho_active   = layer1_tansho(horses)
 
         # 各ケースを処理
@@ -686,7 +707,22 @@ def main() -> None:
     parser.add_argument("--output-csv",  default="tmp/dispatch_backtest_results.csv")
     parser.add_argument("--output-json", default="tmp/dispatch_backtest_results.json")
     parser.add_argument("--output-log",  default="tmp/dispatch_backtest.log")
+    parser.add_argument(
+        "--no-umatan",
+        action="store_true",
+        default=False,
+        help="馬単を完全無効化し、三連複 + 単勝の 2 券種のみで集計する",
+    )
     args = parser.parse_args()
+
+    # --no-umatan フラグ時はデフォルト出力パスを v3_no_umatan に変更
+    if args.no_umatan:
+        if args.output_csv  == "tmp/dispatch_backtest_results.csv":
+            args.output_csv  = "tmp/dispatch_backtest_v3_no_umatan_results.csv"
+        if args.output_json == "tmp/dispatch_backtest_results.json":
+            args.output_json = "tmp/dispatch_backtest_v3_no_umatan_results.json"
+        if args.output_log  == "tmp/dispatch_backtest.log":
+            args.output_log  = "tmp/dispatch_backtest_v3_no_umatan.log"
 
     Path(args.output_log).parent.mkdir(parents=True, exist_ok=True)
     setup_logger(args.output_log)
@@ -696,8 +732,10 @@ def main() -> None:
     end   = date(int(e[:4]), int(e[4:6]), int(e[6:8]))
     total_days = (end - start).days + 1
 
+    mode_label = "馬単なし (三連複+単勝 2 券種)" if args.no_umatan else "馬単あり (3 券種)"
     logger.info("=" * 70)
-    logger.info("案 C vs 案 A バックテスト開始: %s〜%s (%d 日間)", s, e, total_days)
+    logger.info("案 C vs 案 A バックテスト開始: %s〜%s (%d 日間) [%s]",
+                s, e, total_days, mode_label)
     logger.info("6 ケース: %s", ", ".join(CASE_DEFS.keys()))
     logger.info("=" * 70)
 
@@ -710,7 +748,7 @@ def main() -> None:
 
     while d <= end:
         ds = d.strftime("%Y%m%d")
-        n = process_day(ds, case_stats)
+        n = process_day(ds, case_stats, no_umatan=args.no_umatan)
         total_races += n
         processed   += 1
 
@@ -769,7 +807,8 @@ def main() -> None:
     csv_path = Path(args.output_csv)
     csv_path.parent.mkdir(parents=True, exist_ok=True)
     fieldnames = [
-        "case", "races_played", "races_hit", "hit_rate",
+        "case", "umatan_disabled",
+        "races_played", "races_hit", "hit_rate",
         "total_stake", "total_payback", "roi_pct", "net_profit",
         "max_drawdown", "avg_stake_per_race",
         "sanrenpuku_races", "sanrenpuku_hit", "sanrenpuku_stake",
@@ -785,6 +824,7 @@ def main() -> None:
         for cn, fr in final_results.items():
             row = {
                 "case":              cn,
+                "umatan_disabled":   args.no_umatan,
                 "races_played":      fr["races_played"],
                 "races_hit":         fr["races_hit"],
                 "hit_rate":          fr["hit_rate"],
@@ -813,10 +853,11 @@ def main() -> None:
     json_path = Path(args.output_json)
     output_json = {
         "meta": {
-            "start_date":  s,
-            "end_date":    e,
-            "total_days":  total_days,
-            "total_races": total_races,
+            "start_date":     s,
+            "end_date":       e,
+            "total_days":     total_days,
+            "total_races":    total_races,
+            "umatan_disabled": args.no_umatan,
         },
         "cases": final_results,
         "table": table_str,
