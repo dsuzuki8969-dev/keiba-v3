@@ -463,6 +463,9 @@ export interface TicketData {
   a?: number;
   b?: number;
   c?: number;
+  // T-050 単勝チケット用フィールド
+  horse_no?: number;
+  mark?: string;
   appearance?: number;          // 出現率 %（prob*100 と等価、フロント表示用）
   odds_source?: "real" | "estimated";  // 実オッズ or 推定（Phase 1-a）
   payback_if_hit?: number;      // ヒット時の払戻金（Phase 1-b）
@@ -471,6 +474,7 @@ export interface TicketData {
   signal?: string;
   is_reference?: boolean;       // 参考ヒモフラグ（買わない時）
   skip_reason?: string;         // low_ev / low_recovery / torigami / confidence_kelly_zero
+  pattern?: string;             // T-050 三連複パターン識別（中/広/絞り）
 }
 
 /** 買う/買わない判定 (Phase 1-b) */
@@ -494,5 +498,8 @@ export interface TicketsByMode {
     candidates_n?: number;
     max_budget?: number;
     format?: string;
+    // T-050 内訳カウント
+    sanrenpuku_count?: number;
+    tansho_count?: number;
   };
 }

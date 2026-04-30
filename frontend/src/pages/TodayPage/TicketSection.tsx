@@ -282,6 +282,128 @@ function SanrentanFormationView({
 }
 
 
+/** T-050: 単勝1行表示 */
+function TanshoRow({
+  ticket,
+  noToMark,
+}: {
+  ticket: TicketData;
+  noToMark: Record<number, string>;
+}) {
+  const horseNo = ticket.horse_no;
+  const mark = ticket.mark || (horseNo ? noToMark[horseNo] : "") || "";
+  return (
+    <div className="flex flex-wrap items-center gap-2 text-sm py-0.5">
+      <strong className="whitespace-nowrap">
+        <span className={markCls(mark)}>{mark}</span>
+        {horseNo ? circledNum(horseNo) : "?"}
+      </strong>
+      <span className="text-xs text-muted-foreground inline-flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+        {(ticket.odds ?? 0) > 0 && (
+          <span className="whitespace-nowrap">Odds: {(ticket.odds!).toFixed(1)}倍</span>
+        )}
+      </span>
+    </div>
+  );
+}
+
+/** T-050: 三連複動的フォーメーション + 単勝T-4 ハイブリッド表示 */
+function Phase4HybridFormation({
+  tickets,
+  noToMark,
+  meta,
+}: {
+  tickets: TicketData[];
+  noToMark: Record<number, string>;
+  meta?: {
+    skip_reason?: string;
+    race_ev_ratio?: number;
+    format?: string;
+    sanrenpuku_count?: number;
+    tansho_count?: number;
+  };
+}) {
+  // 券種別グループ分け
+  const sanrenpuku = tickets.filter((t) => t.type === "三連複");
+  const tansho = tickets.filter((t) => t.type === "単勝");
+  const totalPoints = sanrenpuku.length + tansho.length;
+  const totalStake = totalPoints * 100;
+
+  return (
+    <div className="space-y-3">
+      {/* サマリー */}
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground border-b border-border/50 pb-2">
+        {sanrenpuku.length > 0 && (
+          <span>
+            三連複 <strong className="text-foreground">{sanrenpuku.length}</strong> 点
+          </span>
+        )}
+        {tansho.length > 0 && (
+          <span>
+            単勝 <strong className="text-foreground">{tansho.length}</strong> 点
+          </span>
+        )}
+        <span>
+          計 <strong className="text-foreground">{totalPoints}</strong> 点
+        </span>
+        <span>
+          投入 <strong className="text-foreground">{totalStake.toLocaleString()}</strong> 円
+        </span>
+      </div>
+
+      {/* 三連複セクション */}
+      {sanrenpuku.length > 0 && (
+        <div>
+          <div className="flex items-center gap-2 mb-1">
+            <span className="px-2 py-0.5 bg-purple-600 text-white text-xs font-bold rounded">
+              三連複 動的フォーメーション
+            </span>
+            <span className="text-xs text-muted-foreground">{sanrenpuku.length}点</span>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-0.5">
+            {sanrenpuku.map((t, i) => (
+              <div key={`SR-${i}`} className="flex flex-wrap items-center gap-2 text-sm py-0.5">
+                <ComboDisplay ticket={t} noToMark={noToMark} />
+                <FmtStats
+                  prob={t.prob || 0}
+                  odds={t.odds || 0}
+                  ev={t.ev || 0}
+                  oddsSource={t.odds_source}
+                />
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* 単勝セクション */}
+      {tansho.length > 0 && (
+        <div>
+          <div className="flex items-center gap-2 mb-1">
+            <span className="px-2 py-0.5 bg-amber-500 text-white text-xs font-bold rounded">
+              単勝 T-4（◉◎＋○）
+            </span>
+            <span className="text-xs text-muted-foreground">{tansho.length}点</span>
+          </div>
+          <div className="flex flex-wrap gap-x-6 gap-y-0.5">
+            {tansho.map((t, i) => (
+              <TanshoRow key={`TS-${i}`} ticket={t} noToMark={noToMark} />
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* データなし */}
+      {tickets.length === 0 && meta?.skip_reason && (
+        <div className="text-sm text-muted-foreground italic">
+          見送り: {meta.skip_reason}
+        </div>
+      )}
+    </div>
+  );
+}
+
+
 /** 「買わない」判定の表示 + 参考ヒモグレー表示 */
 function BetSkipPanel({
   decision,
@@ -338,25 +460,28 @@ export function TicketSection({ race }: Props) {
   );
 
   const tbm = race.tickets_by_mode;
-  // Phase 3: 三連単フォーメーション（fixed キー）
+  // fixed キー = Phase 3 三連単フォーメーション / T-050 ハイブリッドの両方に対応
   const fixedTickets: TicketData[] = (tbm?.fixed || []) as TicketData[];
   const hasFixed = fixedTickets.length > 0;
   // 後方互換: 旧 3モードキーがあっても無視。新方式は fixed のみ。
   const hasModes = hasFixed;
   const decision = race.bet_decision;
-  // _meta はフロントの型に未定義のため any 経由
-  const tbmMeta = (tbm as {
-    _meta?: {
-      skip_reason?: string;
-      race_ev_ratio?: number;
-      format?: string;
-      formation_sanrentan?: {
-        rank1?: Array<{ horse_no: number; mark: string }>;
-        rank2?: Array<{ horse_no: number; mark: string }>;
-        rank3?: Array<{ horse_no: number; mark: string }>;
-      };
+  // _meta: TicketsByMode 型に追加済みのフィールドを直接参照
+  const tbmMeta = tbm?._meta as {
+    skip_reason?: string;
+    race_ev_ratio?: number;
+    format?: string;
+    sanrenpuku_count?: number;
+    tansho_count?: number;
+    formation_sanrentan?: {
+      rank1?: Array<{ horse_no: number; mark: string }>;
+      rank2?: Array<{ horse_no: number; mark: string }>;
+      rank3?: Array<{ horse_no: number; mark: string }>;
     };
-  } | null | undefined)?._meta;
+  } | undefined;
+
+  // T-050 フォーマット判定（"T-050:" で始まる format 文字列）
+  const isT050Format = !!(tbmMeta?.format?.startsWith("T-050:"));
 
   // 何も出力するものがなければ null
   if (
@@ -373,7 +498,7 @@ export function TicketSection({ race }: Props) {
 
   return (
     <>
-      {/* Phase 3: 三連単フォーメーション単一表示 */}
+      {/* T-050 / Phase 3: 買い目指南単一表示 */}
       {(hasFixed || decision?.skip) && (
         <PremiumCard variant={decision?.skip ? "default" : "gold"} padding="md">
           <PremiumCardHeader>
@@ -383,7 +508,9 @@ export function TicketSection({ race }: Props) {
                 Betting Guide
               </PremiumCardAccent>
               <PremiumCardTitle className="text-base flex items-center gap-3 flex-wrap">
-                買い目指南（三連単フォーメーション）
+                {isT050Format
+                  ? "買い目指南（三連複動的 + 単勝T-4）"
+                  : "買い目指南（三連単フォーメーション）"}
                 <span
                   className="text-sm font-normal text-muted-foreground"
                   title="SS=鉄板級 / S=高信頼 / A=有力 / B=印通り / C=波乱含み / D=見送り"
@@ -397,24 +524,36 @@ export function TicketSection({ race }: Props) {
                 )}
               </PremiumCardTitle>
               <p className="text-[11px] text-muted-foreground mt-1 leading-snug">
-                フォーメーション ◉/◎⇔○/▲/(☆)⇒○/▲/△/★/(☆)/(同断層内無印1-2頭) — 各点 100円固定。
-                SS / C / D 信頼度は過去成績マイナスのため見送り。EV は期待払戻倍率の推定値。
+                {isT050Format
+                  ? "三連複動的フォーメーション（中7点/広10点）＋単勝T-4（◉◎＋○）— 各点 100円固定。EV は期待払戻倍率の推定値。"
+                  : "フォーメーション ◉/◎⇔○/▲/(☆)⇒○/▲/△/★/(☆)/(同断層内無印1-2頭) — 各点 100円固定。SS / C / D 信頼度は過去成績マイナスのため見送り。EV は期待払戻倍率の推定値。"}
               </p>
             </div>
           </PremiumCardHeader>
           <div className="space-y-3">
-            {/* Phase 3: 三連単用のフォーメーション列表示（_meta.formation_sanrentan から） */}
-            {tbmMeta?.formation_sanrentan && (
-              <SanrentanFormationColumns formation={tbmMeta.formation_sanrentan} />
-            )}
             {decision?.skip ? (
               <BetSkipPanel decision={decision} noToMark={noToMark} />
             ) : hasFixed ? (
-              <SanrentanFormationView
-                tickets={fixedTickets}
-                noToMark={noToMark}
-                meta={tbmMeta}
-              />
+              isT050Format ? (
+                /* T-050: 三連複動的 + 単勝T-4 ハイブリッド表示 */
+                <Phase4HybridFormation
+                  tickets={fixedTickets}
+                  noToMark={noToMark}
+                  meta={tbmMeta}
+                />
+              ) : (
+                /* Phase 3 旧: 三連単フォーメーション表示（fallback） */
+                <>
+                  {tbmMeta?.formation_sanrentan && (
+                    <SanrentanFormationColumns formation={tbmMeta.formation_sanrentan} />
+                  )}
+                  <SanrentanFormationView
+                    tickets={fixedTickets}
+                    noToMark={noToMark}
+                    meta={tbmMeta}
+                  />
+                </>
+              )
             ) : null}
           </div>
         </PremiumCard>
