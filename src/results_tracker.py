@@ -354,7 +354,11 @@ def save_prediction(date: str, analyses_by_venue: dict, *, lightweight: bool = F
                         else (
                             ev.pace.running_style.value
                             if ev.pace.running_style
-                            else ""
+                            else _fallback_running_style_from_pos1c(
+                                getattr(ev, "_position_1c", None),
+                                getattr(ev, "_normalized_position", 0.5),
+                                len(analysis.evaluations),
+                            )
                         )
                     ),
                     # 前走通過順（展開図整合性確認用）
@@ -522,7 +526,21 @@ def save_prediction(date: str, analyses_by_venue: dict, *, lightweight: bool = F
                 # さらに predicted_corners と running_style の整合性を補正
                 for _hd in race_data["horses"]:
                     _ranks = _corners_per_horse.get(_hd["horse_no"], [])
-                    _hd["predicted_corners"] = "-".join(str(r) for r in _ranks) if _ranks else ""
+                    if _ranks:
+                        _hd["predicted_corners"] = "-".join(str(r) for r in _ranks)
+                    else:
+                        # フォールバック (engine 計算漏れ対策・2026-05-01 マスター指示):
+                        # estimated_pos_1c / pace_estimated_pos4c から推定
+                        _p1c = _hd.get("estimated_pos_1c")
+                        _p4c = _hd.get("pace_estimated_pos4c")
+                        if _p1c is not None or _p4c is not None:
+                            _p1 = max(1, int(round(_p1c if _p1c is not None else _p4c)))
+                            _p4 = max(1, int(round(_p4c if _p4c is not None else _p1c)))
+                            _hd["predicted_corners"] = (
+                                f"{_p1}-{_p4}" if _p1 != _p4 else str(_p1)
+                            )
+                        else:
+                            _hd["predicted_corners"] = ""
                     # 脚質整合性チェック: 1コーナー位置と running_style の矛盾を補正
                     if _ranks:
                         _first_corner = _ranks[0]
@@ -820,6 +838,28 @@ def save_prediction(date: str, analyses_by_venue: dict, *, lightweight: bool = F
 
 def _round_or_none(v, n=2):
     return round(v, n) if v is not None else None
+
+
+def _fallback_running_style_from_pos1c(pos_1c_norm, pos_initial_norm, n_horses: int) -> str:
+    """ev.pace.running_style が None の場合に正規化位置から脚質を推定。
+
+    マスター指示 2026-05-01: 4頭で running_style 空が発生した障害対策。
+    engine 側の _style_map / ev.pace.running_style 設定漏れに対するセーフネット。
+
+    Returns: '逃げ' / '先行' / '差し' / '追込' (空文字回避)
+    """
+    pos = pos_1c_norm if pos_1c_norm is not None else pos_initial_norm
+    if pos is None:
+        return "差し"  # 完全フォールバック
+    n = max(1, int(n_horses))
+    rank_1c = pos * n + 0.5  # 正規化位置 → 順位概算
+    if rank_1c <= 2.5:
+        return "逃げ"
+    if rank_1c <= max(3.5, n * 0.30):
+        return "先行"
+    if rank_1c <= n * 0.75:
+        return "差し"
+    return "追込"
 
 
 def _get_pace_weight_for_ev(ev) -> float:
