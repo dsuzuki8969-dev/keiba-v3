@@ -59,30 +59,42 @@ export function SummaryCards({ data, hybrid }: Props) {
         </div>
       )}
 
-      {/* 上段ヒーロー (1-1: 結果 / 1-2: 予想R数 / 1-3: 的中R数) */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-        {/* 1-1: ◉◎結果 X-X-X-X */}
+      {/* 上段ヒーロー (1-1: 結果 / 1-2: 予想R数 / 1-3: 的中R数)
+          結果カードに広めのスペースを割り当て (1.6fr) で大きいフォント維持 */}
+      <div
+        className="grid grid-cols-1 gap-3 sm:gap-3"
+        style={{ gridTemplateColumns: "minmax(0, 1.6fr) minmax(0, 1fr) minmax(0, 1fr)" }}
+      >
+        {/* 1-1: ◉◎結果 X-X-X-X 1 行・大きく表示 */}
         <PremiumCard variant="default" padding="md" className="text-center stylish-card-hover border border-border/60">
           <div className="inline-flex items-center gap-1.5 text-[11px] font-semibold tracking-wider uppercase text-muted-foreground mb-1">
             <Trophy size={12} className="text-brand-gold" />
             ◉◎結果
           </div>
           <div
-            className="stat-mono leading-tight whitespace-nowrap"
+            className="stat-mono tnum leading-tight whitespace-nowrap overflow-hidden"
             style={{
-              fontSize: total >= 10000 ? "1.35rem" : total >= 1000 ? "1.7rem" : "2.1rem",
+              // 結果カード幅 (約 ~480px / sm 以上) なら 18 桁でも 1.6rem 維持可能
+              fontSize: (() => {
+                const totalDigits = String(win).length + String(second).length + String(third).length + String(out).length;
+                if (totalDigits >= 18) return "1.5rem";  // 例: 13126-7632-5182-13461
+                if (totalDigits >= 14) return "1.7rem";
+                if (totalDigits >= 10) return "1.9rem";
+                return "2.1rem";
+              })(),
+              letterSpacing: "-0.01em",
             }}
           >
-            <span className="text-positive">{win}</span>
+            <span className="text-positive">{fmtNum(win)}</span>
             <span className="text-muted-foreground/50 mx-0.5">-</span>
-            {second}
+            {fmtNum(second)}
             <span className="text-muted-foreground/50 mx-0.5">-</span>
-            {third}
+            {fmtNum(third)}
             <span className="text-muted-foreground/50 mx-0.5">-</span>
-            <span className="text-muted-foreground">{out}</span>
+            <span className="text-muted-foreground">{fmtNum(out)}</span>
           </div>
           <div className="mt-1 text-[11px] text-muted-foreground tnum">
-            的中{total > 0 ? ((p3 / total) * 100).toFixed(1) : "—"}%
+            複勝 {total > 0 ? ((p3 / total) * 100).toFixed(1) : "—"}%
           </div>
         </PremiumCard>
 
