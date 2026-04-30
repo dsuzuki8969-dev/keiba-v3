@@ -142,33 +142,59 @@ export function SummaryCards({ data, hybrid }: Props) {
         ))}
       </div>
 
-      {/* ─── T-050 採用戦略成績 (三連複動的 + 単勝 T-4) ─── */}
+      {/* ─── T-050 採用戦略成績 (三連複動的 + 単勝) — 3×3 グリッド ─── */}
       {hybrid && (() => {
         const spuku = hybrid.sanrenpuku_dynamic;
         const tansho = hybrid.tansho_t4;
         if (!spuku || !tansho) return null;
 
-        // 合算収支・ROI
-        const totalStake   = spuku.total_stake + tansho.total_stake;
-        const totalPayback = spuku.total_payback + tansho.total_payback;
+        // マスター指示 2026-05-01: 「絞り」廃止 → by_variant の絞り分を減算して再計算
+        // (バックエンドが旧コード稼働中の場合に備えてフロント側で除外)
+        const bv = (spuku.by_variant ?? {}) as Record<string, { races: number; hit: number; stake: number; payback: number }>;
+        const narrow = bv["絞り"] ?? { races: 0, hit: 0, stake: 0, payback: 0 };
+
+        const spukuStake   = spuku.total_stake   - narrow.stake;
+        const spukuPayback = spuku.total_payback - narrow.payback;
+        const spukuRaces   = spuku.races_played  - narrow.races;
+        const spukuHits    = spuku.races_hit     - narrow.hit;
+        const spukuRoi     = spukuStake > 0 ? spukuPayback / spukuStake * 100 : 0;
+        const spukuHitRate = spukuRaces > 0 ? spukuHits / spukuRaces * 100 : 0;
+        const spukuProfit  = spukuPayback - spukuStake;
+
+        const tanshoProfit = tansho.total_payback - tansho.total_stake;
+
+        // 合算 (絞り除外後の三連複 + 単勝)
+        const totalStake   = spukuStake + tansho.total_stake;
+        const totalPayback = spukuPayback + tansho.total_payback;
         const totalProfit  = totalPayback - totalStake;
         const totalRoi     = totalStake > 0 ? totalPayback / totalStake * 100 : 0;
+        const totalRaces   = spukuRaces + tansho.races_played;
+        const totalHits    = spukuHits + tansho.races_hit;
+        const totalHitRate = totalRaces > 0 ? totalHits / totalRaces * 100 : 0;
 
-        // 三連複内訳
-        const bv = spuku.by_variant ?? {};
-        const variantCards = (["絞り", "中", "広"] as const).map((v) => {
-          const vd = bv[v];
-          if (!vd || vd.races === 0) return null;
-          return (
-            <PremiumCard key={v} variant="default" padding="sm" className="text-center">
-              <div className="text-[11px] text-muted-foreground mb-0.5">三連複{v} ({vd.races}R)</div>
-              <div className={`stat-mono text-base ${vd.roi_pct >= 100 ? "text-positive" : ""}`}>
-                ROI {vd.roi_pct.toFixed(1)}%
-              </div>
-              <div className="text-[10px] text-muted-foreground mt-0.5">的中率 {vd.hit_rate_pct.toFixed(1)}%</div>
-            </PremiumCard>
-          );
-        }).filter(Boolean);
+        // セルレンダラー
+        const StatCell = ({
+          label, value, sub, color, isProfit,
+        }: { label: string; value: string; sub?: string; color: string; isProfit?: boolean }) => (
+          <PremiumCard variant="default" padding="md" className="text-center stylish-card-hover border border-border/60">
+            <div className="text-[11px] font-semibold tracking-wider uppercase text-muted-foreground mb-1">
+              {label}
+            </div>
+            <div
+              className={`stat-mono text-[1.5rem] sm:text-[1.8rem] font-bold ${isProfit && value.startsWith("-") ? "text-negative" : ""}`}
+              style={!(isProfit && value.startsWith("-")) ? { color } : undefined}
+            >
+              {value}
+            </div>
+            {sub && <div className="text-[10px] text-muted-foreground mt-0.5 tnum">{sub}</div>}
+          </PremiumCard>
+        );
+
+        const COLORS = {
+          combined:  totalProfit  >= 0 ? "#3b82f6" : "#ef4444", // 青 / 赤
+          sanrenpuku: spukuProfit >= 0 ? "#3b82f6" : "#ef4444",
+          tansho:     tanshoProfit >= 0 ? "#22c55e" : "#ef4444", // 緑 / 赤
+        };
 
         return (
           <div className="space-y-3 pt-5 mt-2">
@@ -179,113 +205,76 @@ export function SummaryCards({ data, hybrid }: Props) {
                 Hybrid
               </span>
               <span className="heading-section text-sm">
-                新戦略成績 (三連複動的 + 単勝 T-4)
+                T-050 採用戦略成績 (三連複動的 + 単勝)
               </span>
-              <span className="text-xs text-muted-foreground">（A-NONE / 本番採用）</span>
+              <span className="text-xs text-muted-foreground">（A-NONE 本番採用 / 絞り廃止）</span>
             </div>
 
-            {/* ヒーロー 3 枚: 合算収支 / 三連複動的 ROI / 単勝 T-4 ROI */}
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-              {/* 合算収支 */}
-              <PremiumCard
-                variant={totalProfit >= 0 ? "navy-glow" : "default"}
-                padding="md"
-                className="text-center"
-              >
-                <div className="inline-flex items-center gap-1.5 text-[11px] font-semibold tracking-wider uppercase text-muted-foreground mb-1">
-                  {totalProfit >= 0
-                    ? <TrendingUp size={12} style={{ color: "#3b82f6" }} />
-                    : <TrendingDown size={12} className="text-negative" />}
-                  合算収支
-                </div>
-                <div className={`text-[1.9rem] sm:text-[2.3rem] ${totalProfit >= 0 ? "stat-mono" : "stat-mono text-negative"}`}
-                  style={totalProfit >= 0 ? { color: "#3b82f6" } : undefined}
-                >
-                  {totalProfit >= 0 ? "+" : ""}{fmtNum(totalProfit)}
-                  <span className="text-base ml-0.5 font-semibold">円</span>
-                </div>
-                <div className="text-[11px] text-muted-foreground mt-1 tnum">
-                  合算 ROI {totalRoi.toFixed(1)}%
-                </div>
-              </PremiumCard>
+            {/* 3×3 グリッド: 行=合算/三連複/単勝, 列=収支/回収率/的中率 */}
+            <div className="grid grid-cols-3 gap-2 sm:gap-3">
+              {/* Row 1: 合算 */}
+              <StatCell
+                label="合算 収支"
+                value={(totalProfit >= 0 ? "+" : "") + fmtNum(totalProfit) + "円"}
+                sub={`購入 ${fmtNum(totalStake)} / 払戻 ${fmtNum(totalPayback)}`}
+                color={COLORS.combined}
+                isProfit
+              />
+              <StatCell
+                label="合算 回収率"
+                value={fmtPct(totalRoi)}
+                sub={`${totalRaces}R 適用`}
+                color={COLORS.combined}
+              />
+              <StatCell
+                label="合算 的中率"
+                value={fmtPct(totalHitRate)}
+                sub={`${totalHits}R / ${totalRaces}R 加重`}
+                color={COLORS.combined}
+              />
 
-              {/* 三連複動的 ROI */}
-              <PremiumCard
-                variant={spuku.roi_pct >= 100 ? "navy-glow" : "default"}
-                padding="md"
-                className="text-center"
-              >
-                <div className="inline-flex items-center gap-1.5 text-[11px] font-semibold tracking-wider uppercase text-muted-foreground mb-1">
-                  <Target size={12} style={{ color: "#3b82f6" }} />
-                  三連複動的 ROI
-                </div>
-                <div
-                  className={`text-[1.9rem] sm:text-[2.3rem] ${spuku.roi_pct >= 100 ? "stat-mono" : "stat-mono text-negative"}`}
-                  style={spuku.roi_pct >= 100 ? { color: "#3b82f6" } : undefined}
-                >
-                  {fmtPct(spuku.roi_pct)}
-                </div>
-                <div className="text-[11px] text-muted-foreground mt-1 tnum">
-                  {spuku.races_played}R / 的中 {spuku.races_hit}R ({spuku.hit_rate_pct.toFixed(1)}%)
-                </div>
-              </PremiumCard>
+              {/* Row 2: 三連複 (絞り除外後) */}
+              <StatCell
+                label="三連複 収支"
+                value={(spukuProfit >= 0 ? "+" : "") + fmtNum(spukuProfit) + "円"}
+                sub={`購入 ${fmtNum(spukuStake)} / 払戻 ${fmtNum(spukuPayback)}`}
+                color={COLORS.sanrenpuku}
+                isProfit
+              />
+              <StatCell
+                label="三連複 回収率"
+                value={fmtPct(spukuRoi)}
+                sub={`${spukuRaces}R 適用`}
+                color={COLORS.sanrenpuku}
+              />
+              <StatCell
+                label="三連複 的中率"
+                value={fmtPct(spukuHitRate)}
+                sub={`${spukuHits}R / ${spukuRaces}R`}
+                color={COLORS.sanrenpuku}
+              />
 
-              {/* 単勝 T-4 ROI */}
-              <PremiumCard
-                variant={tansho.roi_pct >= 100 ? "navy-glow" : "default"}
-                padding="md"
-                className="text-center"
-              >
-                <div className="inline-flex items-center gap-1.5 text-[11px] font-semibold tracking-wider uppercase text-muted-foreground mb-1">
-                  <Trophy size={12} style={{ color: "#22c55e" }} />
-                  単勝 T-4 ROI
-                </div>
-                <div
-                  className={`text-[1.9rem] sm:text-[2.3rem] ${tansho.roi_pct >= 100 ? "stat-mono" : "stat-mono text-negative"}`}
-                  style={tansho.roi_pct >= 100 ? { color: "#22c55e" } : undefined}
-                >
-                  {fmtPct(tansho.roi_pct)}
-                </div>
-                <div className="text-[11px] text-muted-foreground mt-1 tnum">
-                  {tansho.races_played}R / 的中 {tansho.races_hit}R ({tansho.hit_rate_pct.toFixed(1)}%)
-                </div>
-              </PremiumCard>
+              {/* Row 3: 単勝 */}
+              <StatCell
+                label="単勝 収支"
+                value={(tanshoProfit >= 0 ? "+" : "") + fmtNum(tanshoProfit) + "円"}
+                sub={`購入 ${fmtNum(tansho.total_stake)} / 払戻 ${fmtNum(tansho.total_payback)}`}
+                color={COLORS.tansho}
+                isProfit
+              />
+              <StatCell
+                label="単勝 回収率"
+                value={fmtPct(tansho.roi_pct)}
+                sub={`${tansho.races_played}R 適用`}
+                color={COLORS.tansho}
+              />
+              <StatCell
+                label="単勝 的中率"
+                value={fmtPct(tansho.hit_rate_pct)}
+                sub={`${tansho.races_hit}R / ${tansho.races_played}R`}
+                color={COLORS.tansho}
+              />
             </div>
-
-            {/* サブカード: 三連複内訳 (絞り/中/広) */}
-            {variantCards.length > 0 && (
-              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-2">
-                {variantCards}
-                {/* 単勝 T-4 サブカード */}
-                <PremiumCard variant="default" padding="sm" className="text-center">
-                  <div className="text-[11px] text-muted-foreground mb-0.5">単勝 T-4</div>
-                  <div className="stat-mono text-base">
-                    {tansho.races_played}R
-                  </div>
-                  <div className="text-[10px] text-muted-foreground mt-0.5">
-                    購入 {fmtNum(tansho.total_stake)}円
-                  </div>
-                </PremiumCard>
-                <PremiumCard variant="default" padding="sm" className="text-center">
-                  <div className="text-[11px] text-muted-foreground mb-0.5">単勝 T-4 払戻</div>
-                  <div className="stat-mono text-base">
-                    {fmtNum(tansho.total_payback)}円
-                  </div>
-                  <div className="text-[10px] text-muted-foreground mt-0.5">
-                    収支 {tansho.balance >= 0 ? "+" : ""}{fmtNum(tansho.balance)}円
-                  </div>
-                </PremiumCard>
-                <PremiumCard variant="default" padding="sm" className="text-center">
-                  <div className="text-[11px] text-muted-foreground mb-0.5">三連複 購入</div>
-                  <div className="stat-mono text-base">
-                    {fmtNum(spuku.total_stake)}円
-                  </div>
-                  <div className="text-[10px] text-muted-foreground mt-0.5">
-                    払戻 {fmtNum(spuku.total_payback)}円
-                  </div>
-                </PremiumCard>
-              </div>
-            )}
           </div>
         );
       })()}

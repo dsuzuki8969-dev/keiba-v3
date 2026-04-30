@@ -142,7 +142,10 @@ def _lookup_payout(payouts: dict, ticket_type: str, combo_nos: list) -> int:
 
 def _layer1_sanrenpuku(horses: list, payouts: dict) -> Optional[str]:
     """三連複動的フォーメーション発動ケース判定。
-    Returns: "絞り" / "中" / "広" / None (見送り)
+    Returns: "中" / "広" / None (見送り)
+
+    マスター指示 2026-05-01: 「絞り」は採用しない (中 + 広 のみ運用)。
+    かつて「絞り」になっていた高確信ケースは「中」として買う。
 
     三連複払戻データが存在しないレース (NAR R2 等) は None を返す。
     """
@@ -168,10 +171,7 @@ def _layer1_sanrenpuku(horses: list, payouts: dict) -> Optional[str]:
     o_place3 = float(taikou.get("place3_prob") or 0.0) if taikou else 0.0
     r_place3 = float(renka.get("place3_prob")  or 0.0) if renka  else 0.0
 
-    if (p_ev >= 1.8 and p_place3_prob >= 0.65
-            and o_place3 >= 0.50 and taikou is not None):
-        return "絞り"
-
+    # 「絞り」発動条件は廃止 — 該当ケースは「中」として処理
     if (p_ev >= 1.3 and p_place3_prob >= 0.55
             and (o_place3 >= 0.40 or r_place3 >= 0.40)):
         return "中"
@@ -415,7 +415,7 @@ def _compute_sanrenpuku_dynamic(year_filter: str) -> dict:
     A-NONE 方式 (信頼度ガードなし / 馬単なし)。
     dispatch_backtest.py の layer1_sanrenpuku + build_sanrenpuku_tickets を移植。
     集計: races_played, races_hit, total_stake, total_payback, roi_pct
-    内訳: by_variant = {絞り, 中, 広}
+    内訳: by_variant = {中, 広} (絞りは 2026-05-01 マスター指示で廃止)
     月別: monthly[]
     """
     pred_dir = Path("data/predictions")
@@ -430,7 +430,6 @@ def _compute_sanrenpuku_dynamic(year_filter: str) -> dict:
         "date_to":       "",
     }
     by_variant: dict = {
-        "絞り": {"races": 0, "hit": 0, "stake": 0, "payback": 0},
         "中":   {"races": 0, "hit": 0, "stake": 0, "payback": 0},
         "広":   {"races": 0, "hit": 0, "stake": 0, "payback": 0},
     }
