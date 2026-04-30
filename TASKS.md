@@ -10,22 +10,22 @@
 
 ### 5/1 朝 マスター起床時 即対応 (最優先)
 
-### T-056 (P0・新規) — Dashboard プロセス再起動 + 集計キャッシュクリア
-- 現状: PID 14252 (pythonw) 稼働中、私の権限では Stop-Process アクセス拒否
-- 影響: 三連複絞り廃止 + results_tracker フォールバックの新コード未反映
-- **手順 (管理者 PowerShell)**:
-  ```powershell
-  Stop-Process -Id 14252 -Force
-  Start-ScheduledTask -TaskName DAI_Keiba_Dashboard
-  ```
-- 工数: 5 分
+### T-056 ✅ 完了 — Dashboard プロセス直接再起動 (admin 権限不要経路)
+- マスター kill (Stop-Process 14252) + 直接起動 `pythonw src/dashboard.py &` で PID 9096 稼働中
+- 新コード (絞り廃止 + results_tracker フォールバック + 並列天気) 反映済
 
 ### T-057 (P0・進行中) — results.json 三連複払戻バックフィル
-- スクリプト: `scripts/backfill_all_payouts.py` (PID 348 稼働中)
-- 対象: 16,057R / レート 1.0秒 / ETA 5.2h (完了予想 12:00 頃)
-- 進捗: `data/logs/backfill_all_payouts.progress.log`
+- スクリプト: `scripts/backfill_all_payouts.py` (新 PID 13432 稼働中)
+- 対象: 14,478R / レート 1.0秒 / ETA 4.3h (完了予想 12:00 頃)
+- 進捗: `data/logs/backfill_all_payouts.progress.log` 7.9%/14k
 - 完了後: `/api/results/invalidate_cache` POST → 過去成績再集計
 - 工数: 自動進行 (待機のみ)
+
+### T-059 ✅ 完了 — 過去 pred.json 全件 T-050 化 + ev 補完
+- regenerate_t050_tickets.py v3 (実オッズ判別含む) 全 849 files / 41,083 races 実行済
+- backfill_ev_field.py で 815 files / 424,435 horses ev 補完済
+- 過去日買い目指南が三連複動的+単勝T-4 に統一表示
+- 単勝 odds は実オッズのみ表示 (predicted_tansho_odds と一致時は非表示)
 
 ### T-058 (P1・新規) — engine.py running_style バグ恒久対策
 - 現象: 5/1 4頭で running_style/predicted_corners 空
