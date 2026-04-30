@@ -1,10 +1,9 @@
 import { PremiumCard } from "@/components/ui/premium/PremiumCard";
 import { TrendingUp, TrendingDown, Target, Trophy } from "lucide-react";
-import type { SanrentanSummaryResponse, HybridSummaryResponse } from "@/api/client";
+import type { HybridSummaryResponse } from "@/api/client";
 
 interface Props {
   data: Record<string, unknown>;
-  sanrentan?: SanrentanSummaryResponse | null;
   hybrid?: HybridSummaryResponse | null;
 }
 
@@ -16,7 +15,7 @@ function fmtNum(v: number): string {
   return v.toLocaleString();
 }
 
-export function SummaryCards({ data, sanrentan, hybrid }: Props) {
+export function SummaryCards({ data, hybrid }: Props) {
   if (!data.total_races) return null;
 
   // ヒーロー数値（◉◎単勝ベースの収支・回収率・結果）
@@ -143,89 +142,7 @@ export function SummaryCards({ data, sanrentan, hybrid }: Props) {
         ))}
       </div>
 
-      {/* ─── 三連単フォーメーション成績（Phase 3） ─── */}
-      {sanrentan && sanrentan.races_played > 0 && (() => {
-        const sProfit = sanrentan.balance;
-        const sRoi = sanrentan.roi_pct;
-        const sHitRate = sanrentan.race_hit_rate_pct;
-        const sCards: { label: string; value: string }[] = [
-          { label: "予想R数", value: sanrentan.races_played + " R" },
-          { label: "的中R数", value: sanrentan.races_hit + " R" },
-          { label: "購入額", value: fmtNum(sanrentan.stake) + "円" },
-          { label: "払戻額", value: fmtNum(sanrentan.payback) + "円" },
-        ];
-        return (
-          <div className="space-y-3 pt-5 mt-2">
-            {/* セクション区切り — ゴールドグラデのヘアライン */}
-            <div className="relative h-px bg-gradient-to-r from-transparent via-brand-gold/40 to-transparent" aria-hidden />
-            <div className="flex items-baseline gap-2">
-              <span className="gold-gradient font-extrabold tracking-wider uppercase text-xs">
-                Trifecta
-              </span>
-              <span className="heading-section text-sm">
-                三連単フォーメーション成績
-              </span>
-              <span className="text-xs text-muted-foreground">（旧戦略・参考）</span>
-            </div>
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-              {/* 収支 */}
-              <PremiumCard
-                variant={sProfit >= 0 ? "navy-glow" : "default"}
-                padding="md"
-                className="text-center"
-              >
-                <div className="inline-flex items-center gap-1.5 text-[11px] font-semibold tracking-wider uppercase text-muted-foreground mb-1">
-                  {sProfit >= 0 ? <TrendingUp size={12} /> : <TrendingDown size={12} className="text-negative" />}
-                  収支
-                </div>
-                <div className={`text-[1.9rem] sm:text-[2.3rem] ${sProfit >= 0 ? "stat-mono-gold" : "stat-mono text-negative"}`}>
-                  {sProfit >= 0 ? "+" : ""}{fmtNum(sProfit)}
-                  <span className="text-base ml-0.5 font-semibold">円</span>
-                </div>
-              </PremiumCard>
-              {/* 三連単F回収率 */}
-              <PremiumCard
-                variant={sRoi >= 100 ? "navy-glow" : "default"}
-                padding="md"
-                className="text-center"
-              >
-                <div className="inline-flex items-center gap-1.5 text-[11px] font-semibold tracking-wider uppercase text-muted-foreground mb-1">
-                  <Target size={12} />
-                  三連単F回収率
-                </div>
-                <div className={`text-[1.9rem] sm:text-[2.3rem] ${sRoi >= 100 ? "stat-mono-gold" : "stat-mono text-negative"}`}>
-                  {fmtPct(sRoi)}
-                </div>
-              </PremiumCard>
-              {/* 三連単F的中率 */}
-              <PremiumCard variant="default" padding="md" className="text-center">
-                <div className="inline-flex items-center gap-1.5 text-[11px] font-semibold tracking-wider uppercase text-muted-foreground mb-1">
-                  <Trophy size={12} />
-                  三連単F的中率
-                </div>
-                <div className="stat-mono text-[1.9rem] sm:text-[2.3rem]">
-                  {fmtPct(sHitRate)}
-                </div>
-              </PremiumCard>
-            </div>
-            {/* サブ指標: 予想R / 的中R / 購入 / 払戻 */}
-            <div className="grid grid-cols-2 sm:grid-cols-2 md:grid-cols-4 gap-2">
-              {sCards.map((c) => (
-                <PremiumCard
-                  key={c.label}
-                  variant="default"
-                  padding="sm"
-                  className="text-center"
-                >
-                  <div className="text-[11px] text-muted-foreground mb-0.5">{c.label}</div>
-                  <div className="stat-mono text-base">{c.value}</div>
-                </PremiumCard>
-              ))}
-            </div>
-          </div>
-        );
-      })()}
-      {/* ─── 新戦略成績 (三連複動的 + 単勝 T-4) ─── */}
+      {/* ─── T-050 採用戦略成績 (三連複動的 + 単勝 T-4) ─── */}
       {hybrid && (() => {
         const spuku = hybrid.sanrenpuku_dynamic;
         const tansho = hybrid.tansho_t4;

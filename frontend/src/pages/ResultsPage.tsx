@@ -1,6 +1,6 @@
 import { useState, lazy, Suspense } from "react";
 import { useSearchParams } from "react-router-dom";
-import { useResultsSummary, useResultsTrend, useResultsDetailed, useSanrentanSummary, useHybridSummary } from "@/api/hooks";
+import { useResultsSummary, useResultsTrend, useResultsDetailed, useHybridSummary } from "@/api/hooks";
 import { SummaryCards } from "./ResultsPage/SummaryCards";
 import { DetailedAnalysis } from "./ResultsPage/DetailedAnalysis";
 import { PastPredictions } from "./ResultsPage/PastPredictions";
@@ -29,15 +29,12 @@ export default function ResultsPage() {
   const { data: summary, isLoading: loadingSummary } = useResultsSummary(year);
   const { data: trend } = useResultsTrend(year);
   const { data: detailed } = useResultsDetailed(year);
-  // 三連単フォーメーション成績（Phase 3 / マスター指示 2026-04-22）
-  const { data: sanrentan } = useSanrentanSummary(year);
-  // 新戦略ハイブリッド成績（三連複動的 + 単勝 T-4 / A-NONE 2券種）
+  // T-050 採用戦略: 三連複動的 + 単勝 T-4 (A-NONE 2 券種・本番採用)
   const { data: hybrid } = useHybridSummary(year);
 
   const summaryData = summary as Record<string, unknown> | undefined;
   const trendData = trend as Record<string, unknown> | undefined;
   const detailedData = detailed as Record<string, unknown> | undefined;
-  const sanrentanData = sanrentan ?? null;
   const hybridData = hybrid ?? null;
 
   return (
@@ -80,8 +77,8 @@ export default function ResultsPage() {
       {/* v6.1.6: 読み込み中は skeleton を表示（234 秒級の API が返るまで視覚的フィードバック） */}
       {loadingSummary && <SummaryCardsSkeleton />}
 
-      {/* サマリーカード（上段: 単勝ベース / 中段: 三連単F(旧) / 下段: 新戦略ハイブリッド） */}
-      {summaryData && <SummaryCards data={summaryData} sanrentan={sanrentanData} hybrid={hybridData} />}
+      {/* サマリーカード（上段: 単勝ベース / 下段: T-050 ハイブリッド戦略） */}
+      {summaryData && <SummaryCards data={summaryData} hybrid={hybridData} />}
 
       {/* データなし */}
       {summaryData && !summaryData.total_races && (
@@ -90,17 +87,17 @@ export default function ResultsPage() {
         </p>
       )}
 
-      {/* チャート（単勝+三連単F+新戦略ハイブリッド推移） */}
+      {/* チャート（単勝 + T-050 ハイブリッド戦略推移） */}
       {trendData ? (
         <Suspense fallback={<ChartSkeleton count={4} />}>
-          <TrendCharts data={trendData} sanrentan={sanrentanData} hybrid={hybridData} />
+          <TrendCharts data={trendData} hybrid={hybridData} />
         </Suspense>
       ) : (
         loadingSummary && <ChartSkeleton count={4} />
       )}
 
-      {/* 詳細分析（左=単勝 / 右=三連単F の並び） */}
-      {detailedData && <DetailedAnalysis data={detailedData} sanrentan={sanrentanData} />}
+      {/* 詳細分析 (単勝ベース) */}
+      {detailedData && <DetailedAnalysis data={detailedData} />}
 
       {/* 過去予想カレンダー（CalendarPage からクエリ ?date= で初期選択日を受け取る） */}
       <PastPredictions initialDate={initialDate} />
