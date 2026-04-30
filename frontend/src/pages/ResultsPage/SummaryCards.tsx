@@ -1,5 +1,5 @@
 import { PremiumCard } from "@/components/ui/premium/PremiumCard";
-import { TrendingUp, TrendingDown, Target, Trophy } from "lucide-react";
+import { Trophy, ListChecks, CheckCircle2 } from "lucide-react";
 import type { HybridSummaryResponse } from "@/api/client";
 
 interface Props {
@@ -18,10 +18,9 @@ function fmtNum(v: number): string {
 export function SummaryCards({ data, hybrid }: Props) {
   if (!data.total_races) return null;
 
-  // ヒーロー数値（◉◎単勝ベースの収支・回収率・結果）
+  // 数値取得
   const tanshoStake = Number(data.honmei_tansho_stake ?? 0);
   const tanshoRet = Number(data.honmei_tansho_ret ?? 0);
-  const profit = tanshoRet - tanshoStake;
   const tanshoRoi = Number(data.honmei_tansho_roi ?? 0);
 
   // 結果 X-X-X-X（1着-2着-3着-着外）
@@ -33,16 +32,6 @@ export function SummaryCards({ data, hybrid }: Props) {
   const third = p3 - p2;
   const out = total - p3;
 
-  const cards: { label: string; value: string; color?: string }[] = [
-    { label: "予想R数", value: (data.honmei_total || 0) + " R" },
-    { label: "的中R数", value: win + " R" },
-    { label: "◉◎勝率", value: fmtPct(Number(data.honmei_win_rate ?? 0)) },
-    { label: "◉◎連対率", value: fmtPct(Number(data.honmei_place2_rate ?? 0)) },
-    { label: "◉◎複勝率", value: fmtPct(Number(data.honmei_rate ?? 0)) },
-    { label: "購入額", value: fmtNum(tanshoStake) + "円" },
-    { label: "払戻額", value: fmtNum(tanshoRet) + "円" },
-  ];
-
   // 期間情報
   const periodParts: string[] = [];
   if (data.fetched_oldest && data.fetched_newest) {
@@ -52,6 +41,16 @@ export function SummaryCards({ data, hybrid }: Props) {
     periodParts.push(`${data.period_days}日分`);
   }
 
+  // 下段サブカード (2-1〜2-6: 勝率 / 連対率 / 複勝率 / 回収率 / 購入額 / 払戻額)
+  const subCards: { label: string; value: string; isRoi?: boolean }[] = [
+    { label: "◉◎勝率", value: fmtPct(Number(data.honmei_win_rate ?? 0)) },
+    { label: "◉◎連対率", value: fmtPct(Number(data.honmei_place2_rate ?? 0)) },
+    { label: "◉◎複勝率", value: fmtPct(Number(data.honmei_rate ?? 0)) },
+    { label: "◉◎回収率", value: fmtPct(tanshoRoi), isRoi: true },
+    { label: "購入額", value: fmtNum(tanshoStake) + "円" },
+    { label: "払戻額", value: fmtNum(tanshoRet) + "円" },
+  ];
+
   return (
     <div className="space-y-3">
       {periodParts.length > 0 && (
@@ -60,40 +59,9 @@ export function SummaryCards({ data, hybrid }: Props) {
         </div>
       )}
 
-      {/* ヒーロー: 収支 + 回収率を大きく表示（v6.1.4 PremiumCard化） */}
+      {/* 上段ヒーロー (1-1: 結果 / 1-2: 予想R数 / 1-3: 的中R数) */}
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-        {/* 収支 — プラスなら金、マイナスなら default */}
-        <PremiumCard
-          variant={profit >= 0 ? "gold" : "default"}
-          padding="md"
-          className="text-center stylish-card-hover border border-border/60"
-        >
-          <div className="inline-flex items-center gap-1.5 text-[11px] font-semibold tracking-wider uppercase text-muted-foreground mb-1">
-            {profit >= 0 ? <TrendingUp size={12} className="text-brand-gold-dark" /> : <TrendingDown size={12} className="text-negative" />}
-            収支
-          </div>
-          <div className={`stat-mono text-[1.9rem] sm:text-[2.3rem] ${profit >= 0 ? "stat-mono-gold" : "text-negative heading-display"}`}>
-            {profit >= 0 ? "+" : ""}{fmtNum(profit)}
-            <span className="text-base ml-0.5 font-semibold">円</span>
-          </div>
-        </PremiumCard>
-
-        {/* ◉◎単勝回収率 — プラスなら金 */}
-        <PremiumCard
-          variant={tanshoRoi >= 100 ? "gold" : "default"}
-          padding="md"
-          className="text-center stylish-card-hover border border-border/60"
-        >
-          <div className="inline-flex items-center gap-1.5 text-[11px] font-semibold tracking-wider uppercase text-muted-foreground mb-1">
-            <Target size={12} className={tanshoRoi >= 100 ? "text-brand-gold-dark" : "text-negative"} />
-            ◉◎単勝回収率
-          </div>
-          <div className={`text-[1.9rem] sm:text-[2.3rem] ${tanshoRoi >= 100 ? "stat-mono-gold" : "stat-mono text-negative"}`}>
-            {fmtPct(tanshoRoi)}
-          </div>
-        </PremiumCard>
-
-        {/* 結果 X-X-X-X — 桁数によって自動リサイズ */}
+        {/* 1-1: ◉◎結果 X-X-X-X */}
         <PremiumCard variant="default" padding="md" className="text-center stylish-card-hover border border-border/60">
           <div className="inline-flex items-center gap-1.5 text-[11px] font-semibold tracking-wider uppercase text-muted-foreground mb-1">
             <Trophy size={12} className="text-brand-gold" />
@@ -102,7 +70,6 @@ export function SummaryCards({ data, hybrid }: Props) {
           <div
             className="stat-mono leading-tight whitespace-nowrap"
             style={{
-              // 5桁を超えると 1.9rem が枠に収まらないため文字数で fontSize を可変に
               fontSize: total >= 10000 ? "1.35rem" : total >= 1000 ? "1.7rem" : "2.1rem",
             }}
           >
@@ -114,16 +81,46 @@ export function SummaryCards({ data, hybrid }: Props) {
             <span className="text-muted-foreground/50 mx-0.5">-</span>
             <span className="text-muted-foreground">{out}</span>
           </div>
-          {/* 補助: 勝率サマリ */}
           <div className="mt-1 text-[11px] text-muted-foreground tnum">
             的中{total > 0 ? ((p3 / total) * 100).toFixed(1) : "—"}%
           </div>
         </PremiumCard>
+
+        {/* 1-2: 予想R数 */}
+        <PremiumCard variant="default" padding="md" className="text-center stylish-card-hover border border-border/60">
+          <div className="inline-flex items-center gap-1.5 text-[11px] font-semibold tracking-wider uppercase text-muted-foreground mb-1">
+            <ListChecks size={12} className="text-brand-gold" />
+            予想R数
+          </div>
+          <div className="stat-mono text-[1.9rem] sm:text-[2.3rem] tnum">
+            {fmtNum(total)}
+            <span className="text-base ml-0.5 font-semibold text-muted-foreground">R</span>
+          </div>
+        </PremiumCard>
+
+        {/* 1-3: 的中R数 */}
+        <PremiumCard
+          variant={win > 0 ? "gold" : "default"}
+          padding="md"
+          className="text-center stylish-card-hover border border-border/60"
+        >
+          <div className="inline-flex items-center gap-1.5 text-[11px] font-semibold tracking-wider uppercase text-muted-foreground mb-1">
+            <CheckCircle2 size={12} className="text-brand-gold-dark" />
+            的中R数
+          </div>
+          <div className={`text-[1.9rem] sm:text-[2.3rem] tnum ${win > 0 ? "stat-mono-gold" : "stat-mono"}`}>
+            {fmtNum(win)}
+            <span className="text-base ml-0.5 font-semibold text-muted-foreground">R</span>
+          </div>
+          <div className="mt-1 text-[11px] text-muted-foreground tnum">
+            的中率 {total > 0 ? ((win / total) * 100).toFixed(1) : "—"}%
+          </div>
+        </PremiumCard>
       </div>
 
-      {/* サブ指標カード */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-7 gap-2">
-        {cards.map((c) => (
+      {/* 下段サブ (2-1〜2-6: 勝率/連対率/複勝率/回収率/購入額/払戻額) */}
+      <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-2">
+        {subCards.map((c) => (
           <PremiumCard
             key={c.label}
             variant="default"
@@ -133,9 +130,7 @@ export function SummaryCards({ data, hybrid }: Props) {
             <div className="text-[11px] text-muted-foreground mb-0.5">
               {c.label}
             </div>
-            <div
-              className={`stat-mono text-base ${c.color || ""}`}
-            >
+            <div className={`stat-mono text-base ${c.isRoi ? (tanshoRoi >= 100 ? "text-positive font-bold" : "text-negative font-bold") : ""}`}>
               {c.value}
             </div>
           </PremiumCard>

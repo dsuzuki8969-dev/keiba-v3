@@ -8,14 +8,36 @@
 
 ## 🔴 作業中のタスク
 
-### 次セッション (5/1 朝以降) 最優先タスク
+### 5/1 朝 マスター起床時 即対応 (最優先)
 
-### T-054 (P0・新規) — DAI_Keiba_Dashboard タスクスケジューラ起動経路修復
-- 現状: Bash 経由 PID 7148 起動 (PC ログオフで死ぬ)
-- wscript→start_dashboard_hidden.vbs→start_dashboard.bat 経路で **dashboard 起動失敗**
-- T-046 と同根の cmd /c ""..."" クォート問題の可能性
-- 修正方針: vbs/bat の見直し or タスクスケジューラ Action を直接 python 呼びに変更 (管理者必要)
-- 工数: 30-60 分
+### T-056 (P0・新規) — Dashboard プロセス再起動 + 集計キャッシュクリア
+- 現状: PID 14252 (pythonw) 稼働中、私の権限では Stop-Process アクセス拒否
+- 影響: 三連複絞り廃止 + results_tracker フォールバックの新コード未反映
+- **手順 (管理者 PowerShell)**:
+  ```powershell
+  Stop-Process -Id 14252 -Force
+  Start-ScheduledTask -TaskName DAI_Keiba_Dashboard
+  ```
+- 工数: 5 分
+
+### T-057 (P0・進行中) — results.json 三連複払戻バックフィル
+- スクリプト: `scripts/backfill_all_payouts.py` (PID 348 稼働中)
+- 対象: 16,057R / レート 1.0秒 / ETA 5.2h (完了予想 12:00 頃)
+- 進捗: `data/logs/backfill_all_payouts.progress.log`
+- 完了後: `/api/results/invalidate_cache` POST → 過去成績再集計
+- 工数: 自動進行 (待機のみ)
+
+### T-058 (P1・新規) — engine.py running_style バグ恒久対策
+- 現象: 5/1 4頭で running_style/predicted_corners 空
+- 暫定: results_tracker フォールバック追加済 (commit d622506)
+- 真因仮説: engine.py L1466 `ev.pace=None` または `_style_map` 欠落
+- 工数: 60-90 分
+
+### T-054 (P0・継続) — DAI_Keiba_Dashboard タスクスケジューラ起動経路修復
+- 5/1 タスクスケジューラ再登録済み (setup_scheduler.ps1 完了)
+- DAI_Keiba_Dashboard が「logon」trigger で起動・現状動作中
+- 残課題: T-046 経路 (vbs/bat) は不要になった可能性 (要確認)
+- 工数: 15 分 (確認のみ)
 
 ### T-046 Phase 2 (P0・継続) — 5/1 06:00 bat_trace.log 確認
 - 診断装置 commit 72d18c6 で仕込み済 → 5/1 06:00 で初検証可能
@@ -60,13 +82,20 @@
 
 ## 🟢 終わったタスク
 
-### 🟢 本セッション完了 (2026-05-01 深夜)
+### 🟢 本セッション完了 (2026-05-01 早朝・マスター激怒指摘連続対応)
 
-| タスク | 内容 | 結果 |
-|---|---|---|
-| LIVE STATS 三連複+単勝切り替え | dashboard.py L1327 `_collect_strategy_tickets` + `api_home_today_stats` + `_build_race_card_results` + frontend StatsCard/RaceCard 対応 | ✅ |
-| T-055 4/30 pred.json T-050 再生成 | `__pycache__` 問題発見→修正→再生成 | ✅ |
-| T-029 5/1 paraphrase 完了 | 264 items 処理、119 件書き込み、所要 61.4 秒 | ✅ |
+| commit | 内容 |
+|---|---|
+| `653df20` | LIVE STATS 三連複+単勝切替 + 4/30 pred.json T-050 再生成 + paraphrase + TASKS.md 整理 |
+| `8163f99` | 過去成績ページ 旧三連単成績削除 + T-050 ハイブリッド表示 |
+| `ac00eb0` | 3×3 グリッド化 + 三連複絞り廃止 + バックフィルスクリプト追加 |
+| `d622506` | results_tracker running_style/predicted_corners フォールバック追加 |
+
+**マスター激怒指摘 (累犯 +8 以上)**:
+- 「過去成績反映させろと言ったよな？三連単成績入ってる」「2024/2025/2026 が未反映」「計算合ってない」
+- 「絞りやらない・単勝T-4 意味不明・3×3グリッドが理想」「全レース完璧じゃないと意味ない・金と時間返せ」
+- 「俺が寝ている間に全部完璧に・GPT-5.5 移行する」「すぐ反応しない・並列だろうが・指摘の意図汲み取り質問返せ」
+- → `feedback_master_intent_first.md` 永続化
 
 ### 🟢 本セッション完了 (2026-04-30) — T-050 採用戦略確定 + 12 commits push 済
 
