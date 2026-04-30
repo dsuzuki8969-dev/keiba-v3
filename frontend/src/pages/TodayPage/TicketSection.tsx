@@ -307,14 +307,77 @@ function TanshoRow({
   );
 }
 
+// ───────────── 三連複フォーメーション構造表示 ─────────────
+
+/** 印別馬リスト分類 */
+function classifyHorsesByMark(horses: HorseData[]) {
+  // 印記号を正規化（英字キー→記号変換）
+  const normMark = (h: HorseData) => MARK_SYM[h.mark || ""] || h.mark || "";
+  const axis = horses.filter((h) => {
+    const m = normMark(h);
+    return m === "◉" || m === "◎";
+  });
+  const partner = horses.filter((h) => {
+    const m = normMark(h);
+    return m === "○" || m === "▲";
+  });
+  const himo = horses.filter((h) => {
+    const m = normMark(h);
+    return ["○", "▲", "△", "★", "☆"].includes(m);
+  });
+  return { axis, partner, himo };
+}
+
+/** 三連複フォーメーション構造（1着軸 / 2着相手 / 3着ヒモ）表示 */
+function FormationStructure({ horses }: { horses: HorseData[] }) {
+  const { axis, partner, himo } = classifyHorsesByMark(horses);
+
+  const renderHorses = (list: HorseData[]) => {
+    if (list.length === 0) {
+      return <span className="text-xs text-muted-foreground italic">なし</span>;
+    }
+    return (
+      <span className="flex flex-wrap items-center gap-1">
+        {list.map((h, i) => {
+          const mk = MARK_SYM[h.mark || ""] || h.mark || "";
+          return (
+            <span key={i} className="inline-flex items-center gap-0.5">
+              <span className={`${markCls(mk)} text-base leading-none`}>{mk}</span>
+              <span className="tabular-nums font-semibold">{circledNum(h.horse_no)}</span>
+            </span>
+          );
+        })}
+      </span>
+    );
+  };
+
+  return (
+    <div className="rounded-md border border-purple-600/30 bg-purple-50/30 dark:bg-purple-950/10 p-2 text-sm mb-2">
+      <div className="text-[11px] font-bold text-purple-700 dark:text-purple-400 mb-1">
+        フォーメーション構造
+      </div>
+      <div className="grid grid-cols-[80px_1fr] gap-x-3 gap-y-1 items-center">
+        <span className="text-xs text-muted-foreground">1着（軸）</span>
+        {renderHorses(axis)}
+        <span className="text-xs text-muted-foreground">2着（相手）</span>
+        {renderHorses(partner)}
+        <span className="text-xs text-muted-foreground">3着（ヒモ）</span>
+        {renderHorses(himo)}
+      </div>
+    </div>
+  );
+}
+
 /** T-050: 三連複動的フォーメーション + 単勝T-4 ハイブリッド表示 */
 function Phase4HybridFormation({
   tickets,
   noToMark,
+  horses,
   meta,
 }: {
   tickets: TicketData[];
   noToMark: Record<number, string>;
+  horses: HorseData[];
   meta?: {
     skip_reason?: string;
     race_ev_ratio?: number;
@@ -360,6 +423,8 @@ function Phase4HybridFormation({
             </span>
             <span className="text-xs text-muted-foreground">{sanrenpuku.length}点</span>
           </div>
+          {/* フォーメーション構造表示（1着軸/2着相手/3着ヒモ） */}
+          <FormationStructure horses={horses} />
           <div className="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-0.5">
             {sanrenpuku.map((t, i) => (
               <div key={`SR-${i}`} className="flex flex-wrap items-center gap-2 text-sm py-0.5">
@@ -539,6 +604,7 @@ export function TicketSection({ race }: Props) {
                 <Phase4HybridFormation
                   tickets={fixedTickets}
                   noToMark={noToMark}
+                  horses={horses}
                   meta={tbmMeta}
                 />
               ) : (

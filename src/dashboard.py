@@ -929,6 +929,9 @@ def _scan_today_predictions(date_str: str) -> dict:
                         "honmei_win_pct": round(honmei.get("win_prob", 0) * 100, 1) if honmei else 0,
                         "honmei_rentai_pct": round(honmei.get("place2_prob", 0) * 100, 1) if honmei else 0,
                         "honmei_fukusho_pct": round(honmei.get("place3_prob", 0) * 100, 1) if honmei else 0,
+                        # 2026-04-30 修正: HTML 未生成レース (pred.json fallback 経由) で honmei_odds/popularity が欠落していた
+                        "honmei_odds": honmei.get("odds") if honmei else None,
+                        "honmei_popularity": honmei.get("popularity") if honmei else None,
                     })
                     # 馬券EV計算
                     all_horses = pr.get("horses", [])
