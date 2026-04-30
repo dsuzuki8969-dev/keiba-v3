@@ -139,16 +139,16 @@ export function RaceCard({ race, onClick, winPctRank, hitResult }: Props) {
             単{winHit ? "◯" : "×"}
           </span>
         )}
-        {/* T-039: 三連単的中バッジ（結果取得済み = true/false のみ表示。null/undefined は非表示） */}
+        {/* T-050: 三連複+単勝 的中バッジ（結果取得済み = true/false のみ表示。null/undefined は非表示） */}
         {sanrentanHit !== null && sanrentanHit !== undefined && (
           <span
             className={cn(
               "text-xs font-bold leading-none",
               sanrentanHit ? "text-red-500" : "text-zinc-400 dark:text-zinc-500"
             )}
-            aria-label={sanrentanHit ? "三連単 的中" : "三連単 不的中"}
+            aria-label={sanrentanHit ? "三連複 的中" : "三連複 不的中"}
           >
-            三{sanrentanHit ? "◯" : "×"}
+            複{sanrentanHit ? "◯" : "×"}
           </span>
         )}
         {race.post_time && (

@@ -1324,6 +1324,35 @@ def _collect_sanrentan_tickets(race: dict) -> list:
     return [t for t in all_tix if t.get("type") == "三連単"]
 
 
+def _collect_strategy_tickets(race: dict) -> list[dict]:
+    """T-050: pred.json から三連複+単勝チケットを取得（重複除去）。
+
+    探索範囲:
+        race["tickets"] + race["formation_tickets"]
+        + race["tickets_by_mode"]["fixed"|"accuracy"|"balanced"|"recovery"]
+
+    Returns:
+        type == "三連複" または "単勝" のチケット dict の list（重複除去済）
+    """
+    all_tix = list(race.get("tickets", []) or [])
+    all_tix += list(race.get("formation_tickets", []) or [])
+    tbm = race.get("tickets_by_mode", {}) or {}
+    for mk in ("fixed", "accuracy", "balanced", "recovery"):
+        all_tix += list(tbm.get(mk, []) or [])
+    seen = set()
+    result = []
+    for t in all_tix:
+        tt = t.get("type", "")
+        if tt not in ("三連複", "単勝"):
+            continue
+        combo = tuple(int(x) for x in (t.get("combo") or []))
+        key = (tt, combo, int(t.get("stake", 0) or 0))
+        if key not in seen:
+            seen.add(key)
+            result.append(t)
+    return result
+
+
 def _check_sanrentan_hit(
     sanrentan_tix: list,
     top3_ordered: list,
@@ -5807,7 +5836,8 @@ function dNavRefreshOdds(date){{
                 "tansho_roi":   round(h_ret / h_stake * 100, 1) if h_stake > 0 else 0.0,
             }
 
-            # 三連単F集計 — pred.json 永続値ベース (T-039 ロジックに統一)
+            # T-050: 三連複+単勝 集計 — pred.json 永続値ベース (LIVE STATS 表示用)
+            # API キー名は sanrentan のまま維持（フロント後方互換）
             sanrentan = {"played": 0, "hit": 0, "stake": 0, "payback": 0, "roi_pct": 0.0}
             try:
                 from scripts.monthly_backtest import get_payout
@@ -5826,40 +5856,52 @@ function dNavRefreshOdds(date){{
                             if not rdata:
                                 continue
                             payouts = rdata.get("payouts", {})
-                            if "三連単" not in payouts and "sanrentan" not in payouts:
-                                continue
 
-                            # 1-2-3 着の馬番を確定 (T-039 と同じロジック)
+                            # 1-2-3 着の馬番を確定
                             order = rdata.get("order") or []
                             if len(order) < 3:
                                 continue
                             finish_map = {int(o["horse_no"]): int(o["finish"]) for o in order}
+                            top3_set = {
+                                h for h, f in finish_map.items() if f <= 3
+                            }
                             top3_ordered = [
                                 h for h, f in sorted(finish_map.items(), key=lambda x: x[1])
                                 if f <= 3
                             ]
                             if len(top3_ordered) < 3:
                                 continue
+                            winner = top3_ordered[0]  # 1着馬番
 
-                            # 共通ヘルパーで三連単チケット集合を取得
-                            sanrentan_tix = _collect_sanrentan_tickets(r)
-                            if not sanrentan_tix:
-                                continue  # 三連単対象外レース (永続値に三連単無し = 予想時点 SS/C/D 等で skip 済)
+                            # T-050 新ヘルパーで三連複+単勝チケット集合を取得
+                            strategy_tix = _collect_strategy_tickets(r)
+                            if not strategy_tix:
+                                continue  # 対象外レース（チケットなし）
 
-                            # ここまで来れば played にカウント (真値 40R 系列)
+                            # ここまで来れば played にカウント
                             sanrentan["played"] += 1
-                            race_hit = _check_sanrentan_hit(sanrentan_tix, top3_ordered) is True
-                            for t in sanrentan_tix:
+                            race_hit = False
+                            for t in strategy_tix:
                                 stake = int(t.get("stake", 0) or 0)
                                 if stake <= 0:
                                     continue
+                                tt = t.get("type", "")
+                                combo = t.get("combo", [])
+                                combo_ints = [int(x) for x in combo] if combo else []
+                                if tt == "三連複" and (len(combo_ints) != 3 or len(set(combo_ints)) != 3):
+                                    continue
                                 sanrentan["stake"] += stake
-                                if race_hit:
-                                    # 当該チケットが的中チケットか個別判定
-                                    combo = t.get("combo", [])
-                                    if combo and len(combo) >= 3 and [int(x) for x in combo[:3]] == top3_ordered:
-                                        pp = get_payout(payouts, t)
-                                        sanrentan["payback"] += pp * (stake // 100)
+                                if tt == "三連複":
+                                    tix_hit = set(combo_ints) == top3_set
+                                elif tt == "単勝":
+                                    tix_hit = bool(combo_ints) and combo_ints[0] == winner
+                                else:
+                                    tix_hit = False
+                                if tix_hit:
+                                    race_hit = True
+                                    sorted_t = {**t, "combo": sorted(combo_ints)}
+                                    pp = get_payout(payouts, sorted_t)
+                                    sanrentan["payback"] += pp * (stake // 100)
                             if race_hit:
                                 sanrentan["hit"] += 1
                         sanrentan["roi_pct"] = (
@@ -5872,7 +5914,7 @@ function dNavRefreshOdds(date){{
                         )
                         sanrentan["balance"] = sanrentan["payback"] - sanrentan["stake"]
             except Exception as _e:
-                logger.debug("today_stats sanrentan 計算失敗: %s", _e)
+                logger.warning("today_stats sanrentan(三連複+単勝) 計算失敗: %s", _e, exc_info=True)
 
             # T-001 (2026-04-25): UI 3 段表記用のメタ情報を計算
             # total_races (pred.json 全数) / finished_races (results.json 取り込み済み)
@@ -5885,14 +5927,13 @@ function dNavRefreshOdds(date){{
                 "pending_age_max_min": 0,
             }
             try:
-                from src.calculator.betting import SANRENTAN_SKIP_CONFIDENCES
-                pred2 = pred_cached  # T-001 reviewer MEDIUM: 上部 load の結果を再利用
+                pred2 = pred_cached
                 if pred2:
                     races2 = pred2.get("races", [])
                     meta["total_races"] = len(races2)
                     meta["eligible_for_sanrentan"] = sum(
                         1 for r in races2
-                        if r.get("confidence", "B") not in SANRENTAN_SKIP_CONFIDENCES
+                        if _collect_strategy_tickets(r)
                     )
                     # results.json 取り込み済み件数・未取り込み統計（M-1 共通ヘルパー）
                     finished_rids, _pf, _pa = _get_pending_fetch_stats(date, races2)
@@ -6844,19 +6885,27 @@ function dNavRefreshOdds(date){{
                     win_hit = (int(h["horse_no"]) == winner)
                     break
 
-            # ── 三連単 チケット 的中判定 ──────────────────────────────────
-            # 共通ヘルパーで三連単チケット集合を取得・判定 (LIVE STATS と single source of truth)
-            sanrentan_tix = _collect_sanrentan_tickets(race)
-            hit = _check_sanrentan_hit(sanrentan_tix, top3_ordered)
-            # T-039 既存仕様: 「チケットあるが top3 < 3」 → None
-            # 「チケットあるが combo 不一致」 → False
-            # 「チケットなし」 → None
-            if hit is True:
-                sanrentan_hit = True
-            elif sanrentan_tix and len(top3_ordered) >= 3:
+            # ── T-050: 三連複+単勝 チケット 的中判定 ────────────────────────
+            # _collect_strategy_tickets で三連複+単勝チケットを取得・判定
+            strategy_tix = _collect_strategy_tickets(race)
+            winner_no = top3_ordered[0] if top3_ordered else None
+            top3_set = set(top3_ordered[:3]) if len(top3_ordered) >= 3 else set()
+            sanrentan_hit: bool | None = None
+            if strategy_tix and len(top3_ordered) >= 3:
+                # チケットあり・着順確定 → False 確定（的中があれば True に上書き）
                 sanrentan_hit = False
-            else:
-                sanrentan_hit = None
+                for _t in strategy_tix:
+                    _tt = _t.get("type", "")
+                    _combo = _t.get("combo", [])
+                    if _tt == "三連複":
+                        _cset = {int(x) for x in _combo} if _combo else set()
+                        if _cset == top3_set and len(_cset) == 3:
+                            sanrentan_hit = True
+                            break
+                    elif _tt == "単勝":
+                        if _combo and winner_no is not None and int(_combo[0]) == winner_no:
+                            sanrentan_hit = True
+                            break
 
             race_results[race_id] = {
                 "win_hit": win_hit,

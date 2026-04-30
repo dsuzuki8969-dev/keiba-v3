@@ -294,7 +294,7 @@ export function useKaisaiCalendar() {
 // T-039: レースカード的中バッジ用フック
 export interface RaceCardHitResult {
   win_hit: boolean | null;        // 単勝 ◎ 的中 (null=結果未取得)
-  sanrentan_hit: boolean | null;  // 三連単 F 的中 (null=未対象/結果未取得)
+  sanrentan_hit: boolean | null;  // T-050: 三連複+単勝 的中 (null=未対象/結果未取得)
 }
 
 export interface RaceCardResultsData {
