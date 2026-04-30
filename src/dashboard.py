@@ -2275,12 +2275,27 @@ def create_app():
             ttl = cached[2] if len(cached) > 2 else _WEATHER_CACHE_TTL
             if (now - cached[0]) < ttl:
                 return jsonify(**cached[1])
+
+        # マスター指示 2026-05-01: VENUES セクション初期表示が遅すぎる (体感1分) 問題対応
+        # ThreadPoolExecutor で天気取得を並列化 (シリアル 3場×5秒 → 並列 ~5秒)
         venues = _get_todays_venues(date)
-        weather = {}
-        for v in venues:
-            coords = VENUE_COORDS.get(v["code"])
-            if coords:
-                weather[v["name"]] = _fetch_weather(coords[0], coords[1])
+        weather: dict = {}
+        from concurrent.futures import ThreadPoolExecutor
+
+        def _w(name_code_lat_lon: tuple) -> tuple:
+            name, lat, lon = name_code_lat_lon
+            return name, _fetch_weather(lat, lon)
+
+        targets = [
+            (v["name"], *VENUE_COORDS[v["code"]])
+            for v in venues
+            if v["code"] in VENUE_COORDS
+        ]
+        if targets:
+            with ThreadPoolExecutor(max_workers=min(8, len(targets))) as ex:
+                for name, w in ex.map(_w, targets):
+                    weather[name] = w
+
         result = {"date": date, "venues": venues, "weather": weather}
         # JRA場のみの場合はキャッシュTTLを短く（NAR場が後から取得可能になる場合に対応）
         _jra_codes = {"01", "02", "03", "04", "05", "06", "07", "08", "09", "10"}
