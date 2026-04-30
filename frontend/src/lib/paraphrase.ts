@@ -708,6 +708,10 @@ const SAFE_MAP: Record<string, string> = {
   "終い重点": "終い重点メニュー",
   "ひと息入れて良化": "間隔空けで良化",
   "ひと息入れて新味": "間隔空けで新味",
+  // 4/30 北斗盃 ベラジオエンペラー (累犯回復)
+  "時計平凡も動き良": "時計は平凡だが動き良",
+  "時計地味も動き良": "時計は地味だが動き良",
+  "時計は出ないも動き良": "時計伸びずも動き良",
 };
 
 export function paraphraseTrainingComment(raw: string | null | undefined): string {
