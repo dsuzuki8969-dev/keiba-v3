@@ -2175,38 +2175,52 @@ def generate_tickets_by_mode(
     confidence: str,
     real_odds_map: Optional[Dict[Tuple[int, int, int], float]] = None,
 ) -> Dict[str, List[Dict]]:
-    """Phase 3: 三連単フォーメーション固定買い目（マスター指示 2026-04-21 第2弾）。
+    """T-050: A-NONE 馬単なし 2 券種ハイブリッド戦略 (2026-04-30 確定)。
 
-    旧モード（accuracy/balanced/recovery, fixed=Phase2 馬連+三複）は廃止し、
-    `generate_sanrentan_formation` の三連単フォーメーションを返す。
+    旧: 三連単フォーメーション (T-040 戦略) → コメントアウトして参考保存。
+    新: dispatch_tickets() による三連複動的フォーメーション + 単勝 T-4 の 2 券種。
+
     互換のため戻り値の dict 形式は維持し、メインキーは "fixed"。
 
     Returns
     -------
     dict
         {
-          "fixed":     [...三連単 tickets],
+          "fixed":     [...三連複 + 単勝 tickets],
           "accuracy":  [],  # 後方互換のため空配列
           "balanced":  [],
           "recovery":  [],
+          "_meta":     {...},
         }
     """
-    fixed = generate_sanrentan_formation(evaluations, race_info, confidence)
+    # 旧: 三連単フォーメーション (T-040 戦略・参考保存)
+    # fixed_old = generate_sanrentan_formation(evaluations, race_info, confidence)
+
+    # 新: A-NONE 馬単なし 2 券種 (T-050 確定戦略)
+    fixed_tickets = dispatch_tickets(evaluations, race_info, real_odds_map)
+
+    # 見送り判定: 三連複・単勝ともにチケットなし
+    skipped = len(fixed_tickets) == 0
+    sanrenpuku_count = sum(1 for t in fixed_tickets if t.get("type") == "三連複")
+    tansho_count     = sum(1 for t in fixed_tickets if t.get("type") == "単勝")
+
     out: Dict[str, List[Dict]] = {
-        "fixed": fixed.get("fixed", []),
+        "fixed": fixed_tickets,
         "accuracy": [],
         "balanced": [],
         "recovery": [],
         # メタ情報（フロント・ダッシュボード用）
         "_meta": {
-            "skipped":       fixed.get("skipped", False),
-            "skip_reason":   fixed.get("skip_reason", ""),
-            "race_ev_ratio": fixed.get("race_ev_ratio", 0.0),
-            "candidates_n":  fixed.get("candidates_n", 0),
-            "max_budget":    fixed.get("max_budget", 0),
-            "format":        "三連単フォーメーション ◉/◎⇔○/▲/(☆)⇒○/▲/△/★/(☆)/(同断層無印)",
-            # Phase 3: 三連単フォーメーションの列定義（UI 表示用）
-            "formation_sanrentan": fixed.get("formation_sanrentan", {"rank1": [], "rank2": [], "rank3": []}),
+            "skipped":          skipped,
+            "skip_reason":      "三連複・単勝ともに発動条件未達" if skipped else "",
+            "race_ev_ratio":    0.0,
+            "candidates_n":     len(fixed_tickets),
+            "max_budget":       len(fixed_tickets) * 100,
+            "format":           "T-050: 三連複動的フォーメーション + 単勝T-4 (馬単なし)",
+            "sanrenpuku_count": sanrenpuku_count,
+            "tansho_count":     tansho_count,
+            # 旧フォーメーション列定義 (互換用・空値)
+            "formation_sanrentan": {"rank1": [], "rank2": [], "rank3": []},
         },
     }
     return out
@@ -2371,3 +2385,349 @@ def generate_reference_tickets(
             "is_reference": True,
         })
     return tickets
+
+
+# ============================================================
+# T-050: A-NONE 馬単なし 2 券種ハイブリッド戦略 (2026-04-30 確定)
+# 三連複動的フォーメーション + 単勝 T-4
+# ============================================================
+
+# ── 印グループ定数 ──
+_DT_HONMEI_MARKS  = {"◉", "◎"}
+_DT_TAIKOU_MARKS  = {"○", "〇"}
+_DT_RENKA_MARKS   = {"▲"}
+_DT_OANA_MARKS    = {"☆"}
+_DT_HOSHI_MIN_ODDS = 10.0   # ☆ 動的補完の最小オッズ閾値
+
+# ── EV 判定閾値 ──
+_DT_EV_STRICT = 1.8   # 絞り: EV≥1.8
+_DT_EV_MID    = 1.3   # 中: EV≥1.3
+_DT_EV_WIDE   = 1.0   # 広: EV≥1.0 (デフォルト)
+
+# ── place3_prob 閾値 ──
+_DT_P3_STRICT_PIVOT  = 0.65  # 絞り: ◉◎ place3_prob
+_DT_P3_STRICT_SECOND = 0.50  # 絞り: ○ place3_prob
+_DT_P3_MID_PIVOT     = 0.55  # 中: ◉◎ place3_prob
+_DT_P3_MID_SUB       = 0.40  # 中: ○ or ▲ place3_prob
+
+
+def _dt_get_ev(ev: "HorseEvaluation") -> float:
+    """HorseEvaluation から EV を計算する。
+    win_prob × effective_odds でフォールバック計算する。
+    """
+    win_prob = float(getattr(ev, "win_prob", 0.0) or 0.0)
+    odds = float(getattr(ev, "effective_odds", None) or
+                 getattr(ev, "predicted_tansho_odds", None) or 0.0)
+    if win_prob > 0 and odds > 0:
+        return win_prob * odds
+    return 0.0
+
+
+def _dt_get_mark_horses(
+    evaluations: List["HorseEvaluation"],
+    mark_set: set,
+) -> List["HorseEvaluation"]:
+    """指定 mark_set に含まれる馬を印優先度 + composite 降順で返す。"""
+    _MARK_PRIO = {"◉": 0, "◎": 1, "○": 2, "〇": 2, "▲": 3, "△": 4, "★": 5, "☆": 6}
+    result = [
+        e for e in evaluations
+        if getattr(getattr(e, "mark", None), "value", "") in mark_set
+        and not getattr(e, "is_tokusen_kiken", False)
+    ]
+    result.sort(key=lambda e: (
+        _MARK_PRIO.get(getattr(getattr(e, "mark", None), "value", ""), 9),
+        -float(getattr(e, "composite", 0) or 0),
+    ))
+    return result
+
+
+def _dt_get_pivot(evaluations: List["HorseEvaluation"]) -> Optional["HorseEvaluation"]:
+    """軸馬 (◉◎ の最優先 1 頭) を返す。"""
+    cands = _dt_get_mark_horses(evaluations, _DT_HONMEI_MARKS)
+    return cands[0] if cands else None
+
+
+def _dt_resolve_hoshi(
+    evaluations: List["HorseEvaluation"],
+) -> Optional["HorseEvaluation"]:
+    """☆ 印馬を返す。存在しない場合は動的補完 (無印 + odds≥10 の win_prob 最高位) を行う。"""
+    hoshi_list = _dt_get_mark_horses(evaluations, _DT_OANA_MARKS)
+    if hoshi_list:
+        return hoshi_list[0]
+    # 動的補完: 無印馬 (mark が None / "－") かつ odds ≥ HOSHI_MIN_ODDS
+    unmarked = [
+        e for e in evaluations
+        if getattr(getattr(e, "mark", None), "value", "－") in ("", None, "－", "-")
+        and float(getattr(e, "effective_odds", None) or
+                  getattr(e, "predicted_tansho_odds", None) or 0.0) >= _DT_HOSHI_MIN_ODDS
+        and not getattr(e, "is_tokusen_kiken", False)
+    ]
+    if not unmarked:
+        return None
+    unmarked.sort(key=lambda e: -float(getattr(e, "win_prob", 0.0) or 0.0))
+    return unmarked[0]
+
+
+def build_sanrenpuku_dynamic_tickets(
+    evaluations: List["HorseEvaluation"],
+    race_info: "RaceInfo",
+    real_odds_map: Optional[Dict] = None,
+) -> List[Dict]:
+    """T-050: 三連複動的フォーメーション買い目を生成する。
+
+    Layer 1 EV フォールバック計算で絞り/中/広を判定し、
+    対応するフォーメーションを生成する。
+
+    判定ロジック (dispatch_backtest.py layer1_sanrenpuku と同等):
+      絞り (S-strict) : EV≥1.8 ∧ ◉◎ place3_prob≥0.65 ∧ ○ place3_prob≥0.50 → 4 点
+      中 (S-mid)      : EV≥1.3 ∧ ◉◎ place3_prob≥0.55 ∧ (○or▲) place3_prob≥0.40 → 7 点
+      広 (S-wide)     : EV≥1.0 (デフォルト) → 10 点
+      見送り          : EV<1.0 → 空リスト
+
+    Returns
+    -------
+    list of dict
+        各要素: {"type": "三連複", "combo": [a,b,c], "pattern": "絞り/中/広",
+                 "odds": float, "prob": float, "ev": float, "stake": 100}
+    """
+    from itertools import combinations as _comb
+
+    # 取消・出走停止馬を除外
+    active = [
+        e for e in evaluations
+        if not getattr(e, "is_tokusen_kiken", False)
+        and not getattr(e, "is_scratched", False)
+    ]
+
+    pivot = _dt_get_pivot(active)
+    if pivot is None:
+        return []
+
+    p_ev          = _dt_get_ev(pivot)
+    p_place3_prob = float(getattr(pivot, "place3_prob", 0.0) or 0.0)
+
+    # 見送り判定
+    if p_ev < _DT_EV_WIDE:
+        return []
+
+    taikou_list = _dt_get_mark_horses(active, _DT_TAIKOU_MARKS)
+    renka_list  = _dt_get_mark_horses(active, _DT_RENKA_MARKS)
+    taikou = taikou_list[0] if taikou_list else None
+    renka  = renka_list[0]  if renka_list  else None
+
+    o_place3 = float(getattr(taikou, "place3_prob", 0.0) or 0.0) if taikou else 0.0
+    r_place3 = float(getattr(renka,  "place3_prob", 0.0) or 0.0) if renka  else 0.0
+
+    # ☆ 補完
+    hoshi = _dt_resolve_hoshi(active)
+
+    # ── ケース判定 ──
+    pattern: str
+    if (p_ev >= _DT_EV_STRICT
+            and p_place3_prob >= _DT_P3_STRICT_PIVOT
+            and o_place3 >= _DT_P3_STRICT_SECOND
+            and taikou is not None):
+        pattern = "絞り"
+    elif (p_ev >= _DT_EV_MID
+          and p_place3_prob >= _DT_P3_MID_PIVOT
+          and (o_place3 >= _DT_P3_MID_SUB or r_place3 >= _DT_P3_MID_SUB)):
+        pattern = "中"
+    else:
+        pattern = "広"
+
+    pivot_no = int(getattr(pivot.horse, "horse_no", 0))
+    is_jra = getattr(race_info, "is_jra", True)
+    field_count = int(getattr(race_info, "field_count", len(active)) or len(active))
+
+    tickets: List[Dict] = []
+
+    if pattern == "絞り":
+        # ◉◎-○ → {▲,△,★,☆} 2頭軸流し (最大4点)
+        if taikou is None:
+            return []
+        taikou_no = int(getattr(taikou.horse, "horse_no", 0))
+        third_marks = {"▲", "△", "★"}
+        thirds = _dt_get_mark_horses(active, third_marks)
+        if hoshi:
+            existing_nos = {int(getattr(e.horse, "horse_no", 0)) for e in thirds}
+            if int(getattr(hoshi.horse, "horse_no", 0)) not in existing_nos:
+                thirds.append(hoshi)
+        for t in thirds:
+            t_no = int(getattr(t.horse, "horse_no", 0))
+            if t_no in (pivot_no, taikou_no):
+                continue
+            combo = sorted([pivot_no, taikou_no, t_no])
+            # オッズ推定 (effective_odds は property: horse.odds or predicted_tansho_odds)
+            oa = float(pivot.effective_odds or 10.0)
+            ob = float(taikou.effective_odds or 10.0)
+            oc = float(t.effective_odds or 10.0)
+            est_odds = estimate_sanrenpuku_odds(oa, ob, oc, field_count, is_jra)
+            prob = (
+                float(getattr(pivot, "place3_prob", 0.0) or 0.0)
+                * float(getattr(taikou, "place3_prob", 0.0) or 0.0)
+                * float(getattr(t, "place3_prob", 0.0) or 0.0)
+            )
+            ev = prob * est_odds
+            tickets.append({
+                "type": "三連複",
+                "combo": combo,
+                "pattern": pattern,
+                "odds": round(est_odds, 1),
+                "prob": round(prob, 4),
+                "ev": round(ev, 3),
+                "stake": 100,
+            })
+
+    elif pattern == "中":
+        # ◉◎ 軸 → (○,▲) × (○,▲,△,★,☆) フォーメーション (最大7点)
+        second_marks = {"○", "〇", "▲"}
+        second_horses = _dt_get_mark_horses(active, second_marks)
+        third_marks   = {"○", "〇", "▲", "△", "★"}
+        third_horses  = _dt_get_mark_horses(active, third_marks)
+        if hoshi:
+            existing_nos = {int(getattr(e.horse, "horse_no", 0)) for e in third_horses}
+            if int(getattr(hoshi.horse, "horse_no", 0)) not in existing_nos:
+                third_horses.append(hoshi)
+        second_nos = [int(getattr(e.horse, "horse_no", 0)) for e in second_horses]
+        all_third_nos = [int(getattr(e.horse, "horse_no", 0)) for e in third_horses]
+        seen: set = set()
+        oa = float(pivot.effective_odds or 10.0)
+        for s_horse in second_horses:
+            s_no = int(getattr(s_horse.horse, "horse_no", 0))
+            if s_no == pivot_no:
+                continue
+            ob = float(s_horse.effective_odds or 10.0)
+            for t_horse in third_horses:
+                t_no = int(getattr(t_horse.horse, "horse_no", 0))
+                if t_no == pivot_no or t_no == s_no:
+                    continue
+                combo = tuple(sorted([pivot_no, s_no, t_no]))
+                if combo in seen:
+                    continue
+                seen.add(combo)
+                oc = float(t_horse.effective_odds or 10.0)
+                est_odds = estimate_sanrenpuku_odds(oa, ob, oc, field_count, is_jra)
+                prob = (
+                    float(getattr(pivot, "place3_prob", 0.0) or 0.0)
+                    * float(getattr(s_horse, "place3_prob", 0.0) or 0.0)
+                    * float(getattr(t_horse, "place3_prob", 0.0) or 0.0)
+                )
+                ev = prob * est_odds
+                tickets.append({
+                    "type": "三連複",
+                    "combo": list(combo),
+                    "pattern": pattern,
+                    "odds": round(est_odds, 1),
+                    "prob": round(prob, 4),
+                    "ev": round(ev, 3),
+                    "stake": 100,
+                })
+
+    else:  # 広
+        # ◉◎ 軸 1頭 → (○,▲,△,★,☆) から 2 頭組合せ (最大10点)
+        sub_all_marks = {"○", "〇", "▲", "△", "★"}
+        sub_all = _dt_get_mark_horses(active, sub_all_marks)
+        if hoshi:
+            existing_nos = {int(getattr(e.horse, "horse_no", 0)) for e in sub_all}
+            if int(getattr(hoshi.horse, "horse_no", 0)) not in existing_nos:
+                sub_all.append(hoshi)
+        oa = float(pivot.effective_odds or 10.0)
+        partners = [e for e in sub_all if int(getattr(e.horse, "horse_no", 0)) != pivot_no]
+        for p1_horse, p2_horse in _comb(partners, 2):
+            p1_no = int(getattr(p1_horse.horse, "horse_no", 0))
+            p2_no = int(getattr(p2_horse.horse, "horse_no", 0))
+            combo = sorted([pivot_no, p1_no, p2_no])
+            ob = float(p1_horse.effective_odds or 10.0)
+            oc = float(p2_horse.effective_odds or 10.0)
+            est_odds = estimate_sanrenpuku_odds(oa, ob, oc, field_count, is_jra)
+            prob = (
+                float(getattr(pivot, "place3_prob", 0.0) or 0.0)
+                * float(getattr(p1_horse, "place3_prob", 0.0) or 0.0)
+                * float(getattr(p2_horse, "place3_prob", 0.0) or 0.0)
+            )
+            ev = prob * est_odds
+            tickets.append({
+                "type": "三連複",
+                "combo": combo,
+                "pattern": pattern,
+                "odds": round(est_odds, 1),
+                "prob": round(prob, 4),
+                "ev": round(ev, 3),
+                "stake": 100,
+            })
+
+    return tickets
+
+
+def build_tansho_t4_tickets(
+    evaluations: List["HorseEvaluation"],
+    race_info: "RaceInfo",
+) -> List[Dict]:
+    """T-050: 単勝 T-4 買い目を生成する。
+
+    ◉◎ 馬を 1 点 + ○ 馬を 1 点 = 計 2 点 (100 円固定)。
+    どちらか一方のみ存在する場合は 1 点のみ。
+    両方なしの場合は空リスト。
+
+    Returns
+    -------
+    list of dict
+        各要素: {"type": "単勝", "horse_no": int, "mark": str,
+                 "odds": float, "stake": 100}
+    """
+    # 取消・出走停止馬を除外
+    active = [
+        e for e in evaluations
+        if not getattr(e, "is_tokusen_kiken", False)
+        and not getattr(e, "is_scratched", False)
+    ]
+
+    tickets: List[Dict] = []
+
+    # ◉◎ 馬 (最優先 1 頭)
+    honmei_list = _dt_get_mark_horses(active, _DT_HONMEI_MARKS)
+    if honmei_list:
+        h = honmei_list[0]
+        mark_val = getattr(getattr(h, "mark", None), "value", "◎")
+        tickets.append({
+            "type": "単勝",
+            "horse_no": int(getattr(h.horse, "horse_no", 0)),
+            "mark": mark_val,
+            "odds": float(h.effective_odds or 0.0),
+            "stake": 100,
+        })
+
+    # ○ 馬 (最優先 1 頭)
+    taikou_list = _dt_get_mark_horses(active, _DT_TAIKOU_MARKS)
+    if taikou_list:
+        h = taikou_list[0]
+        mark_val = getattr(getattr(h, "mark", None), "value", "○")
+        tickets.append({
+            "type": "単勝",
+            "horse_no": int(getattr(h.horse, "horse_no", 0)),
+            "mark": mark_val,
+            "odds": float(h.effective_odds or 0.0),
+            "stake": 100,
+        })
+
+    return tickets
+
+
+def dispatch_tickets(
+    evaluations: List["HorseEvaluation"],
+    race_info: "RaceInfo",
+    real_odds_map: Optional[Dict] = None,
+) -> List[Dict]:
+    """T-050: A-NONE 馬単なし 2 券種統合ディスパッチャ。
+
+    三連複動的フォーメーション + 単勝 T-4 を統合して返す。
+    馬単は不採用 (赤字混入のため A-NONE 確定)。
+
+    Returns
+    -------
+    list of dict
+        三連複チケット + 単勝チケットのフラットなリスト
+    """
+    sanrenpuku = build_sanrenpuku_dynamic_tickets(evaluations, race_info, real_odds_map)
+    tansho     = build_tansho_t4_tickets(evaluations, race_info)
+    return sanrenpuku + tansho

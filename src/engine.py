@@ -42,6 +42,7 @@ from src.calculator.ability import (
 from src.calculator.betting import (
     _calc_confidence_score,
     calc_predicted_odds,
+    dispatch_tickets,
     generate_formation_tickets,
     generate_reference_tickets,
     generate_tickets_by_mode,

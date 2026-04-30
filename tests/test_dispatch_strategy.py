@@ -26,6 +26,7 @@ from scripts.dispatch_backtest import (
     build_sanrenpuku_tickets,
     build_umatan_tickets,
     build_tansho_tickets,
+    process_day,
     GUARD_DEFS,
     CASE_DEFS,
 )
@@ -438,3 +439,338 @@ class TestCaseAVsCaseC:
 
         assert len(result_c["tansho"]) == 0, "案 C Rule3: 単勝カット"
         assert len(result_a["tansho"]) > 0,  "案 A: 単勝も買う"
+
+
+# ────────────────────────────────────────────────────────────────
+# --no-umatan フラグ機能テスト
+# ────────────────────────────────────────────────────────────────
+
+class TestNoUmatanFlag:
+    """--no-umatan フラグ: force_disabled=True で layer1_umatan が常に False を返すことを確認"""
+
+    def test_force_disabled_returns_false_when_would_be_true(self):
+        """通常は True になる馬 (EV≥1.3, win_prob≥0.35) で force_disabled=True → False"""
+        # R1 馬: ◎ EV=1.95, win_prob=0.45 → 通常なら True
+        assert layer1_umatan(RACE_R1_HORSES, force_disabled=False) is True, \
+            "前提確認: force_disabled=False なら True"
+        assert layer1_umatan(RACE_R1_HORSES, force_disabled=True) is False, \
+            "--no-umatan 相当の force_disabled=True なら False"
+
+    def test_force_disabled_returns_false_when_would_also_be_false(self):
+        """通常も False になる馬でも force_disabled=True → False (副作用なし)"""
+        # R5 馬: ◎ EV=0.85 < 1.3 → 通常でも False
+        assert layer1_umatan(RACE_R5_HORSES, force_disabled=False) is False, \
+            "前提確認: force_disabled=False でも False"
+        assert layer1_umatan(RACE_R5_HORSES, force_disabled=True) is False, \
+            "force_disabled=True でも False のまま"
+
+    def test_force_disabled_r2_active(self):
+        """R2 馬 (EV=1.45, win_prob=0.55) でも force_disabled=True → False"""
+        assert layer1_umatan(RACE_R2_HORSES, force_disabled=False) is True, \
+            "前提確認: 通常は True"
+        assert layer1_umatan(RACE_R2_HORSES, force_disabled=True) is False, \
+            "force_disabled=True なら False"
+
+    def test_apply_layer2_case_a_no_umatan_never_buys_umatan(self):
+        """案 A で umatan_active=False の場合 → 馬単チケット生成されない (no-umatan 状態の模擬)"""
+        # force_disabled=True により umatan_active=False になった状態を模擬
+        sr_case   = "中"
+        um_act    = layer1_umatan(RACE_R3_HORSES, force_disabled=True)  # False
+        ts_act    = layer1_tansho(RACE_R3_HORSES)
+
+        assert um_act is False, "no-umatan で馬単候補は False"
+        result = apply_layer2_case_a(sr_case, um_act, ts_act,
+                                     RACE_R3_HORSES, RACE_R3_PAYOUTS)
+        assert len(result["umatan"]) == 0, "馬単チケット生成されない"
+        assert len(result["sanrenpuku"]) > 0, "三連複は生成される"
+
+    def test_apply_layer2_case_c_no_umatan_never_buys_umatan(self):
+        """案 C で umatan_active=False の場合 → Rule 3 が非発動、馬単チケット生成されない"""
+        # R3 は通常 Rule 3 (三連複中+馬単) だが no_umatan=True で馬単 False
+        sr_case   = layer1_sanrenpuku(RACE_R3_HORSES)  # "中"
+        um_act    = layer1_umatan(RACE_R3_HORSES, force_disabled=True)  # False
+        ts_act    = layer1_tansho(RACE_R3_HORSES)
+
+        assert sr_case == "中", "前提: 三連複中"
+        assert um_act is False, "no-umatan で馬単候補は False"
+
+        result = apply_layer2_case_c(sr_case, um_act, ts_act,
+                                     RACE_R3_HORSES, RACE_R3_PAYOUTS)
+        assert len(result["umatan"]) == 0, "馬単チケット生成されない"
+        # Rule 3 非発動 → Rule 4 (デフォルト) へフォールバック、三連複+単勝
+        assert len(result["sanrenpuku"]) > 0, "三連複は生成される"
+
+
+# ────────────────────────────────────────────────────────────────
+# T-050: src/calculator/betting.py 新規 3 関数テスト
+# build_sanrenpuku_dynamic_tickets / build_tansho_t4_tickets / dispatch_tickets
+# ────────────────────────────────────────────────────────────────
+
+from src.calculator.betting import (
+    build_sanrenpuku_dynamic_tickets,
+    build_tansho_t4_tickets,
+    dispatch_tickets,
+)
+from src.models import Mark
+
+
+# ── HorseEvaluation モック ──
+class _MockHorse:
+    """HorseEvaluation.horse の簡易モック"""
+    def __init__(self, horse_no: int, odds: float):
+        self.horse_no = horse_no
+        self.odds = odds  # effective_odds の基礎値
+
+
+class _MockEval:
+    """HorseEvaluation の簡易モック (T-050 テスト用)"""
+    def __init__(
+        self,
+        horse_no: int,
+        mark_val: str,
+        win_prob: float,
+        place3_prob: float,
+        odds: float,
+    ):
+        self.horse = _MockHorse(horse_no, odds)
+        # Mark Enum から value でルックアップ
+        _mark_map = {m.value: m for m in Mark}
+        self.mark = _mark_map.get(mark_val, Mark.NONE)
+        self.win_prob      = win_prob
+        self.place3_prob   = place3_prob
+        self.is_tokusen_kiken = False
+        self.is_scratched  = False
+        self.composite     = 50.0
+        self.predicted_tansho_odds = odds
+
+    @property
+    def effective_odds(self) -> float:
+        return float(self.horse.odds or self.predicted_tansho_odds or 0.0)
+
+
+class _MockRaceInfo:
+    """RaceInfo の簡易モック"""
+    def __init__(self, field_count: int = 8, is_jra: bool = True):
+        self.field_count = field_count
+        self.is_jra = is_jra
+
+
+# ── サンプルレース定義 (HorseEvaluation ベース) ──
+
+def _make_ev_race_strict():
+    """絞り発動条件: ◎ EV=1.98 (0.45×4.4), place3=0.68, ○ place3=0.55"""
+    return [
+        _MockEval(1, "◎", 0.45, 0.68, 4.4),   # 軸: EV=1.98, place3=0.68
+        _MockEval(2, "○", 0.25, 0.55, 4.5),   # 対抗: place3=0.55≥0.50
+        _MockEval(3, "▲", 0.10, 0.30, 9.0),
+        _MockEval(4, "△", 0.05, 0.20, 20.0),
+        _MockEval(5, "★", 0.05, 0.18, 22.0),
+        _MockEval(6, "☆", 0.04, 0.16, 28.0),
+        _MockEval(7, "－", 0.03, 0.10, 35.0),
+        _MockEval(8, "－", 0.03, 0.08, 38.0),
+    ]
+
+
+def _make_ev_race_mid():
+    """中発動条件: ◎ EV=1.44 (0.55×2.6), place3=0.60, ○ place3=0.44≥0.40"""
+    return [
+        _MockEval(1, "◎", 0.55, 0.60, 2.6),   # 軸: EV=1.43
+        _MockEval(2, "○", 0.18, 0.44, 5.5),   # 対抗: place3=0.44≥0.40
+        _MockEval(3, "▲", 0.10, 0.28, 10.0),
+        _MockEval(4, "△", 0.05, 0.20, 20.0),
+        _MockEval(5, "★", 0.04, 0.15, 25.0),
+        _MockEval(6, "☆", 0.03, 0.12, 32.0),
+        _MockEval(7, "－", 0.03, 0.08, 38.0),
+    ]
+
+
+def _make_ev_race_wide():
+    """広発動条件: ◎ EV=1.05, 中条件未達 (place3=0.50<0.55)"""
+    return [
+        _MockEval(1, "◎", 0.28, 0.50, 3.8),   # 軸: EV=1.064
+        _MockEval(2, "○", 0.18, 0.38, 6.0),
+        _MockEval(3, "▲", 0.12, 0.28, 9.0),
+        _MockEval(4, "△", 0.08, 0.22, 14.0),
+        _MockEval(5, "★", 0.06, 0.18, 18.0),
+        _MockEval(6, "☆", 0.04, 0.13, 28.0),
+        _MockEval(7, "－", 0.04, 0.10, 30.0),
+        _MockEval(8, "－", 0.03, 0.08, 42.0),
+    ]
+
+
+def _make_ev_race_skip():
+    """見送り条件: ◎ EV<1.0"""
+    return [
+        _MockEval(1, "◎", 0.20, 0.45, 4.0),   # 軸: EV=0.80<1.0
+        _MockEval(2, "○", 0.18, 0.40, 4.5),
+        _MockEval(3, "▲", 0.12, 0.30, 8.5),
+        _MockEval(4, "△", 0.08, 0.22, 13.0),
+        _MockEval(5, "★", 0.06, 0.18, 18.0),
+    ]
+
+
+def _make_ev_race_no_honmei():
+    """◎◉なし: 軸馬が存在しない"""
+    return [
+        _MockEval(1, "○", 0.30, 0.55, 3.5),
+        _MockEval(2, "▲", 0.20, 0.40, 5.0),
+        _MockEval(3, "△", 0.15, 0.30, 7.5),
+    ]
+
+
+_MOCK_RACE = _MockRaceInfo(field_count=8, is_jra=True)
+
+
+class TestBuildSanrenpukuDynamicTickets:
+    """build_sanrenpuku_dynamic_tickets の単体テスト"""
+
+    def test_strict_pattern_max4(self):
+        """絞り: ◎◉-○ 2頭軸 + {▲△★☆} → 最大4点"""
+        tickets = build_sanrenpuku_dynamic_tickets(_make_ev_race_strict(), _MOCK_RACE)
+        assert len(tickets) > 0, "絞り発動で最低1点"
+        assert len(tickets) <= 4, "絞りは最大4点"
+        for t in tickets:
+            assert t["type"] == "三連複"
+            assert t["pattern"] == "絞り"
+            assert t["stake"] == 100
+            assert len(t["combo"]) == 3
+
+    def test_mid_pattern_max7(self):
+        """中: 最大7点"""
+        tickets = build_sanrenpuku_dynamic_tickets(_make_ev_race_mid(), _MOCK_RACE)
+        assert len(tickets) > 0, "中発動で最低1点"
+        assert len(tickets) <= 7, "中は最大7点"
+        for t in tickets:
+            assert t["type"] == "三連複"
+            assert t["pattern"] == "中"
+            assert t["stake"] == 100
+
+    def test_wide_pattern_max10(self):
+        """広: ◎軸 + サブ馬 C(n,2) 組合せ → 最大10点"""
+        tickets = build_sanrenpuku_dynamic_tickets(_make_ev_race_wide(), _MOCK_RACE)
+        assert len(tickets) > 0, "広発動で最低1点"
+        assert len(tickets) <= 10, "広は最大10点"
+        for t in tickets:
+            assert t["type"] == "三連複"
+            assert t["pattern"] == "広"
+
+    def test_skip_when_ev_too_low(self):
+        """EV<1.0 → 空リスト (見送り)"""
+        tickets = build_sanrenpuku_dynamic_tickets(_make_ev_race_skip(), _MOCK_RACE)
+        assert tickets == []
+
+    def test_no_honmei_returns_empty(self):
+        """◎◉なし → 空リスト"""
+        tickets = build_sanrenpuku_dynamic_tickets(_make_ev_race_no_honmei(), _MOCK_RACE)
+        assert tickets == []
+
+    def test_combo_is_sorted(self):
+        """combo は昇順ソート済み"""
+        tickets = build_sanrenpuku_dynamic_tickets(_make_ev_race_wide(), _MOCK_RACE)
+        for t in tickets:
+            assert t["combo"] == sorted(t["combo"]), f"combo が昇順でない: {t['combo']}"
+
+    def test_no_umatan_ticket_generated(self):
+        """馬単チケットは生成されない (type='馬単' は存在しない)"""
+        tickets = build_sanrenpuku_dynamic_tickets(_make_ev_race_strict(), _MOCK_RACE)
+        for t in tickets:
+            assert t.get("type") != "馬単", "馬単チケットが混入している"
+
+
+class TestBuildTanshoT4Tickets:
+    """build_tansho_t4_tickets の単体テスト"""
+
+    def test_both_honmei_and_taikou(self):
+        """◎ + ○ 両方あり → 2 点"""
+        evals = _make_ev_race_strict()  # ◎馬1番 + ○馬2番
+        tickets = build_tansho_t4_tickets(evals, _MOCK_RACE)
+        assert len(tickets) == 2
+        assert tickets[0]["type"] == "単勝"
+        assert tickets[1]["type"] == "単勝"
+        marks = {t["mark"] for t in tickets}
+        assert "◎" in marks or "◉" in marks, "◎◉が含まれる"
+        assert "○" in marks or "〇" in marks, "○が含まれる"
+
+    def test_only_honmei_no_taikou(self):
+        """◎のみ (○なし) → 1 点"""
+        evals = [
+            _MockEval(1, "◎", 0.40, 0.60, 3.0),
+            _MockEval(2, "▲", 0.15, 0.30, 8.0),
+            _MockEval(3, "△", 0.10, 0.25, 12.0),
+        ]
+        tickets = build_tansho_t4_tickets(evals, _MOCK_RACE)
+        assert len(tickets) == 1
+        assert tickets[0]["mark"] in ("◎", "◉")
+
+    def test_only_taikou_no_honmei(self):
+        """○のみ (◎◉なし) → 1 点"""
+        evals = [
+            _MockEval(1, "○", 0.30, 0.50, 4.0),
+            _MockEval(2, "▲", 0.15, 0.30, 8.0),
+        ]
+        tickets = build_tansho_t4_tickets(evals, _MOCK_RACE)
+        assert len(tickets) == 1
+        assert tickets[0]["mark"] in ("○", "〇")
+
+    def test_no_honmei_no_taikou(self):
+        """◎◉○なし → 空リスト"""
+        evals = [
+            _MockEval(1, "▲", 0.30, 0.50, 4.0),
+            _MockEval(2, "△", 0.20, 0.40, 6.0),
+        ]
+        tickets = build_tansho_t4_tickets(evals, _MOCK_RACE)
+        assert tickets == []
+
+    def test_ticket_fields(self):
+        """返却チケットのフィールド確認"""
+        tickets = build_tansho_t4_tickets(_make_ev_race_strict(), _MOCK_RACE)
+        for t in tickets:
+            assert "horse_no" in t
+            assert "mark" in t
+            assert "odds" in t
+            assert t["stake"] == 100
+            assert t["type"] == "単勝"
+
+
+class TestDispatchTickets:
+    """dispatch_tickets の統合テスト"""
+
+    def test_returns_sanrenpuku_and_tansho(self):
+        """通常レース: 三連複 + 単勝 が返る"""
+        tickets = dispatch_tickets(_make_ev_race_strict(), _MOCK_RACE)
+        types = {t["type"] for t in tickets}
+        assert "三連複" in types, "三連複チケットが含まれる"
+        assert "単勝" in types, "単勝チケットが含まれる"
+
+    def test_no_umatan_in_any_case(self):
+        """馬単チケットは生成されない (A-NONE 確定)"""
+        for race_evals in [
+            _make_ev_race_strict(),
+            _make_ev_race_mid(),
+            _make_ev_race_wide(),
+        ]:
+            tickets = dispatch_tickets(race_evals, _MOCK_RACE)
+            for t in tickets:
+                assert t.get("type") != "馬単", \
+                    f"馬単チケットが混入している (race={race_evals[0].horse.horse_no})"
+
+    def test_skip_when_ev_too_low(self):
+        """EV<1.0 レース: 三連複なし、単勝も空 → 全空リスト"""
+        tickets = dispatch_tickets(_make_ev_race_skip(), _MOCK_RACE)
+        sanrenpuku_tickets = [t for t in tickets if t["type"] == "三連複"]
+        assert sanrenpuku_tickets == [], "三連複なし"
+        # 単勝は EV に関わらず ◎○ の存在で生成 (設計通り)
+        # EV<1.0 でも ◎ が存在すれば単勝は生成される仕様
+
+    def test_flat_list_structure(self):
+        """戻り値はフラットなリスト"""
+        tickets = dispatch_tickets(_make_ev_race_wide(), _MOCK_RACE)
+        assert isinstance(tickets, list), "list 型であること"
+        for t in tickets:
+            assert isinstance(t, dict), "各要素が dict であること"
+
+    def test_stake_all_100(self):
+        """全チケットの stake が 100 円"""
+        tickets = dispatch_tickets(_make_ev_race_mid(), _MOCK_RACE)
+        for t in tickets:
+            assert t["stake"] == 100, f"stake が 100 でない: {t}"
