@@ -8,27 +8,53 @@
 
 ## 🔴 作業中のタスク
 
-### T-050 + T-052 + T-053 (P0・本セッション完走 + 次セッション継続)
+### T-050 + T-052 + T-053 (本セッション 4/30 完走) ✅
 
-**本セッション (4/30) 結論**:
-- 振り分け方式 (案 C) は不採用 — Layer 2 ルールが削除した利益が節約効果を上回る
-- **A-NONE (全件併用 / 全帯) が最善 +7,352,260 円 / 846 日 / ROI 167.3%** (Phase A v3-fix と誤差 0.5% 完全整合)
-- ただし馬単中拡張は ROI 35-72% 赤字 → 抜くと更に向上見込み
-- **真の最善候補: 「三連複動的 + 単勝 T-4」 2 券種全件併用 (馬単抜き)** — 5/1 朝に検証
+**最終結論**: **A-NONE 馬単なし 2 券種 (三連複動的 + 単勝 T-4)** 採用確定
+- 純利 **+8,253,510 円 / 849 日** / 年換算 **+355 万** / ROI **190.0%** / DD 34,950
+- 馬単抜きで純利 +90 万改善 / ROI +22.7pt
+- Phase A v3-fix +662 万 (三連複) と誤差 0.5% で完全整合
 
-**commit (本セッション 4 件)**:
-- 6f60ce9: T-049/T-050 dispatch_backtest 数値整合性修正 (EV フォールバック + NAR 三連複なし skip)
-- 72d18c6: T-046 診断装置仕込み
-- 54ecb73: T-050 案 C 6 ケースバックテスト (旧・参考)
+**本セッション 12 commits push 済**:
+- 0e88e59: T-050 フォーメーション構造表示 + dashboard.py honmei_odds fallback
+- 6af980e: TicketSection 三連複+単勝 表示対応
+- 28463e0: 過去成績ページ 新戦略集計 + dispatch_backtest --no-umatan
+- be24379: T-050 本番実装 (betting.py 新規 4 関数 + engine 統合)
+- af4b273 / 3bb2621 / 701244b: paraphrase 完コピ対策 SAFE_MAP
+- f7c3f29: TASKS.md 結論反映
+- 6f60ce9: T-049/T-050 数値整合性 (EV フォールバック + NAR skip)
+- 72d18c6: T-046 診断装置 (bat + vbs)
+- 54ecb73: T-050 案 C 6 ケースバックテスト (旧)
 - 324567f: T-047 Flask background thread
 
-**次セッション最優先 (★★★)**:
-1. 馬単抜き 2 券種バックテスト (dispatch_backtest.py に馬単 disable オプション追加 → 再走)
-2. 5/1 06:00 bat_trace.log 確認 (T-046 真因確定)
-3. T-047 dashboard 再起動 (管理者必要)
-4. 本番実装委託 (`src/calculator/betting.py` 拡張)
+**詳細**: `~/.claude/projects/.../memory/handoff_2026-04-30.md` ★★★
 
-**詳細**: `~/.claude/projects/.../memory/handoff_2026-04-30.md`
+---
+
+## 🔴 次セッション (5/1 朝以降) 最優先タスク
+
+### T-054 (P0・新規) — DAI_Keiba_Dashboard タスクスケジューラ起動経路修復
+- 現状: Bash 経由 PID 7148 起動 (PC ログオフで死ぬ)
+- wscript→start_dashboard_hidden.vbs→start_dashboard.bat 経路で **dashboard 起動失敗**
+- T-046 と同根の cmd /c ""..."" クォート問題の可能性
+- 修正方針: vbs/bat の見直し or タスクスケジューラ Action を直接 python 呼びに変更 (管理者必要)
+- 工数: 30-60 分
+
+### T-046 Phase 2 (P0・継続) — 5/1 06:00 bat_trace.log 確認
+- 診断装置 commit 72d18c6 で仕込み済 → 5/1 06:00 で初検証可能
+- 確認手順は handoff_2026-04-30.md「Step 1-4」参照
+- 工数: 15 分 + 修正
+
+### T-055 (P1・新規) — 4/30 pred.json T-050 新方式に再生成
+- 現状: 4/30 pred.json は旧 T-040 戦略のまま (門別復旧時に再生成しなかった)
+- 4/30 残レース (大井/笠松/園田 の発走済み多数) は影響軽微だが、過去成績集計のため新戦略で集計するなら再生成必要
+- 工数: 30 分 (netkeiba 並列禁止のため他スクレイピングと排他)
+
+### T-029 続 (P1) — 厩舎コメント体言止め LM Studio 再 paraphrase
+- handoff_2026-04-29 持ち越し
+- pred.json horses[].stable_comment が「ですよ」「ほしいです」残存
+- LM Studio + Qwen + 改善プロンプトで再 paraphrase
+- 工数: 1-2h
 
 ### T-041 (棄却) — 三連単 F 戦略最善化 (旧)
 - 2026-04-29 棄却: Phase A v2 で ROI 49.8% 赤字確定 / 三連複動的 (T-050) で置換
