@@ -61,11 +61,21 @@ def regenerate_for_race(race: dict, payouts: dict) -> tuple[list, list, str]:
         return (h.get("mark") if h else "") or ""
 
     def _h_odds(no: int) -> float:
+        """実オッズのみ返す。予測オッズ (predicted_tansho_odds と一致) なら 0.0。
+
+        マスター指示 2026-05-01: 単勝表示は実オッズのみ、予測オッズは出さない。
+        """
         h = h_by_no.get(no)
         if not h:
             return 0.0
-        v = h.get("odds") or h.get("predicted_tansho_odds") or 0
-        return float(v)
+        o = h.get("odds")
+        if o is None or o <= 0:
+            return 0.0
+        po = h.get("predicted_tansho_odds")
+        # odds と predicted_tansho_odds がほぼ同値 → 実オッズ未取得 (predicted のコピー)
+        if po is not None and abs(float(o) - float(po)) < 0.01:
+            return 0.0
+        return float(o)
 
     def _h_ev(no: int) -> float:
         h = h_by_no.get(no)

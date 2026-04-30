@@ -33,6 +33,10 @@ function VenueLogo({ name, isJra }: { name: string; isJra: boolean }) {
     <img
       src={src}
       alt={name}
+      loading="lazy"
+      decoding="async"
+      width={64}
+      height={64}
       className={`flex-shrink-0 w-8 h-8 sm:w-12 sm:h-12 md:w-16 md:h-16 rounded-lg ${isBanei ? "object-cover" : "object-contain"}`}
       onError={(e) => {
         const el = e.currentTarget;
