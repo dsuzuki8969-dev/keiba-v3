@@ -167,21 +167,27 @@ export function SummaryCards({ data, hybrid }: Props) {
         const totalHits    = spukuHits + tansho.races_hit;
         const totalHitRate = totalRaces > 0 ? totalHits / totalRaces * 100 : 0;
 
-        // セルレンダラー
+        // セルレンダラー (hero=上段大カード / 通常=下段サブカード)
         const StatCell = ({
-          label, value, sub, color, isProfit,
-        }: { label: string; value: string; sub?: string; color: string; isProfit?: boolean }) => (
-          <PremiumCard variant="default" padding="md" className="text-center stylish-card-hover border border-border/60">
-            <div className="text-[11px] font-semibold tracking-wider uppercase text-muted-foreground mb-1">
+          label, value, sub, color, isProfit, hero,
+        }: { label: string; value: string; sub?: string; color: string; isProfit?: boolean; hero?: boolean }) => (
+          <PremiumCard
+            variant="default"
+            padding={hero ? "md" : "sm"}
+            className="text-center stylish-card-hover border border-border/60"
+          >
+            <div className={`font-semibold tracking-wider uppercase text-muted-foreground mb-1 ${hero ? "text-[11px]" : "text-[10px]"}`}>
               {label}
             </div>
             <div
-              className={`stat-mono text-[1.5rem] sm:text-[1.8rem] font-bold ${isProfit && value.startsWith("-") ? "text-negative" : ""}`}
+              className={`stat-mono font-bold ${
+                hero ? "text-[1.5rem] sm:text-[1.8rem]" : "text-base"
+              } ${isProfit && value.startsWith("-") ? "text-negative" : ""}`}
               style={!(isProfit && value.startsWith("-")) ? { color } : undefined}
             >
               {value}
             </div>
-            {sub && <div className="text-[10px] text-muted-foreground mt-0.5 tnum">{sub}</div>}
+            {sub && <div className={`text-muted-foreground mt-0.5 tnum ${hero ? "text-[10px]" : "text-[9px]"}`}>{sub}</div>}
           </PremiumCard>
         );
 
@@ -205,68 +211,76 @@ export function SummaryCards({ data, hybrid }: Props) {
               <span className="text-xs text-muted-foreground">（A-NONE 本番採用 / 絞り廃止）</span>
             </div>
 
-            {/* 3×3 グリッド: 行=合算/三連複/単勝, 列=収支/回収率/的中率 */}
-            <div className="grid grid-cols-3 gap-2 sm:gap-3">
-              {/* Row 1: 合算 */}
+            {/* 上段ヒーロー (1-1: 合算収支 / 1-2: 合算回収率 / 1-3: 合算的中率) */}
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
               <StatCell
                 label="合算 収支"
                 value={(totalProfit >= 0 ? "+" : "") + fmtNum(totalProfit) + "円"}
                 sub={`購入 ${fmtNum(totalStake)} / 払戻 ${fmtNum(totalPayback)}`}
                 color={COLORS.combined}
                 isProfit
+                hero
               />
               <StatCell
                 label="合算 回収率"
                 value={fmtPct(totalRoi)}
                 sub={`${totalRaces}R 適用`}
                 color={COLORS.combined}
+                hero
               />
               <StatCell
                 label="合算 的中率"
                 value={fmtPct(totalHitRate)}
                 sub={`${totalHits}R / ${totalRaces}R 加重`}
                 color={COLORS.combined}
+                hero
               />
+            </div>
 
-              {/* Row 2: 三連複 (絞り除外後) */}
+            {/* 下段サブ (2-1〜2-3: 三連複 / 2-4〜2-6: 単勝) */}
+            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-2">
+              {/* 2-1: 三連複 収支 */}
               <StatCell
                 label="三連複 収支"
                 value={(spukuProfit >= 0 ? "+" : "") + fmtNum(spukuProfit) + "円"}
-                sub={`購入 ${fmtNum(spukuStake)} / 払戻 ${fmtNum(spukuPayback)}`}
+                sub={`購入 ${fmtNum(spukuStake)}`}
                 color={COLORS.sanrenpuku}
                 isProfit
               />
+              {/* 2-2: 三連複 回収率 */}
               <StatCell
                 label="三連複 回収率"
                 value={fmtPct(spukuRoi)}
-                sub={`${spukuRaces}R 適用`}
+                sub={`${spukuRaces}R`}
                 color={COLORS.sanrenpuku}
               />
+              {/* 2-3: 三連複 的中率 */}
               <StatCell
                 label="三連複 的中率"
                 value={fmtPct(spukuHitRate)}
-                sub={`${spukuHits}R / ${spukuRaces}R`}
+                sub={`${spukuHits}/${spukuRaces}R`}
                 color={COLORS.sanrenpuku}
               />
-
-              {/* Row 3: 単勝 */}
+              {/* 2-4: 単勝 収支 */}
               <StatCell
                 label="単勝 収支"
                 value={(tanshoProfit >= 0 ? "+" : "") + fmtNum(tanshoProfit) + "円"}
-                sub={`購入 ${fmtNum(tansho.total_stake)} / 払戻 ${fmtNum(tansho.total_payback)}`}
+                sub={`購入 ${fmtNum(tansho.total_stake)}`}
                 color={COLORS.tansho}
                 isProfit
               />
+              {/* 2-5: 単勝 回収率 */}
               <StatCell
                 label="単勝 回収率"
                 value={fmtPct(tansho.roi_pct)}
-                sub={`${tansho.races_played}R 適用`}
+                sub={`${tansho.races_played}R`}
                 color={COLORS.tansho}
               />
+              {/* 2-6: 単勝 的中率 */}
               <StatCell
                 label="単勝 的中率"
                 value={fmtPct(tansho.hit_rate_pct)}
-                sub={`${tansho.races_hit}R / ${tansho.races_played}R`}
+                sub={`${tansho.races_hit}/${tansho.races_played}R`}
                 color={COLORS.tansho}
               />
             </div>
