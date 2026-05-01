@@ -103,7 +103,11 @@ def _fetch_html(race_id: str, use_cache: bool = True) -> Optional[str]:
 
 
 def parse_payouts(html: str) -> dict:
-    """HTML から全券種の払戻をパース。"""
+    """HTML から全券種の払戻をパース。
+
+    重要: combo セルは <br> 区切りで馬番が並ぶことがある (netkeiba の新形式)。
+    get_text(separator='-') で <br> を '-' に変換し、馬番の連結を防ぐ。
+    """
     payouts: dict = {}
     if not html:
         return payouts
@@ -122,13 +126,20 @@ def parse_payouts(html: str) -> dict:
             if label not in TARGETS:
                 continue
             label = LABEL_NORM.get(label, label)
-            combo_cell = cells[1].get_text(strip=True) if len(cells) > 1 else ""
-            payout_cell = cells[2].get_text(strip=True).replace(",", "") if len(cells) > 2 else ""
+            # separator='-' で <br> を '-' に変換 → 数字連結バグ防止
+            combo_raw = cells[1].get_text(separator='-', strip=True) if len(cells) > 1 else ""
+            payout_raw = cells[2].get_text(separator='\n', strip=True) if len(cells) > 2 else ""
+
+            # 数字とハイフンのみ抽出、連続ハイフンを単一化
+            combo = re.sub(r"-+", "-", re.sub(r"[^\d\-]", "-", combo_raw)).strip("-")
+            payout_val_str = re.sub(r"[^\d]", "", payout_raw.split("\n")[0] if payout_raw else "")
             try:
-                payout_val = int(re.sub(r"[^\d]", "", payout_cell)) if payout_cell else 0
+                payout_val = int(payout_val_str) if payout_val_str else 0
             except ValueError:
                 payout_val = 0
-            entry = {"combo": combo_cell, "payout": payout_val}
+            if not combo:
+                continue
+            entry = {"combo": combo, "payout": payout_val}
             if label == "ワイド":
                 payouts.setdefault("ワイド", [])
                 payouts["ワイド"].append(entry)
