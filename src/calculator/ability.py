@@ -969,6 +969,28 @@ def detect_long_break(runs: List[PastRun], race_date: str, threshold_days: int =
 # C-2: 加重平均偏差値 (WA)
 # ============================================================
 
+# WA計算フィルタ: 海外レース除外用国内場リスト (γ案 条件1)
+# race_log.venue は会場コード ("09" 等) で格納されている場合と、 競馬場名 ("阪神" 等)
+# で格納されている場合の両方があるため、両者を含める。
+# 会場コード対応表は config/settings.py の `_CALIB_VC_TO_NAME` を参照。
+DOMESTIC_VENUES: set = {
+    # JRA 10場 (場名)
+    "札幌", "函館", "福島", "新潟", "東京", "中山", "中京", "京都", "阪神", "小倉",
+    # NAR 14場 (場名)
+    "門別", "盛岡", "水沢", "浦和", "船橋", "大井", "川崎", "金沢",
+    "笠松", "名古屋", "園田", "姫路", "高知", "佐賀", "帯広",
+    # JRA 会場コード ("01"〜"10")
+    "01", "02", "03", "04", "05", "06", "07", "08", "09", "10",
+    # NAR 会場コード (門別 30 / 盛岡 35 / 水沢 36 / 浦和 42 / 船橋 43 / 大井 44 /
+    # 川崎 45 / 金沢 46 / 笠松 47 / 名古屋 48 / 園田 49,50 / 姫路 51 / 帯広 52,65 /
+    # 高知 54 / 佐賀 55)
+    "30", "35", "36", "42", "43", "44", "45", "46", "47", "48", "49", "50",
+    "51", "52", "54", "55", "65",
+}
+
+# WA計算フィルタ: speed_dev/run_dev 異常値除外閾値 (γ案 条件2)
+# これ未満の偏差値はタイム計測不能等の異常値とみなしWA計算から除外
+INVALID_DEV_THRESHOLD: float = 20.0
 
 
 def _get_wa_weights_by_distance(distance: int) -> list:
@@ -1549,11 +1571,42 @@ def calc_ability_deviation(
     chakusa_indices = [r.chakusa_index for r in filtered_runs]
 
     # 5. WA偏差値 (C-2) — 距離帯別の加重平均重みを使用
-    wa_dev = calc_weighted_average_deviation(
-        run_deviations, chakusa_indices, is_long_break,
-        break_days=break_days, horse_age=horse.age or 4,
-        distance=race_distance,
-    )
+    # γ案: WA計算前に「海外レース除外」と「異常値偏差値除外」の2条件フィルタを適用
+    # run_deviations 自体は変更しない (MAX偏差値・トレンド計算で引き続き使用)
+    wa_deviations: List[float] = []
+    wa_chakusa_indices: List[float] = []
+    for _idx, (_run, _dev) in enumerate(zip(filtered_runs, run_deviations)):
+        # 条件1: 海外レース除外 — venue が国内場リストに含まれない場合はスキップ
+        _venue = getattr(_run, "venue", "") or ""
+        if _venue and _venue not in DOMESTIC_VENUES:
+            logger.debug(
+                "WA filter: 海外除外 race=%s venue=%s dev=%.1f",
+                getattr(_run, "race_id", "?"), _venue, _dev,
+            )
+            continue
+        # 条件2: speed_dev/run_dev 異常値除外 — INVALID_DEV_THRESHOLD 未満はスキップ
+        if _dev < INVALID_DEV_THRESHOLD:
+            logger.debug(
+                "WA filter: 異常値除外 race=%s venue=%s dev=%.1f",
+                getattr(_run, "race_id", "?"), _venue, _dev,
+            )
+            continue
+        wa_deviations.append(_dev)
+        wa_chakusa_indices.append(chakusa_indices[_idx] if _idx < len(chakusa_indices) else 0.0)
+
+    # 全過去走が除外された場合は中立値 50.0 で fallback
+    if not wa_deviations:
+        logger.debug(
+            "WA filter: 全走除外 → fallback wa_dev=50.0 (horse=%s)",
+            getattr(horse, "horse_name", "?"),
+        )
+        wa_dev = 50.0
+    else:
+        wa_dev = calc_weighted_average_deviation(
+            wa_deviations, wa_chakusa_indices, is_long_break,
+            break_days=break_days, horse_age=horse.age or 4,
+            distance=race_distance,
+        )
 
     # 5b. 芝ダ転換馬の異馬場WA割引
     # 異馬場走の偏差値は「その馬場での実力」を表す。転向先での実力に直接置き換えはできないが、
