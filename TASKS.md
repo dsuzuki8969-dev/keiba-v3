@@ -8,24 +8,25 @@
 
 ## 🔴 作業中のタスク
 
-### 5/1 朝 マスター起床時 即対応 (最優先)
+### 5/2 セッション 完了済タスク
 
-### T-056 ✅ 完了 — Dashboard プロセス直接再起動 (admin 権限不要経路)
-- マスター kill (Stop-Process 14252) + 直接起動 `pythonw src/dashboard.py &` で PID 9096 稼働中
-- 新コード (絞り廃止 + results_tracker フォールバック + 並列天気) 反映済
+### T-056 ✅ 完了 — Dashboard 直接再起動 (5/2 PID 12712 稼働中)
+### T-057 ✅ 完了 — results.json 三連複払戻バックフィル (12,588 件 + combo バグ修復 16,208 件)
+### T-059 ✅ 完了 — 過去 pred.json 全件 T-050 化 + ev 補完 + 実オッズ判別
+### T-060 ✅ 完了 — 印補正 (× 削除 19,918 / ☆ 補完 6,253)
+### T-061 ✅ 完了 — 三連複 9 パターンバックテスト (A-I) JRA/NAR/自信度別
 
-### T-057 (P0・進行中) — results.json 三連複払戻バックフィル
-- スクリプト: `scripts/backfill_all_payouts.py` (新 PID 13432 稼働中)
-- 対象: 14,478R / レート 1.0秒 / ETA 4.3h (完了予想 12:00 頃)
-- 進捗: `data/logs/backfill_all_payouts.progress.log` 7.9%/14k
-- 完了後: `/api/results/invalidate_cache` POST → 過去成績再集計
-- 工数: 自動進行 (待機のみ)
+### 5/3 以降 マスター指示待ち
 
-### T-059 ✅ 完了 — 過去 pred.json 全件 T-050 化 + ev 補完
-- regenerate_t050_tickets.py v3 (実オッズ判別含む) 全 849 files / 41,083 races 実行済
-- backfill_ev_field.py で 815 files / 424,435 horses ev 補完済
-- 過去日買い目指南が三連複動的+単勝T-4 に統一表示
-- 単勝 odds は実オッズのみ表示 (predicted_tansho_odds と一致時は非表示)
+### T-062 (P0・新規) — 9 パターンの実運用採用判定
+- マスターがどのパターン (E/B/C/D 等) を実運用に採用するか確認
+- 採用後: T-050 戦略との置換 or 併用判断
+- 工数: マスター意思決定待ち
+
+### T-063 (P1・新規) — Backfill 完了済データの最終検証
+- 全期間で異常値ないか確認 (現在 ROI 200%+ 確認済)
+- 月別・印別・自信度別の整合性チェック
+- 工数: 30 分
 
 ### T-058 (P1・新規) — engine.py running_style バグ恒久対策
 - 現象: 5/1 4頭で running_style/predicted_corners 空
