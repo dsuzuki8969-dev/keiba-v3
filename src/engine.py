@@ -44,6 +44,7 @@ from src.calculator.betting import (
     calc_predicted_odds,
     dispatch_tickets,
     generate_formation_tickets,
+    generate_m_prime_tickets,
     generate_reference_tickets,
     generate_tickets_by_mode,
     judge_confidence,
@@ -2088,18 +2089,19 @@ class RaceAnalysisEngine:
         tickets = []
         total_budget = 0
 
-        # ---- Phase 3: 三連単フォーメーション買い目生成 ----
-        tickets_by_mode = generate_tickets_by_mode(evaluations, race, confidence.value)
+        # ---- M' 戦略: 自信度別 三連複フォーメーション (2026-05-03 採用) ----
+        # SS=E(4点) / S/A=C(7点) / B/C/D=D(10点) / E=skip
+        tickets_by_mode = generate_m_prime_tickets(evaluations, race, confidence.value)
 
-        # ---- bet_decision 判定（Phase 3: 三連単 skip 情報を優先利用） ----
+        # ---- bet_decision 判定 (M' skip 情報を優先利用) ----
         _fixed_tickets = (tickets_by_mode or {}).get("fixed", []) if isinstance(tickets_by_mode, dict) else []
         _meta = (tickets_by_mode or {}).get("_meta", {}) if isinstance(tickets_by_mode, dict) else {}
         if _meta.get("skipped"):
-            # 三連単フォーメーションが skip 判定（SS/C/D など）→ 買わない
+            # M' 戦略が skip 判定 (E 自信度) → 買わない
             bet_decision = {
                 "skip": True,
-                "reasons": ["sanrentan_skip"],
-                "message": _meta.get("skip_reason", "三連単フォーメーション 見送り"),
+                "reasons": ["m_prime_skip"],
+                "message": _meta.get("skip_reason", "M' 戦略 見送り"),
                 "max_ev": 0.0,
                 "reference_tickets": [],
             }
@@ -3738,7 +3740,7 @@ def enrich_course_aptitude_with_style_bias(
         try:
             from src.calculator.betting import (
                 generate_formation_tickets as _gen_formation,
-                generate_tickets_by_mode as _gen_tbm,
+                generate_m_prime_tickets as _gen_tbm,
                 make_bet_decision as _make_bd,
             )
             _conf_val = (
