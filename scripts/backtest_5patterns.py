@@ -1,11 +1,13 @@
 """5 つの三連単フォーメーションパターン (A-E) のバックテスト集計。
 
 マスター指示 2026-05-02:
-A: ◉/◎ → 〇/▲/☆     → 〇/▲/△/★/☆
-B: ◉/◎ → 〇/▲/△     → 〇/▲/△/★/☆
-C: ◉/◎ → 〇/▲       → 〇/▲/△/★/☆
-D: ◉/◎/〇 → ◉/◎/〇/▲ → 〇/▲/△/★/☆
-E: ◉/◎ → 〇         → ▲/△/★/☆
+A: ◉/◎ → 〇/▲/☆       → 〇/▲/△/★/☆
+B: ◉/◎ → 〇/▲/△       → 〇/▲/△/★/☆
+C: ◉/◎ → 〇/▲         → 〇/▲/△/★/☆
+D: ◉/◎/〇 → ◉/◎/〇/▲   → 〇/▲/△/★/☆
+E: ◉/◎ → 〇           → ▲/△/★/☆
+F: ◉/◎/〇 → ◉/◎/〇/▲/☆ → 〇/▲/△/★/☆
+G: ◉/◎/〇 → ◉/◎/〇/▲/△ → 〇/▲/△/★/☆
 
 全期間 (data/predictions/*_pred.json + data/results/*_results.json) で
 三連単フォーメーション買い目をシミュレーション、的中率と回収率を比較。
@@ -37,7 +39,9 @@ B_2ND = {"○", "〇", "▲", "△"}                 # B の 2 着
 C_2ND = {"○", "〇", "▲"}                       # C の 2 着
 D_2ND = {"◉", "◎", "○", "〇", "▲"}            # D の 2 着
 E_2ND = {"○", "〇"}                            # E の 2 着
-ABC_3RD = {"○", "〇", "▲", "△", "★", "☆"}    # A/B/C/D の 3 着
+F_2ND = {"◉", "◎", "○", "〇", "▲", "☆"}      # F の 2 着
+G_2ND = {"◉", "◎", "○", "〇", "▲", "△"}      # G の 2 着
+ABC_3RD = {"○", "〇", "▲", "△", "★", "☆"}    # A/B/C/D/F/G の 3 着
 E_3RD   = {"▲", "△", "★", "☆"}               # E の 3 着
 
 
@@ -99,6 +103,8 @@ PATTERNS = {
     "C": (HONMEI_MARKS, C_2ND, ABC_3RD),
     "D": (HONMEI_TAIKOU_MARKS, D_2ND, ABC_3RD),
     "E": (HONMEI_MARKS, E_2ND, E_3RD),
+    "F": (HONMEI_TAIKOU_MARKS, F_2ND, ABC_3RD),
+    "G": (HONMEI_TAIKOU_MARKS, G_2ND, ABC_3RD),
 }
 
 
@@ -176,20 +182,21 @@ def main():
     print()
     print(f"集計対象 pred 日数: {n_pred}")
     print()
-    print(f"{'パターン':<6} {'R購入':>7} {'R的中':>7} {'R的中率':>8} {'点数計':>9} {'点的中':>7} {'購入':>13} {'払戻':>13} {'収支':>14} {'ROI':>8}")
-    print("─" * 110)
-    for k in ["A", "B", "C", "D", "E"]:
+    print(f"{'パターン':<5} {'R購入':>7} {'R的中':>7} {'的中率':>7} {'点数計':>9} {'1R点数':>7} {'購入':>12} {'払戻':>12} {'収支':>13} {'ROI':>7}")
+    print("─" * 116)
+    for k in ["A", "B", "C", "D", "E", "F", "G"]:
         s = stats[k]
         rp = s["races_played"]; rh = s["races_hit"]
         roi = s["payback"] / s["stake"] * 100 if s["stake"] else 0
         rhr = rh / rp * 100 if rp else 0
         bal = s["payback"] - s["stake"]
-        print(f"{k:<6} {rp:>7,} {rh:>7,} {rhr:>7.1f}% {s['tickets_total']:>9,} "
-              f"{s['tickets_hit']:>7,} {s['stake']:>12,}円 {s['payback']:>12,}円 "
-              f"{bal:>+13,}円 {roi:>7.1f}%")
+        per_race = s["tickets_total"] / rp if rp else 0
+        print(f"{k:<5} {rp:>7,} {rh:>7,} {rhr:>6.1f}% {s['tickets_total']:>9,} "
+              f"{per_race:>6.1f}点 {s['stake']:>11,}円 {s['payback']:>11,}円 "
+              f"{bal:>+12,}円 {roi:>6.1f}%")
     print()
     print(f"最高払戻:")
-    for k in ["A", "B", "C", "D", "E"]:
+    for k in ["A", "B", "C", "D", "E", "F", "G"]:
         s = stats[k]
         if s["max_payout"]:
             print(f"  {k}: {s['max_payout']:,}円 ({s['max_date']} race={s['max_race']})")
