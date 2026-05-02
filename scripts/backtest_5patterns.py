@@ -112,10 +112,12 @@ def main():
     pred_files = sorted(PRED_DIR.glob("*_pred.json"))
     pred_files = [f for f in pred_files if "_prev" not in f.name]
 
+    from collections import Counter
     stats = {k: {"races_played": 0, "races_hit": 0,
                  "tickets_total": 0, "tickets_hit": 0,
                  "stake": 0, "payback": 0,
-                 "max_payout": 0, "max_date": "", "max_race": ""}
+                 "max_payout": 0, "max_date": "", "max_race": "",
+                 "tickets_dist": Counter()}  # 1レース毎の点数分布
              for k in PATTERNS}
 
     started = time.time()
@@ -168,6 +170,7 @@ def main():
                     s["races_hit"] += 1
                 s["tickets_total"] += len(tickets)
                 s["tickets_hit"] += hit_tickets
+                s["tickets_dist"][len(tickets)] += 1
                 s["stake"] += stake
                 s["payback"] += payback
                 if payback > s["max_payout"]:
@@ -182,18 +185,33 @@ def main():
     print()
     print(f"集計対象 pred 日数: {n_pred}")
     print()
-    print(f"{'パターン':<5} {'R購入':>7} {'R的中':>7} {'的中率':>7} {'点数計':>9} {'1R点数':>7} {'購入':>12} {'払戻':>12} {'収支':>13} {'ROI':>7}")
-    print("─" * 116)
+    print(f"{'パターン':<5} {'R購入':>7} {'R的中':>7} {'的中率':>7} {'1R点数 (最頻)':>16} {'点数計':>9} {'購入':>12} {'払戻':>12} {'収支':>13} {'ROI':>7}")
+    print("─" * 124)
     for k in ["A", "B", "C", "D", "E", "F", "G"]:
         s = stats[k]
         rp = s["races_played"]; rh = s["races_hit"]
         roi = s["payback"] / s["stake"] * 100 if s["stake"] else 0
         rhr = rh / rp * 100 if rp else 0
         bal = s["payback"] - s["stake"]
-        per_race = s["tickets_total"] / rp if rp else 0
-        print(f"{k:<5} {rp:>7,} {rh:>7,} {rhr:>6.1f}% {s['tickets_total']:>9,} "
-              f"{per_race:>6.1f}点 {s['stake']:>11,}円 {s['payback']:>11,}円 "
+        # 最頻点数 (整数) と全体に占める割合
+        dist = s["tickets_dist"]
+        if dist:
+            mode_pts, mode_cnt = dist.most_common(1)[0]
+            mode_str = f"{mode_pts}点 ({mode_cnt/rp*100:.0f}%)"
+        else:
+            mode_str = "-"
+        print(f"{k:<5} {rp:>7,} {rh:>7,} {rhr:>6.1f}% {mode_str:>16} {s['tickets_total']:>9,} "
+              f"{s['stake']:>11,}円 {s['payback']:>11,}円 "
               f"{bal:>+12,}円 {roi:>6.1f}%")
+    # 点数分布の詳細 (上位 3)
+    print()
+    print("点数分布 (上位3):")
+    for k in ["A", "B", "C", "D", "E", "F", "G"]:
+        s = stats[k]
+        top3 = s["tickets_dist"].most_common(3)
+        rp = s["races_played"] or 1
+        dist_str = ", ".join(f"{p}点 {c/rp*100:.0f}%" for p,c in top3)
+        print(f"  {k}: {dist_str}")
     print()
     print(f"最高払戻:")
     for k in ["A", "B", "C", "D", "E", "F", "G"]:
