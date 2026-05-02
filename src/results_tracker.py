@@ -425,6 +425,15 @@ def save_prediction(date: str, analyses_by_venue: dict, *, lightweight: bool = F
                     "trainer_dev": round(max(20.0, min(100.0, v)), 1) if (v := getattr(ev, "_trainer_dev", None)) is not None else None,
                     "bloodline_dev": round(max(20.0, min(100.0, v)), 1) if (v := getattr(ev, "_bloodline_dev", None)) is not None else None,
                     "training_dev": round(max(20.0, min(100.0, v)), 1) if (v := getattr(ev, "_training_dev", None)) is not None else None,
+                    # フロント期待フィールド（既存フィールドのエイリアス）
+                    # tenkai_dev  = 展開偏差値 → pace.total と同値
+                    "tenkai_dev":  round(ev.pace.total, 2),
+                    # tekisei_dev = 適性偏差値 → course.total と同値
+                    "tekisei_dev": round(ev.course.total, 2),
+                    # oikiri_dev  = 追切偏差値 → _training_dev と同値（None の場合は None）
+                    "oikiri_dev":  round(max(20.0, min(100.0, v)), 1) if (v := getattr(ev, "_training_dev", None)) is not None else None,
+                    # blood_dev   = 血統偏差値 → _bloodline_dev と同値（None の場合は None）
+                    "blood_dev":   round(max(20.0, min(100.0, v)), 1) if (v := getattr(ev, "_bloodline_dev", None)) is not None else None,
                     # 確率追加
                     "predicted_rank": getattr(ev, "_predicted_rank", None),
                     # 能力追加
