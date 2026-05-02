@@ -1,6 +1,6 @@
 import { PremiumCard } from "@/components/ui/premium/PremiumCard";
 import { Trophy, ListChecks, CheckCircle2 } from "lucide-react";
-import type { HybridSummaryResponse } from "@/api/client";
+import type { HybridSummaryResponse, MPrimeSanrenpukuSummary, MPrimeByConfidence } from "@/api/client";
 
 interface Props {
   data: Record<string, unknown>;
@@ -149,7 +149,10 @@ export function SummaryCards({ data, hybrid }: Props) {
         ))}
       </div>
 
-      {/* ─── T-050 採用戦略成績 (三連複動的 + 単勝) — 3×3 グリッド ─── */}
+      {/* ─── M' 戦略 採用成績 ─── */}
+      {hybrid?.m_prime_sanrenpuku && <MPrimeSummarySection mp={hybrid.m_prime_sanrenpuku} />}
+
+      {/* ─── T-050 採用戦略成績 (三連複動的 + 単勝) — 3×3 グリッド (fallback) ─── */}
       {hybrid && (() => {
         const spuku = hybrid.sanrenpuku_dynamic;
         const tansho = hybrid.tansho_t4;
@@ -299,6 +302,141 @@ export function SummaryCards({ data, hybrid }: Props) {
           </div>
         );
       })()}
+    </div>
+  );
+}
+
+// ──────────────────────────────────────────────────────────
+// M' 戦略 採用成績セクション (emerald 系カラー)
+// ──────────────────────────────────────────────────────────
+
+// M' 各自信度に対応する点数定義
+const M_PRIME_POINTS: Record<string, number> = {
+  SS: 4,
+  S:  7,
+  A:  7,
+  B: 10,
+  C: 10,
+  D: 10,
+};
+
+function MPrimeSummarySection({ mp }: { mp: MPrimeSanrenpukuSummary }) {
+  const EMERALD  = "#10b981";
+  const PROFIT_COLOR = mp.balance >= 0 ? EMERALD : "#ef4444";
+
+  // セルレンダラー
+  const StatCell = ({
+    label, value, sub, color, hero,
+  }: { label: string; value: string; sub?: string; color: string; hero?: boolean }) => (
+    <PremiumCard
+      variant="default"
+      padding={hero ? "md" : "sm"}
+      className="text-center stylish-card-hover border border-border/60"
+    >
+      <div className={`font-semibold tracking-wider uppercase text-muted-foreground mb-1 ${hero ? "text-[11px]" : "text-[10px]"}`}>
+        {label}
+      </div>
+      <div
+        className={`stat-mono font-bold ${hero ? "text-[1.5rem] sm:text-[1.8rem]" : "text-base"}`}
+        style={{ color }}
+      >
+        {value}
+      </div>
+      {sub && (
+        <div className={`text-muted-foreground mt-0.5 tnum ${hero ? "text-[10px]" : "text-[9px]"}`}>
+          {sub}
+        </div>
+      )}
+    </PremiumCard>
+  );
+
+  // 自信度別カード (SS/S/A/B/C/D)
+  const confidenceOrder = ["SS", "S", "A", "B", "C", "D"] as const;
+
+  return (
+    <div className="space-y-3 pt-5 mt-2">
+      {/* セクション区切り */}
+      <div className="relative h-px bg-gradient-to-r from-transparent via-emerald-500/40 to-transparent" aria-hidden />
+      <div className="flex items-baseline gap-2">
+        <span className="font-extrabold tracking-wider uppercase text-xs" style={{ color: EMERALD }}>
+          M'
+        </span>
+        <span className="heading-section text-sm">
+          M' 戦略 採用成績 (三連複)
+        </span>
+        <span className="text-xs text-muted-foreground">
+          {mp.date_from} 〜 {mp.date_to}
+        </span>
+      </div>
+
+      {/* 上段ヒーロー (的中率 / 回収率 / 純利) */}
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+        <StatCell
+          label="的中率"
+          value={fmtPct(mp.hit_rate_pct)}
+          sub={`${fmtNum(mp.races_hit)} / ${fmtNum(mp.races_played)} R`}
+          color={EMERALD}
+          hero
+        />
+        <StatCell
+          label="回収率 ROI"
+          value={fmtPct(mp.roi_pct)}
+          sub={`購入 ${fmtNum(mp.total_stake)} 円`}
+          color={mp.roi_pct >= 100 ? EMERALD : "#ef4444"}
+          hero
+        />
+        <StatCell
+          label="純利"
+          value={(mp.balance >= 0 ? "+" : "") + fmtNum(mp.balance) + "円"}
+          sub={`払戻 ${fmtNum(mp.total_payback)} 円`}
+          color={PROFIT_COLOR}
+          hero
+        />
+      </div>
+
+      {/* 自信度別内訳 6カード */}
+      <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-2">
+        {confidenceOrder.map((rank) => {
+          const c: MPrimeByConfidence | undefined = mp.by_confidence[rank];
+          const pts = M_PRIME_POINTS[rank] ?? "?";
+          if (!c) {
+            // データなし → グレーアウト表示
+            return (
+              <PremiumCard key={rank} variant="default" padding="sm" className="text-center opacity-40">
+                <div className="text-[10px] font-semibold text-muted-foreground mb-1">{rank}</div>
+                <div className="text-[9px] text-muted-foreground">{pts}点</div>
+                <div className="text-xs text-muted-foreground mt-1">—</div>
+              </PremiumCard>
+            );
+          }
+          const roiColor = c.roi_pct >= 100 ? EMERALD : "#ef4444";
+          const balColor = c.balance >= 0 ? EMERALD : "#ef4444";
+          return (
+            <PremiumCard key={rank} variant="default" padding="sm" className="text-center stylish-card-hover border border-border/60">
+              {/* ランク名 + 点数 */}
+              <div className="flex items-center justify-center gap-1 mb-1">
+                <span className="text-[11px] font-extrabold" style={{ color: EMERALD }}>{rank}</span>
+                <span className="text-[9px] text-muted-foreground">{pts}点</span>
+              </div>
+              {/* 的中率 */}
+              <div className="text-[10px] text-muted-foreground">的中率</div>
+              <div className="stat-mono text-sm font-bold" style={{ color: EMERALD }}>
+                {fmtPct(c.hit_rate_pct)}
+              </div>
+              {/* ROI */}
+              <div className="text-[10px] text-muted-foreground mt-0.5">ROI</div>
+              <div className="stat-mono text-sm font-bold" style={{ color: roiColor }}>
+                {fmtPct(c.roi_pct)}
+              </div>
+              {/* 純利 */}
+              <div className="text-[10px] text-muted-foreground mt-0.5">純利</div>
+              <div className="stat-mono text-xs font-bold" style={{ color: balColor }}>
+                {(c.balance >= 0 ? "+" : "") + fmtNum(c.balance)}
+              </div>
+            </PremiumCard>
+          );
+        })}
+      </div>
     </div>
   );
 }

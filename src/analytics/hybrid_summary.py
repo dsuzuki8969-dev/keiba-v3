@@ -549,18 +549,247 @@ def _compute_sanrenpuku_dynamic(year_filter: str) -> dict:
 
 
 # ────────────────────────────────────────────────────────────────
+# M' 戦略集計 (Phase 6 対応)
+# ────────────────────────────────────────────────────────────────
+
+def _is_m_prime_pred(races: list) -> bool:
+    """pred.json のレースリストが M' 戦略フォーマットかを判定する。
+
+    tickets_by_mode._meta.format が "M':" で始まる場合 M' と判定。
+    最初の有効なレースの _meta で判断する。
+    """
+    for r in races:
+        tbm = r.get("tickets_by_mode", {}) or {}
+        meta = tbm.get("_meta", {}) or {}
+        fmt = meta.get("format", "") or ""
+        if fmt:
+            return fmt.startswith("M'")
+    return False
+
+
+def _layer1_m_prime_sanrenpuku(race: dict) -> bool:
+    """M' 戦略での三連複チケット発動判定。
+
+    tickets_by_mode._meta.skipped が False かつ
+    tickets リストに type=="三連複" が 1 件以上あれば発動とみなす。
+    旧 T-050 の EV 判定ロジックとは独立して、pred.json の結果をそのまま使う。
+
+    Returns:
+        True  : M' 戦略がこのレースでチケットを出力している
+        False : skip 扱い（自信度不足・NAR 除外等）
+    """
+    tbm = race.get("tickets_by_mode", {}) or {}
+    meta = tbm.get("_meta", {}) or {}
+    # skip フラグで明示的に見送られたレースは除外
+    if meta.get("skipped", False):
+        return False
+    # tickets に三連複が 1 件以上あれば発動
+    tix = race.get("tickets", []) or []
+    return any(t.get("type") == "三連複" for t in tix)
+
+
+def _compute_m_prime_sanrenpuku(year_filter: str) -> dict:
+    """M' 戦略（自信度別三連複）の過去成績を集計する。
+
+    pred.json の tickets（type=="三連複"）と results.json の払戻を突合。
+    自信度別内訳 by_confidence (SS/S/A/B/C/D/E) も集計する。
+
+    集計: races_played, races_hit, total_stake, total_payback, roi_pct
+    内訳: by_confidence = {SS: {...}, S: {...}, ...}
+    月別: monthly[]
+    """
+    pred_dir = Path("data/predictions")
+    res_dir  = Path("data/results")
+
+    stats: dict = {
+        "races_played":  0,
+        "races_hit":     0,
+        "total_stake":   0,
+        "total_payback": 0,
+        "date_from":     "",
+        "date_to":       "",
+    }
+    # M' 自信度レベル（_meta.confidence または overall_confidence）
+    _CONFIDENCE_LEVELS = ("SS", "S", "A", "B", "C", "D", "E")
+    by_confidence: dict = {lv: {"races": 0, "hit": 0, "stake": 0, "payback": 0}
+                           for lv in _CONFIDENCE_LEVELS}
+    by_month: dict = {}
+
+    for fp in sorted(pred_dir.glob("*_pred.json")):
+        if "_prev" in fp.name:
+            continue
+        date_str = fp.name.split("_")[0]
+        if len(date_str) != 8 or not date_str.isdigit():
+            continue
+        if not _year_match(date_str, year_filter):
+            continue
+
+        res_fp = res_dir / f"{date_str}_results.json"
+        if not res_fp.exists():
+            continue
+
+        try:
+            with fp.open(encoding="utf-8") as f:
+                pred = json.load(f)
+            with res_fp.open(encoding="utf-8") as f:
+                results = json.load(f)
+        except (json.JSONDecodeError, OSError):
+            continue
+
+        races = pred.get("races", [])
+        # M' フォーマットでない pred.json はスキップ
+        if not _is_m_prime_pred(races):
+            continue
+
+        if not stats["date_from"] or date_str < stats["date_from"]:
+            stats["date_from"] = date_str
+        if not stats["date_to"] or date_str > stats["date_to"]:
+            stats["date_to"] = date_str
+
+        for r in races:
+            race_id = str(r.get("race_id", ""))
+
+            # M' 発動判定（skip レースは除外）
+            if not _layer1_m_prime_sanrenpuku(r):
+                continue
+
+            # 結果データ取得
+            rdata = results.get(race_id)
+            if rdata is None:
+                continue
+            payouts = rdata.get("payouts", {})
+            if not payouts:
+                continue
+
+            # 三連複払戻データが存在しないレースはスキップ（NAR R2 等）
+            if payouts.get("三連複") is None and payouts.get("sanrenpuku") is None:
+                continue
+
+            # 自信度取得（_meta.confidence → overall_confidence の順でフォールバック）
+            tbm = r.get("tickets_by_mode", {}) or {}
+            meta = tbm.get("_meta", {}) or {}
+            confidence = meta.get("confidence", "") or r.get("overall_confidence", "") or ""
+
+            # tickets から三連複チケットを取得
+            tix = [t for t in (r.get("tickets", []) or []) if t.get("type") == "三連複"]
+            if not tix:
+                continue
+
+            # 1-2-3 着の馬番セットを取得（払戻突合用）
+            top3_set: set = set()
+            if payouts.get("三連複"):
+                bucket = payouts["三連複"]
+                # bucket が list の場合は最初の combo から top3 を推定
+                # 実際の着順は results の order フィールドを優先
+            order = rdata.get("order") or []
+            if len(order) >= 3:
+                finish_map = {int(o["horse_no"]): int(o["finish"]) for o in order}
+                top3_set = {h for h, f in finish_map.items() if f <= 3}
+
+            stake    = sum(int(t.get("stake", 0) or 0) for t in tix)
+            if stake <= 0:
+                stake = len(tix) * STAKE_PER_TICKET
+
+            # 的中チェック: 三連複 combo が top3_set と完全一致するか
+            race_hit = False
+            payback  = 0
+            if len(top3_set) == 3:
+                for t in tix:
+                    combo_ints = [int(x) for x in (t.get("combo") or [])]
+                    if len(combo_ints) != 3:
+                        continue
+                    if set(combo_ints) == top3_set:
+                        race_hit = True
+                        pb = _lookup_payout(payouts, "三連複", sorted(combo_ints))
+                        t_stake = int(t.get("stake", 0) or 0) or STAKE_PER_TICKET
+                        payback += pb * (t_stake // 100)
+
+            stats["races_played"]  += 1
+            stats["total_stake"]   += stake
+            stats["total_payback"] += payback
+            if race_hit:
+                stats["races_hit"] += 1
+
+            # 自信度別内訳
+            if confidence in by_confidence:
+                bc = by_confidence[confidence]
+                bc["races"]   += 1
+                bc["stake"]   += stake
+                bc["payback"] += payback
+                if race_hit:
+                    bc["hit"] += 1
+
+            # 月別集計
+            month_key = f"{date_str[:4]}-{date_str[4:6]}"
+            bm = by_month.setdefault(month_key, {
+                "played": 0, "hit": 0, "stake": 0, "payback": 0
+            })
+            bm["played"]  += 1
+            bm["stake"]   += stake
+            bm["payback"] += payback
+            if race_hit:
+                bm["hit"] += 1
+
+    # 派生指標
+    ts  = stats["total_stake"]
+    tpb = stats["total_payback"]
+    rp  = stats["races_played"]
+    rh  = stats["races_hit"]
+    stats["balance"]      = tpb - ts
+    stats["roi_pct"]      = round(tpb / ts * 100, 1) if ts > 0 else 0.0
+    stats["hit_rate_pct"] = round(rh / rp * 100, 1) if rp > 0 else 0.0
+
+    # 自信度別 ROI
+    for lv, lv_data in by_confidence.items():
+        lv_s = lv_data["stake"]
+        lv_r = lv_data["races"]
+        lv_data["roi_pct"] = round(lv_data["payback"] / lv_s * 100, 1) if lv_s > 0 else 0.0
+        lv_data["hit_rate_pct"] = round(lv_data["hit"] / lv_r * 100, 1) if lv_r > 0 else 0.0
+    stats["by_confidence"] = {
+        lv: v for lv, v in by_confidence.items() if v["races"] > 0
+    }
+
+    # 月別 (累積 ROI 付き)
+    cum_stake, cum_payback = 0, 0
+    monthly = []
+    for m in sorted(by_month.keys()):
+        v = by_month[m]
+        cum_stake   += v["stake"]
+        cum_payback += v["payback"]
+        monthly.append({
+            "month":       m,
+            "played":      v["played"],
+            "hit":         v["hit"],
+            "stake":       v["stake"],
+            "payback":     v["payback"],
+            "balance":     v["payback"] - v["stake"],
+            "roi_pct":     round(v["payback"] / v["stake"] * 100, 1) if v["stake"] > 0 else 0.0,
+            "cum_roi_pct": round(cum_payback / cum_stake * 100, 1) if cum_stake > 0 else 0.0,
+        })
+    stats["monthly"] = monthly
+
+    return stats
+
+
+# ────────────────────────────────────────────────────────────────
 # 公開 API
 # ────────────────────────────────────────────────────────────────
 
 def get_hybrid_summary(year_filter: str = "all", force_refresh: bool = False) -> dict:
-    """新戦略ハイブリッド成績集計 (三連複動的 + 単勝 T-4) を返す。
+    """新戦略ハイブリッド成績集計 (三連複動的 + 単勝 T-4 + M' 戦略) を返す。
 
     30 分 TTL キャッシュ。force_refresh=True でキャッシュ無視。
 
+    M' 戦略 (Phase 6 対応):
+        pred.json が M' フォーマットの日付は m_prime_sanrenpuku に集計。
+        旧 T-050 フォーマットの日付は tansho_t4 / sanrenpuku_dynamic に集計。
+        両者は format 判定で自動振り分けされるため、混在期間でも正しく集計される。
+
     Returns:
         {
-            "tansho_t4":       {...}   # 単勝 T-4 集計
-            "sanrenpuku_dynamic": {...}  # 三連複動的集計
+            "tansho_t4":            {...}  # 単勝 T-4 集計（旧 T-050 / 残置）
+            "sanrenpuku_dynamic":   {...}  # 三連複動的集計（旧 T-050 / 残置）
+            "m_prime_sanrenpuku":   {...}  # M' 戦略三連複集計（自信度別内訳付き）
         }
     """
     cache_key = year_filter or "all"
@@ -569,12 +798,14 @@ def get_hybrid_summary(year_filter: str = "all", force_refresh: bool = False) ->
         if cached and (time.time() - cached[0]) < _CACHE_TTL:
             return cached[1]
 
-    tansho_result     = _compute_tansho_t4(cache_key)
-    sanrenpuku_result = _compute_sanrenpuku_dynamic(cache_key)
+    tansho_result       = _compute_tansho_t4(cache_key)
+    sanrenpuku_result   = _compute_sanrenpuku_dynamic(cache_key)
+    m_prime_result      = _compute_m_prime_sanrenpuku(cache_key)
 
     result = {
         "tansho_t4":          tansho_result,
         "sanrenpuku_dynamic": sanrenpuku_result,
+        "m_prime_sanrenpuku": m_prime_result,
     }
     _CACHE[cache_key] = (time.time(), result)
     return result

@@ -469,6 +469,179 @@ function Phase4HybridFormation({
 }
 
 
+// ───────────── M' 戦略: 自信度別 三連複表示 ─────────────
+
+/** M' 戦略の自信度バッジ表示 */
+function MPrimeConfBadge({
+  confidence,
+  subPattern,
+  ticketCount,
+  skipped,
+}: {
+  confidence?: string;
+  subPattern?: string;
+  ticketCount?: number;
+  skipped?: boolean;
+}) {
+  // 自信度ごとのカラーマッピング
+  const confColor: Record<string, string> = {
+    SS: "bg-red-600 text-white",
+    S:  "bg-orange-500 text-white",
+    A:  "bg-amber-500 text-white",
+    B:  "bg-yellow-400 text-gray-900",
+    C:  "bg-lime-500 text-white",
+    D:  "bg-teal-500 text-white",
+    E:  "bg-gray-400 text-white",
+  };
+  const cls = confColor[confidence ?? ""] ?? "bg-gray-400 text-white";
+
+  if (skipped) {
+    return (
+      <span className="inline-flex items-center gap-1.5">
+        <span className={`px-2 py-0.5 rounded text-xs font-bold ${cls}`}>
+          [{confidence ?? "?"}]
+        </span>
+        <span className="px-2 py-0.5 rounded text-xs font-semibold bg-gray-200 text-gray-600 dark:bg-gray-700 dark:text-gray-400">
+          見送り
+        </span>
+      </span>
+    );
+  }
+
+  return (
+    <span className="inline-flex items-center gap-1.5">
+      <span className={`px-2 py-0.5 rounded text-xs font-bold ${cls}`}>
+        [{confidence ?? "?"}]
+      </span>
+      {subPattern && (
+        <span className="text-xs text-muted-foreground">
+          → {subPattern} パターン
+        </span>
+      )}
+      {ticketCount !== undefined && (
+        <span className="text-xs font-semibold text-emerald-700 dark:text-emerald-400">
+          ({ticketCount} 点)
+        </span>
+      )}
+    </span>
+  );
+}
+
+/** M' 戦略: 自信度別 三連複表示コンポーネント */
+function MPrimeFormation({
+  tickets,
+  noToMark,
+  horses: _horses,
+  meta,
+}: {
+  tickets: TicketData[];
+  noToMark: Record<number, string>;
+  horses: HorseData[];
+  meta?: {
+    skip_reason?: string;
+    format?: string;
+    sub_pattern?: string;
+    ticket_count?: number;
+    stake_total?: number;
+    confidence?: string;
+    skipped?: boolean;
+  };
+}) {
+  // 三連複のみ抽出（tickets は全て三連複のはずだが念のためフィルタ）
+  const sanrenpuku = tickets.filter((t) => t.type === "三連複");
+  const ticketCount = meta?.ticket_count ?? sanrenpuku.length;
+  const stakeTotal = meta?.stake_total ?? ticketCount * 100;
+  const skipped = meta?.skipped ?? false;
+  const subPattern = meta?.sub_pattern;
+  const confidence = meta?.confidence;
+
+  return (
+    <div className="space-y-3">
+      {/* ヘッダーサマリー */}
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-b border-border/50 pb-2">
+        {/* 自信度 + パターン バッジ */}
+        <MPrimeConfBadge
+          confidence={confidence}
+          subPattern={subPattern}
+          ticketCount={ticketCount}
+          skipped={skipped}
+        />
+        {/* 投資額 */}
+        {!skipped && stakeTotal > 0 && (
+          <span className="text-xs text-muted-foreground">
+            1R投資額: <strong className="text-foreground">¥{stakeTotal.toLocaleString()}</strong>
+            <span className="ml-1 opacity-70">(1点100円)</span>
+          </span>
+        )}
+      </div>
+
+      {/* 見送り時 */}
+      {skipped ? (
+        <div className="rounded-md border border-gray-300/50 bg-gray-50/50 dark:bg-gray-900/20 p-3">
+          <p className="text-sm text-muted-foreground">
+            このレースは見送りです。
+            {meta?.skip_reason && (
+              <span className="ml-1">理由: {meta.skip_reason}</span>
+            )}
+          </p>
+        </div>
+      ) : (
+        /* 買い目リスト */
+        <div>
+          <div className="flex items-center gap-2 mb-2">
+            <span className="px-2 py-0.5 bg-emerald-600 text-white text-xs font-bold rounded">
+              三連複
+            </span>
+            <span className="text-xs text-muted-foreground">{sanrenpuku.length}点</span>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-0.5">
+            {sanrenpuku.map((t, i) => {
+              // horse_marks フィールド (M' 戦略では combo の印順序が格納済み)
+              const horseMarks = (t as { horse_marks?: string[] }).horse_marks;
+              return (
+                <div key={`MP-${i}`} className="flex flex-wrap items-center gap-2 text-sm py-0.5">
+                  {/* horse_marks がある場合は印順で表示、なければ noToMark 逆引き */}
+                  {horseMarks && horseMarks.length > 0 ? (
+                    <strong className="whitespace-nowrap">
+                      {(t.combo ?? []).map((n, j) => {
+                        const mk = horseMarks[j] ?? noToMark[n] ?? "";
+                        return (
+                          <span key={j}>
+                            {j > 0 && (
+                              <span className="text-muted-foreground mx-0.5">-</span>
+                            )}
+                            <span className={markCls(mk)}>{mk}</span>
+                            {circledNum(n)}
+                          </span>
+                        );
+                      })}
+                    </strong>
+                  ) : (
+                    /* horse_marks 未設定の場合は既存 ComboDisplay で代替 */
+                    <ComboDisplay ticket={t} noToMark={noToMark} />
+                  )}
+                  <FmtStats
+                    prob={t.prob || 0}
+                    odds={t.odds || 0}
+                    ev={t.ev || 0}
+                    oddsSource={t.odds_source}
+                  />
+                </div>
+              );
+            })}
+          </div>
+          {sanrenpuku.length === 0 && (
+            <p className="text-sm text-muted-foreground italic">
+              買い目データがありません。
+            </p>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+
 /** 「買わない」判定の表示 + 参考ヒモグレー表示 */
 function BetSkipPanel({
   decision,
@@ -543,10 +716,18 @@ export function TicketSection({ race }: Props) {
       rank2?: Array<{ horse_no: number; mark: string }>;
       rank3?: Array<{ horse_no: number; mark: string }>;
     };
+    // M' 戦略用フィールド
+    sub_pattern?: string;
+    ticket_count?: number;
+    stake_total?: number;
+    confidence?: string;
+    skipped?: boolean;
   } | undefined;
 
   // T-050 フォーマット判定（"T-050:" で始まる format 文字列）
   const isT050Format = !!(tbmMeta?.format?.startsWith("T-050:"));
+  // M' 戦略フォーマット判定（"M':" で始まる format 文字列）
+  const isMPrimeFormat = !!(tbmMeta?.format?.startsWith("M':"));
 
   // 何も出力するものがなければ null
   if (
@@ -573,9 +754,11 @@ export function TicketSection({ race }: Props) {
                 Betting Guide
               </PremiumCardAccent>
               <PremiumCardTitle className="text-base flex items-center gap-3 flex-wrap">
-                {isT050Format
-                  ? "買い目指南（三連複動的 + 単勝T-4）"
-                  : "買い目指南（三連単フォーメーション）"}
+                {isMPrimeFormat
+                  ? "買い目指南（M' 戦略 自信度別 三連複）"
+                  : isT050Format
+                    ? "買い目指南（三連複動的 + 単勝T-4）"
+                    : "買い目指南（三連単フォーメーション）"}
                 <span
                   className="text-sm font-normal text-muted-foreground"
                   title="SS=鉄板級 / S=高信頼 / A=有力 / B=印通り / C=波乱含み / D=見送り"
@@ -589,9 +772,11 @@ export function TicketSection({ race }: Props) {
                 )}
               </PremiumCardTitle>
               <p className="text-[11px] text-muted-foreground mt-1 leading-snug">
-                {isT050Format
-                  ? "三連複動的フォーメーション（中7点/広10点）＋単勝T-4（◉◎＋○）— 各点 100円固定。EV は期待払戻倍率の推定値。"
-                  : "フォーメーション ◉/◎⇔○/▲/(☆)⇒○/▲/△/★/(☆)/(同断層内無印1-2頭) — 各点 100円固定。SS / C / D 信頼度は過去成績マイナスのため見送り。EV は期待払戻倍率の推定値。"}
+                {isMPrimeFormat
+                  ? "M' 戦略: SS=E(4点) / S/A=C(7点) / B/C/D=D(10点) / E=見送り。1点100円固定。年純利 +¥12M / ROI 217%実証。"
+                  : isT050Format
+                    ? "三連複動的フォーメーション（中7点/広10点）＋単勝T-4（◉◎＋○）— 各点 100円固定。EV は期待払戻倍率の推定値。"
+                    : "フォーメーション ◉/◎⇔○/▲/(☆)⇒○/▲/△/★/(☆)/(同断層内無印1-2頭) — 各点 100円固定。SS / C / D 信頼度は過去成績マイナスのため見送り。EV は期待払戻倍率の推定値。"}
               </p>
             </div>
           </PremiumCardHeader>
@@ -599,8 +784,16 @@ export function TicketSection({ race }: Props) {
             {decision?.skip ? (
               <BetSkipPanel decision={decision} noToMark={noToMark} />
             ) : hasFixed ? (
-              isT050Format ? (
-                /* T-050: 三連複動的 + 単勝T-4 ハイブリッド表示 */
+              isMPrimeFormat ? (
+                /* M' 戦略: 自信度別 三連複 */
+                <MPrimeFormation
+                  tickets={fixedTickets}
+                  noToMark={noToMark}
+                  horses={horses}
+                  meta={tbmMeta}
+                />
+              ) : isT050Format ? (
+                /* T-050: 三連複動的 + 単勝T-4 ハイブリッド表示（fallback） */
                 <Phase4HybridFormation
                   tickets={fixedTickets}
                   noToMark={noToMark}

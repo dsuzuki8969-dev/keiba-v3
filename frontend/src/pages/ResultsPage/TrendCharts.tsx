@@ -68,6 +68,10 @@ const CHART_COLORS = {
   hybridTansho: "#22c55e",   // 明緑（単勝 T-4 ROI / 既存◉◎単勝とは別色）
   hybridProfitPlus: "#3b82f6",  // 青（プラス収支・新戦略）
   hybridProfitMinus: "#ef4444", // 赤（マイナス収支）
+  // M' 戦略 (emerald 系)
+  mprime: "#10b981",          // emerald（M' ROI）
+  mprimeProfitPlus: "#10b981",
+  mprimeProfitMinus: "#ef4444",
 };
 
 function fmtPct(v: number): string {
@@ -107,8 +111,20 @@ export function TrendCharts({ data, hybrid }: Props) {
     tansho: m.cum_roi_pct,
   }));
 
+  // ──── M' 月別データ ────
+  // monthly は Record<string, MPrimeMonthly> 形式なのでエントリを月順にソート
+  const mprimeMonthlyRaw = hybrid?.m_prime_sanrenpuku?.monthly ?? {};
+  const mprimeMonthlyData = Object.entries(mprimeMonthlyRaw)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([month, v]) => ({
+      name: month,
+      roi: v.roi_pct,
+      balance: v.balance,
+    }));
+
   if (!labels.length && !monthLabels.length
-      && spukuMonthly.length === 0 && tanshoMonthly.length === 0) return null;
+      && spukuMonthly.length === 0 && tanshoMonthly.length === 0
+      && mprimeMonthlyData.length === 0) return null;
 
   return (
     <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
@@ -267,6 +283,81 @@ export function TrendCharts({ data, hybrid }: Props) {
                 />
               </AreaChart>
             </ResponsiveContainer>
+        </ChartCard>
+      )}
+
+      {/* ────────── 5: M' 三連複 月別 ROI推移 (emerald) ────────── */}
+      {mprimeMonthlyData.length > 0 && (
+        <ChartCard accentColor={CHART_COLORS.mprime} title="M' 戦略 月別 ROI 推移">
+          <ResponsiveContainer width="100%" height={220}>
+            <AreaChart data={mprimeMonthlyData} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
+              <defs>
+                <linearGradient id="mprimeRoiGrad" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stopColor={CHART_COLORS.mprime} stopOpacity={0.5} />
+                  <stop offset="100%" stopColor={CHART_COLORS.mprime} stopOpacity={0.05} />
+                </linearGradient>
+              </defs>
+              <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
+              <XAxis
+                dataKey="name"
+                tick={{ fontSize: 10, fill: "var(--muted-foreground)" }}
+                tickLine={false}
+                interval="preserveStartEnd"
+                stroke="var(--border)"
+              />
+              <YAxis
+                tick={{ fontSize: 10, fill: "var(--muted-foreground)" }}
+                tickLine={false}
+                tickFormatter={(v) => v + "%"}
+                stroke="var(--border)"
+              />
+              <Tooltip
+                contentStyle={tooltipStyle}
+                formatter={(v) => [fmtPct(Number(v)), "M' ROI"]}
+              />
+              <ReferenceLine
+                y={100}
+                stroke="var(--brand-gold)"
+                strokeDasharray="4 4"
+                label={{ value: "損益分岐 100%", fill: "var(--brand-gold)", fontSize: 10, position: "insideTopRight" }}
+              />
+              <Area
+                type="monotone"
+                dataKey="roi"
+                stroke={CHART_COLORS.mprime}
+                strokeWidth={2.5}
+                fill="url(#mprimeRoiGrad)"
+                dot={mprimeMonthlyData.length <= 24}
+                isAnimationActive
+              />
+            </AreaChart>
+          </ResponsiveContainer>
+        </ChartCard>
+      )}
+
+      {/* ────────── 6: M' 三連複 月別純利推移 (emerald / 棒グラフ) ────────── */}
+      {mprimeMonthlyData.length > 0 && (
+        <ChartCard accentColor={CHART_COLORS.mprime} title="M' 戦略 月別純利推移">
+          <ResponsiveContainer width="100%" height={220}>
+            <BarChart data={mprimeMonthlyData}>
+              <CartesianGrid strokeDasharray="3 3" stroke="currentColor" opacity={0.15} />
+              <XAxis dataKey="name" tick={{ fontSize: 10 }} tickLine={false} />
+              <YAxis
+                tick={{ fontSize: 10 }}
+                tickLine={false}
+                tickFormatter={(v) => (v >= 0 ? "+" : "") + v.toLocaleString()}
+              />
+              <Tooltip formatter={(v) => [fmtYen(Number(v)), "M' 純利"]} />
+              <Bar dataKey="balance" radius={[4, 4, 0, 0]}>
+                {mprimeMonthlyData.map((entry, i) => (
+                  <Cell
+                    key={`mp-${i}`}
+                    fill={entry.balance >= 0 ? CHART_COLORS.mprimeProfitPlus : CHART_COLORS.mprimeProfitMinus}
+                  />
+                ))}
+              </Bar>
+            </BarChart>
+          </ResponsiveContainer>
         </ChartCard>
       )}
     </div>

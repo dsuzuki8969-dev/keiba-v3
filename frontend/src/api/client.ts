@@ -418,9 +418,54 @@ export interface SanrenpukuDynamicSummary {
   monthly: HybridMonthly[];
 }
 
+// M' 戦略: 自信度別成績
+export interface MPrimeByConfidence {
+  played: number;
+  hit: number;
+  hit_rate_pct: number;
+  stake: number;
+  payback: number;
+  balance: number;
+  roi_pct: number;
+}
+
+// M' 戦略: 月別成績
+export interface MPrimeMonthly {
+  played: number;
+  hit: number;
+  stake: number;
+  payback: number;
+  balance: number;
+  roi_pct: number;
+}
+
+// M' 戦略: 全体サマリ
+export interface MPrimeSanrenpukuSummary {
+  races_played: number;
+  races_hit: number;
+  hit_rate_pct: number;
+  roi_pct: number;
+  total_stake: number;
+  total_payback: number;
+  balance: number;
+  date_from: string;
+  date_to: string;
+  by_confidence: {
+    SS?: MPrimeByConfidence;
+    S?: MPrimeByConfidence;
+    A?: MPrimeByConfidence;
+    B?: MPrimeByConfidence;
+    C?: MPrimeByConfidence;
+    D?: MPrimeByConfidence;
+    E?: MPrimeByConfidence;
+  };
+  monthly: Record<string, MPrimeMonthly>;
+}
+
 export interface HybridSummaryResponse {
   tansho_t4: TanshoT4Summary;
   sanrenpuku_dynamic: SanrenpukuDynamicSummary;
+  m_prime_sanrenpuku?: MPrimeSanrenpukuSummary | null;
   error?: string;
 }
 

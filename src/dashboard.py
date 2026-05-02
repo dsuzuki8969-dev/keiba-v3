@@ -1324,15 +1324,32 @@ def _collect_sanrentan_tickets(race: dict) -> list:
     return [t for t in all_tix if t.get("type") == "三連単"]
 
 
+def _is_m_prime_race(race: dict) -> bool:
+    """M' 戦略の pred.json かどうかを判定する。
+
+    tickets_by_mode._meta.format が "M':" で始まる場合 M' と判定。
+    旧 T-050 フォーマット (三連複+単勝) は format が存在しないか異なる文字列。
+    """
+    tbm = race.get("tickets_by_mode", {}) or {}
+    meta = tbm.get("_meta", {}) or {}
+    fmt = meta.get("format", "") or ""
+    return fmt.startswith("M'")
+
+
 def _collect_strategy_tickets(race: dict) -> list[dict]:
-    """T-050: pred.json から三連複+単勝チケットを取得（重複除去）。
+    """M' / T-050: pred.json から三連複チケットを取得（重複除去）。
+
+    M' 戦略では単勝チケットは発生しないため、三連複のみを対象とする。
+    旧 T-050 フォーマット（三連複+単勝混在）との後方互換を維持するため、
+    単勝チケットも引き続き処理できるが、M' データでは 0 件になる（期待動作）。
 
     探索範囲:
         race["tickets"] + race["formation_tickets"]
         + race["tickets_by_mode"]["fixed"|"accuracy"|"balanced"|"recovery"]
 
     Returns:
-        type == "三連複" または "単勝" のチケット dict の list（重複除去済）
+        type == "三連複" のチケット dict の list（重複除去済）
+        ※ 旧 T-050 データとの後方互換のため "単勝" も含む（M' では 0 件）
     """
     all_tix = list(race.get("tickets", []) or [])
     all_tix += list(race.get("formation_tickets", []) or [])
@@ -1343,6 +1360,7 @@ def _collect_strategy_tickets(race: dict) -> list[dict]:
     result = []
     for t in all_tix:
         tt = t.get("type", "")
+        # M' 戦略では三連複のみ発生する。単勝は旧 T-050 後方互換のため残置
         if tt not in ("三連複", "単勝"):
             continue
         combo = tuple(int(x) for x in (t.get("combo") or []))
@@ -5851,20 +5869,36 @@ function dNavRefreshOdds(date){{
                 "tansho_roi":   round(h_ret / h_stake * 100, 1) if h_stake > 0 else 0.0,
             }
 
-            # T-050: 三連複+単勝 集計 — pred.json 永続値ベース (LIVE STATS 表示用)
+            # M' / T-050: 三連複集計 — pred.json 永続値ベース (LIVE STATS 表示用)
             # API キー名は sanrentan のまま維持（フロント後方互換）
+            # M' 戦略では単勝チケットは 0 件になる（期待動作）
             sanrentan = {"played": 0, "hit": 0, "stake": 0, "payback": 0, "roi_pct": 0.0}
+            # strategy_format: pred.json の戦略フォーマットを記録（M' / T-050 / unknown）
+            strategy_format = "unknown"
+            # m_prime_stats: M' 自信度別集計（将来拡張用。現状は空 dict）
+            m_prime_stats: dict = {}
             try:
                 from scripts.monthly_backtest import get_payout
                 from config.settings import RESULTS_DIR as _RDIR
                 import os as _os
                 pred = pred_cached  # T-001 reviewer MEDIUM: 上部 load の結果を再利用
                 if pred:
+                    # M' / T-050 フォーマット判定（最初のレースの _meta.format で判断）
+                    _first_races = pred.get("races", [])
+                    if _first_races:
+                        if _is_m_prime_race(_first_races[0]):
+                            strategy_format = "M'"
+                        else:
+                            strategy_format = "T-050"
+                    logger.debug("today_stats strategy_format=%s", strategy_format)
+
                     date_key = date.replace("-", "")
                     res_fp = _os.path.join(_RDIR, f"{date_key}_results.json")
                     if _os.path.isfile(res_fp):
                         with open(res_fp, "r", encoding="utf-8") as _rf:
                             results = json.load(_rf)
+                        # M' 自信度別集計用（将来拡張: confidence ごとの hit/played 集計）
+                        _mp_by_conf: dict = {}
                         for r in pred.get("races", []):
                             rid = str(r.get("race_id", ""))
                             rdata = results.get(rid)
@@ -5888,14 +5922,24 @@ function dNavRefreshOdds(date){{
                                 continue
                             winner = top3_ordered[0]  # 1着馬番
 
-                            # T-050 新ヘルパーで三連複+単勝チケット集合を取得
+                            # M' / T-050 ヘルパーで三連複チケット集合を取得
+                            # M' では単勝 0 件・三連複のみ / 旧 T-050 では両方あり得る
                             strategy_tix = _collect_strategy_tickets(r)
                             if not strategy_tix:
-                                continue  # 対象外レース（チケットなし）
+                                continue  # 対象外レース（チケットなし / M' skip）
 
                             # ここまで来れば played にカウント
                             sanrentan["played"] += 1
                             race_hit = False
+
+                            # M' 自信度（overall_confidence）を取得（将来拡張用）
+                            _conf = r.get("overall_confidence", "")
+                            if strategy_format == "M'" and _conf:
+                                _mp_conf = _mp_by_conf.setdefault(_conf, {
+                                    "played": 0, "hit": 0, "stake": 0, "payback": 0
+                                })
+                                _mp_conf["played"] += 1
+
                             for t in strategy_tix:
                                 stake = int(t.get("stake", 0) or 0)
                                 if stake <= 0:
@@ -5909,6 +5953,8 @@ function dNavRefreshOdds(date){{
                                 if tt == "三連複":
                                     tix_hit = set(combo_ints) == top3_set
                                 elif tt == "単勝":
+                                    # 旧 T-050 後方互換: 単勝チケットも処理
+                                    # M' データでは単勝チケットは 0 件なのでここには到達しない
                                     tix_hit = bool(combo_ints) and combo_ints[0] == winner
                                 else:
                                     tix_hit = False
@@ -5919,6 +5965,9 @@ function dNavRefreshOdds(date){{
                                     sanrentan["payback"] += pp * (stake // 100)
                             if race_hit:
                                 sanrentan["hit"] += 1
+                                if strategy_format == "M'" and _conf and _conf in _mp_by_conf:
+                                    _mp_by_conf[_conf]["hit"] += 1
+
                         sanrentan["roi_pct"] = (
                             round(sanrentan["payback"] / sanrentan["stake"] * 100, 1)
                             if sanrentan["stake"] > 0 else 0.0
@@ -5928,8 +5977,20 @@ function dNavRefreshOdds(date){{
                             if sanrentan["played"] > 0 else 0.0
                         )
                         sanrentan["balance"] = sanrentan["payback"] - sanrentan["stake"]
+
+                        # M' 自信度別集計を整形して m_prime_stats に格納
+                        if strategy_format == "M'" and _mp_by_conf:
+                            for _c, _cv in _mp_by_conf.items():
+                                _cs = _cv["stake"]
+                                _cp = _cv["payback"]
+                                _cv["roi_pct"] = round(_cp / _cs * 100, 1) if _cs > 0 else 0.0
+                                _cv["hit_rate_pct"] = (
+                                    round(_cv["hit"] / _cv["played"] * 100, 1)
+                                    if _cv["played"] > 0 else 0.0
+                                )
+                            m_prime_stats = _mp_by_conf
             except Exception as _e:
-                logger.warning("today_stats sanrentan(三連複+単勝) 計算失敗: %s", _e, exc_info=True)
+                logger.warning("today_stats 三連複集計(M'/T-050) 計算失敗: %s", _e, exc_info=True)
 
             # T-001 (2026-04-25): UI 3 段表記用のメタ情報を計算
             # total_races (pred.json 全数) / finished_races (results.json 取り込み済み)
@@ -5967,6 +6028,9 @@ function dNavRefreshOdds(date){{
                 pending_age_max_min=meta["pending_age_max_min"],
                 honmei=honmei,
                 sanrentan=sanrentan,
+                # M' 戦略拡張フィールド（フロントが旧フォーマット期待時は無視される）
+                strategy_format=strategy_format,  # "M'" or "T-050" or "unknown"
+                m_prime_stats=m_prime_stats,       # M' 自信度別集計（将来拡張用）
                 last_updated=datetime.now().strftime("%H:%M"),
             )
         except Exception as e:
