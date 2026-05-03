@@ -1,6 +1,6 @@
 import { PremiumCard } from "@/components/ui/premium/PremiumCard";
 import { Trophy, ListChecks, CheckCircle2 } from "lucide-react";
-import type { HybridSummaryResponse, MPrimeSanrenpukuSummary, MPrimeByConfidence } from "@/api/client";
+import type { HybridSummaryResponse, MPrimeSanrenpukuSummary, MPrimeByConfidence, MPrimeTopPayout } from "@/api/client";
 
 interface Props {
   data: Record<string, unknown>;
@@ -410,7 +410,9 @@ function MPrimeSummarySection({ mp }: { mp: MPrimeSanrenpukuSummary }) {
             );
           }
           const roiColor = c.roi_pct >= 100 ? EMERALD : "#ef4444";
-          const balColor = c.balance >= 0 ? EMERALD : "#ef4444";
+          // backend は balance フィールドを返さないため payback - stake で計算
+          const balance = (c.payback ?? 0) - (c.stake ?? 0);
+          const balColor = balance >= 0 ? EMERALD : "#ef4444";
           return (
             <PremiumCard key={rank} variant="default" padding="sm" className="text-center stylish-card-hover border border-border/60">
               {/* ランク名 + 点数 */}
@@ -431,12 +433,53 @@ function MPrimeSummarySection({ mp }: { mp: MPrimeSanrenpukuSummary }) {
               {/* 純利 */}
               <div className="text-[10px] text-muted-foreground mt-0.5">純利</div>
               <div className="stat-mono text-xs font-bold" style={{ color: balColor }}>
-                {(c.balance >= 0 ? "+" : "") + fmtNum(c.balance)}
+                {(balance >= 0 ? "+" : "") + fmtNum(balance)}
               </div>
             </PremiumCard>
           );
         })}
       </div>
+
+      {/* 三連複高配当 TOP10 */}
+      {mp.top_payouts && mp.top_payouts.length > 0 && (
+        <div className="mt-4">
+          <div className="text-xs font-semibold text-muted-foreground mb-2">三連複高配当 TOP10</div>
+          <PremiumCard variant="default" padding="sm">
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs tabular-nums">
+                <thead>
+                  <tr className="text-muted-foreground border-b border-border/40">
+                    <th className="text-left px-2 py-1">#</th>
+                    <th className="text-right px-2 py-1">配当</th>
+                    <th className="text-left px-2 py-1">日付</th>
+                    <th className="text-left px-2 py-1">場</th>
+                    <th className="text-right px-2 py-1">R</th>
+                    <th className="text-left px-2 py-1">レース</th>
+                    <th className="text-left px-2 py-1">買い目</th>
+                    <th className="text-left px-2 py-1">自信度</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {mp.top_payouts.map((tp: MPrimeTopPayout, i: number) => (
+                    <tr key={i} className="border-b border-border/20 hover:bg-muted/30">
+                      <td className="px-2 py-1">{i + 1}</td>
+                      <td className="px-2 py-1 text-right font-bold" style={{ color: EMERALD }}>
+                        {fmtNum(tp.payback)}円
+                      </td>
+                      <td className="px-2 py-1">{tp.date.slice(5)}</td>
+                      <td className="px-2 py-1">{tp.venue}</td>
+                      <td className="px-2 py-1 text-right">{tp.race_no}</td>
+                      <td className="px-2 py-1">{tp.race_name || "—"}</td>
+                      <td className="px-2 py-1 stat-mono">{tp.combo}</td>
+                      <td className="px-2 py-1">{tp.confidence || "—"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </PremiumCard>
+        </div>
+      )}
     </div>
   );
 }

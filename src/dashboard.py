@@ -912,6 +912,7 @@ def _scan_today_predictions(date_str: str) -> dict:
                         races[venue] = []
                     races[venue].append({
                         "race_no": race_no,
+                        "race_id": _rid,  # T-039: HTML 欠損 fallback でも race_id を渡す (的中バッジ表示用)
                         "file": "",
                         "url": "",
                         "name": pr.get("race_name") or f"{race_no}R",

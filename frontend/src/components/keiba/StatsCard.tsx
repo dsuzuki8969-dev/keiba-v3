@@ -209,9 +209,9 @@ export function StatsCard({
           </div>
         </div>
 
-        {/* T-050: 三連複+単勝 */}
+        {/* M' 戦略: 三連複 (自信度別 SS=E/S=C/A=C/B/C/D=D/E=skip) */}
         <div>
-          <div className="text-[11px] text-muted-foreground mb-1">三連複+単勝</div>
+          <div className="text-[11px] text-muted-foreground mb-1">三連複 (M' 戦略)</div>
           <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1">
             <span className="tabular-nums text-sm">
               予想 <span className="text-foreground font-bold">{sPlayed}R</span>

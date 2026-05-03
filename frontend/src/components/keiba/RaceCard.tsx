@@ -127,19 +127,8 @@ export function RaceCard({ race, onClick, winPctRank, hitResult }: Props) {
         </span>
         {race.grade && <GradeBadge grade={race.grade} />}
         <ConfidenceBadge rank={conf} className="ml-1" />
-        {/* T-039: 単勝◎的中バッジ（結果取得済み = true/false のみ表示。null/undefined は非表示） */}
-        {winHit !== null && winHit !== undefined && (
-          <span
-            className={cn(
-              "text-xs font-bold leading-none",
-              winHit ? "text-red-500" : "text-zinc-400 dark:text-zinc-500"
-            )}
-            aria-label={winHit ? "単勝 的中" : "単勝 不的中"}
-          >
-            単{winHit ? "◯" : "×"}
-          </span>
-        )}
-        {/* T-050: 三連複+単勝 的中バッジ（結果取得済み = true/false のみ表示。null/undefined は非表示） */}
+        {/* M' 戦略: 三連複 的中バッジ（M' は単勝廃止のため単勝バッジは削除）
+           結果取得済み = true/false のみ表示。null/undefined は非表示 */}
         {sanrentanHit !== null && sanrentanHit !== undefined && (
           <span
             className={cn(
@@ -148,7 +137,7 @@ export function RaceCard({ race, onClick, winPctRank, hitResult }: Props) {
             )}
             aria-label={sanrentanHit ? "三連複 的中" : "三連複 不的中"}
           >
-            複{sanrentanHit ? "◯" : "×"}
+            三連複{sanrentanHit ? "◯" : "×"}
           </span>
         )}
         {race.post_time && (

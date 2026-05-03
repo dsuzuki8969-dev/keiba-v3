@@ -43,6 +43,28 @@
 - ability_wa 改善 58,053 馬 / ability_total 改善 82,504 馬
 - pred.json は gitignore で git 差分なし (handoff に記録)
 
+### 5/3-5/4 後半セッション 完了済タスク
+
+### T-067 ✅ 完了 — dashboard 修復・三連複高配当 TOP10 新規実装
+- M' フロント表示 (TicketSection/SummaryCards/TrendCharts)
+- LIVE STATS パネル「三連複+単勝」→「三連複 (M' 戦略)」
+- レースカード単勝バッジ削除
+- HTML 欠損レース race_id 補完 (dashboard.py L914)
+- M' セクション TypeError (c.balance) 修正
+- **三連複高配当 TOP10** バックエンド集計 + フロント表示新規実装
+- dashboard pythonw 再起動 (PID 16260 / 黒画面なし)
+
+### T-068 (P0・新規) — 本セッション最終 commit + push
+- 5/4 06:48 時点 未 commit 修正 5 件:
+  - frontend/src/api/client.ts (MPrimeTopPayout 型追加)
+  - frontend/src/components/keiba/RaceCard.tsx (単勝バッジ削除)
+  - frontend/src/components/keiba/StatsCard.tsx (三連複表記修正)
+  - frontend/src/pages/ResultsPage/SummaryCards.tsx (三連複 TOP10 + balance 修正)
+  - src/analytics/hybrid_summary.py (top_payouts 集計)
+  - src/dashboard.py (HTML 欠損 race_id 補完)
+  - src/static/* (再ビルド)
+- 工数: 5 分
+
 ### T-067 (P0・新規) — dashboard 再起動 + フロント M' 表示確認
 - Phase 6 改修 (dashboard.py + hybrid_summary.py の M' 集計対応) 反映
 - src/static/ ビルド成果物 (M' 表示) 反映

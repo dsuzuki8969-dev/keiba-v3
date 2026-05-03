@@ -614,6 +614,8 @@ def _compute_m_prime_sanrenpuku(year_filter: str) -> dict:
     by_confidence: dict = {lv: {"races": 0, "hit": 0, "stake": 0, "payback": 0}
                            for lv in _CONFIDENCE_LEVELS}
     by_month: dict = {}
+    # 三連複高配当 TOP10 候補リスト（後で payback 降順ソート → TOP10）
+    top_payouts_list: list = []
 
     for fp in sorted(pred_dir.glob("*_pred.json")):
         if "_prev" in fp.name:
@@ -709,6 +711,17 @@ def _compute_m_prime_sanrenpuku(year_filter: str) -> dict:
             stats["total_payback"] += payback
             if race_hit:
                 stats["races_hit"] += 1
+                # 三連複高配当 TOP10 候補に追加（払戻 > 0 のみ）
+                if payback > 0:
+                    top_payouts_list.append({
+                        "payback":   int(payback),
+                        "date":      f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}",
+                        "venue":     r.get("venue", "") or "",
+                        "race_no":   int(r.get("race_no", 0) or 0),
+                        "race_name": r.get("race_name", "") or "",
+                        "combo":     "-".join(str(x) for x in sorted(top3_set)),
+                        "confidence": confidence,
+                    })
 
             # 自信度別内訳
             if confidence in by_confidence:
@@ -767,6 +780,11 @@ def _compute_m_prime_sanrenpuku(year_filter: str) -> dict:
             "cum_roi_pct": round(cum_payback / cum_stake * 100, 1) if cum_stake > 0 else 0.0,
         })
     stats["monthly"] = monthly
+
+    # 三連複高配当 TOP10
+    stats["top_payouts"] = sorted(
+        top_payouts_list, key=lambda x: -x["payback"]
+    )[:10]
 
     return stats
 

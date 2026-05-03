@@ -440,6 +440,16 @@ export interface MPrimeMonthly {
 }
 
 // M' 戦略: 全体サマリ
+export interface MPrimeTopPayout {
+  payback: number;
+  date: string;
+  venue: string;
+  race_no: number;
+  race_name: string;
+  combo: string;
+  confidence: string;
+}
+
 export interface MPrimeSanrenpukuSummary {
   races_played: number;
   races_hit: number;
@@ -460,6 +470,7 @@ export interface MPrimeSanrenpukuSummary {
     E?: MPrimeByConfidence;
   };
   monthly: Record<string, MPrimeMonthly>;
+  top_payouts?: MPrimeTopPayout[];
 }
 
 export interface HybridSummaryResponse {
