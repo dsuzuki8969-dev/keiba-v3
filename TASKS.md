@@ -38,10 +38,10 @@
 - 真因仮説: G1/G2/G3 勝利数の直接ボーナス未加算 / クラス補正の効きが弱い
 - 工数: 90-120 分 (調査) + 実装
 
-### T-066 (P0・新規) — Phase 3c 完了確認 + commit 7
-- 全 850 日 ability 再計算が 16:00 頃完了見込み
-- 完了後ログを確認して commit 作成 (内容変更ファイルは pred.json のみ・gitignore で git に出ない)
-- 完了後 dashboard 再起動 (Phase 6 改修 + フロント M' 表示反映)
+### T-066 ✅ 完了 — Phase 3c 全 851 日 ability 再計算
+- 16:17 完走 (Total elapsed 32,294 秒)
+- ability_wa 改善 58,053 馬 / ability_total 改善 82,504 馬
+- pred.json は gitignore で git 差分なし (handoff に記録)
 
 ### T-067 (P0・新規) — dashboard 再起動 + フロント M' 表示確認
 - Phase 6 改修 (dashboard.py + hybrid_summary.py の M' 集計対応) 反映
