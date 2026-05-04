@@ -30,12 +30,24 @@
   Unregister-ScheduledTask -TaskName "DAI_Keiba_Tunnel" -Confirm:$false
   ```
 
-### T-063b (P1・新規) — 2025 年三連複 payouts 約 18,809 件 再取得
-- **発見経緯**: T-063 検証で判明 (2026-03-12/13 一括バックフィル時に旧スクレイパーフォーマットで三連複/三連単が未取得)
-- **対象**: 2025 全期間 (2025-11/12 が 100% NULL) + 2026-01〜03 部分 NULL
-- **作業**: results_tracker.py 経由 or 専用スクリプトで再スクレイピング
-- **制約**: netkeiba レート制限 2 秒/件 → 約 10 時間 (一晩バックグラウンド)
-- **詳細**: `logs/verify_backfill_integrity_20260504.json`
+### T-063b (P1・準備完了・マスター手動実行待ち) — 2025 年三連複 payouts 再取得
+- **対象**: 16,208 件 (dry-run 結果)
+- **スクリプト**: `scripts/backfill_sanrenpuku_payouts_2025.py` (準備完了)
+- **推定所要時間**: 約 9.0 時間
+- **安全装置 5 項目**: --execute 必須 / 危険時間帯自動 abort / 競合プロセス検出 / 中断再開 / レート制限 2.0 秒/件
+- **マスター実行コマンド** (推奨 24:00 以降):
+  ```bash
+  python scripts/backfill_sanrenpuku_payouts_2025.py --dry-run    # 再確認
+  python scripts/backfill_sanrenpuku_payouts_2025.py --execute &  # 本実行
+  tail -f logs/backfill_sanrenpuku_*.log                          # 進捗確認
+  ```
+
+### T-NEW-P1 (P1・新規) — HorseEvaluation.is_scratched 属性追加
+- **発見経緯**: T-NEW-P0 緊急バグ修正中に副次バグとして発見
+- **問題**: `src/calculator/betting.py` L2500/2683/2787/2867 の 4 箇所で `getattr(e, "is_scratched", False)` が常に False を返す。HorseEvaluation / Horse 両方に is_scratched 属性なし。取消馬除外フィルタが effectively no-op
+- **暫定**: is_tokusen_kiken フィルタが代替動作中のため致命的影響なし
+- **修正方針**: src/models.py の HorseEvaluation に is_scratched: bool = False を追加 + engine.py で実体化時に horse.is_scratched (なければ追加) から伝搬
+- **工数**: 60 分
 
 ---
 
