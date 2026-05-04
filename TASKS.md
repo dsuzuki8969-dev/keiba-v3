@@ -8,16 +8,17 @@
 
 ## 🔴 作業中のタスク
 
-### T-069 (P0・新規・マスター手動必須) — DAI_Keiba_Predict 4 日連続失敗修復
-- **現象**: 5/1〜5/4 連続 4 日間 06:00 で `VBS_END ec=255` (bat 起動失敗)
-- **真因**: Principal.LogonType=Interactive → マスター就寝中 (ログオフ状態) で cmd 起動不可
-- **修復**: `scripts/fix_predict_task_logon.ps1` (LogonType=Password に変更)
-- **実行コマンド** (要管理者権限 PowerShell + Windows ログオンパスワード):
-  ```
-  powershell -ExecutionPolicy Bypass -File scripts\fix_predict_task_logon.ps1
-  ```
-- **代替案 S4U** (Claude Code 試行済 → アクセス拒否で不可): 一般権限不可
-- **影響**: 当日朝の予想最終調整が 4 日連続未実行 (Predict_Tomorrow 17:00 で前日生成済のため致命的ではないが、朝のオッズ反映欠落)
+### T-069 (P0 → 暫定対応済 / P2 残課題) — DAI_Keiba_Predict Disable で恒久回避
+- **暫定対応 (5/4 完了)**: `Disable-ScheduledTask -TaskName "DAI_Keiba_Predict"` で無効化済
+  - 明朝 06:00 の `VBS_END ec=255` 失敗ログ累積が停止
+  - 代替: Predict_Tomorrow (前日 17:00) で予想生成済のため実害ゼロ
+- **真因 (記録)**: Principal.LogonType=Interactive → マスター就寝中 (ログオフ状態) で cmd 起動不可
+- **本格修復が阻まれた理由**: マスターアカウントが Microsoft アカウント (`dsuzuki8969@gmail.com`) かつ「Windows Hello のみ許可」が ON = ローカルパスワード入力経路が UI 上消えている
+- **将来の本格修復手順** (P2・優先度低・Predict_Tomorrow で代替できているため不急):
+  1. Microsoft アカウントのパスワードを確認/リセット (`https://account.live.com/password/reset`)
+  2. 管理者 PowerShell で `.\scripts\fix_predict_task_logon.ps1` 実行 → Microsoft アカウントパスワード入力
+  3. `Enable-ScheduledTask -TaskName "DAI_Keiba_Predict"` で再有効化
+  4. 翌朝 06:00 で `bat_trace.log` の BAT_START 行確認
 
 ### T-070 (P1・新規・マスター手動必須) — タスクスケジューラ整理
 - ✅ 削除済: D-AI Keiba Dashboard (Disabled)、DAI_Batch_Reanalyze (Ready/3 月以降未実行)
