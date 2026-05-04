@@ -615,8 +615,9 @@ def save_prediction(date: str, analyses_by_venue: dict, *, lightweight: bool = F
                             _hd["ml_top2_prob"] = None
                             _hd["ml_place_prob"] = None
                             _hd["mark"] = ""
-                            _hd["predicted_corners"] = ""
-                            _hd["running_style"] = ""
+                            # T-058 修正: predicted_corners / running_style はクリアしない
+                            # オッズ未確定→取消誤判定→オッズ復帰時に空欄が残るバグを防ぐため
+                            # is_scratched=True で表示側がフィルタするので展開情報の保持は安全
                             _hd["is_scratched"] = True
                             # 評価データは保持（ability_total, pace_total, course_total, composite）
                             # オッズ更新で取消解除された場合に復元できるようにする
