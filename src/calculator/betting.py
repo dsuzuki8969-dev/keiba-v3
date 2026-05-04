@@ -2878,7 +2878,9 @@ def generate_m_prime_tickets(
     # ── 馬番セット化 ──
     def _horse_no(e: "HorseEvaluation") -> int:
         """馬番を int で返す。"""
-        return int(getattr(e, "horse_no", 0))
+        # T-NEW-P0 修正: HorseEvaluation には horse_no 属性が無く、horse の下にある
+        # 修正前: getattr(e, "horse_no", 0) は常に 0 を返し、全 combo が [0,0,0] 不正値になっていた
+        return int(getattr(e.horse, "horse_no", 0))
 
     def _get_mark_val(e: "HorseEvaluation") -> str:
         """印の文字列を返す。"""
