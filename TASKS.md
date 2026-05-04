@@ -58,8 +58,6 @@
 
 | 優先度 | 項目 | 状態 / 条件 |
 |:---:|---|---|
-| P1 | 取消馬誤検知 (水沢 12R 等) 真因究明 | 「取消馬により買い目無効」テキストの出所特定 |
-| P1 | build_sanrentan_tickets vs pred.json fixed 整合性検証 | LIVE STATS 修正完了後にバックテスト突合 |
 | P1 | B_prefix 1,253 件の対応 | NAR 公式コード突合 or netkeiba スクレイピング |
 | P1 | 2023 年生まれ若駒 339 件 | netkeiba 403 → 自動補完待ち |
 | P1 | B skipped 6,609 件の再 apply | キャッシュ蓄積後 `restart_backfill_b.ps1` 再実行 |
