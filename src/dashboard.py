@@ -3224,18 +3224,38 @@ def create_app():
         except Exception as e:
             logger.warning("auto-fetch(single) 失敗 %s/%s: %s", date, race_id, e)
 
-    def _sanitize_payouts(payouts: dict) -> dict:
-        """払戻データのスクレイパーバグによる連結異常値を除去する。
+    def _split_wide_combo(combo: str) -> list:
+        """ワイド combo 連結バグを修復する。
 
-        旧スクレイパーが複勝/枠連等の複数馬番エントリを配列化せず文字列連結した結果、
-        combo="3117" payout=5008503640 のような異常値が生成される場合がある。
+        旧スクレイパーがワイド3組(3-11, 3-7, 7-11)を "3-11-3-7-7-11" と
+        1エントリに文字列連結した場合、偶数個パーツを2個ずつペアに分割して返す。
+        正常な1組(例: "3-11", dash=1)はそのままリスト1要素として返す。
+        """
+        parts = combo.split("-")
+        if len(parts) % 2 == 0 and len(parts) >= 4:
+            # 偶数個 → 2個ずつペアに分割 (3組: 6部品, 5組: 10部品, 6組: 12部品)
+            return [f"{parts[i]}-{parts[i+1]}" for i in range(0, len(parts), 2)]
+        return [combo]  # 解析不能 or 正常(2部品)なのでそのまま
+
+    def _sanitize_payouts(payouts: dict) -> dict:
+        """払戻データのスクレイパーバグによる連結異常値を除去・修復する。
+
+        修復ケース1: 旧スクレイパーが複勝/枠連等の複数馬番エントリを配列化せず
+        文字列連結した結果、combo="3117" payout=5008503640 のような異常値。
         100円払戻の最大値はおよそ数万円なので、1,000万円超は壊れたデータとみなす。
         そのエントリは None で上書きしてフロントに「データなし」として返す。
+
+        修復ケース2: ワイドで複数組が1エントリに combo 連結されたバグ。
+        例: combo="3-11-3-7-7-11" payout=6190 → 3エントリ [{combo:"3-11",...},{combo:"3-7",...},{combo:"7-11",...}]
+        dash数が3以上(偶数部品数が4以上)で連結バグと判定し分割する。
+        payout は全エントリに同じ値を割り振る（1組あたりの払戻が同値のため）。
         """
         # 壊れている可能性がある単票券種（配列ではなく dict 単体で返る可能性がある）
         SINGLE_TICKET_KEYS = {"単勝", "tansho", "複勝", "fukusho", "枠連", "wakuren",
                               "馬連", "umaren", "馬単", "umatan",
                               "三連複", "sanrenpuku", "三連単", "sanrentan"}
+        # ワイド combo 連結バグの対象キー
+        WIDE_KEYS = {"ワイド", "wide", "quinella_place"}
         MAX_NORMAL_PAYOUT = 9_999_999  # 100円払戻の現実的最大値（三連単高配当でも ~300万）
         sanitized = {}
         for k, v in payouts.items():
@@ -3248,13 +3268,30 @@ def create_app():
                     sanitized[k] = None
                     continue
             elif isinstance(v, list):
-                # 配列の場合は各エントリを検証
+                # 配列の場合は各エントリを検証 + ワイド combo 連結バグ修復
                 clean_list = []
                 for item in v:
-                    if isinstance(item, dict) and (item.get("payout") or 0) > MAX_NORMAL_PAYOUT:
+                    if not isinstance(item, dict):
+                        clean_list.append(item)
+                        continue
+                    if (item.get("payout") or 0) > MAX_NORMAL_PAYOUT:
                         logger.debug("payouts sanitize: 配列内異常払戻を除去 key=%s combo=%s payout=%s",
                                      k, item.get("combo"), item.get("payout"))
                         continue
+                    # ワイド combo 連結バグの修復
+                    combo = item.get("combo", "") or ""
+                    if k in WIDE_KEYS and combo.count("-") >= 3:
+                        split_combos = _split_wide_combo(combo)
+                        if len(split_combos) > 1:
+                            payout_val = item.get("payout")
+                            logger.debug(
+                                "payouts sanitize: ワイド combo 連結バグを修復 "
+                                "key=%s combo=%s → %s エントリ payout=%s",
+                                k, combo, len(split_combos), payout_val
+                            )
+                            for sc in split_combos:
+                                clean_list.append({"combo": sc, "payout": payout_val})
+                            continue
                     clean_list.append(item)
                 sanitized[k] = clean_list if clean_list else None
                 continue
