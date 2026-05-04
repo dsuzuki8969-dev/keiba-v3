@@ -777,12 +777,15 @@ def save_prediction(date: str, analyses_by_venue: dict, *, lightweight: bool = F
         #   取消馬を含むチケットは削除して stale データを残さない）
         if _sn:
             _fc = _race.get("formation_columns") or {}
+            # col1 除去前の状態を保存（元々空だった場合と取消で空になった場合を区別）
+            _col1_before = list(_fc.get("col1") or [])
             for _col_key in ("col1", "col2", "col3"):
                 _col = _fc.get(_col_key)
                 if isinstance(_col, list):
                     _fc[_col_key] = [h for h in _col if h not in _sn]
-            # col1 が空になった場合、買い目全体を無効化（軸が取消→買えない）
-            _col1_empty = not (_fc.get("col1") or [])
+            # col1 が取消馬除去によって空になった場合のみ無効化
+            # （元々 col1=[] だった場合 = M'戦略など = 取消とは無関係なので無効化しない）
+            _col1_empty = bool(_col1_before) and not (_fc.get("col1") or [])
             if _race.get("formation_columns") is not None:
                 _race["formation_columns"] = _fc
 
@@ -804,6 +807,11 @@ def save_prediction(date: str, analyses_by_venue: dict, *, lightweight: bool = F
                 return False
 
             _tbm = _race.get("tickets_by_mode")
+            # tickets_by_mode 浄化前のチケット数合計（取消除去の実質影響を検出）
+            _tbm_before_count = sum(
+                len(_tbm.get(m, []) or [])
+                for m in ("accuracy", "balanced", "recovery", "fixed")
+            ) if isinstance(_tbm, dict) else 0
             if isinstance(_tbm, dict):
                 for _mode_k, _ts in list(_tbm.items()):
                     if isinstance(_ts, list):
@@ -825,7 +833,12 @@ def save_prediction(date: str, analyses_by_venue: dict, *, lightweight: bool = F
                 (_tbm.get(m) if isinstance(_tbm, dict) else None)
                 for m in ("accuracy", "balanced", "recovery", "fixed")
             )
-            if _col1_empty or not _has_any_tickets:
+            # 取消馬によって実際に買い目が無効化された場合のみ bet_decision を書き換える:
+            # - _col1_empty: 元々非空だった col1 が取消馬除去で空になった（軸取消）
+            # - _tbm_before_count > 0 かつ not _has_any_tickets: チケットが取消で全削除された
+            # ※ 元々 tickets=[] 且つ col1=[] の場合（M'戦略でEV不足等）は除外する
+            _actually_invalidated = _col1_empty or (_tbm_before_count > 0 and not _has_any_tickets)
+            if _actually_invalidated:
                 _bd = _race.get("bet_decision") or {}
                 if isinstance(_bd, dict):
                     _bd["skip"] = True
