@@ -1574,6 +1574,7 @@ def _l3f_corners_backfill(conn) -> None:
     import re as _re
 
     # 補完対象のrace_idを取得（last_3f=0 または corners不足）
+    # ばんえい競馬(venue_code=65)は構造上コーナーが存在しないため corners 対象から除外
     need_l3f = conn.execute(
         "SELECT DISTINCT race_id FROM race_log "
         "WHERE (last_3f_sec IS NULL OR last_3f_sec = 0) AND finish_pos < 90"
@@ -1582,7 +1583,8 @@ def _l3f_corners_backfill(conn) -> None:
         "SELECT DISTINCT race_id FROM race_log "
         "WHERE (positions_corners IS NULL OR positions_corners = '' OR positions_corners = '[]' "
         "  OR (positions_corners NOT LIKE '%,%' AND positions_corners != '')) "
-        "AND finish_pos < 90"
+        "AND finish_pos < 90 "
+        "AND SUBSTR(race_id, 5, 2) != '65'"  # ばんえい(帯広)はコーナーなし
     ).fetchall()
 
     target_ids = set()
@@ -1639,6 +1641,11 @@ def _l3f_corners_backfill(conn) -> None:
 
         soup = BeautifulSoup(html, "html.parser")
 
+        # venue_code を race_id から抽出 (race_id = YYYY + VV + MMDD + RR)
+        _venue_code = race_id[4:6] if len(race_id) >= 6 else ""
+        # ばんえい競馬 (帯広=65) は上り3Fの値域が通常と大きく異なる (約60-150秒)
+        _is_banei = (_venue_code == "65")
+
         # ── last_3f_sec 抽出 ──
         l3f_map = {}
         if race_id in l3f_ids:
@@ -1657,9 +1664,12 @@ def _l3f_corners_backfill(conn) -> None:
                     hno = int(hno_t)
                     for ci in range(7, min(len(cells), 14)):
                         t = cells[ci].get_text(strip=True)
-                        if _re.match(r"^\d{2}\.\d$", t):
+                        # 数値パターン: "38.1" (通常) or "75.4" (ばんえい)
+                        if _re.match(r"^\d{2,3}\.\d$", t):
                             val = float(t)
-                            if 28.0 <= val <= 50.0:
+                            # ばんえいは60-150秒、通常は28-50秒
+                            l3f_min, l3f_max = (60.0, 150.0) if _is_banei else (28.0, 50.0)
+                            if l3f_min <= val <= l3f_max:
                                 l3f_map[hno] = val
                                 break
 
@@ -1921,13 +1931,13 @@ def populate_race_log_from_predictions() -> int:
                       (race_date, race_id, venue_code, surface, distance,
                        horse_no, finish_pos,
                        jockey_id, jockey_name, trainer_id, trainer_name,
-                       field_count, is_jra, win_odds,
+                       field_count, is_jra, win_odds, tansho_odds,
                        sire_name, bms_name,
                        positions_corners, position_4c,
                        finish_time_sec, last_3f_sec, horse_id,
                        margin_ahead, margin_behind,
                        horse_name)
-                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                     """,
                     (race_date, race_id, venue_code, surface, distance,
                      horse_no, finish,
@@ -1935,7 +1945,7 @@ def populate_race_log_from_predictions() -> int:
                      hinfo.get("jockey_name", ""),
                      hinfo.get("trainer_id", ""),
                      hinfo.get("trainer_name", ""),
-                     field_count, is_jra, win_odds,
+                     field_count, is_jra, win_odds, win_odds,  # tansho_odds は確定オッズ = order_json.odds と同一
                      hinfo.get("sire_name", ""),
                      hinfo.get("bms_name", ""),
                      _corners_json, _p4c,
@@ -1945,12 +1955,15 @@ def populate_race_log_from_predictions() -> int:
                 )
                 inserted += 1
 
-    # ── NULL win_odds のバックフィル（既存行を race_results.order_json から補完）──
-    null_count = conn.execute("SELECT COUNT(*) FROM race_log WHERE win_odds IS NULL").fetchone()[0]
+    # ── NULL win_odds / tansho_odds のバックフィル（既存行を race_results.order_json から補完）──
+    # win_odds と tansho_odds は同一ソース（order_json.odds = 確定単勝オッズ）
+    null_count = conn.execute(
+        "SELECT COUNT(*) FROM race_log WHERE win_odds IS NULL OR tansho_odds IS NULL"
+    ).fetchone()[0]
     if null_count > 0:
-        print(f"[race_log投入] win_odds NULL行 {null_count:,}件 → バックフィル開始...", flush=True)
+        print(f"[race_log投入] win_odds/tansho_odds NULL行 {null_count:,}件 → バックフィル開始...", flush=True)
         _null_rids = [r[0] for r in conn.execute(
-            "SELECT DISTINCT race_id FROM race_log WHERE win_odds IS NULL"
+            "SELECT DISTINCT race_id FROM race_log WHERE win_odds IS NULL OR tansho_odds IS NULL"
         ).fetchall()]
         _updated = 0
         _batch_size = 200
@@ -1973,8 +1986,12 @@ def populate_race_log_from_predictions() -> int:
                             except (ValueError, TypeError):
                                 continue
                             r = conn.execute(
-                                "UPDATE race_log SET win_odds=? WHERE race_id=? AND horse_no=? AND win_odds IS NULL",
-                                (_odds_f, _rr[0], int(_hno)),
+                                """UPDATE race_log
+                                   SET win_odds=COALESCE(win_odds, ?),
+                                       tansho_odds=COALESCE(tansho_odds, ?)
+                                   WHERE race_id=? AND horse_no=?
+                                     AND (win_odds IS NULL OR tansho_odds IS NULL)""",
+                                (_odds_f, _odds_f, _rr[0], int(_hno)),
                             )
                             _updated += r.rowcount
                 except (json.JSONDecodeError, TypeError):
@@ -1983,8 +2000,8 @@ def populate_race_log_from_predictions() -> int:
                 conn.commit()
             except Exception:
                 conn.rollback()
-                logger.warning("win_odds バックフィルバッチコミット失敗、rollback実行", exc_info=True)
-        print(f"[race_log投入] win_odds バックフィル完了: {_updated:,}件更新", flush=True)
+                logger.warning("win_odds/tansho_odds バックフィルバッチコミット失敗、rollback実行", exc_info=True)
+        print(f"[race_log投入] win_odds/tansho_odds バックフィル完了: {_updated:,}件更新", flush=True)
 
     # ── sire_name / bms_name のバックフィル（既存行を predictions.horses_json から補完）──
     # 前回バックフィルで0件更新だった場合はスキップ（新規挿入があれば再実行）
