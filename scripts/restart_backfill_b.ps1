@@ -1,4 +1,4 @@
-# D-AI Keiba 持ち越し B: 2023 年下半期 race_log バックフィル 再開スクリプト
+﻿# D-AI Keiba 持ち越し B: 2023 年下半期 race_log バックフィル 再開スクリプト
 # 「B を再開して」コマンド時に呼ばれる
 #
 # 二重起動防止: PID ファイル方式 (data/backfill_b.pid)

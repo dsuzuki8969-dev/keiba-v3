@@ -1,4 +1,4 @@
-$ErrorActionPreference = "Stop"
+﻿$ErrorActionPreference = "Stop"
 Write-Host "cloudflared service fix" -ForegroundColor Cyan
 
 $UserDir = "C:\Users\dsuzu\.cloudflared"

@@ -1,4 +1,4 @@
-# DAI_Keiba_Predict 06:00 タスクの未実行問題対応
+﻿# DAI_Keiba_Predict 06:00 タスクの未実行問題対応
 # 原因: タスクのPrincipal.LogonTypeがInteractive（ユーザーがアクティブにログオン中のみ実行）
 #        06:00はPCが省電力/スリープ状態、もしくは画面ロック中で実行が失敗する
 #
