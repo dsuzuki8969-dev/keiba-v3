@@ -640,6 +640,19 @@ def prepare_datasets(df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
     cutoff = max_date - timedelta(days=30 * VAL_MONTHS)
     train = valid[valid["race_date_dt"] < cutoff]
     val = valid[valid["race_date_dt"] >= cutoff]
+
+    # 学習データが空の場合: MLデータ蓄積期間が短い場合の fallback
+    # (hist_run_count >= 1 により全データが val 期間に偏る状況への対応)
+    if len(train) == 0:
+        logger.warning(
+            f"Train が空です (cutoff={cutoff.date()})。"
+            f"全有効データを時系列 60/40 分割して fallback します。"
+        )
+        sorted_valid = valid.sort_values("race_date_dt")
+        split_idx = int(len(sorted_valid) * 0.6)
+        train = sorted_valid.iloc[:split_idx].copy()
+        val = sorted_valid.iloc[split_idx:].copy()
+
     logger.info(f"Train: {len(train):,}行, Val: {len(val):,}行")
     return train, val
 
