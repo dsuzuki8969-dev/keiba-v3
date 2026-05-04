@@ -500,7 +500,8 @@ def main() -> None:
         backup_db()
 
     # ── NetkeibaClient（キャッシュ優先、TTL 無視で古いキャッシュも再利用） ──
-    client = NetkeibaClient(ignore_ttl=True, request_interval=1.0)
+    # 5/5 マスター激怒指摘 (★★ 累犯 2 回目): netkeiba レート制限 2.0 秒/件以上厳守
+    client = NetkeibaClient(ignore_ttl=True, request_interval=2.0)
 
     # ── フェーズ 1: race_id 列挙 ──
     log("\n[Phase 1] race_id 列挙中...")

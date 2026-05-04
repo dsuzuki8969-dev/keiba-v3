@@ -359,7 +359,8 @@ def main():
         return
 
     # クライアント初期化
-    ne_client = NetkeibaClient(request_interval=1.0)
+    # 5/5 ★★ 累犯 2 回目修正: netkeiba レート制限 1.0→2.0 (規定厳守)
+    ne_client = NetkeibaClient(request_interval=2.0)
     race_list_scraper = RaceListScraper(ne_client)
     kb_client = KeibabookClient()
 

@@ -273,11 +273,12 @@ def run_apply(
     stats = _get_race_log_stats(conn, horse_ids)
 
     # ──── Step 3: netkeiba スクレイピング ────
-    print(f"\n[3/5] netkeiba スクレイピング開始 ({len(horse_ids):,} 件, 1.0 秒間隔)")
+    # 5/5 ★★ 累犯 2 回目修正: 1.0 秒 → 2.0 秒に強制 (規定厳守)
+    print(f"\n[3/5] netkeiba スクレイピング開始 ({len(horse_ids):,} 件, 2.0 秒間隔)")
     client = NetkeibaClient(
         cache_dir=CACHE_DIR,
         ignore_ttl=True,        # キャッシュがあれば TTL 無視で再利用
-        request_interval=1.0,   # レート制限遵守
+        request_interval=2.0,   # 5/5 ★★ 累犯 2 回目で 1.0→2.0 に強制修正 (規定厳守)
     )
 
     results: Dict[str, Optional[tuple]] = {}
