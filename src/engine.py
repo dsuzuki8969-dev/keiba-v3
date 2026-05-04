@@ -2409,6 +2409,8 @@ class RaceAnalysisEngine:
         override_pos_1c: Optional[float] = None,
     ) -> HorseEvaluation:
         ev = HorseEvaluation(horse=horse)
+        # Horse 側に is_scratched が付いていれば伝搬（将来の属性追加に対応）
+        ev.is_scratched = getattr(horse, "is_scratched", False)
 
         # 芝ダ転換コンテキスト構築（同馬場走がない馬のみ）
         _switch_ctx = None

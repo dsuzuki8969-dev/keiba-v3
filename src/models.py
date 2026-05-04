@@ -706,6 +706,7 @@ class HorseEvaluation:
     is_tokusen_kiken: bool = False
     kiken_score: float = 0.0
     kiken_type: KikenType = KikenType.NONE
+    is_scratched: bool = False  # 取消馬フラグ (results_tracker / dashboard で設定)
 
     # 予測オッズ (5-1)
     predicted_odds: Optional[float] = None

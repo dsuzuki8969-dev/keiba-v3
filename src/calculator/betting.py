@@ -2497,7 +2497,7 @@ def build_sanrenpuku_dynamic_tickets(
     active = [
         e for e in evaluations
         if not getattr(e, "is_tokusen_kiken", False)
-        and not getattr(e, "is_scratched", False)
+        and not e.is_scratched
     ]
 
     pivot = _dt_get_pivot(active)
@@ -2680,7 +2680,7 @@ def build_tansho_t4_tickets(
     active = [
         e for e in evaluations
         if not getattr(e, "is_tokusen_kiken", False)
-        and not getattr(e, "is_scratched", False)
+        and not e.is_scratched
     ]
 
     tickets: List[Dict] = []
@@ -2784,7 +2784,7 @@ def _mp_get_mark_horses(
     result = [
         e for e in evaluations
         if getattr(getattr(e, "mark", None), "value", "") in mark_set
-        and not getattr(e, "is_scratched", False)
+        and not e.is_scratched
         and not getattr(e, "is_tokusen_kiken", False)
     ]
     result.sort(key=lambda e: (
@@ -2864,7 +2864,7 @@ def generate_m_prime_tickets(
     # ── 有効馬リスト (取消除外) ──
     active = [
         e for e in evaluations
-        if not getattr(e, "is_scratched", False)
+        if not e.is_scratched
         and not getattr(e, "is_tokusen_kiken", False)
     ]
 
