@@ -1571,7 +1571,7 @@ def calc_ability_deviation(
     chakusa_indices = [r.chakusa_index for r in filtered_runs]
 
     # 5. WA偏差値 (C-2) — 距離帯別の加重平均重みを使用
-    # γ案: WA計算前に「海外レース除外」と「異常値偏差値除外」の2条件フィルタを適用
+    # γ案: WA計算前に「海外レース除外」「異常値偏差値除外」「取消/no-time除外」の3条件フィルタを適用
     # run_deviations 自体は変更しない (MAX偏差値・トレンド計算で引き続き使用)
     wa_deviations: List[float] = []
     wa_chakusa_indices: List[float] = []
@@ -1589,6 +1589,17 @@ def calc_ability_deviation(
             logger.debug(
                 "WA filter: 異常値除外 race=%s venue=%s dev=%.1f",
                 getattr(_run, "race_id", "?"), _venue, _dev,
+            )
+            continue
+        # 条件3: 取消・除外・タイム無し除外 — finish_pos>=90 または finish_time_sec なし の場合はスキップ
+        # これらは run_deviations に 30.0 (ペナルティ値) が設定されており、
+        # WA計算に混入すると実力のある馬の評価値を不当に引き下げる原因となる。
+        # (例: 天皇賞春でタイム無し → 30.0 が最高重みでWAに参入しG1馬が過小評価される)
+        if _run.finish_pos >= 90 or not _run.finish_time_sec or _run.finish_time_sec <= 0:
+            logger.debug(
+                "WA filter: 取消/no-time除外 race=%s pos=%s time=%s dev=%.1f",
+                getattr(_run, "race_id", "?"), _run.finish_pos,
+                _run.finish_time_sec, _dev,
             )
             continue
         wa_deviations.append(_dev)
