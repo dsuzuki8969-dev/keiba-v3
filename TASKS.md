@@ -31,17 +31,12 @@
   Unregister-ScheduledTask -TaskName "DAI_Keiba_Tunnel" -Confirm:$false
   ```
 
-### T-063b (P1・準備完了・マスター手動実行待ち) — 2025 年三連複 payouts 再取得
-- **対象**: 16,208 件 (dry-run 結果)
-- **スクリプト**: `scripts/backfill_sanrenpuku_payouts_2025.py` (準備完了)
-- **推定所要時間**: 約 9.0 時間
-- **安全装置 5 項目**: --execute 必須 / 危険時間帯自動 abort / 競合プロセス検出 / 中断再開 / レート制限 2.0 秒/件
-- **マスター実行コマンド** (推奨 24:00 以降):
-  ```bash
-  python scripts/backfill_sanrenpuku_payouts_2025.py --dry-run    # 再確認
-  python scripts/backfill_sanrenpuku_payouts_2025.py --execute &  # 本実行
-  tail -f logs/backfill_sanrenpuku_*.log                          # 進捗確認
-  ```
+### T-063b (P1・5/4 23:35 BG 自動起動済) — 2025 年三連複 payouts 再取得
+- **状態**: 5/4 21:43 BG 予約起動済 (PID 94864 / sleep 6711 秒で 23:35 起動)
+- **対象**: 16,208 件 / 推定 9.0 時間 (朝 8:35 完走見込み)
+- **ログ**: `log/backfill_sanrenpuku_20260504.log`
+- **進捗確認**: `tail -f log/backfill_sanrenpuku_*.log`
+- **完走後の処理**: B 系 / B_prefix / 2023 若駒 を順次起動可能 (詳細は下記)
 
 ### T-NEW-P1 (P1・新規) — HorseEvaluation.is_scratched 属性追加
 - **発見経緯**: T-NEW-P0 緊急バグ修正中に副次バグとして発見
@@ -54,14 +49,16 @@
 
 ## 🟡 将来課題（次セッション以降）
 
-### P1
+### P1 (T-063b 完走後・朝 8:35 以降に直列実行)
 
-| 優先度 | 項目 | 状態 / 条件 |
+netkeiba 並列禁止 (★★ 違反歴 1 回) のため、T-063b 完走を待ってから直列実行する。
+
+| 優先度 | 項目 | 起動コマンド (T-063b 完走後) |
 |:---:|---|---|
-| P1 | B_prefix 1,253 件の対応 | NAR 公式コード突合 or netkeiba スクレイピング |
-| P1 | 2023 年生まれ若駒 339 件 | netkeiba 403 → 自動補完待ち |
-| P1 | B skipped 6,609 件の再 apply | キャッシュ蓄積後 `restart_backfill_b.ps1` 再実行 |
-| P1 | ML 47 モデル再学習 (retrain_all.py) | B 完走 +34,477 行で AUC 向上余地 |
+| P1 | B skipped 6,609 件の再 apply | `powershell -ExecutionPolicy Bypass -File scripts\restart_backfill_b.ps1` |
+| P1 | B_prefix 1,253 件の対応 | 別途専用スクリプト準備が必要 (NAR 公式コード突合 or netkeiba 馬詳細) |
+| P1 | 2023 年生まれ若駒 339 件 | netkeiba 403 自動補完待ち or 手動 |
+| P1 (完了) | ~~ML 47 モデル再学習~~ | ✅ 5/4 完走 (commit e851118) |
 
 ### P2
 
