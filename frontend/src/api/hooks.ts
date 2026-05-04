@@ -279,8 +279,12 @@ export function useKaisaiCalendar() {
 
 // T-039: レースカード的中バッジ用フック
 export interface RaceCardHitResult {
-  win_hit: boolean | null;        // 単勝 ◎ 的中 (null=結果未取得)
-  sanrentan_hit: boolean | null;  // T-050: 三連複+単勝 的中 (null=未対象/結果未取得)
+  win_hit: boolean | null;        // 旧: 単勝 ◎ 的中 (後方互換)
+  sanrentan_hit: boolean | null;  // 旧: 三連複 OR 単勝チケット 的中 (後方互換)
+  // 新: 4 状態枠色判定用 (5/4 マスター指摘)
+  // 単勝のみ → 青 / 三連複のみ → 赤 / 両方 → 緑 / 未的中 → デフォルト
+  tansho_hit: boolean | null;     // 単勝 ◎ 的中 (= win_hit)
+  sanrenpuku_hit: boolean | null; // 三連複のみ 的中 (単勝チケットを含まない)
 }
 
 export interface RaceCardResultsData {

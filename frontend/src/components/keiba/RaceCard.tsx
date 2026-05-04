@@ -99,11 +99,21 @@ export function RaceCard({ race, onClick, winPctRank, hitResult }: Props) {
 
   const markKey = race.honmei_mark || "";
 
-  // T-039: 的中バッジ値（null = 結果未取得 → 非表示、undefined = prop 未渡し → 非表示）
-  const winHit = hitResult?.win_hit;          // true | false | null | undefined
-  const sanrentanHit = hitResult?.sanrentan_hit;   // true | false | null | undefined
-  // いずれかが true → カード外枠を赤系に強調
-  const isAnyHit = winHit === true || sanrentanHit === true;
+  // T-039 + 5/4 マスター指摘: 4 状態枠色ロジック
+  // 単勝 ◎ 的中 = tanshoHit / 三連複 (M') 的中 = sanrenpukuHit (単勝チケット含まない)
+  const tanshoHit = hitResult?.tansho_hit ?? hitResult?.win_hit;  // 後方互換 fallback
+  const sanrenpukuHit = hitResult?.sanrenpuku_hit;
+  // 旧表示用 (バッジ): 三連複 OR 単勝チケット
+  const sanrentanHit = hitResult?.sanrentan_hit;
+  // 4 状態枠色: 両方 → 緑 / 単勝のみ → 青 / 三連複のみ → 赤 / どちらも → デフォルト
+  let hitBorderClass = "";
+  if (tanshoHit === true && sanrenpukuHit === true) {
+    hitBorderClass = "border-green-500/60 ring-1 ring-green-500/40";
+  } else if (tanshoHit === true && sanrenpukuHit !== true) {
+    hitBorderClass = "border-blue-500/60 ring-1 ring-blue-500/40";
+  } else if (tanshoHit !== true && sanrenpukuHit === true) {
+    hitBorderClass = "border-red-500/40 ring-1 ring-red-500/30";
+  }
 
   return (
     <PremiumCard
@@ -111,7 +121,7 @@ export function RaceCard({ race, onClick, winPctRank, hitResult }: Props) {
       padding="md"
       interactive
       onClick={onClick}
-      className={cn("group space-y-2.5", isAnyHit && "border-red-500/40 ring-1 ring-red-500/30")}
+      className={cn("group space-y-2.5", hitBorderClass)}
       as="button"
     >
       {/* 上段: レース番号 + グレード + 自信度バッジ + T-039 的中バッジ + 発走時刻（右寄せ） */}

@@ -70,13 +70,13 @@ _VALID_YEAR_RE = re.compile(r"^(all|\d{4})$")
 def cache_path(kind: str, year: str) -> str:
     """キャッシュ JSON のパスを返す。
 
-    kind: "summary" / "sanrentan_summary" / "detailed" / "trend"
+    kind: "summary" / "sanrentan_summary" / "detailed" / "trend" / "hybrid_summary"
     year: "all" / "2026" / ...
     """
     # 許可リスト検証。path traversal を根本的に防ぐ
     if not _VALID_YEAR_RE.fullmatch(year):
         raise ValueError(f"不正な year: {year!r} (許可: all/YYYY)")
-    if kind not in ("summary", "sanrentan_summary", "detailed", "trend"):
+    if kind not in ("summary", "sanrentan_summary", "detailed", "trend", "hybrid_summary"):
         raise ValueError(f"不正な kind: {kind!r}")
     return os.path.join(RESULTS_CACHE_DIR, f"{kind}_{year}.json")
 
@@ -194,7 +194,7 @@ def build_year_cache(year: str, force: bool = False) -> dict:
 
     # force=False の場合は新鮮なキャッシュをスキップ
     if not force:
-        kinds = ("summary", "sanrentan_summary", "detailed", "trend")
+        kinds = ("summary", "sanrentan_summary", "detailed", "trend", "hybrid_summary")
         try:
             all_exist = all(os.path.exists(cache_path(k, year)) for k in kinds)
             if all_exist:
@@ -234,6 +234,13 @@ def build_year_cache(year: str, force: bool = False) -> dict:
         sanrentan = get_sanrentan_summary(year_filter=year, force=True)
         stats["elapsed"]["sanrentan_summary"] = round(time.time() - t2, 2)
         atomic_write_json(cache_path("sanrentan_summary", year), sanrentan, separators=(",", ":"))
+
+        # 4) hybrid_summary (三連複動的 + 単勝 T-4 + M' 戦略)
+        t3 = time.time()
+        from src.analytics.hybrid_summary import get_hybrid_summary
+        hybrid = get_hybrid_summary(year_filter=year, force_refresh=True)
+        stats["elapsed"]["hybrid_summary"] = round(time.time() - t3, 2)
+        atomic_write_json(cache_path("hybrid_summary", year), hybrid, separators=(",", ":"))
 
         stats["ok"] = True
     except Exception as e:

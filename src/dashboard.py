@@ -7007,10 +7007,14 @@ function dNavRefreshOdds(date){{
             strategy_tix = _collect_strategy_tickets(race)
             winner_no = top3_ordered[0] if top3_ordered else None
             top3_set = set(top3_ordered[:3]) if len(top3_ordered) >= 3 else set()
+
+            # 旧 sanrentan_hit (三連複 OR 単勝チケット): 後方互換
             sanrentan_hit: bool | None = None
+            # 新 sanrenpuku_hit (三連複のみ): 4 状態判定用
+            sanrenpuku_hit: bool | None = None
             if strategy_tix and len(top3_ordered) >= 3:
-                # チケットあり・着順確定 → False 確定（的中があれば True に上書き）
                 sanrentan_hit = False
+                sanrenpuku_hit = False
                 for _t in strategy_tix:
                     _tt = _t.get("type", "")
                     _combo = _t.get("combo", [])
@@ -7018,15 +7022,18 @@ function dNavRefreshOdds(date){{
                         _cset = {int(x) for x in _combo} if _combo else set()
                         if _cset == top3_set and len(_cset) == 3:
                             sanrentan_hit = True
-                            break
+                            sanrenpuku_hit = True
                     elif _tt == "単勝":
                         if _combo and winner_no is not None and int(_combo[0]) == winner_no:
                             sanrentan_hit = True
-                            break
 
             race_results[race_id] = {
+                # 旧フィールド (後方互換):
                 "win_hit": win_hit,
                 "sanrentan_hit": sanrentan_hit,
+                # 新フィールド (4 状態判定用): 単勝のみ → 青 / 三連複のみ → 赤 / 両方 → 緑
+                "tansho_hit": win_hit,
+                "sanrenpuku_hit": sanrenpuku_hit,
             }
 
         return {"date": date, "results": race_results}
