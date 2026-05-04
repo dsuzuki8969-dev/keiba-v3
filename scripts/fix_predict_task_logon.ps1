@@ -2,11 +2,16 @@
 # 原因: タスクのPrincipal.LogonTypeがInteractive（ユーザーがアクティブにログオン中のみ実行）
 #        06:00はPCが省電力/スリープ状態、もしくは画面ロック中で実行が失敗する
 #
-# 解決: LogonType=Passwordに変更し、ユーザーがログオンしていなくても実行できるようにする
-#       ※ 登録時にログインパスワードの入力が必要
+# 解決: schtasks /change /rp 経路で「Run whether user is logged on or not」を有効化
+#       Set-ScheduledTask -Principal 経路はパスワード保存ができないため schtasks ネイティブを使用
 #
 # 使い方: 管理者権限 PowerShell で実行
-#   powershell -ExecutionPolicy Bypass -File scripts\fix_predict_task_logon.ps1
+#   .\scripts\fix_predict_task_logon.ps1
+#
+# 動作:
+#   1. 起動時に Get-Credential で Windows ログオンパスワードを 1 回だけ入力
+#   2. schtasks /change /tn <task> /ru <user> /rp <password> で資格情報を保存
+#   3. 4 タスク全てに同じ資格情報を適用
 
 $ErrorActionPreference = "Stop"
 $UserId = "$env:USERDOMAIN\$env:USERNAME"
@@ -14,10 +19,16 @@ $UserId = "$env:USERDOMAIN\$env:USERNAME"
 Write-Host "DAI_Keiba タスクを「ログオン時以外も実行」に変更します" -ForegroundColor Cyan
 Write-Host "対象ユーザー: $UserId" -ForegroundColor Gray
 Write-Host ""
+Write-Host "Windows ログオンパスワードを入力してください" -ForegroundColor Yellow
+Write-Host "(普段 PC ログオン時に入力しているパスワード。1 回だけ入力すれば 4 タスクに適用されます)" -ForegroundColor Gray
 
-# Principal を作成（-RunLevel Highest + -LogonType Password）
-# Password は登録時に別ダイアログで要求される
-$Principal = New-ScheduledTaskPrincipal -UserId $UserId -LogonType Password -RunLevel Highest
+# 資格情報を 1 回だけ取得
+$Cred = Get-Credential -UserName $UserId -Message "Windows ログオンパスワードを入力してください"
+if (-not $Cred) {
+    Write-Host "中断: パスワード入力がキャンセルされました" -ForegroundColor Red
+    exit 1
+}
+$PlainPassword = $Cred.GetNetworkCredential().Password
 
 # 対象タスク
 $Tasks = @(
@@ -27,22 +38,37 @@ $Tasks = @(
     "DAI_Keiba_Maintenance"
 )
 
+$SuccessCount = 0
+$FailCount = 0
+
 foreach ($TaskName in $Tasks) {
     $Task = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
     if (-not $Task) {
-        Write-Host "SKIP: $TaskName（未登録）" -ForegroundColor Yellow
+        Write-Host "SKIP: $TaskName (未登録)" -ForegroundColor Yellow
         continue
     }
     Write-Host "UPDATE: $TaskName を Password ログオンタイプに変更中..." -ForegroundColor Green
-    try {
-        Set-ScheduledTask -TaskName $TaskName -Principal $Principal -ErrorAction Stop | Out-Null
+
+    # schtasks /change /ru /rp で資格情報を保存 (Set-ScheduledTask では不可)
+    $output = & schtasks /change /tn $TaskName /ru $UserId /rp $PlainPassword 2>&1
+    if ($LASTEXITCODE -eq 0) {
         Write-Host "  OK" -ForegroundColor Green
-    }
-    catch {
-        Write-Host "  エラー: $_" -ForegroundColor Red
-        Write-Host "  (管理者権限が必要、またはパスワード保存を許可する必要があります)" -ForegroundColor Yellow
+        $SuccessCount++
+    } else {
+        Write-Host "  エラー (exit=$LASTEXITCODE):" -ForegroundColor Red
+        Write-Host "  $output" -ForegroundColor Red
+        $FailCount++
     }
 }
 
 Write-Host ""
-Write-Host "完了後、各タスクのプロパティで「ユーザーがログオンしているかどうかにかかわらず実行する」が有効になっていることを確認してください" -ForegroundColor Cyan
+Write-Host "完了: 成功 $SuccessCount 件 / 失敗 $FailCount 件" -ForegroundColor Cyan
+Write-Host ""
+Write-Host "確認方法:" -ForegroundColor Cyan
+Write-Host "  Get-ScheduledTask -TaskName 'DAI_Keiba_Predict' | Select-Object -ExpandProperty Principal" -ForegroundColor Gray
+Write-Host "  → LogonType が Password になっていれば成功" -ForegroundColor Gray
+
+# パスワード変数をクリア (メモリ残留を最小化)
+$PlainPassword = $null
+$Cred = $null
+[System.GC]::Collect()
