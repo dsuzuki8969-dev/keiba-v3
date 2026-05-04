@@ -3224,6 +3224,43 @@ def create_app():
         except Exception as e:
             logger.warning("auto-fetch(single) 失敗 %s/%s: %s", date, race_id, e)
 
+    def _sanitize_payouts(payouts: dict) -> dict:
+        """払戻データのスクレイパーバグによる連結異常値を除去する。
+
+        旧スクレイパーが複勝/枠連等の複数馬番エントリを配列化せず文字列連結した結果、
+        combo="3117" payout=5008503640 のような異常値が生成される場合がある。
+        100円払戻の最大値はおよそ数万円なので、1,000万円超は壊れたデータとみなす。
+        そのエントリは None で上書きしてフロントに「データなし」として返す。
+        """
+        # 壊れている可能性がある単票券種（配列ではなく dict 単体で返る可能性がある）
+        SINGLE_TICKET_KEYS = {"単勝", "tansho", "複勝", "fukusho", "枠連", "wakuren",
+                              "馬連", "umaren", "馬単", "umatan",
+                              "三連複", "sanrenpuku", "三連単", "sanrentan"}
+        MAX_NORMAL_PAYOUT = 9_999_999  # 100円払戻の現実的最大値（三連単高配当でも ~300万）
+        sanitized = {}
+        for k, v in payouts.items():
+            if k in SINGLE_TICKET_KEYS and isinstance(v, dict):
+                payout_val = v.get("payout", 0) or 0
+                if payout_val > MAX_NORMAL_PAYOUT:
+                    # 旧スクレイパーの連結バグ → 該当キーを None で除去
+                    logger.debug("payouts sanitize: 異常払戻を除去 key=%s combo=%s payout=%s",
+                                 k, v.get("combo"), payout_val)
+                    sanitized[k] = None
+                    continue
+            elif isinstance(v, list):
+                # 配列の場合は各エントリを検証
+                clean_list = []
+                for item in v:
+                    if isinstance(item, dict) and (item.get("payout") or 0) > MAX_NORMAL_PAYOUT:
+                        logger.debug("payouts sanitize: 配列内異常払戻を除去 key=%s combo=%s payout=%s",
+                                     k, item.get("combo"), item.get("payout"))
+                        continue
+                    clean_list.append(item)
+                sanitized[k] = clean_list if clean_list else None
+                continue
+            sanitized[k] = v
+        return sanitized
+
     @app.route("/api/results/race")
     def api_results_race():
         """個別レースの結果（着順・払戻）を返す"""
@@ -3405,7 +3442,7 @@ def create_app():
                 order.append(entry)
             return jsonify(
                 ok=True, found=True, order=order,
-                payouts=race_result.get("payouts", {}),
+                payouts=_sanitize_payouts(race_result.get("payouts", {})),
                 # 応急パッチで odds を埋めた場合、データが未完全であることを通知
                 data_incomplete=bool(_bug_detected),
             )
