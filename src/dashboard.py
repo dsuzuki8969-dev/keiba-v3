@@ -3355,7 +3355,7 @@ def create_app():
                                 "popularity": h.get("popularity"),
                             }
                         break
-            # race_log から通過順・走破タイム・後3F・着差・人気・オッズを補完（results.jsonに不足分）
+            # race_log から通過順・走破タイム・後3F・着差・人気・オッズ・馬名・騎手 を補完
             racelog_map = {}
             try:
                 import sqlite3 as _sql
@@ -3364,13 +3364,24 @@ def create_app():
                     _c.row_factory = _sql.Row
                     for _r in _c.execute(
                         "SELECT horse_no, positions_corners, finish_time_sec, last_3f_sec, "
-                        "margin_ahead, margin_behind, position_4c, popularity, win_odds "
+                        "margin_ahead, margin_behind, position_4c, popularity, win_odds, "
+                        "horse_name, jockey_name "
                         "FROM race_log WHERE race_id=?",
                         (race_id,)
                     ).fetchall():
                         racelog_map[_r["horse_no"]] = dict(_r)
             except Exception:
                 logger.debug("race_log 補完失敗 race_id=%s", race_id, exc_info=True)
+
+            # 5/6 マスター指摘: pred.json 由来の jockey/horse_name は印マーク連結等の問題あり
+            # race_log の clean データで horse_map を上書き (全頭分)
+            for _hno, _rl in racelog_map.items():
+                if _hno not in horse_map:
+                    horse_map[_hno] = {}
+                if _rl.get("horse_name"):
+                    horse_map[_hno]["horse_name"] = _rl["horse_name"]
+                if _rl.get("jockey_name"):
+                    horse_map[_hno]["jockey"] = _rl["jockey_name"]
 
             # 結果取得スクレイパーのバグ対策（2026-04-22 JRA/NAR 両方で判明）:
             # JRA _parse_jra_result_order / NAR result parser の右→左スキャンが
