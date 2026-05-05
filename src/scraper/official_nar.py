@@ -1619,6 +1619,12 @@ class OfficialNARScraper:
             if not horse_no:
                 continue
 
+            # 5/6 マスター指摘修正: 馬名・騎手・人気・オッズも取得
+            # 馬名 (4列目, index=3)
+            horse_name = texts[3] if len(texts) > 3 else ""
+            # 騎手 (8列目, index=7)
+            jockey_name = texts[7] if len(texts) > 7 else ""
+
             # 負担重量 (7列目, index=6)
             weight_kg = 55.0
             try:
@@ -1658,13 +1664,32 @@ class OfficialNARScraper:
                 except ValueError:
                     pass
 
+            # 人気 (15列目, index=14)
+            popularity = None
+            if len(texts) > 14:
+                try:
+                    pop = int(texts[14])
+                    if 1 <= pop <= 50:
+                        popularity = pop
+                except ValueError:
+                    pass
+
+            # 着差 (13列目, index=12)
+            margin = ""
+            if len(texts) > 12:
+                margin = texts[12].strip() or ""
+
             results.append({
                 "horse_no": horse_no,
                 "finish": finish,
+                "horse_name": horse_name,
+                "jockey_name": jockey_name,
                 "last_3f": last_3f,
                 "time_sec": time_sec,
                 "weight_kg": weight_kg,
                 "horse_weight": horse_weight,
+                "popularity": popularity,
+                "margin": margin,
             })
 
         return results
