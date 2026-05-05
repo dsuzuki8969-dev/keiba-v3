@@ -684,6 +684,10 @@ def _compute_m_prime_sanrenpuku(year_filter: str) -> dict:
                 # bucket が list の場合は最初の combo から top3 を推定
                 # 実際の着順は results の order フィールドを優先
             order = rdata.get("order") or []
+            # 5/5 マスター指摘: 競馬ルール上 4 頭未満は不成立 (no race)
+            # = scraper 取込不全レースを集計から除外 (hybrid_summary 過去成績の正規化)
+            if len(order) < 5:
+                continue
             if len(order) >= 3:
                 finish_map = {int(o["horse_no"]): int(o["finish"]) for o in order}
                 top3_set = {h for h, f in finish_map.items() if f <= 3}
