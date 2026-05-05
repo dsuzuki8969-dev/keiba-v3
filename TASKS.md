@@ -38,28 +38,20 @@ netkeiba 24h クールダウン中でも代替経路で全件完走:
 
 ## 🔴 作業中のタスク
 
-### T-069 (P0 → 暫定対応済 / P2 残課題) — DAI_Keiba_Predict Disable で恒久回避
-- **暫定対応 (5/4 完了)**: `Disable-ScheduledTask -TaskName "DAI_Keiba_Predict"` で無効化済
-  - 明朝 06:00 の `VBS_END ec=255` 失敗ログ累積が停止
-  - 代替: Predict_Tomorrow (前日 17:00) で予想生成済のため実害ゼロ
-- **真因 (記録)**: Principal.LogonType=Interactive → マスター就寝中 (ログオフ状態) で cmd 起動不可
-- **本格修復が阻まれた理由**: マスターアカウントが Microsoft アカウント (`dsuzuki8969@gmail.com`) かつ「Windows Hello のみ許可」が ON = ローカルパスワード入力経路が UI 上消えている
-- **将来の本格修復手順** (P2・優先度低・Predict_Tomorrow で代替できているため不急):
-  1. Microsoft アカウントのパスワードを確認/リセット (`https://account.live.com/password/reset`)
-  2. 管理者 PowerShell で `.\scripts\fix_predict_task_logon.ps1` 実行 → Microsoft アカウントパスワード入力
-  3. `Enable-ScheduledTask -TaskName "DAI_Keiba_Predict"` で再有効化
-  4. 翌朝 06:00 で `bat_trace.log` の BAT_START 行確認
+### ✅ T-069 完了 — Disable で恒久運用 (マスター承認・5/5 A 案確定)
+- **状態**: `DAI_Keiba_Predict` 永久 Disable / Predict_Tomorrow (17:00) で前日生成済 = 実害ゼロ
+- **本格修復が技術的に不可能**:
+  - マスターアカウントは **Windows ローカルアカウント** `dsuzu` (whoami /upn が "not a domain user" エラー)
+  - Microsoft アカウントパスワード `dsuzuki8969@gmail.com` は **Windows ローカル認証用ではない**
+  - 普段は PIN サインイン = ローカルパスワード未設定 (or 別物)
+  - schtasks /rp の試行 4 件すべて「ユーザー名またはパスワードが正しくありません」で失敗 (5/5 朝)
+- **5/5 マスター承認**: A 案 (Disable のまま) 採用 = 5/1〜5/4 4 日間 Disable 状態で問題なく運用継続実績
+- **将来パスワード再設定があった場合の手順**: 管理者 PowerShell で `schtasks /change /tn "DAI_Keiba_Predict" /ru dsuzu /rp <ローカル PW>` → `Enable-ScheduledTask`
 
-### T-070 (P1・新規・マスター手動必須) — タスクスケジューラ整理
-- ✅ 削除済: D-AI Keiba Dashboard (Disabled)、DAI_Batch_Reanalyze (Ready/3 月以降未実行)
-- ❌ アクセス拒否で削除不可 (要管理者権限):
-  - `KeibaStreamlit` (Disabled)
-  - `DAI_Keiba_Tunnel` (旧版・D-AI Keiba Cloudflared と重複)
-- **実行コマンド** (管理者 PowerShell):
-  ```
-  Unregister-ScheduledTask -TaskName "KeibaStreamlit" -Confirm:$false
-  Unregister-ScheduledTask -TaskName "DAI_Keiba_Tunnel" -Confirm:$false
-  ```
+### ✅ T-070 完了 — タスクスケジューラ整理 (5/5 マスター手動実行)
+- ✅ 削除済: D-AI Keiba Dashboard (Disabled) / DAI_Batch_Reanalyze
+- ✅ **5/5 朝マスター管理者 PS で削除**: KeibaStreamlit / DAI_Keiba_Tunnel
+- 残 DAI_Keiba_* タスク 9 件 (Predict 含む) は Ready/Running・健全動作中
 
 ### ✅ T-063b 完了 — 2025 年三連複 payouts 再取得
 - 5/4 23:34 起動 → **9.9 分で 16,208 件全件成功** (キャッシュヒットで実質 GET 不要)
