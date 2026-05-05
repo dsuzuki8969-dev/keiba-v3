@@ -1597,7 +1597,11 @@ class OfficialNARScraper:
 
         for row in result_table.select("tr"):
             cells = row.select("td")
-            if len(cells) < 12:
+            # 5/5 マスター激怒指摘修正: 12 列必須 → 4 列必須に緩和
+            # 4 着以降の馬で一部列が省略 (cells < 12) されているケースで全部 skip され
+            # race_log に 3 頭しか取り込まれない構造バグ (5/5 で 78 件・全期間 133 件)。
+            # 必須は着順 + 馬番のみ、他列は欠損許容で取り込む。
+            if len(cells) < 4:
                 continue
 
             texts = [c.get_text(strip=True) for c in cells]
@@ -1609,7 +1613,9 @@ class OfficialNARScraper:
             finish = int(texts[0])
 
             # 馬番 (3列目, index=2)
-            horse_no = int(texts[2]) if texts[2].isdigit() else 0
+            if len(texts) <= 2 or not texts[2].isdigit():
+                continue
+            horse_no = int(texts[2])
             if not horse_no:
                 continue
 
