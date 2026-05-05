@@ -359,37 +359,34 @@ class KeibabookResultScraper:
                                     pass
 
                 # ── 馬名 + 騎手名取得 (5/6 マスター指摘修正) ──
+                # keibabook seiseki の td.left は連結テキスト:
+                # "ブラックビート牡4近藤颯54名瀬戸口3331" のように
+                # [馬名][性別][年齢][騎手][斤量][所属][厩舎][通過順] が連結
+                # 正規表現で分離
                 horse_name = ""
                 jockey_name = ""
-                # 馬名: td.uma / td.bamei / td.uma_bamei 等の a タグ優先
-                for sel in ("td.uma a", "td.bamei a", "td.uma_bamei a", "td.horse a"):
-                    el = row.select_one(sel)
-                    if el:
-                        horse_name = el.get_text(strip=True)
-                        break
-                # 騎手名: td.kishu / td.jockey の a タグ
-                for sel in ("td.kishu a", "td.jockey a"):
-                    el = row.select_one(sel)
-                    if el:
-                        jockey_name = el.get_text(strip=True)
-                        break
-                # フォールバック: a タグなしの場合 td テキスト直接
-                if not horse_name:
-                    for c in cells:
-                        cls = " ".join(c.get("class", []))
-                        if any(k in cls for k in ("uma", "bamei", "horse")):
-                            t = c.get_text(strip=True)
-                            if t and len(t) >= 2:
-                                horse_name = t
-                                break
-                if not jockey_name:
-                    for c in cells:
-                        cls = " ".join(c.get("class", []))
-                        if any(k in cls for k in ("kishu", "jockey")):
-                            t = c.get_text(strip=True)
-                            if t and len(t) >= 1:
-                                jockey_name = t
-                                break
+                left_cell_2 = row.select_one("td.left")
+                if left_cell_2:
+                    # まず a タグから取得 (馬名のリンクがあれば優先)
+                    a_tags = left_cell_2.select("a")
+                    if a_tags:
+                        # a タグ複数 = [馬名, 騎手, 厩舎] の順が一般的
+                        if len(a_tags) >= 1:
+                            horse_name = a_tags[0].get_text(strip=True)
+                        if len(a_tags) >= 2:
+                            jockey_name = a_tags[1].get_text(strip=True)
+                    # フォールバック: 正規表現でテキスト分離
+                    if not horse_name:
+                        left_text = left_cell_2.get_text(strip=True)
+                        # カタカナ + ー + 漢字 で馬名
+                        # 性別 (牡/牝/セ/騙) + 年齢で区切り
+                        m_split = re.match(
+                            r"^([゠-ー一-鿿]+?)([牡牝セ騙])(\d+)(.+?)(\d{2})",
+                            left_text
+                        )
+                        if m_split:
+                            horse_name = m_split.group(1)
+                            jockey_name = m_split.group(4)
 
                 entry = {
                     "horse_no":    horse_no,
