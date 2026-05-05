@@ -358,15 +358,50 @@ class KeibabookResultScraper:
                                 except ValueError:
                                     pass
 
+                # ── 馬名 + 騎手名取得 (5/6 マスター指摘修正) ──
+                horse_name = ""
+                jockey_name = ""
+                # 馬名: td.uma / td.bamei / td.uma_bamei 等の a タグ優先
+                for sel in ("td.uma a", "td.bamei a", "td.uma_bamei a", "td.horse a"):
+                    el = row.select_one(sel)
+                    if el:
+                        horse_name = el.get_text(strip=True)
+                        break
+                # 騎手名: td.kishu / td.jockey の a タグ
+                for sel in ("td.kishu a", "td.jockey a"):
+                    el = row.select_one(sel)
+                    if el:
+                        jockey_name = el.get_text(strip=True)
+                        break
+                # フォールバック: a タグなしの場合 td テキスト直接
+                if not horse_name:
+                    for c in cells:
+                        cls = " ".join(c.get("class", []))
+                        if any(k in cls for k in ("uma", "bamei", "horse")):
+                            t = c.get_text(strip=True)
+                            if t and len(t) >= 2:
+                                horse_name = t
+                                break
+                if not jockey_name:
+                    for c in cells:
+                        cls = " ".join(c.get("class", []))
+                        if any(k in cls for k in ("kishu", "jockey")):
+                            t = c.get_text(strip=True)
+                            if t and len(t) >= 1:
+                                jockey_name = t
+                                break
+
                 entry = {
-                    "horse_no":   horse_no,
-                    "finish":     finish,
-                    "corners":    corners if corners else None,
-                    "last_3f":    last_3f,
-                    "time_sec":   time_sec,
-                    "margin":     margin,
-                    "win_odds":   win_odds,
-                    "popularity": popularity,
+                    "horse_no":    horse_no,
+                    "finish":      finish,
+                    "horse_name":  horse_name,
+                    "jockey_name": jockey_name,
+                    "corners":     corners if corners else None,
+                    "last_3f":     last_3f,
+                    "time_sec":    time_sec,
+                    "margin":      margin,
+                    "win_odds":    win_odds,
+                    "popularity":  popularity,
                 }
                 results.append(entry)
 
