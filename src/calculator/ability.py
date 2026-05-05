@@ -1523,9 +1523,12 @@ def calc_ability_deviation(
         weight_corr = (run.weight_kg - base_weight) * 0.15
         corrected_time += weight_corr
 
+        # venue_codeはcourse_idの先頭2桁から取得（PastRunにvenue_codeフィールドなし）
+        # NAR(45等)とJRA(01-10)で換算定数kが異なるため正しく渡す必要がある
+        _run_vc = _cid.split("_")[0] if _cid else ""
         dev = calc_run_deviation(
             corrected_time, std_time, run.distance,
-            venue_code=getattr(run, "venue_code", ""),
+            venue_code=_run_vc,
         )
 
         # B-5: 中央↔地方クロス補正（全馬場種別）
