@@ -6022,10 +6022,6 @@ function dNavRefreshOdds(date){{
                             order = rdata.get("order") or []
                             if len(order) < 3:
                                 continue
-                            # 5/5 マスター指摘: 競馬ルール上 4 頭未満は不成立 (no race)
-                            # = scraper 取込不全レースを LIVE STATS から除外 (正規化)
-                            if len(order) < 5:
-                                continue
                             finish_map = {int(o["horse_no"]): int(o["finish"]) for o in order}
                             top3_set = {
                                 h for h, f in finish_map.items() if f <= 3
