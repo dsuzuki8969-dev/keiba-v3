@@ -57,12 +57,14 @@ netkeiba 24h クールダウン中でも代替経路で全件完走:
 - 5/4 23:34 起動 → **9.9 分で 16,208 件全件成功** (キャッシュヒットで実質 GET 不要)
 - DB UPDATE 成功 16,208 / 失敗 0
 
-### T-NEW-P1 (P1・新規) — HorseEvaluation.is_scratched 属性追加
+### ✅ T-NEW-P1 完了 (5/7) — HorseEvaluation.is_scratched 属性追加 + formatter.py 取消馬印付け除外
 - **発見経緯**: T-NEW-P0 緊急バグ修正中に副次バグとして発見
-- **問題**: `src/calculator/betting.py` L2500/2683/2787/2867 の 4 箇所で `getattr(e, "is_scratched", False)` が常に False を返す。HorseEvaluation / Horse 両方に is_scratched 属性なし。取消馬除外フィルタが effectively no-op
-- **暫定**: is_tokusen_kiken フィルタが代替動作中のため致命的影響なし
-- **修正方針**: src/models.py の HorseEvaluation に is_scratched: bool = False を追加 + engine.py で実体化時に horse.is_scratched (なければ追加) から伝搬
-- **工数**: 60 分
+- **問題**: `src/calculator/betting.py` L2500/2683/2787/2867 の 4 箇所で `getattr(e, "is_scratched", False)` が常に False、`src/output/formatter.py` L89-95 でも `is_scratched` フラグを参照せず → 取消馬除外フィルタ全面 no-op
+- **修正実装**:
+  - `src/models.py` L398: Horse.is_scratched 属性追加 (HorseEvaluation 側 L712 は既存)
+  - `src/engine.py` L2412-2413: 伝搬パス完成 (既存 getattr が実値返却に切替)
+  - `src/output/formatter.py` L89-96: 印付け除外条件に `ev.is_scratched or` を OR 追加 (keiba-reviewer 指摘修正・案 X)
+- **検証**: betting.py 4 箇所動作 + formatter.py smoke test PASS (取消馬の印付与なし)
 
 ---
 
@@ -116,8 +118,11 @@ python scripts/backfill_horses_2023h_retry.py --execute
 
 | 優先度 | 項目 | 状態 / 条件 |
 |:---:|---|---|
-| P2 | netkeiba 並列リクエスト禁止の構造強化 | feedback_netkeiba_concurrent_throttle 関連 |
-| P2 | B_prefix race_log 残存 33,779 件 | 整合済だが将来的に netkeiba_id 統合余地 |
+| ✅ 完了 (5/7) | ~~netkeiba 並列リクエスト禁止の構造強化 (フェーズ A)~~ | REQUEST_INTERVAL 2.0 グローバル化 + クールダウン永続化 (`tmp/netkeiba_cooldown.txt` atomic write・UTC 固定 ISO8601) 完了。smoke test 3/3 PASS。累犯防止 80% 達成 |
+| ✅ Closed (案 C 確定 5/7) | ~~B_prefix race_log 残存 37,426 件~~ | **統合せず現状維持確定**。理由: race_log B_prefix 37,426 件 / horses B_prefix 1,495 件 (100% netkeiba_id 補完済) / engine.py 7 段階 fallback で完全動作中 / 統合 cost-benefit 不成立 (案 A: race_log UPDATE / 案 B: horses PK 変更 いずれも本体メリット微・リスク高) |
+| P3 (将来) | netkeiba 並列禁止 フェーズ B (危険時間帯モジュール化) | 0.5 日 |
+| P3 (将来) | netkeiba 並列禁止 フェーズ C (netkeiba_access_broker file lock) | 2 日 |
+| P3 (将来) | netkeiba 並列禁止 フェーズ D (スケジューラ統合) | 3-5 日 |
 
 ---
 
