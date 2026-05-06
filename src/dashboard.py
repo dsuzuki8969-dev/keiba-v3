@@ -6938,6 +6938,19 @@ function dNavRefreshOdds(date){{
             _layout_count = 0
             _layout_details = {}
 
+        # netkeiba 403 watchdog ステータス (2026-05-06 追加: 過去事故再発防止)
+        _netkeiba_cooldown_remaining = 0
+        _netkeiba_403_count = 0
+        _netkeiba_403_last_time = None
+        try:
+            from src.scraper.netkeiba import _get_403_status
+            _n403 = _get_403_status()
+            _netkeiba_cooldown_remaining = _n403.get("cooldown_remaining", 0)
+            _netkeiba_403_count = _n403.get("count", 0)
+            _netkeiba_403_last_time = _n403.get("last_time_iso")
+        except Exception as _ne:
+            logger.debug("/api/health netkeiba_403_status 取得失敗: %s", _ne)
+
         return jsonify({
             "status": "ok",
             "uptime_sec": round(time.time() - _start_time),
@@ -6948,6 +6961,9 @@ function dNavRefreshOdds(date){{
             "today": today_metrics,
             "layout_warnings": _layout_count,
             "layout_warnings_detail": _layout_details,
+            "netkeiba_cooldown_remaining": _netkeiba_cooldown_remaining,
+            "netkeiba_403_count": _netkeiba_403_count,
+            "netkeiba_403_last_time": _netkeiba_403_last_time,
         })
 
     # ── T-038 開催カレンダーマスタ API ──────────────────────────────────────

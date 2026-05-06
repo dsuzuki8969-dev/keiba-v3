@@ -110,6 +110,77 @@ def _load_cooldown_from_file() -> float:
 # モジュールロード時にファイルから復元 (起動直後も cooldown が有効なら skip)
 _NETKEIBA_COOLDOWN_UNTIL: float = _load_cooldown_from_file()
 
+# ============================================================
+# 連続 403 watchdog (2026-05-06 追加: 過去事故再発防止)
+# 2026-04-28 事故: 並列アクセスで 403 × 10,398 件 + 3h 遅延
+# 直近 60 秒以内に複数回 403 が続く場合のみカウントアップ。
+# 5 件超: 1h cooldown / 10 件超: 24h cooldown で自動 abort。
+# ============================================================
+_NETKEIBA_403_COUNT: int = 0        # 連続 403 カウント
+_NETKEIBA_403_LAST_TIME: float = 0.0  # 最後の 403 発生 epoch
+_403_WINDOW_SEC: int = 60           # 連続とみなす時間窓 (秒)
+_403_THRESHOLD_1H: int = 5          # この件数超えで 1h cooldown
+_403_THRESHOLD_24H: int = 10        # この件数超えで 24h cooldown
+
+
+def _record_403() -> None:
+    """403 を 1 件記録し、閾値到達で自動 cooldown を発動する。
+
+    カウント更新は _NETKEIBA_COOLDOWN_LOCK で保護 (thread-safe)。
+    cooldown 設定は Lock 外で呼ぶ (_set_netkeiba_cooldown が内部で同 Lock を取得するためデッドロック回避)。
+    """
+    global _NETKEIBA_403_COUNT, _NETKEIBA_403_LAST_TIME
+    with _NETKEIBA_COOLDOWN_LOCK:
+        now = time.time()
+        # 前回の 403 から _403_WINDOW_SEC 超えていたらカウントをリセット
+        if now - _NETKEIBA_403_LAST_TIME > _403_WINDOW_SEC:
+            _NETKEIBA_403_COUNT = 0
+        _NETKEIBA_403_COUNT += 1
+        _NETKEIBA_403_LAST_TIME = now
+        count = _NETKEIBA_403_COUNT
+
+    # 閾値チェック (Lock 外で cooldown を設定してデッドロック回避)
+    # 「N 件以上」で発動 (定数 _403_THRESHOLD_1H=5 / _403_THRESHOLD_24H=10 と一致)
+    if count >= _403_THRESHOLD_24H:
+        # 24h cooldown: 大量連続 403 は長期 ban のサイン
+        _set_netkeiba_cooldown(86400)
+        logger.critical(
+            "連続 403 大量検知 (%d 件) → 自動 24h cooldown 発動。手動確認が必要です。",
+            count,
+        )
+    elif count >= _403_THRESHOLD_1H:
+        # 1h cooldown: 短期アクセス過多の可能性
+        _set_netkeiba_cooldown(3600)
+        logger.error(
+            "連続 403 検知 (%d 件) → 自動 cooldown 1h 発動。", count
+        )
+
+
+def _get_403_status() -> Dict:
+    """403 watchdog の診断情報を返す公開 API (dashboard /api/health から参照)。
+
+    Returns:
+        dict:
+            count (int): 現在の連続 403 カウント
+            last_time (float | None): 最後の 403 発生 epoch (未発生なら None)
+            last_time_iso (str | None): last_time の ISO8601 表現 (UTC)
+            cooldown_remaining (int): netkeiba cooldown 残り秒 (0 = 非アクティブ)
+    """
+    with _NETKEIBA_COOLDOWN_LOCK:
+        count = _NETKEIBA_403_COUNT
+        last_t = _NETKEIBA_403_LAST_TIME if _NETKEIBA_403_LAST_TIME > 0.0 else None
+    last_iso = (
+        datetime.fromtimestamp(last_t, tz=timezone.utc).isoformat()
+        if last_t is not None
+        else None
+    )
+    return {
+        "count": count,
+        "last_time": last_t,
+        "last_time_iso": last_iso,
+        "cooldown_remaining": _get_netkeiba_cooldown_remaining(),
+    }
+
 
 class NetkeibaRateLimited(Exception):
     """netkeiba が HTTP 429 を返した時に raise（上位で即フォールバック用）"""
@@ -528,6 +599,13 @@ class NetkeibaClient:
                     )
                     return None  # 即 None でフォールバック誘導
 
+                # HTTP 403 (Forbidden): 連続 403 watchdog に記録 (2026-05-06 追加)
+                # 5 件超で 1h cooldown / 10 件超で 24h cooldown に自動昇格
+                if resp.status_code == 403:
+                    _record_403()
+                    logger.warning("netkeiba 403 検知 (連続 %d 件): %s", _NETKEIBA_403_COUNT, full_url)
+                    return None
+
                 # HTTP 503 (Service Unavailable) もレート制限の一種として扱う
                 if resp.status_code == 503:
                     logger.warning("netkeiba 503 → 短期 cooldown 60秒: %s", full_url)
@@ -554,6 +632,12 @@ class NetkeibaClient:
                 if status in (400, 404):
                     self._known_404.add(cache_key)
                     logger.debug("404/400スキップ登録: %s", full_url)
+                elif status == 403:
+                    # 例外経由でも 403 は watchdog に記録 (2026-05-06 追加)
+                    _record_403()
+                    logger.warning(
+                        "netkeiba 403 例外検知 (連続 %d 件): %s", _NETKEIBA_403_COUNT, full_url
+                    )
                 elif status == 429:
                     # 例外経由でも 429 は cooldown 発動
                     try:
