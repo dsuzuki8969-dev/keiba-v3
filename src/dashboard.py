@@ -6951,6 +6951,14 @@ function dNavRefreshOdds(date){{
         except Exception as _ne:
             logger.debug("/api/health netkeiba_403_status 取得失敗: %s", _ne)
 
+        # Slack 通知設定状態 (2026-05-06 追加: フェーズ D 段階 2-B)
+        _slack_configured = False
+        try:
+            from src.slack_notify import is_slack_configured
+            _slack_configured = is_slack_configured()
+        except Exception as _slack_e:
+            logger.debug("/api/health slack_configured 取得失敗: %s", _slack_e)
+
         return jsonify({
             "status": "ok",
             "uptime_sec": round(time.time() - _start_time),
@@ -6964,6 +6972,7 @@ function dNavRefreshOdds(date){{
             "netkeiba_cooldown_remaining": _netkeiba_cooldown_remaining,
             "netkeiba_403_count": _netkeiba_403_count,
             "netkeiba_403_last_time": _netkeiba_403_last_time,
+            "slack_configured": _slack_configured,
         })
 
     # ── T-038 開催カレンダーマスタ API ──────────────────────────────────────

@@ -44,6 +44,7 @@ from data.masters.venue_master import (
 from src.log import get_logger
 from src.models import CourseMaster, Horse, PastRun, RaceInfo, TrainingRecord
 from src.scraper._layout_check import check_cell_count, check_required_classes
+from src.slack_notify import send_slack
 
 logger = get_logger(__name__)
 
@@ -148,12 +149,38 @@ def _record_403() -> None:
             "連続 403 大量検知 (%d 件) → 自動 24h cooldown 発動。手動確認が必要です。",
             count,
         )
+        # Slack 緊急アラート (2026-05-06 追加: 過去事故再発防止)
+        try:
+            send_slack(
+                message=(
+                    f"連続 403 が {count} 件に達しました。\n"
+                    "自動 24h cooldown を発動しました。\n"
+                    "手動での状況確認・netkeiba アクセス停止を推奨します。"
+                ),
+                level="critical",
+                title="[netkeiba] 連続 403 大量検知 24h cooldown 発動",
+            )
+        except Exception as _se:
+            logger.warning("Slack 通知失敗 (無視して続行): %s", _se)
     elif count >= _403_THRESHOLD_1H:
         # 1h cooldown: 短期アクセス過多の可能性
         _set_netkeiba_cooldown(3600)
         logger.error(
             "連続 403 検知 (%d 件) → 自動 cooldown 1h 発動。", count
         )
+        # Slack エラーアラート (2026-05-06 追加)
+        try:
+            send_slack(
+                message=(
+                    f"連続 403 が {count} 件検知されました。\n"
+                    "自動 1h cooldown を発動しました。\n"
+                    "状況によっては手動確認を推奨します。"
+                ),
+                level="error",
+                title="[netkeiba] 連続 403 検知 1h cooldown",
+            )
+        except Exception as _se:
+            logger.warning("Slack 通知失敗 (無視して続行): %s", _se)
 
 
 def _get_403_status() -> Dict:
