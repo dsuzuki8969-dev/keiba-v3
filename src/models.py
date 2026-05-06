@@ -394,6 +394,9 @@ class Horse:
     # データ取得元 ("netkeiba"/"official"/"keibabook"/"rakuten")
     source: str = ""
 
+    # 出走取消フラグ (scraper / results_tracker / dashboard で設定。engine.py 経由で HorseEvaluation に伝搬)
+    is_scratched: bool = False
+
     @property
     def weight_diff(self) -> float:
         """斤量補正量(秒) (D-5)"""

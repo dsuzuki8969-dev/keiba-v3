@@ -86,13 +86,15 @@ def assign_marks(evaluations: List[HorseEvaluation], is_jra: bool = True) -> Lis
     for ev in evaluations:
         ev._composite_snapshot = comp_snapshot[id(ev)]
 
-    # 出走取消馬を除外（オッズ確定レースでodds=Noneの馬）
+    # 出走取消馬を除外（is_scratched フラグ or オッズ確定レースで odds=None の馬）
+    # T-NEW-P1: HorseEvaluation.is_scratched 属性を参照して取消馬を確実に印付けから除外
     _has_odds = any(getattr(ev.horse, 'odds', None) is not None for ev in evaluations)
     _scratched = set()
     if _has_odds:
         _scratched = {id(ev) for ev in evaluations
-                      if getattr(ev.horse, 'odds', None) is None
-                      and getattr(ev.horse, 'tansho_odds', None) is None}
+                      if ev.is_scratched
+                      or (getattr(ev.horse, 'odds', None) is None
+                          and getattr(ev.horse, 'tansho_odds', None) is None)}
 
     for ev in evaluations:
         ev.mark = Mark.NONE
