@@ -1794,14 +1794,28 @@ class PersonnelDBManager:
                 self._data = json.load(f)
 
     def save(self):
-        """アトミック書き込み: tmp ファイルに書いてから os.replace で原子的差し替え"""
+        """アトミック書き込み: tmp ファイルに書いてから os.replace で原子的差し替え。
+
+        Windows で dashboard.py が同ファイルを open() 中の場合 WinError 32
+        (PermissionError) が発生する。最大 5 回・0.2 秒間隔でリトライして
+        2026-05-06 事故 (predict 22 レース連続スキップ) の再発を防ぐ。
+        """
+        import time as _time
         os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
         tmp_path = self.db_path + ".tmp"
         with open(tmp_path, "w", encoding="utf-8") as f:
             json.dump(self._data, f, ensure_ascii=False, indent=2)
             f.flush()
             os.fsync(f.fileno())
-        os.replace(tmp_path, self.db_path)
+        # Windows ファイルロック競合 (dashboard が同ファイル読み込み中) でリトライ
+        for attempt in range(5):
+            try:
+                os.replace(tmp_path, self.db_path)
+                return
+            except PermissionError:
+                if attempt == 4:
+                    raise
+                _time.sleep(0.2)
 
     def is_stale(self, key: str) -> bool:
         """キャッシュが古いか判定"""
