@@ -230,7 +230,17 @@ def _parse_trainer_affiliation(trainer_td_text: str) -> str:
 
 class NetkeibaClient:
     def __init__(self, cache_dir: str = None, no_cache: bool = False, request_interval: float = None,
-                 ignore_ttl: bool = False):
+                 ignore_ttl: bool = False, use_broker: bool = False):
+        """
+        Args:
+            cache_dir: キャッシュディレクトリ。None の場合は設定値を使用。
+            no_cache: True にするとキャッシュを使用しない。
+            request_interval: リクエスト間隔秒数。None の場合は REQUEST_INTERVAL を使用。
+            ignore_ttl: True の場合、キャッシュ TTL を無視して常にキャッシュを使う。
+            use_broker: True にすると NetkeibaAccessBroker による file lock を有効化する。
+                        デフォルト False = 既存挙動を維持 (呼び出し元への影響ゼロ)。
+                        複数プロセスが同時に netkeiba にアクセスする懸念がある場合に使う。
+        """
         if not HAS_DEPS:
             raise ImportError(
                 "requests と beautifulsoup4 が必要です: pip install requests beautifulsoup4 lxml"
@@ -251,6 +261,21 @@ class NetkeibaClient:
         self._race_top_fetched = False
         self._db_top_fetched = False
         self._known_404: set = set()  # 400/404 を返したURLを記憶してスキップ
+
+        # フェーズ C: プロセス間排他ロック (opt-in)
+        # use_broker=True を明示した場合のみ有効化。既存呼び出し元は変更不要。
+        if use_broker:
+            try:
+                from src.scraper.netkeiba_access_broker import get_default_broker
+                self._broker = get_default_broker()
+                logger.info("NetkeibaClient: access broker を有効化しました")
+            except Exception as e:
+                self._broker = None
+                logger.warning(
+                    "NetkeibaClient: access broker の初期化に失敗 (broker 無効で続行): %s", e
+                )
+        else:
+            self._broker = None  # broker 無効: 既存挙動をそのまま維持
 
     def clone(self) -> "NetkeibaClient":
         """並列リクエスト用にクライアントを複製する。
@@ -429,106 +454,126 @@ class NetkeibaClient:
             self._stats_skip += 1
             return None
 
-        # マスター指示 2026-04-23: netkeiba 制限中は即 None 返してフォールバックへ
-        if _is_netkeiba_cooldown_active():
-            remaining = _get_netkeiba_cooldown_remaining()
-            logger.warning(
-                "netkeiba 制限中（残 %ds）→ リクエスト skip: %s",
-                remaining, url,
-            )
-            self._stats_skip += 1
-            return None
-
-        self._stats_fetch += 1
-        elapsed = time.time() - self._last_request
-        if elapsed < self.request_interval:
-            time.sleep(self.request_interval - elapsed)
-
-        # クエリを自前でエンコードし、Referer を付与して 400 を防ぐ
-        full_url = url
-        if params:
-            sep = "&" if "?" in url else "?"
-            full_url = url + sep + urlencode(params)
-
-        parsed = urlparse(full_url)
-        if "race.netkeiba.com" in parsed.netloc:
-            self._ensure_race_top_cookie()
-        elif "db.netkeiba.com" in parsed.netloc:
-            self._ensure_db_top_cookie()
-        headers = dict(HEADERS)
-        headers["Accept"] = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
-        if "nar.netkeiba.com" in parsed.netloc:
-            headers["Referer"] = "https://nar.netkeiba.com/"
-        elif "race.netkeiba.com" in parsed.netloc:
-            # 出馬表・馬柱・結果は「一覧から遷移」に見せる
-            if "/race/shutuba.html" in full_url or "/race/newspaper.html" in full_url or "/race/result.html" in full_url:
-                headers["Referer"] = "https://race.netkeiba.com/top/race_list.html"
-            else:
-                headers["Referer"] = "https://race.netkeiba.com/"
-        elif "db.netkeiba.com" in parsed.netloc:
-            # 馬結果ページは馬トップから遷移に見せる
-            if "/horse/result/" in full_url:
-                horse_id = full_url.rstrip("/").split("/")[-1]
-                headers["Referer"] = f"{BASE_URL}/horse/{horse_id}/"
-            else:
-                headers["Referer"] = f"{BASE_URL}/"
-
-        try:
-            resp = self.session.get(full_url, timeout=15, headers=headers)
-
-            # マスター指示 2026-04-23: HTTP 429 (Too Many Requests) の明示検知
-            if resp.status_code == 429:
-                try:
-                    retry_after = int(resp.headers.get("Retry-After", _DEFAULT_RETRY_AFTER))
-                except (TypeError, ValueError):
-                    retry_after = _DEFAULT_RETRY_AFTER
-                _set_netkeiba_cooldown(retry_after)
+        # フェーズ C: broker 有効時は HTTP リクエスト前にプロセス間ロックを取得する
+        # broker=None (デフォルト) の場合はこのブロックをスキップ → 既存挙動を維持
+        _broker_acquired = False
+        if self._broker is not None:
+            _broker_acquired = self._broker.acquire()
+            if not _broker_acquired:
+                # タイムアウト: ロック取得できなかったが、リクエスト自体は続行する
+                # (排他制御失敗でも起動を止めないポリシー)
                 logger.warning(
-                    "netkeiba 429 検知 → cooldown %d秒 (Retry-After=%s): %s",
-                    retry_after, resp.headers.get("Retry-After", "N/A"), full_url,
+                    "broker: ロック取得タイムアウト — リクエストを続行します: %s", url
                 )
-                return None  # 即 None でフォールバック誘導
 
-            # HTTP 503 (Service Unavailable) もレート制限の一種として扱う
-            if resp.status_code == 503:
-                logger.warning("netkeiba 503 → 短期 cooldown 60秒: %s", full_url)
-                _set_netkeiba_cooldown(60)
+        # フェーズ C: broker 保持中は finally で必ず release する
+        try:
+            # マスター指示 2026-04-23: netkeiba 制限中は即 None 返してフォールバックへ
+            if _is_netkeiba_cooldown_active():
+                remaining = _get_netkeiba_cooldown_remaining()
+                logger.warning(
+                    "netkeiba 制限中（残 %ds）→ リクエスト skip: %s",
+                    remaining, url,
+                )
+                self._stats_skip += 1
                 return None
 
-            resp.raise_for_status()
-            if encoding:
-                resp.encoding = encoding
-            elif params and params.get("encoding") == "UTF-8":
-                resp.encoding = "utf-8"
-            elif "race.netkeiba.com" in url or "nar.netkeiba.com" in url:
-                resp.encoding = "utf-8" if "newspaper" in url else "euc-jp"
-            else:
-                resp.encoding = "euc-jp"
-            self._last_request = time.time()
+            self._stats_fetch += 1
+            elapsed = time.time() - self._last_request
+            if elapsed < self.request_interval:
+                time.sleep(self.request_interval - elapsed)
 
-            self._write_cache(cache_path, resp.text)
+            # クエリを自前でエンコードし、Referer を付与して 400 を防ぐ
+            full_url = url
+            if params:
+                sep = "&" if "?" in url else "?"
+                full_url = url + sep + urlencode(params)
 
-            return BeautifulSoup(resp.text, "lxml")
-        except Exception as e:
-            # 400/404 は恒久的に存在しないページなのでスキップリストに登録
-            status = getattr(getattr(e, "response", None), "status_code", 0)
-            if status in (400, 404):
-                self._known_404.add(cache_key)
-                logger.debug("404/400スキップ登録: %s", full_url)
-            elif status == 429:
-                # 例外経由でも 429 は cooldown 発動
-                try:
-                    retry_after = int(e.response.headers.get("Retry-After", _DEFAULT_RETRY_AFTER))
-                except Exception:
-                    retry_after = _DEFAULT_RETRY_AFTER
-                _set_netkeiba_cooldown(retry_after)
-                logger.warning(
-                    "netkeiba 429 例外検知 → cooldown %d秒: %s",
-                    retry_after, full_url,
-                )
-            else:
-                logger.warning("GET failed: %s → %s: %s", full_url, type(e).__name__, e, exc_info=True)
-            return None
+            parsed = urlparse(full_url)
+            if "race.netkeiba.com" in parsed.netloc:
+                self._ensure_race_top_cookie()
+            elif "db.netkeiba.com" in parsed.netloc:
+                self._ensure_db_top_cookie()
+            headers = dict(HEADERS)
+            headers["Accept"] = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+            if "nar.netkeiba.com" in parsed.netloc:
+                headers["Referer"] = "https://nar.netkeiba.com/"
+            elif "race.netkeiba.com" in parsed.netloc:
+                # 出馬表・馬柱・結果は「一覧から遷移」に見せる
+                if "/race/shutuba.html" in full_url or "/race/newspaper.html" in full_url or "/race/result.html" in full_url:
+                    headers["Referer"] = "https://race.netkeiba.com/top/race_list.html"
+                else:
+                    headers["Referer"] = "https://race.netkeiba.com/"
+            elif "db.netkeiba.com" in parsed.netloc:
+                # 馬結果ページは馬トップから遷移に見せる
+                if "/horse/result/" in full_url:
+                    horse_id = full_url.rstrip("/").split("/")[-1]
+                    headers["Referer"] = f"{BASE_URL}/horse/{horse_id}/"
+                else:
+                    headers["Referer"] = f"{BASE_URL}/"
+
+            try:
+                resp = self.session.get(full_url, timeout=15, headers=headers)
+
+                # マスター指示 2026-04-23: HTTP 429 (Too Many Requests) の明示検知
+                if resp.status_code == 429:
+                    try:
+                        retry_after = int(resp.headers.get("Retry-After", _DEFAULT_RETRY_AFTER))
+                    except (TypeError, ValueError):
+                        retry_after = _DEFAULT_RETRY_AFTER
+                    _set_netkeiba_cooldown(retry_after)
+                    logger.warning(
+                        "netkeiba 429 検知 → cooldown %d秒 (Retry-After=%s): %s",
+                        retry_after, resp.headers.get("Retry-After", "N/A"), full_url,
+                    )
+                    return None  # 即 None でフォールバック誘導
+
+                # HTTP 503 (Service Unavailable) もレート制限の一種として扱う
+                if resp.status_code == 503:
+                    logger.warning("netkeiba 503 → 短期 cooldown 60秒: %s", full_url)
+                    _set_netkeiba_cooldown(60)
+                    return None
+
+                resp.raise_for_status()
+                if encoding:
+                    resp.encoding = encoding
+                elif params and params.get("encoding") == "UTF-8":
+                    resp.encoding = "utf-8"
+                elif "race.netkeiba.com" in url or "nar.netkeiba.com" in url:
+                    resp.encoding = "utf-8" if "newspaper" in url else "euc-jp"
+                else:
+                    resp.encoding = "euc-jp"
+                self._last_request = time.time()
+
+                self._write_cache(cache_path, resp.text)
+
+                return BeautifulSoup(resp.text, "lxml")
+            except Exception as e:
+                # 400/404 は恒久的に存在しないページなのでスキップリストに登録
+                status = getattr(getattr(e, "response", None), "status_code", 0)
+                if status in (400, 404):
+                    self._known_404.add(cache_key)
+                    logger.debug("404/400スキップ登録: %s", full_url)
+                elif status == 429:
+                    # 例外経由でも 429 は cooldown 発動
+                    try:
+                        retry_after = int(e.response.headers.get("Retry-After", _DEFAULT_RETRY_AFTER))
+                    except Exception:
+                        retry_after = _DEFAULT_RETRY_AFTER
+                    _set_netkeiba_cooldown(retry_after)
+                    logger.warning(
+                        "netkeiba 429 例外検知 → cooldown %d秒: %s",
+                        retry_after, full_url,
+                    )
+                else:
+                    logger.warning("GET failed: %s → %s: %s", full_url, type(e).__name__, e, exc_info=True)
+                return None
+
+        finally:
+            # フェーズ C: broker でロックを取得していた場合は必ず release する
+            # (return/例外どちらのパスでも確実に解放)
+            if self._broker is not None and _broker_acquired:
+                self._broker.release()
 
     def _cache_key(self, url: str, params: dict = None) -> str:
         key = url.replace("https://", "").replace("/", "_").replace("?", "_")

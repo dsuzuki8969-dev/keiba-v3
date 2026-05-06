@@ -11,5 +11,11 @@ scipy>=1.11.0
 rich>=13.0.0
 lz4>=4.0.0
 
+# プロセス監視 (netkeiba 競合チェック用・Windows + Unix 両対応)
+psutil>=5.9.0
+
+# プロセス間排他ロック (netkeiba_access_broker フェーズ C・Windows + Unix 両対応)
+portalocker>=2.0.0
+
 # Windows通知（Windows環境のみ）
 winotify>=1.1.0; sys_platform == "win32"
