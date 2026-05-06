@@ -118,11 +118,12 @@ python scripts/backfill_horses_2023h_retry.py --execute
 
 | 優先度 | 項目 | 状態 / 条件 |
 |:---:|---|---|
-| ✅ 完了 (5/7) | ~~netkeiba 並列リクエスト禁止の構造強化 (フェーズ A)~~ | REQUEST_INTERVAL 2.0 グローバル化 + クールダウン永続化 (`tmp/netkeiba_cooldown.txt` atomic write・UTC 固定 ISO8601) 完了。smoke test 3/3 PASS。累犯防止 80% 達成 |
-| ✅ Closed (案 C 確定 5/7) | ~~B_prefix race_log 残存 37,426 件~~ | **統合せず現状維持確定**。理由: race_log B_prefix 37,426 件 / horses B_prefix 1,495 件 (100% netkeiba_id 補完済) / engine.py 7 段階 fallback で完全動作中 / 統合 cost-benefit 不成立 (案 A: race_log UPDATE / 案 B: horses PK 変更 いずれも本体メリット微・リスク高) |
-| P3 (将来) | netkeiba 並列禁止 フェーズ B (危険時間帯モジュール化) | 0.5 日 |
-| P3 (将来) | netkeiba 並列禁止 フェーズ C (netkeiba_access_broker file lock) | 2 日 |
-| P3 (将来) | netkeiba 並列禁止 フェーズ D (スケジューラ統合) | 3-5 日 |
+| ✅ 完了 (5/7) | ~~netkeiba 並列リクエスト禁止の構造強化 (フェーズ A)~~ | REQUEST_INTERVAL 2.0 グローバル化 + クールダウン永続化 完了 (commit 2b60c22)。累犯防止 80% 達成 |
+| ✅ Closed (案 C 確定 5/7) | ~~B_prefix race_log 残存 37,426 件~~ | **統合せず現状維持確定**。engine.py 7 段階 fallback で完全動作中 / 統合 cost-benefit 不成立 |
+| ✅ 完了 (5/7) | ~~フェーズ B (危険時間帯モジュール化)~~ | `src/scraper/netkeiba_checks.py` 新規 254 行 + backfill 2 件統合 (commit 3d05d98)。smoke test 全 PASS |
+| ✅ 完了 (5/7) | ~~フェーズ C 最小+α (netkeiba_access_broker file lock + NetkeibaClient optional hook)~~ | broker 253 行 (commit 411356b) + reviewer P0/P1 修正 (commit 2a44a6e)。portalocker ベース・smoke test 4/4 PASS |
+| 🟡 引継ぎ (次セッション以降) | フェーズ D (スケジューラ統合・broker 必須化・既存 backfill 全置換) | 3-5 日 規模 → `memory/project_p3d_scheduler_integration_handoff.md` |
+| 📌 残課題 (フェーズ B 範囲外) | `backfill_horses_2023h_retry.py` / `backfill_win_odds_via_keibabook.py` も `assert_safe_to_proceed` 統合 | 0.2 日 (フェーズ D ついで or 単独) |
 
 ---
 
