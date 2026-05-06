@@ -18,8 +18,10 @@ Phase 1 データソース: netkeiba.com
 
 import os
 import re
+import tempfile
+import threading
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple
 from urllib.parse import urlencode, urlparse
 
@@ -64,15 +66,49 @@ BASE_URL = "https://db.netkeiba.com"
 RACE_URL = "https://race.netkeiba.com"
 NAR_URL = "https://nar.netkeiba.com"  # 地方競馬
 ODDS_URL = "https://race.netkeiba.com/odds"
-REQUEST_INTERVAL = 1.5  # 秒 (礼儀あるスクレイピング)
+REQUEST_INTERVAL = 2.0  # 秒 (礼儀あるスクレイピング: 2026-04-28 事故教訓で 1.5→2.0 に強化)
 
 # マスター指示 2026-04-23: netkeiba レート制限 (HTTP 429) の明示検知 + cooldown
 # 制限発動中は即座に None を返してフォールバック（公式→競馬ブック→楽天）へ誘導。
 # 15秒タイムアウトを何度も食らって全体をハングさせない。
-import threading as _threading
-_NETKEIBA_COOLDOWN_UNTIL: float = 0.0   # 0 なら通常運用、非0 なら time.time() < この値 で全リクエスト skip
-_NETKEIBA_COOLDOWN_LOCK = _threading.Lock()
+#
+# 2026-05-06 強化: cooldown をファイルに永続化 (tmp/netkeiba_cooldown.txt)
+# 再起動後もクールダウンが復元されるため、大量 GET → 再起動 → 全件 403 事故を防止。
+_NETKEIBA_COOLDOWN_LOCK = threading.Lock()
 _DEFAULT_RETRY_AFTER = 300              # Retry-After 未提供時のデフォルト cooldown（5分）
+
+# cooldown 永続化ファイルパス (プロジェクトルート/tmp/ 配下)
+_COOLDOWN_FILE = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+    "tmp", "netkeiba_cooldown.txt",
+)
+
+def _load_cooldown_from_file() -> float:
+    """起動時: tmp/netkeiba_cooldown.txt を読み込んで cooldown 終了 epoch を返す。
+    ファイル無し・過去日・読み込み失敗は 0.0 (クールダウン無し) を返す。
+    """
+    try:
+        if not os.path.exists(_COOLDOWN_FILE):
+            return 0.0
+        with open(_COOLDOWN_FILE, "r", encoding="utf-8") as f:
+            ts_str = f.read().strip()
+        if not ts_str:
+            return 0.0
+        # ISO8601 文字列 → epoch float に変換
+        dt = datetime.fromisoformat(ts_str)
+        epoch = dt.timestamp()
+        if epoch <= time.time():
+            # 過去日 → クールダウン無しと判断
+            return 0.0
+        logger.info("netkeiba cooldown ファイルを復元: until=%s (残 %ds)", ts_str, int(epoch - time.time()))
+        return epoch
+    except Exception as e:
+        logger.warning("netkeiba_cooldown.txt 読み込み失敗 (無視して続行): %s", e)
+        return 0.0
+
+
+# モジュールロード時にファイルから復元 (起動直後も cooldown が有効なら skip)
+_NETKEIBA_COOLDOWN_UNTIL: float = _load_cooldown_from_file()
 
 
 class NetkeibaRateLimited(Exception):
@@ -83,13 +119,34 @@ class NetkeibaRateLimited(Exception):
 
 
 def _set_netkeiba_cooldown(retry_after: int) -> None:
-    """cooldown を設定（複数スレッドからの同時 429 を安全に処理）"""
+    """cooldown を設定（複数スレッドからの同時 429 を安全に処理）。
+    メモリ上の _NETKEIBA_COOLDOWN_UNTIL を更新すると同時に
+    tmp/netkeiba_cooldown.txt へ atomic write して再起動後も復元できるようにする。
+    """
     global _NETKEIBA_COOLDOWN_UNTIL
     with _NETKEIBA_COOLDOWN_LOCK:
         new_until = time.time() + retry_after
         # より長い cooldown を優先（小さい値で上書きしない）
         if new_until > _NETKEIBA_COOLDOWN_UNTIL:
             _NETKEIBA_COOLDOWN_UNTIL = new_until
+            # --- ファイルへ永続化 (atomic write: tempfile → os.replace) ---
+            try:
+                os.makedirs(os.path.dirname(_COOLDOWN_FILE), exist_ok=True)
+                # UTC 固定の ISO8601 で書き込む (Python 3.10 以下の fromisoformat 互換性確保 +
+                # ローカルタイムゾーン変更の影響を排除)
+                ts_str = datetime.fromtimestamp(new_until, tz=timezone.utc).isoformat()
+                # 同ディレクトリに一時ファイル作成 → rename で atomic 上書き (Windows + Unix 両対応)
+                tmp_dir = os.path.dirname(_COOLDOWN_FILE)
+                with tempfile.NamedTemporaryFile(
+                    mode="w", encoding="utf-8", dir=tmp_dir,
+                    delete=False, suffix=".tmp"
+                ) as tf:
+                    tf.write(ts_str + "\n")
+                    tmp_path = tf.name
+                os.replace(tmp_path, _COOLDOWN_FILE)
+                logger.info("netkeiba cooldown をファイルに永続化: %s (retry_after=%ds)", ts_str, retry_after)
+            except Exception as e:
+                logger.warning("netkeiba_cooldown.txt 書き込み失敗 (メモリ設定は有効): %s", e)
 
 
 def _is_netkeiba_cooldown_active() -> bool:
