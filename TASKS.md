@@ -122,8 +122,9 @@ python scripts/backfill_horses_2023h_retry.py --execute
 | ✅ Closed (案 C 確定 5/7) | ~~B_prefix race_log 残存 37,426 件~~ | **統合せず現状維持確定**。engine.py 7 段階 fallback で完全動作中 / 統合 cost-benefit 不成立 |
 | ✅ 完了 (5/7) | ~~フェーズ B (危険時間帯モジュール化)~~ | `src/scraper/netkeiba_checks.py` 新規 254 行 + backfill 2 件統合 (commit 3d05d98)。smoke test 全 PASS |
 | ✅ 完了 (5/7) | ~~フェーズ C 最小+α (netkeiba_access_broker file lock + NetkeibaClient optional hook)~~ | broker 253 行 (commit 411356b) + reviewer P0/P1 修正 (commit 2a44a6e)。portalocker ベース・smoke test 4/4 PASS |
-| 🟡 引継ぎ (次セッション以降) | フェーズ D (スケジューラ統合・broker 必須化・既存 backfill 全置換) | 3-5 日 規模 → `memory/project_p3d_scheduler_integration_handoff.md` |
-| 📌 残課題 (フェーズ B 範囲外) | `backfill_horses_2023h_retry.py` / `backfill_win_odds_via_keibabook.py` も `assert_safe_to_proceed` 統合 | 0.2 日 (フェーズ D ついで or 単独) |
+| ✅ 完了 (5/7) | ~~フェーズ D 段階 1 (broker 必須化 + cooldown 自動延期 + 連続 403 watchdog + 軽量 DAG)~~ | scheduler.py / scheduler_tasks.py / netkeiba.py / dashboard.py / scheduler_dag.py + backfill 13 件統合 |
+| ✅ 完了 (5/7) | ~~残 backfill 2 件 (`horses_2023h_retry` / `win_odds_via_keibabook`)~~ | `assert_safe_to_proceed` 統合済 |
+| 🟡 引継ぎ (次セッション) | フェーズ D 段階 2 (本格 DAG エンジン + APScheduler 統合 + slack 通知) | 2-3 日 |
 
 ---
 
