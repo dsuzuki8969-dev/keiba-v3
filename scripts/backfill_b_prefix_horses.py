@@ -39,10 +39,8 @@ from __future__ import annotations
 
 import argparse
 import io
-import os
 import re
 import sqlite3
-import subprocess
 import sys
 import time
 from datetime import datetime
@@ -57,6 +55,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from config.settings import DATABASE_PATH, CACHE_DIR
 from src.log import get_logger
+from src.scraper.netkeiba_checks import assert_safe_to_proceed  # 危険時間帯・競合プロセスチェック
 
 logger = get_logger(__name__)
 
@@ -66,20 +65,6 @@ RATE_LIMIT_SEC = 2.0
 
 # 中断再開マーカー
 DONE_MARKER_FILE = Path(__file__).resolve().parent.parent / "tmp" / "backfill_b_prefix_done.txt"
-
-# 危険時間帯 (netkeiba 並列実行スケジュールと重複する時間帯)
-DANGER_HOURS = [
-    (6, 0, 6, 30),    # 06:00-06:30: DAI_Keiba_Predict
-    (22, 0, 23, 30),  # 22:00-23:30: DAI_Keiba_Results + DAI_Keiba_Maintenance
-]
-
-# 競合プロセスキーワード (これらが動いていたら abort)
-CONFLICT_PROCESSES = [
-    "run_analysis_date.py",
-    "backfill_race_log",
-    "backfill_horses_2023h",
-    "backfill_b_prefix",  # 自己重複防止 (別プロセス)
-]
 
 # netkeiba 馬名検索 URL
 NETKEIBA_SEARCH_URL = "https://db.netkeiba.com/"
@@ -92,37 +77,7 @@ SEARCH_PARAMS_BASE = {
 BACKUP_DIR = Path(DATABASE_PATH).parent / "backups"
 
 # ── ユーティリティ ─────────────────────────────────────────────────────────────
-
-def _is_danger_time() -> bool:
-    """現在が危険時間帯かどうかを返す"""
-    now = datetime.now()
-    h, m = now.hour, now.minute
-    for (sh, sm, eh, em) in DANGER_HOURS:
-        start_min = sh * 60 + sm
-        end_min = eh * 60 + em
-        now_min = h * 60 + m
-        if start_min <= now_min < end_min:
-            return True
-    return False
-
-
-def _check_conflict_processes() -> list[str]:
-    """競合プロセスが動いていればそのリストを返す"""
-    try:
-        result = subprocess.run(
-            ["ps", "-ef"],
-            capture_output=True, text=True, timeout=5
-        )
-        lines = result.stdout.splitlines()
-        conflicts = []
-        for proc in CONFLICT_PROCESSES:
-            for line in lines:
-                if proc in line and "grep" not in line:
-                    conflicts.append(proc)
-                    break
-        return conflicts
-    except Exception:
-        return []  # 確認できない場合は通過させる
+# 危険時間帯・競合プロセスチェックは src.scraper.netkeiba_checks.assert_safe_to_proceed() に委譲
 
 
 def _load_done_ids() -> set[str]:
@@ -368,8 +323,9 @@ def run_dry_run(conn: sqlite3.Connection) -> None:
             f"sex={h['sex']} 推定生年={guessed_year}"
         )
 
-    # 危険時間帯チェック
-    if _is_danger_time():
+    # 危険時間帯チェック (共通モジュール使用)
+    from src.scraper.netkeiba_checks import is_danger_time
+    if is_danger_time():
         print(f"\n[警告] 現在は危険時間帯です。--execute 実行時は自動 abort します。")
     else:
         print(f"\n[安全] 現在は実行可能時間帯です。")
@@ -390,17 +346,11 @@ def run_execute(
     print("【execute】B_prefix 馬 netkeiba_id 補完 開始")
     print("=" * 65)
 
-    # ──── 安全チェック ────
-    if _is_danger_time():
-        now_str = datetime.now().strftime("%H:%M")
-        print(f"[ABORT] 危険時間帯 ({now_str}) のため実行を中止します。")
-        print("  実行可能時間: 06:31〜21:59 / 23:31〜05:59")
-        sys.exit(1)
-
-    conflicts = _check_conflict_processes()
-    if conflicts:
-        print(f"[ABORT] 競合プロセス検出: {conflicts}")
-        print("  netkeiba 並列アクセス禁止 (違反歴 1 回・業務影響大)")
+    # ──── 安全チェック (危険時間帯・競合プロセス一括確認) ────
+    try:
+        assert_safe_to_proceed(force=False)
+    except RuntimeError as e:
+        print(str(e))
         sys.exit(1)
 
     # ──── Step 1: 対象抽出 ────

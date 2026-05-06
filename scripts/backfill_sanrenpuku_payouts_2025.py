@@ -32,7 +32,6 @@ from __future__ import annotations
 import argparse
 import io
 import json
-import os
 import re
 import sqlite3
 import sys
@@ -54,32 +53,17 @@ TMP_DIR   = BASE_DIR / "tmp"
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 TMP_DIR.mkdir(parents=True, exist_ok=True)
 
+# プロジェクトルートをパスに追加 (src モジュール import のため)
+sys.path.insert(0, str(BASE_DIR))
+
+from src.scraper.netkeiba_checks import assert_safe_to_proceed  # 危険時間帯・競合プロセスチェック
+
 TODAY_STR   = datetime.now().strftime("%Y%m%d")
 LOG_FILE    = LOG_DIR / f"backfill_sanrenpuku_payouts_{TODAY_STR}.log"
 DONE_FILE   = TMP_DIR / "backfill_sanrenpuku_done.txt"
 
 # ─── レート制限 ──────────────────────────────────────
 RATE_LIMIT_SEC = 2.0   # 最低 2.0 秒 (CLAUDE.md 遵守)
-
-# ─── 危険時間帯 ──────────────────────────────────────
-# (hhmm_start, hhmm_end) — 端点含む
-BLOCKED_PERIODS = [
-    (600,  630),   # 06:00-06:30  DAI_Keiba_Predict
-    (2200, 2330),  # 22:00-23:30  DAI_Keiba_Results + Maintenance
-]
-
-# ─── 競合プロセス名キーワード ─────────────────────────
-CONFLICT_KEYWORDS = [
-    "auto_fetch_odds",
-    "predict_tomorrow_runner",
-    "results_tracker",
-    "scheduler_tasks",
-    "run_analysis_date",
-    "backfill_all_payouts",    # 他の backfill が動いていたら衝突
-    "backfill_payouts",
-    "backfill_recent_days",
-    "backfill_2026_gaps",
-]
 
 # ─── JRA 会場コード ──────────────────────────────────
 JRA_VENUE_CODES = {"01", "02", "03", "04", "05", "06", "07", "08", "09", "10"}
@@ -106,62 +90,9 @@ def log(msg: str) -> None:
 
 
 # ============================================================
-# 安全装置 1: 危険時間帯チェック
+# 安全装置: 危険時間帯・競合プロセスチェック
+# → src.scraper.netkeiba_checks.assert_safe_to_proceed() に委譲
 # ============================================================
-
-def check_blocked_time() -> None:
-    now_hhmm = int(datetime.now().strftime("%H%M"))
-    for start, end in BLOCKED_PERIODS:
-        if start <= now_hhmm <= end:
-            log(f"[ABORT] 危険時間帯 ({start:04d}-{end:04d}) のため中止します。")
-            log("       推奨実行時間帯: 24:00 以降 (Results 22:00 / Maintenance 23:00 完了後)")
-            sys.exit(1)
-
-
-# ============================================================
-# 安全装置 2: 競合プロセスチェック
-# ============================================================
-
-def check_conflict_processes() -> None:
-    """psutil なしでも動作するように subprocess で ps を使う。"""
-    try:
-        import subprocess
-        # Windows では wmic、Git Bash では ps 両対応
-        if sys.platform == "win32":
-            result = subprocess.run(
-                ["wmic", "process", "get", "commandline"],
-                capture_output=True, text=True, timeout=10
-            )
-            cmdlines = result.stdout
-        else:
-            result = subprocess.run(
-                ["ps", "-ef"],
-                capture_output=True, text=True, timeout=10
-            )
-            cmdlines = result.stdout
-    except Exception as e:
-        log(f"[警告] プロセスチェック失敗 (スキップ): {e}")
-        return
-
-    my_pid = os.getpid()
-    conflicts = []
-    for line in cmdlines.splitlines():
-        # 自分自身は除外
-        if "backfill_sanrenpuku_payouts_2025" in line:
-            # PID が自分かどうか確認 (簡易)
-            continue
-        for kw in CONFLICT_KEYWORDS:
-            if kw in line:
-                conflicts.append(line.strip()[:120])
-                break
-
-    if conflicts:
-        log("[ABORT] 競合する Python プロセスが動作中です:")
-        for c in conflicts:
-            log(f"  {c}")
-        log("競合プロセスが終了してから再実行してください。")
-        sys.exit(1)
-
 
 # ============================================================
 # 中断再開: 処理済み race_id 管理
@@ -426,10 +357,13 @@ def main() -> None:
     log(f"  進捗ファイル: {DONE_FILE}")
     log("=" * 60)
 
-    # ── 安全装置 ────────────────────────────────────────────
+    # ── 安全装置 (危険時間帯・競合プロセス一括確認) ────────────
     if args.execute:
-        check_blocked_time()
-        check_conflict_processes()
+        try:
+            assert_safe_to_proceed(force=False)
+        except RuntimeError as e:
+            log(str(e))
+            sys.exit(1)
 
     # ── done ファイルリセット ──────────────────────────────
     if args.reset_done and DONE_FILE.exists():
