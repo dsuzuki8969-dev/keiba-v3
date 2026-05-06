@@ -45,6 +45,7 @@ from src.database import get_db, init_schema  # noqa: E402
 from src.scraper.kaisai_calendar_util import get_open_dates  # noqa: E402
 from src.scraper.ml_data_collector import parse_result_page  # noqa: E402
 from src.scraper.netkeiba import NetkeibaClient, RaceListScraper  # noqa: E402
+from src.scraper.netkeiba_checks import assert_safe_to_proceed  # noqa: E402  # 危険時間帯・競合プロセスチェック
 
 # ──────────────────────────────────────────
 # 定数
@@ -501,7 +502,15 @@ def main() -> None:
 
     # ── NetkeibaClient（キャッシュ優先、TTL 無視で古いキャッシュも再利用） ──
     # 5/5 マスター激怒指摘 (★★ 累犯 2 回目): netkeiba レート制限 2.0 秒/件以上厳守
-    client = NetkeibaClient(ignore_ttl=True, request_interval=2.0)
+
+    # 危険時間帯・競合プロセスチェック (netkeiba アクセス開始前)
+    try:
+        assert_safe_to_proceed(force=False)
+    except RuntimeError as e:
+        log(str(e))
+        return
+
+    client = NetkeibaClient(use_broker=True, ignore_ttl=True, request_interval=2.0)
 
     # ── フェーズ 1: race_id 列挙 ──
     log("\n[Phase 1] race_id 列挙中...")

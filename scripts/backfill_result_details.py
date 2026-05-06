@@ -21,6 +21,7 @@ from src.results_tracker import (  # noqa: E402
     _is_corners_empty,
 )
 from src.scraper.netkeiba import NetkeibaClient  # noqa: E402
+from src.scraper.netkeiba_checks import assert_safe_to_proceed  # noqa: E402  # 危険時間帯・競合プロセスチェック
 
 
 def _format_duration(sec: float) -> str:
@@ -81,7 +82,14 @@ def main() -> int:
         print("補完対象なし")
         return 0
 
-    client = NetkeibaClient()
+    # 危険時間帯・競合プロセスチェック (netkeiba アクセス開始前)
+    try:
+        assert_safe_to_proceed(force=False)
+    except RuntimeError as e:
+        print(str(e))
+        return 1
+
+    client = NetkeibaClient(use_broker=True)
     start_ts = time.time()
     success, failed = 0, 0
 

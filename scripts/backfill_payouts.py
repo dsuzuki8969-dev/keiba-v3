@@ -21,6 +21,7 @@ sys.path.insert(0, ".")
 from config.settings import RESULTS_DIR, PREDICTIONS_DIR
 from src.results_tracker import fetch_single_race_result, load_prediction
 from src.scraper.netkeiba import NetkeibaClient
+from src.scraper.netkeiba_checks import assert_safe_to_proceed  # 危険時間帯・競合プロセスチェック
 
 OFFICIAL_INTERVAL = 3.0   # 公式連続リクエストの間隔（秒）
 NETKEIBA_INTERVAL = 2.5   # netkeiba フォールバック時の間隔（秒、礼儀あるスクレイピング）
@@ -129,7 +130,14 @@ def main():
         log(f"公式スクレイパ初期化失敗: {e}")
         official = None
 
-    netkeiba = NetkeibaClient(no_cache=True)
+    # 危険時間帯・競合プロセスチェック (netkeiba アクセス開始前)
+    try:
+        assert_safe_to_proceed(force=False)
+    except RuntimeError as e:
+        log(str(e))
+        return
+
+    netkeiba = NetkeibaClient(use_broker=True, no_cache=True)
     # リクエスト間隔を調整（netkeiba）
     if hasattr(netkeiba, "request_interval"):
         netkeiba.request_interval = NETKEIBA_INTERVAL

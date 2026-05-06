@@ -15,6 +15,7 @@ sys.path.insert(0, ".")
 from config.settings import RESULTS_DIR, PREDICTIONS_DIR
 from src.results_tracker import fetch_actual_results
 from src.scraper.netkeiba import NetkeibaClient
+from src.scraper.netkeiba_checks import assert_safe_to_proceed  # 危険時間帯・競合プロセスチェック
 from src.scraper.official_odds import OfficialOddsScraper
 
 TARGET_DATES = [
@@ -65,7 +66,14 @@ def main() -> None:
     t0 = time.time()
     log(f"=== 直近日 backfill 開始 対象 {len(TARGET_DATES)} 日 ===")
 
-    client = NetkeibaClient(no_cache=True)
+    # 危険時間帯・競合プロセスチェック (netkeiba アクセス開始前)
+    try:
+        assert_safe_to_proceed(force=False)
+    except RuntimeError as e:
+        log(str(e))
+        return
+
+    client = NetkeibaClient(use_broker=True, no_cache=True)
     official = OfficialOddsScraper()
 
     for i, date in enumerate(TARGET_DATES):

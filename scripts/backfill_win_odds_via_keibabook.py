@@ -26,7 +26,6 @@ netkeiba には一切アクセスしない。
 
 import argparse
 import datetime
-import os
 import re
 import sqlite3
 import sys
@@ -51,6 +50,7 @@ _PROJ_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_PROJ_ROOT))
 
 from src.log import get_logger
+from src.scraper.netkeiba_checks import assert_safe_to_proceed
 
 logger = get_logger("backfill_win_odds")
 
@@ -64,66 +64,6 @@ _RATE_SLEEP   = 2.5   # 秒/件 (2.0秒以上厳守)
 _RETRY_MAX    = 3
 _RETRY_SLEEP  = 5.0
 
-# 危険時間帯: (開始h, 開始m, 終了h, 終了m) のリスト
-_DANGER_TIMES = [
-    (6,  0,  6, 30),   # 06:00-06:30 (Predict スケジューラ)
-    (22, 0, 23, 30),   # 22:00-23:30 (Results + Maintenance スケジューラ)
-]
-
-# 競合プロセス検出キーワード
-_CONFLICT_KEYWORDS = [
-    "auto_fetch",
-    "Predict_Tomorrow",
-    "Predict",
-    "results_tracker",
-    "run_analysis_date",
-    "fallback_fetch_today",
-]
-
-
-# ================================================================
-# 安全装置
-# ================================================================
-
-def _check_danger_time() -> bool:
-    """現在が危険時間帯なら True を返す"""
-    now = datetime.datetime.now()
-    h, m = now.hour, now.minute
-    current_min = h * 60 + m
-    for (sh, sm, eh, em) in _DANGER_TIMES:
-        start = sh * 60 + sm
-        end   = eh * 60 + em
-        if start <= current_min <= end:
-            return True
-    return False
-
-
-def _check_conflict_processes() -> List[str]:
-    """競合プロセスが実行中なら識別子リストを返す"""
-    try:
-        import subprocess
-        # Windows では tasklist / Unix では ps
-        if sys.platform == "win32":
-            result = subprocess.run(
-                ["tasklist", "/FO", "CSV", "/NH"],
-                capture_output=True, text=True, timeout=10
-            )
-            lines = result.stdout
-        else:
-            result = subprocess.run(
-                ["ps", "-ef"],
-                capture_output=True, text=True, timeout=10
-            )
-            lines = result.stdout
-
-        found = []
-        for kw in _CONFLICT_KEYWORDS:
-            if kw in lines:
-                found.append(kw)
-        return found
-    except Exception as e:
-        logger.debug(f"プロセスチェック失敗: {e}")
-        return []
 
 
 # ================================================================
@@ -459,15 +399,10 @@ def main():
     print(f"[INFO] DB: {_DB_PATH}", flush=True)
 
     # ── 安全装置チェック ──────────────────────────────────
-    if _check_danger_time():
-        now = datetime.datetime.now().strftime("%H:%M")
-        print(f"[ABORT] 危険時間帯 ({now}) のため中断します。スケジューラと競合するリスクがあります。")
-        sys.exit(1)
-
-    conflicts = _check_conflict_processes()
-    if conflicts:
-        print(f"[ABORT] 競合プロセス検出: {conflicts}")
-        print("       競合プロセスが終了してから再実行してください。")
+    try:
+        assert_safe_to_proceed(force=False)
+    except RuntimeError as e:
+        print(str(e))
         sys.exit(1)
 
     # ── 対象レース取得 ──────────────────────────────────
@@ -542,9 +477,10 @@ def main():
 
     for idx, (race_id, race_date) in enumerate(race_list, 1):
         # 危険時間帯チェック (各レース処理前に確認)
-        if _check_danger_time():
-            now_str = datetime.datetime.now().strftime("%H:%M")
-            print(f"\n[ABORT] 危険時間帯 ({now_str}) に突入。処理を中断します。")
+        try:
+            assert_safe_to_proceed(force=False)
+        except RuntimeError as e:
+            print(f"\n{e}")
             print(f"  処理済み: {idx-1}/{len(race_list)} レース")
             print(f"  再開: python scripts/backfill_win_odds_via_keibabook.py --execute --resume")
             break

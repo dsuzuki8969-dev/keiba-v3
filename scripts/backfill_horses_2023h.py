@@ -35,6 +35,7 @@ from src.scraper.netkeiba import (
     HorseHistoryParser,
     PedigreeParser,
 )
+from src.scraper.netkeiba_checks import assert_safe_to_proceed  # 危険時間帯・競合プロセスチェック
 from src.models import Horse
 
 logger = get_logger(__name__)
@@ -275,7 +276,16 @@ def run_apply(
     # ──── Step 3: netkeiba スクレイピング ────
     # 5/5 ★★ 累犯 2 回目修正: 1.0 秒 → 2.0 秒に強制 (規定厳守)
     print(f"\n[3/5] netkeiba スクレイピング開始 ({len(horse_ids):,} 件, 2.0 秒間隔)")
+
+    # 危険時間帯・競合プロセスチェック (netkeiba アクセス開始前)
+    try:
+        assert_safe_to_proceed(force=False)
+    except RuntimeError as e:
+        print(str(e))
+        return
+
     client = NetkeibaClient(
+        use_broker=True,
         cache_dir=CACHE_DIR,
         ignore_ttl=True,        # キャッシュがあれば TTL 無視で再利用
         request_interval=2.0,   # 5/5 ★★ 累犯 2 回目で 1.0→2.0 に強制修正 (規定厳守)

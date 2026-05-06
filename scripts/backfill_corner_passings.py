@@ -24,6 +24,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.scraper.netkeiba import NetkeibaClient
+from src.scraper.netkeiba_checks import assert_safe_to_proceed  # 危険時間帯・競合プロセスチェック
 from src.scraper.official_nar import parse_corner_passing_from_text
 from data.masters.venue_master import JRA_CODES
 
@@ -154,7 +155,14 @@ def main():
                         help="この日付以降のみ処理 YYYY-MM-DD or YYYYMMDD")
     args = parser.parse_args()
 
-    client = NetkeibaClient(no_cache=True)
+    # 危険時間帯・競合プロセスチェック (netkeiba アクセス開始前)
+    try:
+        assert_safe_to_proceed(force=False)
+    except RuntimeError as e:
+        print(str(e))
+        return
+
+    client = NetkeibaClient(use_broker=True, no_cache=True)
 
     if args.date:
         date_key = args.date.replace("-", "")

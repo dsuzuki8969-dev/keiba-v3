@@ -389,6 +389,7 @@ def run_execute(
 
     from src.scraper.netkeiba import NetkeibaClient
     client = NetkeibaClient(
+        use_broker=True,
         cache_dir=CACHE_DIR,
         ignore_ttl=True,
         request_interval=RATE_LIMIT_SEC,  # 2.0 秒 (違反歴厳守)

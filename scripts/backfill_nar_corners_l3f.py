@@ -40,6 +40,8 @@ except ImportError:
 _DB_PATH = str(_PROJ_ROOT / "data" / "keiba.db")
 _CACHE_DIR = str(_PROJ_ROOT / "data" / "cache")
 
+from src.scraper.netkeiba_checks import assert_safe_to_proceed  # 危険時間帯・競合プロセスチェック
+
 # ばんえい競馬(帯広) venue_code
 _BANEI_VC = "65"
 
@@ -334,6 +336,14 @@ def main():
 
     mode = "実行モード" if args.execute else "dry-run モード"
     print(f"[バックフィル開始] {mode} / 直近{args.days}日 / venue={args.venue or '全場'}", flush=True)
+
+    # 危険時間帯・競合プロセスチェック (DB 更新時のみ)
+    if args.execute:
+        try:
+            assert_safe_to_proceed(force=False)
+        except RuntimeError as e:
+            print(str(e), flush=True)
+            return
 
     stats = run_backfill(days=args.days, venue_filter=args.venue, execute=args.execute)
 

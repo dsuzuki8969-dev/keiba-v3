@@ -35,10 +35,8 @@ from __future__ import annotations
 
 import argparse
 import io
-import os
 import shutil
 import sqlite3
-import subprocess
 import sys
 import time
 from datetime import datetime
@@ -54,6 +52,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from config.settings import DATABASE_PATH, CACHE_DIR
 from src.log import get_logger
+from src.scraper.netkeiba_checks import assert_safe_to_proceed
 
 logger = get_logger(__name__)
 
@@ -70,55 +69,10 @@ BACKUP_DIR = Path(DATABASE_PATH).parent / "backups"
 # JRA 会場コード
 JRA_VENUE_CODES = {"01", "02", "03", "04", "05", "06", "07", "08", "09", "10"}
 
-# 危険時間帯
-DANGER_HOURS = [
-    (6, 0, 6, 30),
-    (22, 0, 23, 30),
-]
-
-# 競合プロセスキーワード
-CONFLICT_PROCESSES = [
-    "run_analysis_date.py",
-    "backfill_race_log",
-    "backfill_b_prefix",
-    "backfill_horses_2023h",  # 元スクリプトとの重複防止
-]
-
-
 # ── ユーティリティ ─────────────────────────────────────────────────────────────
 
 def _is_jra_horse_id(horse_id: str) -> bool:
     return horse_id.isdigit() and len(horse_id) == 10
-
-
-def _is_danger_time() -> bool:
-    now = datetime.now()
-    h, m = now.hour, now.minute
-    for (sh, sm, eh, em) in DANGER_HOURS:
-        start_min = sh * 60 + sm
-        end_min = eh * 60 + em
-        now_min = h * 60 + m
-        if start_min <= now_min < end_min:
-            return True
-    return False
-
-
-def _check_conflict_processes() -> list[str]:
-    try:
-        result = subprocess.run(
-            ["ps", "-ef"],
-            capture_output=True, text=True, timeout=5
-        )
-        lines = result.stdout.splitlines()
-        conflicts = []
-        for proc in CONFLICT_PROCESSES:
-            for line in lines:
-                if proc in line and "grep" not in line and "retry" not in line:
-                    conflicts.append(proc)
-                    break
-        return conflicts
-    except Exception:
-        return []
 
 
 def _load_done_ids() -> set[str]:
@@ -311,10 +265,11 @@ def run_dry_run(conn: sqlite3.Connection) -> None:
     print(f"  JRA {len(jra_remaining):,} 件 × {RATE_LIMIT_SEC}秒 = {len(jra_remaining) * RATE_LIMIT_SEC / 60:.0f} 分")
     print(f"  NAR {len(nar_remaining):,} 件 × 0.1秒  = {len(nar_remaining) * 0.1 / 60:.1f} 分")
 
-    if _is_danger_time():
-        print(f"\n[警告] 現在は危険時間帯です。--execute 実行時は自動 abort します。")
-    else:
+    try:
+        assert_safe_to_proceed(force=False)
         print(f"\n[安全] 現在は実行可能時間帯です。")
+    except RuntimeError as e:
+        print(f"\n[警告] {e}")
 
     print(f"\n実行コマンド:")
     print(f"  python scripts/backfill_horses_2023h_retry.py --execute")
@@ -330,16 +285,10 @@ def run_execute(conn: sqlite3.Connection, max_fetch: int | None = None) -> None:
     print("=" * 65)
 
     # ──── 安全チェック ────
-    if _is_danger_time():
-        now_str = datetime.now().strftime("%H:%M")
-        print(f"[ABORT] 危険時間帯 ({now_str}) のため実行を中止します。")
-        print("  実行可能時間: 06:31〜21:59 / 23:31〜05:59")
-        sys.exit(1)
-
-    conflicts = _check_conflict_processes()
-    if conflicts:
-        print(f"[ABORT] 競合プロセス検出: {conflicts}")
-        print("  netkeiba 並列アクセス禁止 (違反歴 1 回・業務影響大)")
+    try:
+        assert_safe_to_proceed(force=False)
+    except RuntimeError as e:
+        print(str(e))
         sys.exit(1)
 
     # ──── Step 1: 対象抽出 ────

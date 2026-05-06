@@ -44,6 +44,7 @@ _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, _PROJECT_ROOT)
 
 from config.settings import DATABASE_PATH
+from src.scraper.netkeiba_checks import assert_safe_to_proceed  # 危険時間帯・競合プロセスチェック
 
 # ============================================================
 # ログ設定
@@ -257,6 +258,14 @@ def run_backfill(
     logger.info(f"  dry_run={dry_run}, force={force}, min_runs={min_runs}")
     logger.info(f"  対象 venue: {venue_codes or 'NAR 全場'}")
     logger.info("=" * 60)
+
+    # 危険時間帯・競合プロセスチェック (DB アクセス開始前)
+    if not dry_run:
+        try:
+            assert_safe_to_proceed(force=False)
+        except RuntimeError as e:
+            logger.error(str(e))
+            return
 
     # 対象 venue_code リスト作成
     if venue_codes:

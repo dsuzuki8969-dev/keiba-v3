@@ -15,6 +15,7 @@ sys.path.insert(0, ".")
 from config.settings import RESULTS_DIR, PREDICTIONS_DIR
 from src.results_tracker import fetch_actual_results
 from src.scraper.netkeiba import NetkeibaClient
+from src.scraper.netkeiba_checks import assert_safe_to_proceed  # 危険時間帯・競合プロセスチェック
 from src.scraper.official_odds import OfficialOddsScraper
 
 INCOMPLETE_THRESHOLD = 0.80  # with_order/pred_races がこれ未満なら不完全
@@ -79,7 +80,14 @@ def main() -> None:
         log("backfill 対象なし")
         return
 
-    client = NetkeibaClient(no_cache=True)
+    # 危険時間帯・競合プロセスチェック (netkeiba アクセス開始前)
+    try:
+        assert_safe_to_proceed(force=False)
+    except RuntimeError as e:
+        log(str(e))
+        return
+
+    client = NetkeibaClient(use_broker=True, no_cache=True)
     official = OfficialOddsScraper()
 
     for i, (date_iso, wo, pred_cnt) in enumerate(targets):
