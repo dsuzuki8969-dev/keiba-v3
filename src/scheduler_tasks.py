@@ -126,7 +126,7 @@ def run_odds_update(date_key: str, cancel_event: threading.Event | None = None,
         nonlocal nk_scraper
         if nk_scraper is None:
             from src.scraper.netkeiba import NetkeibaClient, OddsScraper
-            client = get_auth_client() or NetkeibaClient(no_cache=True)
+            client = get_auth_client() or NetkeibaClient(no_cache=True, use_broker=True)
             nk_scraper = OddsScraper(client)
         return nk_scraper
 
@@ -432,7 +432,7 @@ def run_db_update(date_str: str, progress_callback=None):
     try:
         from src.scraper.course_db_collector import collect_course_db_from_results
         from src.scraper.netkeiba import NetkeibaClient, RaceListScraper
-        client = NetkeibaClient()
+        client = NetkeibaClient(use_broker=True)
         rls = RaceListScraper(client)
         collect_course_db_from_results(
             client, rls, date_str, date_str,
@@ -513,7 +513,7 @@ def get_race_ids(date_str: str) -> list:
     """指定日のレースID一覧を取得（開催なしなら空リスト）"""
     try:
         from src.scraper.netkeiba import NetkeibaClient, RaceListScraper
-        client = NetkeibaClient()
+        client = NetkeibaClient(use_broker=True)
         rls = RaceListScraper(client)
         ids = rls.get_race_ids(date_str)
         return ids or []

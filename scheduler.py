@@ -9,7 +9,6 @@ Usage:
   python scheduler.py --run results      # 手動: 前日の結果取得+DB更新
 """
 import argparse
-import json
 import os
 import subprocess
 import sys
@@ -17,15 +16,19 @@ import io
 import logging
 from datetime import datetime, timedelta
 from logging.handlers import TimedRotatingFileHandler
+from typing import Optional
 
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", line_buffering=True)
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from apscheduler.schedulers.blocking import BlockingScheduler
-from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.schedulers.background import BackgroundScheduler  # --status の next_run_time 取得用 (L264)
 from apscheduler.events import EVENT_JOB_EXECUTED, EVENT_JOB_ERROR
 
 from config.settings import PROJECT_ROOT
+
+# netkeiba cooldown 感知ユーティリティ (フェーズ D 段階 1)
+from src.scraper.netkeiba import _is_netkeiba_cooldown_active, _get_netkeiba_cooldown_remaining
 
 # ── ログ設定 ──
 LOG_DIR = os.path.join(PROJECT_ROOT, "data", "logs")
@@ -47,11 +50,66 @@ logger.addHandler(ch)
 
 
 # ================================================================
+# netkeiba cooldown ヘルパ
+# ================================================================
+
+def _check_cooldown_and_reschedule(job_name: str, original_job_func, *args) -> bool:
+    """
+    netkeiba cooldown 中なら True を返してジョブを延期予約し、呼び出し元はすぐ return する。
+    cooldown なし → False を返すので通常処理を続行する。
+
+    延期タイミング: cooldown 残り秒数 + 5 秒後 ('date' トリガー)
+    """
+    if not _is_netkeiba_cooldown_active():
+        return False  # クールダウンなし → 通常実行
+
+    remaining = _get_netkeiba_cooldown_remaining()
+    run_at = datetime.now() + timedelta(seconds=remaining + 5)
+    run_at_str = run_at.strftime("%Y-%m-%d %H:%M:%S")
+
+    logger.info(
+        "netkeiba cooldown 中 (残 %ds) のためジョブ %s を %s に延期しました",
+        remaining, job_name, run_at_str,
+    )
+
+    if _scheduler is not None:
+        try:
+            _scheduler.add_job(
+                original_job_func,
+                trigger="date",
+                run_date=run_at,
+                args=list(args),
+                # ID は固定 ("_retry" 含めるが timestamp 含めない):
+                # 24h cooldown 中に複数回 fire しても retry job が積み上がらず、
+                # 常に最後の 1 件だけが有効 (replace_existing=True で上書き)。
+                id=f"{job_name}_retry",
+                replace_existing=True,
+                misfire_grace_time=600,
+            )
+        except Exception as e:
+            logger.warning("ジョブ %s の延期予約失敗: %s", job_name, e)
+    else:
+        # スケジューラ未初期化 (CLI --run 等の単発実行) では延期予約不可。
+        # 呼び出し元がジョブを実行せず終了するため、運用者に手動再実行を促す。
+        logger.warning(
+            "ジョブ %s: スケジューラ未初期化のため延期不可。"
+            " cooldown 解除後に手動再実行してください (残 %ds)",
+            job_name, remaining,
+        )
+
+    return True  # クールダウン中 → 呼び出し元は即 return
+
+
+# ================================================================
 # ジョブ関数
 # ================================================================
 
 def job_prediction():
     """翌日の予想を作成（開催日のみ）"""
+    # netkeiba cooldown 中なら延期して即 return
+    if _check_cooldown_and_reschedule("job_prediction", job_prediction):
+        return
+
     tomorrow = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
     logger.info("━━ 予想作成ジョブ開始: %s ━━", tomorrow)
 
@@ -74,6 +132,10 @@ def job_prediction():
 
 def job_odds_morning():
     """当日6:00のオッズ更新 + 発走前ジョブ動的登録"""
+    # netkeiba cooldown 中なら延期して即 return
+    if _check_cooldown_and_reschedule("job_odds_morning", job_odds_morning):
+        return
+
     today = datetime.now().strftime("%Y-%m-%d")
     date_key = today.replace("-", "")
     logger.info("━━ オッズ更新(定時)ジョブ開始: %s ━━", today)
@@ -129,6 +191,10 @@ def _job_odds_pre_race(date_key: str, race_id: str):
 
 def job_results_and_db():
     """前日の結果取得 + DB更新"""
+    # netkeiba cooldown 中なら延期して即 return
+    if _check_cooldown_and_reschedule("job_results_and_db", job_results_and_db):
+        return
+
     yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
     date_key = yesterday.replace("-", "")
     pred_file = os.path.join(PROJECT_ROOT, "data", "predictions", f"{date_key}_pred.json")
@@ -160,7 +226,7 @@ def job_results_and_db():
 # スケジューラー
 # ================================================================
 
-_scheduler: BlockingScheduler = None
+_scheduler: Optional[BlockingScheduler] = None
 
 
 def _on_job_event(event):
