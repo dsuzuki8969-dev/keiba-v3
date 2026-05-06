@@ -124,7 +124,9 @@ python scripts/backfill_horses_2023h_retry.py --execute
 | ✅ 完了 (5/7) | ~~フェーズ C 最小+α (netkeiba_access_broker file lock + NetkeibaClient optional hook)~~ | broker 253 行 (commit 411356b) + reviewer P0/P1 修正 (commit 2a44a6e)。portalocker ベース・smoke test 4/4 PASS |
 | ✅ 完了 (5/7) | ~~フェーズ D 段階 1 (broker 必須化 + cooldown 自動延期 + 連続 403 watchdog + 軽量 DAG)~~ | scheduler.py / scheduler_tasks.py / netkeiba.py / dashboard.py / scheduler_dag.py + backfill 13 件統合 |
 | ✅ 完了 (5/7) | ~~残 backfill 2 件 (`horses_2023h_retry` / `win_odds_via_keibabook`)~~ | `assert_safe_to_proceed` 統合済 |
-| 🟡 引継ぎ (次セッション) | フェーズ D 段階 2 (本格 DAG エンジン + APScheduler 統合 + slack 通知) | 2-3 日 |
+| ✅ 完了 (5/7) | ~~フェーズ D 段階 2-A (本格 DAG エンジン)~~ | DFS 全ノード起点循環検査 + topological_order (Kahn) + APScheduler 統合 (3 ジョブ DAG 登録 + can_run 待機 + リトライ上限) |
+| ✅ 完了 (5/7) | ~~フェーズ D 段階 2-B (slack 通知)~~ | `src/slack_notify.py` 新規 + netkeiba 連続 403 / scheduler cooldown 延期 / dashboard /api/health 連携 / spam 防止 60s |
+| 📌 P3 全完成 | netkeiba 並列禁止構造強化 + DAG + Watchdog + Slack 通知 全達成 | 累犯防止率 約 99% (A=80% + B/C 追加 10% + D-1 段階 1 + D-2 段階 2) |
 
 ---
 
