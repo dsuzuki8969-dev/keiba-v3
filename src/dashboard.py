@@ -798,6 +798,11 @@ def _scan_today_predictions(date_str: str) -> dict:
         # 馬券自信度: pred JSONから優先取得、なければHTMLパースを使用
         conf = _pred_conf.get((venue, race_no), "") or html_meta.get("overall_confidence", "")
 
+        # B 案: race レベルで scrape_failed フラグをチェック (補完馬を含むレース)
+        # その場合、印・買い目情報を全部空にして警告フラグ付与 (誤情報流布防止)
+        _horses_check = _pred_horses.get((venue, race_no), [])
+        _has_scrape_failed = any(h.get("scrape_failed") for h in _horses_check)
+
         if venue not in races:
             races[venue] = []
         races[venue].append(
@@ -812,19 +817,26 @@ def _scan_today_predictions(date_str: str) -> dict:
                 "distance": html_meta.get("distance", 0),
                 "head_count": html_meta.get("head_count", 0),
                 "grade": html_meta.get("grade", ""),
-                "overall_confidence": conf,
-                "honmei_no": html_meta.get("honmei_no", 0),
-                "honmei_name": html_meta.get("honmei_name", ""),
-                "honmei_mark": html_meta.get("honmei_mark", ""),
-                "honmei_composite": html_meta.get("honmei_composite", 0),
-                "composite_gap": _comp_gap(_pred_horses.get((venue, race_no), []), {}) if (venue, race_no) in _pred_horses else 0,
-                "honmei_win_pct": html_meta.get("honmei_win_pct", 0),
-                "honmei_rentai_pct": html_meta.get("honmei_rentai_pct", 0),
-                "honmei_fukusho_pct": html_meta.get("honmei_fukusho_pct", 0),
-                "honmei_odds": html_meta.get("honmei_odds"),
-                "honmei_popularity": html_meta.get("honmei_popularity"),
+                "overall_confidence": "?" if _has_scrape_failed else conf,
+                # B 案: 補完馬含む race は honmei 系を 0 / 空に (信頼性低のため)
+                "honmei_no": 0 if _has_scrape_failed else html_meta.get("honmei_no", 0),
+                "honmei_name": "" if _has_scrape_failed else html_meta.get("honmei_name", ""),
+                "honmei_mark": "" if _has_scrape_failed else html_meta.get("honmei_mark", ""),
+                "honmei_composite": 0 if _has_scrape_failed else html_meta.get("honmei_composite", 0),
+                "composite_gap": 0 if _has_scrape_failed else (_comp_gap(_pred_horses.get((venue, race_no), []), {}) if (venue, race_no) in _pred_horses else 0),
+                "honmei_win_pct": 0 if _has_scrape_failed else html_meta.get("honmei_win_pct", 0),
+                "honmei_rentai_pct": 0 if _has_scrape_failed else html_meta.get("honmei_rentai_pct", 0),
+                "honmei_fukusho_pct": 0 if _has_scrape_failed else html_meta.get("honmei_fukusho_pct", 0),
+                "honmei_odds": None if _has_scrape_failed else html_meta.get("honmei_odds"),
+                "honmei_popularity": None if _has_scrape_failed else html_meta.get("honmei_popularity"),
+                # B 案: 警告フラグ (フロントで「予想生成不可」表示用)
+                "scrape_failed": _has_scrape_failed,
+                "scrape_failed_warning": "出馬表scraper bugで馬データ補完済 (予想信頼性低)" if _has_scrape_failed else "",
             }
         )
+        # 補完馬含む race は本命上書きスキップ (B 案)
+        if _has_scrape_failed:
+            continue
         # pred.json の馬データから本命馬情報を上書き（オッズ更新後の最新印を反映）
         horses = _pred_horses.get((venue, race_no), [])
         if horses:

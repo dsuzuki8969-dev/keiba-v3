@@ -243,6 +243,9 @@ class OfficialNARScraper:
             race_id_override: 指定されていればそのrace_idを使用
 
         Returns: (RaceInfo, List[Horse]) or (None, [])
+
+        【A 案 fallback】 過去日アクセスで scraper が 3 頭立てになる構造的バグの
+        対策として、解析結果が 5 頭未満なら race_log から完全データで上書きする。
         """
 
         url = f"{_BASE}/TodayRaceInfo/DebaTable"
@@ -259,14 +262,133 @@ class OfficialNARScraper:
             if resp.status_code != 200:
                 logger.debug("NAR DebaTable %d: %s R%d",
                              resp.status_code, baba_code, race_no)
-                return None, []
+                # ステータス失敗時も race_log fallback 試行
+                return self._fallback_from_race_log(
+                    race_date, race_no, baba_code, race_id_override,
+                )
         except Exception as e:
             logger.debug("NAR DebaTable fetch failed: %s", e)
-            return None, []
+            return self._fallback_from_race_log(
+                race_date, race_no, baba_code, race_id_override,
+            )
 
-        return self._parse_debatable(
+        race_info, horses = self._parse_debatable(
             resp.text, race_date, race_no, baba_code, race_id_override,
         )
+
+        # A 案: 5 頭未満なら race_log から完全データで上書き
+        if horses is None or len(horses) < 5:
+            logger.warning(
+                "NAR DebaTable scraper bug 検知: %s R%d で %d 頭しか取得できず → race_log fallback 試行",
+                baba_code, race_no, len(horses) if horses else 0,
+            )
+            fb_info, fb_horses = self._fallback_from_race_log(
+                race_date, race_no, baba_code, race_id_override,
+            )
+            if fb_horses and len(fb_horses) > (len(horses) if horses else 0):
+                logger.info(
+                    "NAR race_log fallback 成功: %s R%d → %d 頭",
+                    baba_code, race_no, len(fb_horses),
+                )
+                return fb_info or race_info, fb_horses
+
+        return race_info, horses
+
+    def _fallback_from_race_log(self, race_date: str, race_no: int,
+                                baba_code: str, race_id_override: str = ""):
+        """race_log から RaceInfo + List[Horse] を構築する fallback。
+
+        過去日アクセスで scraper が 3 頭立てしか取れない構造的バグの対策。
+        race_log には全頭分の完全データがあるためそこから Horse[] を構築。
+        """
+        try:
+            import sqlite3
+            from src.models import Horse, RaceInfo
+            from config.settings import DATABASE_PATH
+
+            # race_id 構築 (netkeiba 形式: YYYY + vc + MMDD + RR)
+            netkeiba_vc = _NAR_BABA_TO_NETKEIBA.get(baba_code, "")
+            if race_id_override:
+                rid = race_id_override
+            else:
+                date_key = race_date.replace("/", "")
+                rid = f"{date_key[:4]}{netkeiba_vc}{date_key[4:8]}{race_no:02d}"
+
+            conn = sqlite3.connect(DATABASE_PATH)
+            conn.row_factory = sqlite3.Row
+            c = conn.cursor()
+            c.execute("""
+                SELECT * FROM race_log
+                WHERE race_id = ?
+                ORDER BY horse_no
+            """, (rid,))
+            rows = c.fetchall()
+            conn.close()
+
+            if not rows or len(rows) < 5:
+                return None, []
+
+            # RaceInfo 構築 (簡易版 - race_log の最初の行から)
+            r0 = rows[0]
+            iso_date = race_date.replace("/", "-")
+            venue_name = _NAR_VENUE_NAMES.get(baba_code, "")
+            race_info = RaceInfo(
+                race_id=rid,
+                race_date=iso_date,
+                race_no=race_no,
+                venue=venue_name,
+                venue_code=baba_code,
+                race_name=r0["race_name"] or "",
+                grade=r0["grade"] or "",
+                surface=r0["surface"] or "",
+                distance=r0["distance"] or 0,
+                direction=r0["direction"] or "右",
+                course_id=r0["course_id"] or "",
+                weather=r0["weather"] or "",
+                track_condition=r0["condition"] or "",
+                field_count=len(rows),
+                post_time="",
+                is_jra=False,
+            ) if hasattr(RaceInfo, "race_id") else None
+
+            # Horse[] 構築 (Horse dataclass の正確なフィールド名で)
+            horses = []
+            for r in rows:
+                h = Horse(
+                    # 必須位置引数
+                    horse_id=r["horse_id"] or "",
+                    horse_name=r["horse_name"] or "",
+                    sex=r["sex"] or "",
+                    age=r["age"] or 0,
+                    color="",
+                    trainer=r["trainer_name"] or "",
+                    trainer_id=r["trainer_id"] or "",
+                    owner="",
+                    breeder="",
+                    sire=r["sire_name"] or "",
+                    dam="",
+                    # キーワード引数
+                    maternal_grandsire=r["bms_name"] or "",
+                    horse_no=r["horse_no"] or 0,
+                    gate_no=r["gate_no"] or 0,
+                    jockey=r["jockey_name"] or "",
+                    jockey_id=r["jockey_id"] or "",
+                    weight_kg=float(r["weight_kg"] or 55.0),
+                    odds=r["tansho_odds"] or r["win_odds"],
+                    race_date=race_date.replace("/", "-"),
+                    venue=venue_name,
+                    race_no=race_no,
+                    source="race_log_fallback",
+                )
+                # A 案フラグ
+                h.scrape_failed = True
+                horses.append(h)
+
+            return race_info, horses
+
+        except Exception as e:
+            logger.warning("race_log fallback 失敗: %s", e, exc_info=True)
+            return None, []
 
     def get_race_ids(self, date: str) -> List[str]:
         """指定日のNARレースID一覧を取得
