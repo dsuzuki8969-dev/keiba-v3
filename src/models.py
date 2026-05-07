@@ -397,6 +397,9 @@ class Horse:
     # 出走取消フラグ (scraper / results_tracker / dashboard で設定。engine.py 経由で HorseEvaluation に伝搬)
     is_scratched: bool = False
 
+    # scrape 失敗フラグ (出馬表 scraper bug で race_log から補完した馬。formatter.py で印付与から除外)
+    scrape_failed: bool = False
+
     @property
     def weight_diff(self) -> float:
         """斤量補正量(秒) (D-5)"""
