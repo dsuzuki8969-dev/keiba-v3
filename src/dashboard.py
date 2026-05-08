@@ -918,11 +918,15 @@ def _scan_today_predictions(date_str: str) -> dict:
                     race_no = pr.get("race_no", 0)
                     if (venue, race_no) in _existing:
                         continue  # HTML版が既にあるのでスキップ
+                    # B 案: 補完馬を含む race を判定 (印・買い目 ブランク化用)
+                    _pr_horses = pr.get("horses", [])
+                    _pr_has_sf = any(h.get("scrape_failed") for h in _pr_horses)
                     honmei = None
-                    for h in pr.get("horses", []):
-                        if h.get("mark") in ("◉", "◎"):
-                            honmei = h
-                            break
+                    if not _pr_has_sf:  # B 案: 補完 race は本命を抽出しない
+                        for h in _pr_horses:
+                            if h.get("mark") in ("◉", "◎"):
+                                honmei = h
+                                break
                     if venue not in races:
                         races[venue] = []
                     races[venue].append({
@@ -936,19 +940,25 @@ def _scan_today_predictions(date_str: str) -> dict:
                         "distance": pr.get("distance", 0),
                         "head_count": pr.get("field_count", 0),
                         "grade": pr.get("grade", ""),
-                        "overall_confidence": pr.get("confidence", ""),
+                        "overall_confidence": "?" if _pr_has_sf else pr.get("confidence", ""),
                         "honmei_no": honmei.get("horse_no", 0) if honmei else 0,
                         "honmei_name": honmei.get("horse_name", "") if honmei else "",
                         "honmei_mark": honmei.get("mark", "") if honmei else "",
                         "honmei_composite": honmei.get("composite", 0) if honmei else 0,
-                        "composite_gap": _comp_gap(pr.get("horses", []), honmei) if honmei else 0,
+                        "composite_gap": _comp_gap(_pr_horses, honmei) if honmei else 0,
                         "honmei_win_pct": round(honmei.get("win_prob", 0) * 100, 1) if honmei else 0,
                         "honmei_rentai_pct": round(honmei.get("place2_prob", 0) * 100, 1) if honmei else 0,
                         "honmei_fukusho_pct": round(honmei.get("place3_prob", 0) * 100, 1) if honmei else 0,
                         # 2026-04-30 修正: HTML 未生成レース (pred.json fallback 経由) で honmei_odds/popularity が欠落していた
                         "honmei_odds": honmei.get("odds") if honmei else None,
                         "honmei_popularity": honmei.get("popularity") if honmei else None,
+                        # B 案: 警告フラグ
+                        "scrape_failed": _pr_has_sf,
+                        "scrape_failed_warning": "出馬表scraper bugで馬データ補完済 (予想信頼性低)" if _pr_has_sf else "",
                     })
+                    # B 案: 補完 race は EV / 印付き馬番もブランク (誤情報流布防止)
+                    if _pr_has_sf:
+                        continue
                     # 馬券EV計算
                     all_horses = pr.get("horses", [])
                     if all_horses:
