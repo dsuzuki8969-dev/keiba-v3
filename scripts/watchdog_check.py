@@ -8,6 +8,7 @@ if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
 LOG = os.path.join(_PROJECT_ROOT, "data", "watchdog.log")
+LOG_MAX_BYTES = 1 * 1024 * 1024  # 1 MB でローテーション
 STATE_FILE = os.path.join(_PROJECT_ROOT, "data", "watchdog_state.json")
 DASHBOARD_PY = os.path.join(_PROJECT_ROOT, "src", "dashboard.py")
 HEALTH_URL = "http://127.0.0.1:5051/api/health"
@@ -17,7 +18,20 @@ _NO_WINDOW = 0x08000000  # CREATE_NO_WINDOW
 _DETACHED = 0x00000008   # DETACHED_PROCESS
 
 
+def _rotate_log_if_needed():
+    """watchdog.log が LOG_MAX_BYTES を超えたら .1 にローテーション (1世代)。"""
+    try:
+        if os.path.isfile(LOG) and os.path.getsize(LOG) > LOG_MAX_BYTES:
+            backup = LOG + ".1"
+            if os.path.isfile(backup):
+                os.remove(backup)
+            os.rename(LOG, backup)
+    except Exception:
+        pass
+
+
 def log(msg):
+    _rotate_log_if_needed()
     ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     line = f"[{ts}] {msg}"
     with open(LOG, "a", encoding="utf-8") as f:
