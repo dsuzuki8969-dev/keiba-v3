@@ -169,6 +169,23 @@ def mark_done(name: str) -> None:
             logger.info("DAG: タスク完了 name=%s (累計完了 %d 件)", name, len(_COMPLETED))
 
 
+def mark_failed(name: str) -> None:
+    """タスク失敗を記録する。依存タスクの待機タイムアウトを早めるためログ出力のみ。
+    _COMPLETED には追加しない (依存タスクは実行されない)。"""
+    with _LOCK:
+        blocked = [
+            t for t, deps in _DAG.items()
+            if t not in _COMPLETED and name in deps
+        ]
+        if blocked:
+            logger.warning(
+                "DAG: タスク失敗 name=%s → ブロック中: %s (dag_reset_state まで待機)",
+                name, blocked,
+            )
+        else:
+            logger.warning("DAG: タスク失敗 name=%s (依存タスクなし)", name)
+
+
 def reset_state() -> None:
     """完了状態をリセットする (日次バッチで翌日タスクのため呼ぶ想定)。"""
     with _LOCK:

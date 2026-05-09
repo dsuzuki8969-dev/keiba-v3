@@ -37,6 +37,7 @@ from src.scheduler_dag import (
     register_task,
     can_run as dag_can_run,
     mark_done as dag_mark_done,
+    mark_failed as dag_mark_failed,
     reset_state as dag_reset_state,
     get_dag_state,
     validate_dag,
@@ -225,6 +226,7 @@ def job_prediction():
         dag_mark_done("job_prediction")
     else:
         logger.error("予想作成失敗: %s\n%s", tomorrow, result.stderr[-500:] if result.stderr else "")
+        dag_mark_failed("job_prediction")
 
 
 def job_odds_morning():
@@ -243,9 +245,15 @@ def job_odds_morning():
     logger.info("━━ オッズ更新(定時)ジョブ開始: %s ━━", today)
 
     from src.scheduler_tasks import run_odds_update
-    count = run_odds_update(date_key)
+    try:
+        count = run_odds_update(date_key)
+    except Exception as e:
+        logger.error("オッズ更新例外: %s", e)
+        dag_mark_failed("job_odds_morning")
+        return
     if count == 0:
         logger.info("オッズ更新: 対象なし")
+        dag_mark_done("job_odds_morning")
         return
 
     logger.info("オッズ更新完了: %dレース", count)
@@ -331,8 +339,8 @@ def job_results_and_db():
         # ジョブ完了 → DAG mark_done で下流タスクを unblock
         dag_mark_done("job_results_and_db")
     else:
-        # 失敗時は DB 更新 + mark_done をスキップ (下流タスクへ不正データ伝播防止)
         logger.error("結果取得失敗: %s\n%s", yesterday, result.stderr[-500:] if result.stderr else "")
+        dag_mark_failed("job_results_and_db")
 
 
 # ================================================================
@@ -370,13 +378,13 @@ def build_scheduler() -> BlockingScheduler:
     # DAG タスク登録
     _register_dag_tasks()
 
-    # 1. 予想作成: 毎日 17:00
-    sched.add_job(job_prediction, "cron", hour=17, minute=0, id="prediction",
+    # 1. 予想作成: 毎日 17:05 (Windows TS Predict_Tomorrow 17:00 の 5 分後・競合回避)
+    sched.add_job(job_prediction, "cron", hour=17, minute=5, id="prediction",
                   name="予想作成(翌日)", misfire_grace_time=3600)
 
-    # 2. オッズ更新(定時): 毎日 6:00
-    sched.add_job(job_odds_morning, "cron", hour=6, minute=0, id="odds_morning",
-                  name="オッズ更新(定時6:00)", misfire_grace_time=3600)
+    # 2. オッズ更新(定時): 毎日 6:05 (Windows TS Predict 06:00 の 5 分後・競合回避)
+    sched.add_job(job_odds_morning, "cron", hour=6, minute=5, id="odds_morning",
+                  name="オッズ更新(定時6:05)", misfire_grace_time=3600)
 
     # 3. 結果取得 + DB更新: 毎日 0:00
     sched.add_job(job_results_and_db, "cron", hour=0, minute=0, id="results_db",

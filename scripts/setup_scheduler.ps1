@@ -216,6 +216,32 @@ Register-ScheduledTask `
 
 Write-Host "OK: DAI_Keiba_Paraphrase_Tomorrow (daily 17:30)" -ForegroundColor Green
 
+# ── 10. APScheduler (DAG エンジン) 常駐（ログオン時起動・自動再起動）──
+$SchedSettings = New-ScheduledTaskSettingsSet `
+    -ExecutionTimeLimit ([TimeSpan]::Zero) `
+    -StartWhenAvailable `
+    -RunOnlyIfNetworkAvailable `
+    -RestartCount 3 `
+    -RestartInterval (New-TimeSpan -Minutes 1)
+
+$SchedAction = New-ScheduledTaskAction `
+    -Execute "wscript.exe" `
+    -Argument "`"$ScriptDir\scripts\start_scheduler_hidden.vbs`"" `
+    -WorkingDirectory $ScriptDir
+
+$SchedTrigger = New-ScheduledTaskTrigger -AtLogon
+
+Register-ScheduledTask `
+    -TaskName "DAI_Keiba_Scheduler" `
+    -Description "D-AI Keiba: APScheduler + DAG エンジン常駐 (ログオン時起動, 失敗時自動再起動)" `
+    -Action $SchedAction `
+    -Trigger $SchedTrigger `
+    -Settings $SchedSettings `
+    -RunLevel Highest `
+    -Force | Out-Null
+
+Write-Host "OK: DAI_Keiba_Scheduler (at logon, auto-restart)" -ForegroundColor Green
+
 # ── 登録済みタスク一覧 ────────────────────────────────────────
 Write-Host ""
 Write-Host "登録済みタスク:" -ForegroundColor Yellow
@@ -233,5 +259,6 @@ Write-Host "  22:00  DAI_Keiba_Results              - 結果照合" -ForegroundC
 Write-Host "  23:00  DAI_Keiba_Maintenance          - 払戻バックフィル + 整合性チェック" -ForegroundColor White
 Write-Host "                                          (日曜: VACUUM, 月初: CSV更新)" -ForegroundColor Gray
 Write-Host "  logon  DAI_Keiba_Dashboard            - ダッシュボード常駐 (自動再起動)" -ForegroundColor White
+Write-Host "  logon  DAI_Keiba_Scheduler            - APScheduler + DAG エンジン常駐" -ForegroundColor White
 Write-Host "  5min   DAI_Keiba_Watchdog             - dashboard+cloudflared watchdog" -ForegroundColor White
 Write-Host "  5min   DAI_Keiba_AutoOdds             - 発走15分前オッズ+馬体重 (09:30-21:00)" -ForegroundColor White
