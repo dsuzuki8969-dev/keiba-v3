@@ -403,10 +403,10 @@ def show_status():
     """次回実行予定を表示"""
     # BackgroundScheduler で起動してnext_run_timeを取得
     sched = BackgroundScheduler(timezone="Asia/Tokyo")
-    sched.add_job(job_prediction, "cron", hour=17, minute=0, id="prediction",
+    sched.add_job(job_prediction, "cron", hour=17, minute=5, id="prediction",
                   name="予想作成(翌日)", misfire_grace_time=3600)
-    sched.add_job(job_odds_morning, "cron", hour=6, minute=0, id="odds_morning",
-                  name="オッズ更新(定時6:00)", misfire_grace_time=3600)
+    sched.add_job(job_odds_morning, "cron", hour=6, minute=5, id="odds_morning",
+                  name="オッズ更新(定時6:05)", misfire_grace_time=3600)
     sched.add_job(job_results_and_db, "cron", hour=0, minute=0, id="results_db",
                   name="結果取得+DB更新(前日)", misfire_grace_time=3600)
     sched.start()
@@ -485,11 +485,32 @@ def main():
         run_manual(args.run)
         return
 
-    # フォアグラウンド実行
+    # 二重起動防止 (pidfile ロック)
+    pidfile = os.path.join(PROJECT_ROOT, "data", "scheduler.pid")
+    if os.path.isfile(pidfile):
+        try:
+            old_pid = int(open(pidfile, "r").read().strip())
+            # プロセスが生存しているか確認
+            import psutil
+            if psutil.pid_exists(old_pid):
+                try:
+                    proc = psutil.Process(old_pid)
+                    if "python" in proc.name().lower():
+                        logger.warning("スケジューラー既に起動中 (PID %d)、終了します", old_pid)
+                        return
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    pass
+        except (ValueError, ImportError):
+            pass
+
+    # PID 記録
+    with open(pidfile, "w") as f:
+        f.write(str(os.getpid()))
+
     logger.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-    logger.info("  keiba-v3 自動スケジューラー起動")
-    logger.info("  予想作成: 毎日 17:00")
-    logger.info("  オッズ更新: 毎日 6:00 + 発走15分前")
+    logger.info("  keiba-v3 自動スケジューラー起動 (PID %d)", os.getpid())
+    logger.info("  予想作成: 毎日 17:05")
+    logger.info("  オッズ更新: 毎日 6:05 + 発走15分前")
     logger.info("  結果取得+DB更新: 毎日 0:00")
     logger.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
@@ -498,6 +519,11 @@ def main():
         sched.start()
     except (KeyboardInterrupt, SystemExit):
         logger.info("スケジューラー停止")
+    finally:
+        try:
+            os.remove(pidfile)
+        except OSError:
+            pass
 
 
 if __name__ == "__main__":
