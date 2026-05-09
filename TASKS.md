@@ -38,33 +38,24 @@ netkeiba 24h クールダウン中でも代替経路で全件完走:
 
 ## 🔴 作業中のタスク
 
-### ✅ T-069 完了 — Disable で恒久運用 (マスター承認・5/5 A 案確定)
-- **状態**: `DAI_Keiba_Predict` 永久 Disable / Predict_Tomorrow (17:00) で前日生成済 = 実害ゼロ
-- **本格修復が技術的に不可能**:
-  - マスターアカウントは **Windows ローカルアカウント** `dsuzu` (whoami /upn が "not a domain user" エラー)
-  - Microsoft アカウントパスワード `dsuzuki8969@gmail.com` は **Windows ローカル認証用ではない**
-  - 普段は PIN サインイン = ローカルパスワード未設定 (or 別物)
-  - schtasks /rp の試行 4 件すべて「ユーザー名またはパスワードが正しくありません」で失敗 (5/5 朝)
-- **5/5 マスター承認**: A 案 (Disable のまま) 採用 = 5/1〜5/4 4 日間 Disable 状態で問題なく運用継続実績
-- **将来パスワード再設定があった場合の手順**: 管理者 PowerShell で `schtasks /change /tn "DAI_Keiba_Predict" /ru dsuzu /rp <ローカル PW>` → `Enable-ScheduledTask`
+(なし)
 
-### ✅ T-070 完了 — タスクスケジューラ整理 (5/5 マスター手動実行)
-- ✅ 削除済: D-AI Keiba Dashboard (Disabled) / DAI_Batch_Reanalyze
-- ✅ **5/5 朝マスター管理者 PS で削除**: KeibaStreamlit / DAI_Keiba_Tunnel
-- 残 DAI_Keiba_* タスク 9 件 (Predict 含む) は Ready/Running・健全動作中
+---
 
-### ✅ T-063b 完了 — 2025 年三連複 payouts 再取得
-- 5/4 23:34 起動 → **9.9 分で 16,208 件全件成功** (キャッシュヒットで実質 GET 不要)
-- DB UPDATE 成功 16,208 / 失敗 0
+## 🟣 5/9 完了タスク
 
-### ✅ T-NEW-P1 完了 (5/7) — HorseEvaluation.is_scratched 属性追加 + formatter.py 取消馬印付け除外
-- **発見経緯**: T-NEW-P0 緊急バグ修正中に副次バグとして発見
-- **問題**: `src/calculator/betting.py` L2500/2683/2787/2867 の 4 箇所で `getattr(e, "is_scratched", False)` が常に False、`src/output/formatter.py` L89-95 でも `is_scratched` フラグを参照せず → 取消馬除外フィルタ全面 no-op
-- **修正実装**:
-  - `src/models.py` L398: Horse.is_scratched 属性追加 (HorseEvaluation 側 L712 は既存)
-  - `src/engine.py` L2412-2413: 伝搬パス完成 (既存 getattr が実値返却に切替)
-  - `src/output/formatter.py` L89-96: 印付け除外条件に `ev.is_scratched or` を OR 追加 (keiba-reviewer 指摘修正・案 X)
-- **検証**: betting.py 4 箇所動作 + formatter.py smoke test PASS (取消馬の印付与なし)
+### ✅ P2-3 — watchdog_check.py HTTP 強化 + 連続失敗追跡 + Slack 通知 + ログローテーション
+### ✅ P2-2 — ability_max γ案統一 (wa_deviations ベースに修正)
+### ✅ P2-1 — NAR scraper テスト 24 件 (_parse_race_mark_table 回帰テスト)
+### ✅ 品質チェック + 本番動作検証 (pred.json 57 レース・dashboard /api/health 正常)
+### ✅ 細かな改善 (テスト移動 3 件 + watchdog.log ローテーション)
+### ✅ P3-2 Phase 1+2 — APScheduler 常駐化 + DAG 統合
+- scheduler.py: mark_failed 統合 + 時刻 5 分オフセット (Windows TS 競合回避)
+- start_scheduler.bat + start_scheduler_hidden.vbs 新規作成
+- setup_scheduler.ps1: DAI_Keiba_Scheduler タスク追加
+- show_status 時刻修正 + 二重起動防止 pidfile ロック
+- scheduler_dag テスト 28 件全パス
+- **マスター手動実行必要**: `powershell -ExecutionPolicy Bypass -File scripts\setup_scheduler.ps1`
 
 ---
 
@@ -128,6 +119,14 @@ python scripts/backfill_horses_2023h_retry.py --execute
 | ✅ 完了 (5/7) | ~~フェーズ D 段階 2-B (slack 通知)~~ | `src/slack_notify.py` 新規 + netkeiba 連続 403 / scheduler cooldown 延期 / dashboard /api/health 連携 / spam 防止 60s |
 | 📌 P3 全完成 | netkeiba 並列禁止構造強化 + DAG + Watchdog + Slack 通知 全達成 | 累犯防止率 約 99% (A=80% + B/C 追加 10% + D-1 段階 1 + D-2 段階 2) |
 
+### P3 (scheduler 関連)
+
+| 優先度 | 項目 | 状態 / 条件 |
+|:---:|---|---|
+| ✅ 完了 (5/9) | P3-2 Phase 1+2 — APScheduler 常駐化 + 競合回避 + pidfile | 5 commit (scheduler.py / start_scheduler.bat / VBS / setup_scheduler.ps1 / DAG テスト 28 件) |
+| 🔜 P3-2 Phase 3 | DAG 依存関係の実質化 (ジョブ実行順序の review) | マスター設計判断が必要・次セッション |
+| 🔜 P3-D (3-5 日規模) | Windows TS → APScheduler 段階的移行 | `memory/project_p3d_scheduler_integration_handoff.md` 参照 |
+
 ---
 
 ## 🟢 過去の完了タスク
@@ -135,11 +134,9 @@ python scripts/backfill_horses_2023h_retry.py --execute
 過去セッションの完了タスクは git log + handoff_*.md に集約済。本ファイルからは削除した。
 
 参照先:
-- 5/4 後半: 本日 commit 群 (fcf96b5 整理 / c2150f3 T-063 / acc1b99 T-058 / e1cda93 T-047 / 717dbaf T-065)
+- 5/9: `memory/handoff_2026-05-09.md` (P2 三件 + P3-2 Phase 1+2 + DAG テスト)
+- 5/7: `memory/handoff_2026-05-07.md` (netkeiba 並列禁止フェーズ D 全完成)
+- 5/5-5/6: `memory/handoff_2026-05-06_session_complete.md` (NAR 3 頭立てバグ全修復 + 19 時間自走)
+- 5/5: `memory/handoff_2026-05-05_data_quality_emergency.md` (データ品質緊急修復)
 - 5/3-5/4: `memory/handoff_2026-05-04.md` (M' 戦略本実装 + γ案修正 + Phase 3c)
-- 5/2: `memory/handoff_2026-05-02.md`
-- 5/1: `memory/handoff_2026-05-01.md`
-- 4/30: `memory/handoff_2026-04-30.md`
-- 4/29: `memory/handoff_2026-04-29.md`
-- 4/28: `memory/handoff_2026-04-28_v2.md`
-- 4/26-27: `memory/handoff_2026-04-27_v5.md`
+- 5/2 以前: git log + memory/handoff_*.md
