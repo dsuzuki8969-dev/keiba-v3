@@ -1574,8 +1574,8 @@ def calc_ability_deviation(
     chakusa_indices = [r.chakusa_index for r in filtered_runs]
 
     # 5. WA偏差値 (C-2) — 距離帯別の加重平均重みを使用
-    # γ案: WA計算前に「海外レース除外」「異常値偏差値除外」「取消/no-time除外」の3条件フィルタを適用
-    # run_deviations 自体は変更しない (MAX偏差値・トレンド計算で引き続き使用)
+    # γ案: WA/MAX計算前に「海外レース除外」「異常値偏差値除外」「取消/no-time除外」の3条件フィルタを適用
+    # run_deviations 自体は変更しない (トレンド計算で引き続き使用)
     wa_deviations: List[float] = []
     wa_chakusa_indices: List[float] = []
     for _idx, (_run, _dev) in enumerate(zip(filtered_runs, run_deviations)):
@@ -1643,9 +1643,9 @@ def calc_ability_deviation(
                 getattr(horse, 'horse_name', '?'), surface_switch_adj, switch_dir,
             )
 
-    # 6. MAX偏差値（過去走なしの場合は wa_dev と同値で統一）
-    max_dev = max(run_deviations) if run_deviations else wa_dev
-    if is_surface_switch and run_deviations:
+    # 6. MAX偏差値 — WA と同じ γ案 3 条件フィルタ適用済の wa_deviations から取得
+    max_dev = max(wa_deviations) if wa_deviations else wa_dev
+    if is_surface_switch and wa_deviations:
         from config.settings import SURFACE_SWITCH_BASE_DISCOUNT
         max_dev = 48.0 + (max_dev - 48.0) * SURFACE_SWITCH_BASE_DISCOUNT
 
