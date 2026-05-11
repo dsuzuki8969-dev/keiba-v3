@@ -992,17 +992,14 @@ DOMESTIC_VENUES: set = {
 # これ未満の偏差値はタイム計測不能等の異常値とみなしWA計算から除外
 INVALID_DEV_THRESHOLD: float = 20.0
 
-# G1/G2/G3 実績ボーナス: WA偏差値への加算値
+# G1/G2/G3 実績ボーナス: WA・MAX 両偏差値への加算値
 # 複数該当する場合は最大値のみ採用（累積加算しない）
-# キー: (グレード, 着順範囲) → 加算値
+# NAR の JpnI/II/III は scraper が G1/G2/G3 に正規化済のため別キー不要
 # 着順グループ: "1st"=1着, "2nd"=2着, "3rd"=3着, "4-5th"=4〜5着
 GRADE_BONUS: Dict[str, Dict[str, float]] = {
-    "G1":    {"1st": 5.0, "2nd": 3.0, "3rd": 2.0, "4-5th": 1.0},
-    "JpnI":  {"1st": 5.0, "2nd": 3.0, "3rd": 2.0, "4-5th": 1.0},
-    "G2":    {"1st": 3.0, "2nd": 2.0, "3rd": 1.0, "4-5th": 0.5},
-    "JpnII": {"1st": 3.0, "2nd": 2.0, "3rd": 1.0, "4-5th": 0.5},
-    "G3":    {"1st": 2.0, "2nd": 1.0, "3rd": 0.5, "4-5th": 0.0},
-    "JpnIII":{"1st": 2.0, "2nd": 1.0, "3rd": 0.5, "4-5th": 0.0},
+    "G1": {"1st": 5.0, "2nd": 3.0, "3rd": 2.0, "4-5th": 1.0},
+    "G2": {"1st": 3.0, "2nd": 2.0, "3rd": 1.0, "4-5th": 0.5},
+    "G3": {"1st": 2.0, "2nd": 1.0, "3rd": 0.5, "4-5th": 0.0},
 }
 
 
@@ -1665,11 +1662,10 @@ def calc_ability_deviation(
             distance=race_distance,
         )
 
-    # 5a. G1/G2/G3 実績ボーナス加算
+    # 5a. G1/G2/G3 実績ボーナス加算 (WA + MAX 両方)
     # WA フィルタを通過した走のうち最高グレード実績のボーナスを WA に加算する。
+    # MAX にも同額加算して alpha (WA/MAX ブレンド比) を歪ませない。
     # 複数該当しても最大値 1 つのみ採用（累積しない）。
-    # 芝ダ転換割引・休養明け減衰の後ではなく WA 算出直後に加算し、
-    # グレード実績はトレンド・転換割引と独立した評価軸として扱う。
     _grade_bonus = _calc_grade_bonus(wa_runs)
     if _grade_bonus > 0.0:
         _wa_before = wa_dev
@@ -1702,6 +1698,8 @@ def calc_ability_deviation(
 
     # 6. MAX偏差値 — WA と同じ γ案 3 条件フィルタ適用済の wa_deviations から取得
     max_dev = max(wa_deviations) if wa_deviations else wa_dev
+    if _grade_bonus > 0.0:
+        max_dev = min(DEVIATION["ability"]["max"], max_dev + _grade_bonus)
     if is_surface_switch and wa_deviations:
         from config.settings import SURFACE_SWITCH_BASE_DISCOUNT
         max_dev = 48.0 + (max_dev - 48.0) * SURFACE_SWITCH_BASE_DISCOUNT
