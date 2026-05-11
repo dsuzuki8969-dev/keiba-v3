@@ -725,6 +725,8 @@ def _scan_today_predictions(date_str: str) -> dict:
                 raw = pf.read()
             text = raw.decode("utf-8", errors="ignore")
             pred_data = json.loads(text)
+            from src.results_tracker import heal_zero_composite_races
+            heal_zero_composite_races(pred_data)
             for pr in pred_data.get("races", []):
                 venue = pr.get("venue", "")
                 rno = pr.get("race_no")
@@ -912,6 +914,8 @@ def _scan_today_predictions(date_str: str) -> dict:
             try:
                 with open(pred_json_path, "r", encoding="utf-8") as pf:
                     pred_data = json.load(pf)
+                from src.results_tracker import heal_zero_composite_races
+                heal_zero_composite_races(pred_data)
                 # HTML既読レースを記録（重複防止）
                 _existing = set()
                 for _v, _rlist in races.items():
@@ -1657,6 +1661,8 @@ def create_app():
         try:
             with open(pred_file, "r", encoding="utf-8") as f:
                 data = json.load(f)
+            from src.results_tracker import heal_zero_composite_races
+            heal_zero_composite_races(data)
             for race in data.get("races", []):
                 if race.get("venue") == venue and race.get("race_no") == race_no:
                     # パラフレーズ cache を適用（pred.json 上書き対策）
