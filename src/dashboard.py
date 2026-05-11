@@ -1753,9 +1753,16 @@ def create_app():
                         try:
                             from src.calculator.popularity_blend import reassign_marks_dict
                             if not _is_marks_frozen(race):
-                                # 取消馬を除外して印再割り振り
-                                _active_for_marks = [h for h in _race_horses if not h.get("is_scratched")]
+                                # 取消馬・scrape_failed馬を除外して印再割り振り
+                                _active_for_marks = [
+                                    h for h in _race_horses
+                                    if not h.get("is_scratched") and not h.get("scrape_failed")
+                                ]
                                 reassign_marks_dict(_active_for_marks, is_jra=race.get("is_jra", True))
+                                # scrape_failed馬の印をクリア (reassign後に残らないよう)
+                                for _hd in _race_horses:
+                                    if _hd.get("scrape_failed"):
+                                        _hd["mark"] = ""
                             else:
                                 logger.debug("印固定中（発走%d分前以内）: %s", MARK_FREEZE_MINUTES, race.get("race_id"))
                         except Exception:
@@ -2107,7 +2114,11 @@ def create_app():
                                             _is_jra, len(_horses), _pop_stats,
                                         )
                                         if not _is_marks_frozen(race):
-                                            reassign_marks_dict(_horses, is_jra=_is_jra)
+                                            _mark_targets = [h for h in _horses if not h.get("scrape_failed")]
+                                            reassign_marks_dict(_mark_targets, is_jra=_is_jra)
+                                            for _sf_h in _horses:
+                                                if _sf_h.get("scrape_failed"):
+                                                    _sf_h["mark"] = ""
                                             # HTMLの印も同期
                                             if date:
                                                 _dk = date.replace("-", "")
