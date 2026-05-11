@@ -330,7 +330,9 @@ def init_schema() -> None:
     except Exception:
         pass
     conn.commit()
-    # executescript() が PRAGMA をリセットするため再設定
+    # executescript() が暗黙 COMMIT で PRAGMA をリセットするため全て再設定
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=NORMAL")
     conn.execute("PRAGMA foreign_keys=ON")
     _SCHEMA_INITIALIZED = True
 

@@ -27,7 +27,11 @@ try:
 except ImportError:
     HAS_DEPS = False
 
-from config.settings import PERSONNEL_DB_PATH
+from config.settings import DEVIATION, PERSONNEL_DB_PATH
+
+# 騎手・調教師偏差値のクランプ範囲（settings.py DEVIATION["personnel"] から取得）
+_PERSONNEL_DEV_MIN = float(DEVIATION["personnel"]["min"])
+_PERSONNEL_DEV_MAX = float(DEVIATION["personnel"]["max"])
 from data.masters.venue_master import JRA_VENUE_CODES, VENUE_NAME_TO_CODE
 from src.log import get_logger
 from src.models import JockeyStats, JushaRank, KaisyuType, TrainerStats
@@ -104,7 +108,7 @@ class JockeyScraper:
                     # JRA平均勝率 ≈ 0.08, σ ≈ 0.04
                     k_career = 50
                     adj_wr = (total_wins + 0.08 * k_career) / (total_runs + k_career)
-                    career_dev = max(20.0, min(100.0, 50.0 + (adj_wr - 0.08) / 0.04 * 10))
+                    career_dev = max(_PERSONNEL_DEV_MIN, min(_PERSONNEL_DEV_MAX, 50.0 + (adj_wr - 0.08) / 0.04 * 10))
                     _upper_runs = long_data.get("upper_runs", 0) if long_data else 0
                     _lower_runs = long_data.get("lower_runs", 0) if long_data else 0
                     # recent データが不十分（5走未満）→ career_dev で上書き
@@ -306,7 +310,7 @@ class JockeyScraper:
         adjusted_rate = (wins + base_rate * k) / (runs + k)
 
         deviation = 50 + (adjusted_rate - base_rate) / sigma * 10
-        return max(20.0, min(100.0, deviation))
+        return max(_PERSONNEL_DEV_MIN, min(_PERSONNEL_DEV_MAX, deviation))
 
     def _classify_kaisyu(self, data: dict) -> KaisyuType:
         """H-1: 回収率タイプ分類"""
@@ -402,7 +406,7 @@ class TrainerScraper:
                 base_rate, sigma = 0.10, 0.04  # NAR
             else:
                 base_rate, sigma = 0.07, 0.03  # JRA
-            stats.deviation = max(20.0, min(100.0, 50.0 + (wr - base_rate) / sigma * 10))
+            stats.deviation = max(_PERSONNEL_DEV_MIN, min(_PERSONNEL_DEV_MAX, 50.0 + (wr - base_rate) / sigma * 10))
 
         # ページタイトルからフルネームを取得
         for s in [prof_soup, soup]:
@@ -904,7 +908,7 @@ def build_jockey_stats_from_course_db(
 
     # z-score → 偏差値（50中心、σ=10）
     z = (adj_wr - pop_wr) / pop_sigma if pop_sigma > 0 else 0
-    dev = round(max(20.0, min(100.0, 50.0 + z * 10.0)), 1)
+    dev = round(max(_PERSONNEL_DEV_MIN, min(_PERSONNEL_DEV_MAX, 50.0 + z * 10.0)), 1)
 
     # ── course_records を構築（コース別偏差値、ベイズ補正付き） ──
     course_records: Dict[str, Dict[str, Any]] = {}
@@ -933,7 +937,7 @@ def build_jockey_stats_from_course_db(
             cid_var = sum((x - cid_mean) ** 2 for x in cid_adj_wrs) / len(cid_adj_wrs)
             cid_sigma = math.sqrt(cid_var) if cid_var > 0 else 0.03
             cid_z = (cid_adj_wr - cid_pop_wr) / cid_sigma if cid_sigma > 0 else 0
-            course_dev = round(max(20.0, min(100.0, 50.0 + cid_z * 10.0)), 1)
+            course_dev = round(max(_PERSONNEL_DEV_MIN, min(_PERSONNEL_DEV_MAX, 50.0 + cid_z * 10.0)), 1)
         course_records[cid] = {
             "all_dev": course_dev,
             "upper_dev": course_dev,

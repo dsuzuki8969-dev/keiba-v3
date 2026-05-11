@@ -7360,6 +7360,12 @@ function dNavRefreshOdds(date){{
 
     _schedule_post_race_timers(datetime.now().strftime("%Y-%m-%d"))
 
+    # リクエスト終了時にスレッドローカル DB 接続を確実にクローズ（コネクションリーク防止）
+    @app.teardown_appcontext
+    def _close_db_on_teardown(exc):
+        from src.database import close_db as _close_db
+        _close_db()
+
     return app
 
 

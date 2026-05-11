@@ -244,7 +244,38 @@ def _set_netkeiba_cooldown(retry_after: int) -> None:
                 os.replace(tmp_path, _COOLDOWN_FILE)
                 logger.info("netkeiba cooldown をファイルに永続化: %s (retry_after=%ds)", ts_str, retry_after)
             except Exception as e:
-                logger.warning("netkeiba_cooldown.txt 書き込み失敗 (メモリ設定は有効): %s", e)
+                logger.error("netkeiba_cooldown.txt 書き込み失敗 (1 回目): %s", e)
+                # --- 1 秒待ってリトライ (再起動後の cooldown 消失を防ぐ) ---
+                try:
+                    time.sleep(1)
+                    os.makedirs(os.path.dirname(_COOLDOWN_FILE), exist_ok=True)
+                    ts_str_retry = datetime.fromtimestamp(new_until, tz=timezone.utc).isoformat()
+                    tmp_dir_retry = os.path.dirname(_COOLDOWN_FILE)
+                    with tempfile.NamedTemporaryFile(
+                        mode="w", encoding="utf-8", dir=tmp_dir_retry,
+                        delete=False, suffix=".tmp"
+                    ) as tf2:
+                        tf2.write(ts_str_retry + "\n")
+                        tmp_path2 = tf2.name
+                    os.replace(tmp_path2, _COOLDOWN_FILE)
+                    logger.info("netkeiba cooldown リトライ書き込み成功: %s", ts_str_retry)
+                except Exception as e2:
+                    # 2 回目も失敗 — critical 記録 + Slack 通知
+                    # メモリ上 cooldown は有効なので処理は続行する
+                    logger.critical(
+                        "netkeiba_cooldown.txt 書き込み 2 回連続失敗 "
+                        "(メモリ設定は有効だが再起動時に消失リスク): "
+                        "1 回目=%s / 2 回目=%s", e, e2,
+                    )
+                    try:
+                        send_slack(
+                            "⚠️ netkeiba_cooldown.txt 永続化 2 回失敗。"
+                            "再起動時に cooldown 消失→403 リスクあり。手動確認してください。"
+                            f"\n1 回目: {e}\n2 回目: {e2}"
+                        )
+                    except Exception:
+                        # Slack 通知自体の失敗はログのみ (処理を止めない)
+                        logger.warning("cooldown 永続化失敗の Slack 通知も失敗")
 
 
 def _is_netkeiba_cooldown_active() -> bool:
@@ -328,7 +359,7 @@ def _parse_trainer_affiliation(trainer_td_text: str) -> str:
 
 class NetkeibaClient:
     def __init__(self, cache_dir: str = None, no_cache: bool = False, request_interval: float = None,
-                 ignore_ttl: bool = False, use_broker: bool = False):
+                 ignore_ttl: bool = False, use_broker: bool = True):
         """
         Args:
             cache_dir: キャッシュディレクトリ。None の場合は設定値を使用。
@@ -336,8 +367,9 @@ class NetkeibaClient:
             request_interval: リクエスト間隔秒数。None の場合は REQUEST_INTERVAL を使用。
             ignore_ttl: True の場合、キャッシュ TTL を無視して常にキャッシュを使う。
             use_broker: True にすると NetkeibaAccessBroker による file lock を有効化する。
-                        デフォルト False = 既存挙動を維持 (呼び出し元への影響ゼロ)。
-                        複数プロセスが同時に netkeiba にアクセスする懸念がある場合に使う。
+                        デフォルト True = 並列アクセス保護が常時有効。
+                        portalocker 未インストール時は warning を出して broker 無効で続行。
+                        テスト等で明示的に無効化したい場合のみ False を指定。
         """
         if not HAS_DEPS:
             raise ImportError(
@@ -360,8 +392,8 @@ class NetkeibaClient:
         self._db_top_fetched = False
         self._known_404: set = set()  # 400/404 を返したURLを記憶してスキップ
 
-        # フェーズ C: プロセス間排他ロック (opt-in)
-        # use_broker=True を明示した場合のみ有効化。既存呼び出し元は変更不要。
+        # フェーズ C: プロセス間排他ロック (デフォルト有効)
+        # use_broker=False を明示した場合のみ無効化。
         if use_broker:
             try:
                 from src.scraper.netkeiba_access_broker import get_default_broker
@@ -377,7 +409,7 @@ class NetkeibaClient:
 
     def clone(self) -> "NetkeibaClient":
         """並列リクエスト用にクライアントを複製する。
-        セッションCookieを引き継ぐが、レートリミットは独立（各クライアントが1.5s守る）。
+        セッションCookie・レート制限状態・broker を引き継ぐ。
         キャッシュディレクトリと known_404 セットは共有。
         """
         c = object.__new__(NetkeibaClient)
@@ -388,13 +420,14 @@ class NetkeibaClient:
         c.force_no_cache = self.force_no_cache
         c.ignore_ttl = self.ignore_ttl
         c.request_interval = self.request_interval
-        c._last_request = 0.0  # 独立したレートリミット
+        c._last_request = self._last_request  # 親のレート制限状態を継承（クローン直後のノーガード防止）
         c._stats_cache = 0
         c._stats_fetch = 0
         c._stats_skip = 0
         c._race_top_fetched = self._race_top_fetched
         c._db_top_fetched = self._db_top_fetched
         c._known_404 = self._known_404  # 共有（読み取り大半、書き込みは稀）
+        c._broker = self._broker  # broker インスタンスを共有（None の場合もそのまま継承）
         return c
 
     def _ensure_race_top_cookie(self) -> None:
@@ -1154,7 +1187,9 @@ class RaceEntryParser:
         db.netkeiba.com/horse の馬ページから HorseHistoryParser で補完。
         """
         horses = []
-        for row in soup.select("table.OikiriTable tr.HorseList"):
+        _parse_fail_count = 0  # パース失敗馬カウンタ
+        _rows = soup.select("table.OikiriTable tr.HorseList")
+        for row in _rows:
             waku_td = row.select_one("td[class*='Waku']")  # Waku1, Waku2, ...
             umaban_td = row.select_one("td.Umaban")
             if not waku_td or not umaban_td:
@@ -1223,11 +1258,18 @@ class RaceEntryParser:
                     )
                 )
             except Exception as e:
+                _parse_fail_count += 1
                 logger.warning(
                     "horse parse error (newspaper): race_id=%s → %s: %s", race_id, type(e).__name__, e, exc_info=True
                 )
                 continue
 
+        # パース失敗があれば集計ログを出力（呼び出し元への可視化）
+        if _parse_fail_count > 0:
+            logger.warning(
+                "パース失敗集計 (newspaper): race_id=%s — %d頭中%d頭パース失敗",
+                race_id, len(_rows), _parse_fail_count,
+            )
         return horses
 
     def _parse_training_from_oikiri_table(
@@ -1305,6 +1347,7 @@ class RaceEntryParser:
     def _parse_horses(self, race_id: str, soup: BeautifulSoup) -> List[Horse]:
         """shutuba.html 用（レガシー・フォールバック）"""
         horses = []
+        _parse_fail_count = 0  # パース失敗馬カウンタ
         rows = soup.select("table.ShutubaTable tr.HorseList")
         # ★ 構造チェック: テーブル自体の存在確認
         check_required_classes(
@@ -1442,9 +1485,16 @@ class RaceEntryParser:
                     )
                 )
             except Exception as e:
+                _parse_fail_count += 1
                 logger.warning("horse parse error: race_id=%s → %s: %s", race_id, type(e).__name__, e, exc_info=True)
                 continue
 
+        # パース失敗があれば集計ログを出力（呼び出し元への可視化）
+        if _parse_fail_count > 0:
+            logger.warning(
+                "パース失敗集計 (shutuba): race_id=%s — %d頭中%d頭パース失敗",
+                race_id, len(rows), _parse_fail_count,
+            )
         return horses
 
     def _extract_grade(self, text: str) -> str:
