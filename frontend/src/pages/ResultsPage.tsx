@@ -29,7 +29,7 @@ export default function ResultsPage() {
   const { data: summary, isLoading: loadingSummary } = useResultsSummary(year);
   const { data: trend } = useResultsTrend(year);
   const { data: detailed } = useResultsDetailed(year);
-  // T-050 採用戦略: 三連複動的 + 単勝 T-4 (A-NONE 2 券種・本番採用)
+  // M' 戦略 (F-015) 採用成績: hybrid_summary API から m_prime_sanrenpuku を取得
   const { data: hybrid } = useHybridSummary(year);
 
   const summaryData = summary as Record<string, unknown> | undefined;
@@ -77,7 +77,7 @@ export default function ResultsPage() {
       {/* v6.1.6: 読み込み中は skeleton を表示（234 秒級の API が返るまで視覚的フィードバック） */}
       {loadingSummary && <SummaryCardsSkeleton />}
 
-      {/* サマリーカード（上段: 単勝ベース / 下段: T-050 ハイブリッド戦略） */}
+      {/* サマリーカード（上段: 単勝ベース / 下段: M' 戦略 三連複） */}
       {summaryData && <SummaryCards data={summaryData} hybrid={hybridData} />}
 
       {/* データなし */}
@@ -87,7 +87,7 @@ export default function ResultsPage() {
         </p>
       )}
 
-      {/* チャート（単勝 + T-050 ハイブリッド戦略推移） */}
+      {/* チャート（単勝 + M' 戦略推移） */}
       {trendData ? (
         <Suspense fallback={<ChartSkeleton count={4} />}>
           <TrendCharts data={trendData} hybrid={hybridData} />
