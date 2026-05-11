@@ -2904,10 +2904,10 @@ def generate_m_prime_tickets(
     for a_no in col1_nos:
         for b_no in col2_nos:
             for c_no in col3_nos:
-                key = tuple(sorted([a_no, b_no, c_no]))
-                # 同一組合せ・馬番重複をスキップ
-                if len(key) < 3:
+                if a_no == b_no or b_no == c_no or a_no == c_no:
                     continue
+                key = tuple(sorted([a_no, b_no, c_no]))
+                # 同一組合せをスキップ
                 if key in seen:
                     continue
                 seen.add(key)
