@@ -139,6 +139,10 @@ def repair(date: str, dry_run: bool = False) -> int:
         return repaired
 
     if repaired > 0:
+        # composite=0 のスタブ馬を偏差値ベースで修復
+        from src.results_tracker import heal_zero_composite_races
+        heal_zero_composite_races(pred)
+
         # バックアップ取って書き込み
         backup = pred_path.with_suffix(".json.bak.repair")
         with open(backup, "w", encoding="utf-8") as f:

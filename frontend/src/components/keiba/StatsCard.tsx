@@ -88,6 +88,7 @@ export function StatsCard({
   const out = honmei.out || 0;
   const winRate = honmei.win_rate || 0;
   const rentai = honmei.place2_rate || 0;
+  const fukusho = honmei.place_rate || 0;
   const tanRoi = honmei.tansho_roi || 0;
   const tanStake = honmei.tansho_stake || 0;
   const tanRet = honmei.tansho_ret || 0;
@@ -96,6 +97,7 @@ export function StatsCard({
   const sStake = sanrentan.stake || 0;
   const sRet = sanrentan.payback || 0;
   const sRoi = sanrentan.roi_pct || 0;
+  const sHitRate = sanrentan.hit_rate_pct || 0;
   const sBalance = sanrentan.balance || sRet - sStake;
   const lastUpdated = (d as { last_updated?: string }).last_updated || "";
   const resultsPending = (d as { results_pending?: boolean }).results_pending;
@@ -193,6 +195,12 @@ export function StatsCard({
                 {rentai.toFixed(1)}%
               </span>
             </span>
+            <span className="text-xs text-muted-foreground tabular-nums">
+              複勝{" "}
+              <span className="stat-mono text-foreground">
+                {fukusho.toFixed(1)}%
+              </span>
+            </span>
             <span
               className={`text-xs tabular-nums ${
                 tanRoi >= 100 ? "text-positive" : "text-muted-foreground"
@@ -218,6 +226,12 @@ export function StatsCard({
               <span className="text-muted-foreground mx-1">/</span>
               的中{" "}
               <span className="text-positive font-bold">{sHit}R</span>
+            </span>
+            <span className="text-xs text-muted-foreground tabular-nums">
+              的中率{" "}
+              <span className="stat-mono text-foreground">
+                {sHitRate.toFixed(1)}%
+              </span>
             </span>
             <span
               className={`text-xs tabular-nums ${

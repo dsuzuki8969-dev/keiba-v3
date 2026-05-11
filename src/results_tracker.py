@@ -8,6 +8,7 @@
 """
 
 import json
+import math
 import os
 import re
 import shutil
@@ -4244,3 +4245,96 @@ def _render_simple_html(date: str, venues: dict) -> str:
         f"<div class='date-header'>D-AI 競馬予想　{date}（印・買い目）</div>"
         f"{''.join(sections)}</body></html>"
     )
+
+
+# ---------------------------------------------------------------------------
+# composite=0 修復 (repair_pred_from_race_log で追加されたスタブ馬向け)
+# ---------------------------------------------------------------------------
+
+# デフォルト composite 重み
+_HEAL_WEIGHTS = {
+    "ability_total": 0.50,
+    "pace_total": 0.25,
+    "tekisei_dev": 0.10,
+    "jockey_dev": 0.10,
+    "trainer_dev": 0.05,
+    "bloodline_dev": 0.05,
+}
+
+# 偏差値デフォルト (データ欠損時)
+_HEAL_DEFAULTS = {
+    "ability_total": 48.0,
+    "pace_total": 48.0,
+    "tekisei_dev": 48.0,
+    "jockey_dev": 50.0,
+    "trainer_dev": 50.0,
+    "bloodline_dev": 50.0,
+}
+
+
+def heal_zero_composite_races(pred_data: dict) -> int:
+    """composite=0 の馬がいるレースを修復する。
+
+    偏差値ベースで composite を再計算し、全馬の win_prob を softmax で再算出する。
+    既に正常値を持つ馬はスキップする (冪等性保証)。
+
+    Returns:
+        修復したレース数
+    """
+    races = pred_data.get("races", [])
+    healed_count = 0
+
+    for race in races:
+        horses = race.get("horses", [])
+        if not horses:
+            continue
+
+        # composite=0 かつ odds>0 (出走取消でない) の馬を探す
+        need_heal = [
+            h for h in horses
+            if h.get("composite", -1) == 0.0
+            and (h.get("odds") or 0) > 0
+        ]
+        if not need_heal:
+            continue
+
+        # 各馬の composite を再計算
+        fixed_in_race = 0
+        for h in need_heal:
+            comp = 0.0
+            for key, weight in _HEAL_WEIGHTS.items():
+                val = h.get(key)
+                if val is None or val == 0.0:
+                    val = _HEAL_DEFAULTS[key]
+                comp += val * weight
+            # クランプ [20.0, 100.0]
+            comp = max(20.0, min(100.0, comp))
+            h["composite"] = round(comp, 2)
+            fixed_in_race += 1
+
+        # レース全馬の win_prob を softmax で再計算 (出走取消馬を除く)
+        non_scratched = [
+            h for h in horses
+            if not h.get("is_scratched")
+            and (h.get("odds") or 0) > 0
+        ]
+        if non_scratched:
+            composites = [h.get("composite", 20.0) for h in non_scratched]
+            exp_vals = [math.exp((c - 50.0) / 10.0) for c in composites]
+            total_exp = sum(exp_vals)
+            if total_exp > 0:
+                for h, ev in zip(non_scratched, exp_vals):
+                    wp = ev / total_exp
+                    h["win_prob"] = round(wp, 6)
+                    h["place2_prob"] = round(min(0.95, wp * 2.5), 6)
+                    h["place3_prob"] = round(min(0.99, wp * 4.0), 6)
+
+        venue = race.get("venue", "?")
+        race_no = race.get("race_no", "?")
+        logger.info(
+            "heal_zero_composite: %s %sR - %d馬修復",
+            venue, race_no, fixed_in_race,
+        )
+        healed_count += 1
+
+    return healed_count
