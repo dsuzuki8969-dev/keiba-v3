@@ -58,8 +58,6 @@ export const api = {
   // 成績
   resultsDates: () => get<{ dates: string[]; daily_stats: Record<string, unknown> }>("/api/results/dates"),
   resultsSummary: (year: string) => get<ResultsSummaryResponse>(`/api/results/summary?year=${year}`),
-  resultsSanrentanSummary: (year: string) =>
-    get<SanrentanSummaryResponse>(`/api/results/sanrentan_summary?year=${year}`),
   resultsHybridSummary: (year: string) =>
     get<HybridSummaryResponse>(`/api/results/hybrid_summary?year=${year}`),
   resultsTrend: (year: string) => get<ResultsTrendResponse>(`/api/results/trend?year=${year}`),
@@ -309,62 +307,8 @@ export interface ResultsSummaryResponse {
   cards: SummaryCard[];
 }
 
-export interface SanrentanByConfidence {
-  confidence: string;
-  played: number;
-  hit: number;
-  hit_rate_pct: number;
-  stake: number;
-  payback: number;
-  roi_pct: number;
-}
-
-export interface SanrentanTopPayout {
-  payout: number;
-  date: string;      // YYYYMMDD
-  venue: string;
-  race_no: number;
-  race_name: string;
-  conf: string;
-  race_payback: number;
-}
-
-export interface SanrentanMonthly {
-  month: string;      // "YYYY-MM"
-  played: number;
-  hit: number;
-  stake: number;
-  payback: number;
-  balance: number;
-  roi_pct: number;
-  cum_roi_pct: number;
-}
-
-export interface SanrentanSummaryResponse {
-  period_days: number;
-  races_total: number;
-  races_played: number;
-  races_skipped: number;
-  races_hit: number;
-  points: number;
-  hits: number;
-  stake: number;
-  payback: number;
-  balance: number;
-  roi_pct: number;
-  race_hit_rate_pct: number;
-  point_hit_rate_pct: number;
-  max_payout: number;
-  date_from: string;
-  date_to: string;
-  by_confidence: SanrentanByConfidence[];
-  top10_payouts: SanrentanTopPayout[];
-  monthly: SanrentanMonthly[];
-  error?: string;
-}
-
 // ────────────────────────────────────────────────────────────────
-// 新戦略ハイブリッド成績 (三連複動的 + 単勝 T-4)
+// ハイブリッド成績 (三連複動的 + 単勝 T-4 + M' 戦略)
 // ────────────────────────────────────────────────────────────────
 
 export interface HybridMonthly {
@@ -376,46 +320,6 @@ export interface HybridMonthly {
   balance: number;
   roi_pct: number;
   cum_roi_pct: number;
-}
-
-export interface TanshoT4Summary {
-  races_played: number;
-  races_hit: number;
-  total_stake: number;
-  total_payback: number;
-  balance: number;
-  roi_pct: number;
-  hit_rate_pct: number;
-  date_from: string;
-  date_to: string;
-  monthly: HybridMonthly[];
-}
-
-export interface SanrenpukuVariant {
-  races: number;
-  hit: number;
-  stake: number;
-  payback: number;
-  roi_pct: number;
-  hit_rate_pct: number;
-}
-
-export interface SanrenpukuDynamicSummary {
-  races_played: number;
-  races_hit: number;
-  total_stake: number;
-  total_payback: number;
-  balance: number;
-  roi_pct: number;
-  hit_rate_pct: number;
-  date_from: string;
-  date_to: string;
-  by_variant: {
-    絞り: SanrenpukuVariant;
-    中: SanrenpukuVariant;
-    広: SanrenpukuVariant;
-  };
-  monthly: HybridMonthly[];
 }
 
 // M' 戦略: 自信度別成績
@@ -474,8 +378,8 @@ export interface MPrimeSanrenpukuSummary {
 }
 
 export interface HybridSummaryResponse {
-  tansho_t4: TanshoT4Summary;
-  sanrenpuku_dynamic: SanrenpukuDynamicSummary;
+  tansho_t4?: unknown;
+  sanrenpuku_dynamic?: unknown;
   m_prime_sanrenpuku?: MPrimeSanrenpukuSummary | null;
   error?: string;
 }

@@ -13,4 +13,7 @@ if errorlevel 1 (
     exit /b 1
 )
 python run_daily_auto.py --predict >> "log\daily_predict.log" 2>&1
-echo [%date% %time%] 当日予想生成終了 ec=%ERRORLEVEL% >> "log\daily_predict.log"
+set EC=%ERRORLEVEL%
+echo [%date% %time%] 当日予想生成終了 ec=%EC% >> "log\daily_predict.log"
+echo [%date% %time%] BAT_END ec=%EC% >> "C:\Users\dsuzu\keiba\keiba-v3\log\bat_trace.log"
+exit /b %EC%

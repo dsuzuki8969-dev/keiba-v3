@@ -1464,14 +1464,29 @@ class RaceAnalysisEngine:
                 ev._normalized_position = _normalized_positions.get(ev.horse.horse_no)
                 # Phase 9A: 1角位置スコア（展開図初角タブ用）
                 ev._position_1c = _1c_normalized.get(ev.horse.horse_no)
-                if ev.horse.horse_no in _style_map and ev.pace:
-                    _rs = _style_map[ev.horse.horse_no]
-                    # 表示用は4分類に正規化（好位→先行、中団→差し）
-                    if _rs == RunningStyle.KOUI:
-                        _rs = RunningStyle.SENKOU
-                    elif _rs == RunningStyle.CHUUDAN:
-                        _rs = RunningStyle.SASHIKOMI
-                    ev.pace.running_style = _rs
+                if ev.pace:
+                    if ev.horse.horse_no in _style_map:
+                        _rs = _style_map[ev.horse.horse_no]
+                        # 表示用は4分類に正規化（好位→先行、中団→差し）
+                        if _rs == RunningStyle.KOUI:
+                            _rs = RunningStyle.SENKOU
+                        elif _rs == RunningStyle.CHUUDAN:
+                            _rs = RunningStyle.SASHIKOMI
+                        ev.pace.running_style = _rs
+                    elif not _is_banei:
+                        # _style_map 登録漏れ: 正規化位置から脚質を推定（フォールバック）
+                        # 閾値は _final_style_map と整合させる (0.25/0.78)
+                        _pos = ev._normalized_position if ev._normalized_position is not None else 0.5
+                        if _pos <= 0.25:
+                            ev.pace.running_style = RunningStyle.SENKOU
+                        elif _pos <= 0.78:
+                            ev.pace.running_style = RunningStyle.SASHIKOMI
+                        else:
+                            ev.pace.running_style = RunningStyle.OIKOMI
+                        logger.warning(
+                            "running_style フォールバック: horse_no=%s pos=%.2f -> %s",
+                            ev.horse.horse_no, _pos, ev.pace.running_style.value,
+                        )
 
             # ---- 展開コメント・有利枠・有利脚質（並び・前半/後半3F推定を利用） ----
             lineup = calc_lineup(horses)

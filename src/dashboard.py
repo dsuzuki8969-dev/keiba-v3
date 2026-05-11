@@ -87,9 +87,17 @@ _WEATHER_CACHE_TTL = 1800  # 秒（天気データ: 30分）
 _auto_fetch_lock = threading.Lock()
 _auto_fetch_busy_dates: set = set()         # 現在 fetch 処理中の日付
 _auto_fetch_cooldown: dict = {}             # race_id → last_attempt_timestamp
-_AUTO_FETCH_COOLDOWN_SEC = 30               # T-017 (2026-04-27): 60→30秒。フロント polling 2分と相性改善・5R遅延解消
+# Fix-2 (2026-05-11): 元30秒から180秒に変更。exponential backoff 導入で初回失敗後も適切に再試行
+_AUTO_FETCH_COOLDOWN_SEC = 180              # 後方互換用エイリアス（_AUTO_FETCH_COOLDOWN_BASE_SEC と同値）
+_AUTO_FETCH_COOLDOWN_BASE_SEC = 180             # exponential backoff の基準クールダウン (秒)。旧名 _AUTO_FETCH_COOLDOWN_MIN
+_AUTO_FETCH_COOLDOWN_MAX_SEC = 600         # exponential backoff の最大クールダウン (秒・失敗4回で到達)
+_auto_fetch_fail_count: dict = {}           # Fix-2: race_id → 連続失敗カウント (成功でリセット)
 _AUTO_FETCH_MAX_PER_CALL = 50               # T-001 (2026-04-25): 5R→50R。70R/日規模に追従、netkeiba 1.5s × 50R ≒ 75秒で完了
 _AUTO_FETCH_COOLDOWN_MAX = 1000             # cooldown_max も拡張（race_id 蓄積防止用、cooldown_sec×2 の余裕）
+
+# ── Fix-3: タイマー補完用。race_id ごとにタイマーセット済みかを追跡 ──
+_auto_fetch_timer_set: set = set()          # タイマーセット済み race_id の集合（重複タイマー防止）
+_auto_fetch_timer_lock = threading.Lock()   # H2: _auto_fetch_timer_set の check-then-act をスレッドセーフにするロック
 
 # ── T-047 (2026-04-29): background result fetcher スレッド二重起動防止フラグ ──
 _BG_FETCHER_STARTED = False      # create_app() が複数回呼ばれても 1 スレッドのみ起動
@@ -106,14 +114,16 @@ def _cleanup_cooldown_if_needed() -> None:
 
     常時稼働 Flask プロセスで race_id が蓄積し続けるのを防ぐ。
     2倍の cooldown 期間を過ぎたエントリは削除（再試行判定に不要）。
+    Fix-2: _auto_fetch_fail_count も同時にクリーンアップ。
     """
     if len(_auto_fetch_cooldown) < _AUTO_FETCH_COOLDOWN_MAX:
         return
     now = time.time()
     expired = [k for k, v in list(_auto_fetch_cooldown.items())
-               if now - v > _AUTO_FETCH_COOLDOWN_SEC * 2]
+               if now - v > _AUTO_FETCH_COOLDOWN_MAX_SEC * 2]
     for k in expired:
         _auto_fetch_cooldown.pop(k, None)
+        _auto_fetch_fail_count.pop(k, None)  # Fix-2: 失敗カウントも同時クリーンアップ
 
 # 競馬場コード → 緯度・経度（天気API用）
 VENUE_COORDS = {
@@ -1924,9 +1934,15 @@ def create_app():
             _cd_key = f"odds:{race_id}"
             with _auto_fetch_lock:
                 last_attempt = _auto_fetch_cooldown.get(_cd_key, 0)
-                if now_ts - last_attempt < _AUTO_FETCH_COOLDOWN_SEC:
+                # H1: 指数バックオフ対応 — 失敗回数に応じてクールダウンを伸長
+                fail_cnt = _auto_fetch_fail_count.get(_cd_key, 0)
+                effective_cooldown = min(
+                    _AUTO_FETCH_COOLDOWN_BASE_SEC * (2 ** min(fail_cnt, 10)),
+                    _AUTO_FETCH_COOLDOWN_MAX_SEC,
+                )
+                if now_ts - last_attempt < effective_cooldown:
                     return jsonify(ok=True, auto=True, skipped="cooldown",
-                                   remaining=int(_AUTO_FETCH_COOLDOWN_SEC - (now_ts - last_attempt)))
+                                   remaining=int(effective_cooldown - (now_ts - last_attempt)))
                 _auto_fetch_cooldown[_cd_key] = now_ts
             # マスター指示 2026-04-23 (修正版): 単に get_tansho だけでは
             # pred.json のチケットオッズが更新されない（実オッズ反映されない）。
@@ -3188,10 +3204,16 @@ def create_app():
         fire-and-forget、クールダウン付き（_auto_fetch_lock で TOCTOU 保護）。
         """
         # クールダウン（TOCTOU 保護のため Lock 内で check-then-set）
+        # H1: 指数バックオフ対応 — 失敗回数に応じてクールダウンを伸長
         now_ts = time.time()
         with _auto_fetch_lock:
             last_attempt = _auto_fetch_cooldown.get(race_id, 0)
-            if now_ts - last_attempt < _AUTO_FETCH_COOLDOWN_SEC:
+            fail_cnt = _auto_fetch_fail_count.get(race_id, 0)
+            effective_cooldown = min(
+                _AUTO_FETCH_COOLDOWN_BASE_SEC * (2 ** min(fail_cnt, 10)),
+                _AUTO_FETCH_COOLDOWN_MAX_SEC,
+            )
+            if now_ts - last_attempt < effective_cooldown:
                 return
             _auto_fetch_cooldown[race_id] = now_ts
 
@@ -3734,26 +3756,10 @@ def create_app():
 
     @app.route("/api/results/sanrentan_summary")
     def api_results_sanrentan_summary():
-        """三連単フォーメーション戦略（Phase 3）の成績を返す。
-        year=all/2024/2025/2026 の単位でキャッシュ（30分）。
+        """廃止済み: 旧三連単フォーメーション戦略成績エンドポイント。
+        M' 戦略 (F-015) 本番採用に伴い表示廃止。404 を避けるため空レスポンスを返す。
         """
-        year = _validate_year(request.args.get("year", "all"))
-        force = request.args.get("force", "") in ("1", "true")
-
-        def _fallback():
-            try:
-                from src.analytics.sanrentan_summary import get_sanrentan_summary
-
-                result = get_sanrentan_summary(year_filter=year, force=force)
-                return jsonify(result)
-            except Exception as e:
-                logger.warning("results sanrentan_summary failed: %s", e, exc_info=True)
-                return jsonify(error=str(e))
-
-        # force 指定時はキャッシュを無視してフルパスで再計算
-        if force:
-            return _fallback()
-        return _serve_results_cache("sanrentan_summary", year, _fallback)
+        return jsonify({})
 
     @app.route("/api/results/hybrid_summary")
     def api_results_hybrid_summary():
@@ -5211,6 +5217,9 @@ function dNavRefreshOdds(date){{
         import time as _tw
         _tw.sleep(5)
         _warmup_personnel_cache()
+        # results キャッシュ warmup (hybrid_summary 含む全5種)
+        for yr in ["all", "2026", "2025"]:
+            _results_cache_build_bg(yr)
 
     threading.Thread(target=_delayed_warmup, daemon=True).start()
 
@@ -5723,12 +5732,19 @@ function dNavRefreshOdds(date){{
                 if not rid or rid in existing_rids:
                     continue
                 post_time = race.get("post_time", "") or ""
+                # Fix-1: post_time が空の場合は 20分前を仮の発走時刻として扱う
+                # 当日の pred.json に含まれる = 当日レースとみなし結果取得対象に含める
                 if not post_time:
-                    continue
-                try:
-                    post_dt = datetime.strptime(f"{date} {post_time}", "%Y-%m-%d %H:%M")
-                except Exception:
-                    continue
+                    post_dt = now - timedelta(minutes=20)
+                    logger.debug(
+                        "auto-fetch Fix-1: %s post_time 空 → 仮発走時刻 %s を使用",
+                        rid, post_dt.strftime("%H:%M"),
+                    )
+                else:
+                    try:
+                        post_dt = datetime.strptime(f"{date} {post_time}", "%Y-%m-%d %H:%M")
+                    except Exception:
+                        continue
                 # 発走+10分経過していること（force=True なら発走後即対象、ただし結果未掲載なら取得失敗）
                 # T-020 (2026-04-27): 手動更新ボタンは「即座に取れるもの全部」の意図のため
                 # force=True で 10 分閾値解除。netkeiba 未掲載なら errors+= で報告
@@ -5737,11 +5753,22 @@ function dNavRefreshOdds(date){{
                 if force and now < post_dt:
                     # 発走前 race は force でも対象外
                     continue
-                # クールダウン: force=True の場合は bypass
+                # Fix-2: exponential backoff — 連続失敗回数に応じてクールダウンを伸長
+                # force=True の場合は bypass
                 if not force:
+                    fail_cnt = _auto_fetch_fail_count.get(rid, 0)
+                    # 失敗 N 回: cooldown = min(基準 * 2^N, 最大値)
+                    effective_cooldown = min(
+                        _AUTO_FETCH_COOLDOWN_BASE_SEC * (2 ** min(fail_cnt, 10)),
+                        _AUTO_FETCH_COOLDOWN_MAX_SEC,
+                    )
                     last_attempt = _auto_fetch_cooldown.get(rid, 0)
-                    if now_ts - last_attempt < _AUTO_FETCH_COOLDOWN_SEC:
+                    if now_ts - last_attempt < effective_cooldown:
                         stats["skipped"] += 1
+                        logger.debug(
+                            "auto-fetch: %s クールダウン中 (残 %.0fs, 失敗=%d)",
+                            rid, effective_cooldown - (now_ts - last_attempt), fail_cnt,
+                        )
                         continue
                 targets.append(rid)
                 if len(targets) >= max_per_call:
@@ -5768,12 +5795,28 @@ function dNavRefreshOdds(date){{
                     )
                     if entry and entry.get("order"):
                         stats["fetched"] += 1
-                        logger.info("auto-fetch: %s 取得成功", rid)
+                        # Fix-2: 取得成功 → 失敗カウントをリセット
+                        with _auto_fetch_lock:
+                            _auto_fetch_fail_count.pop(rid, None)
+                        logger.info("auto-fetch: %s 取得成功 (失敗カウントリセット)", rid)
                     else:
                         stats["skipped"] += 1
+                        # Fix-2: 結果未掲載（order なし）も失敗としてカウントアップ
+                        with _auto_fetch_lock:
+                            _auto_fetch_fail_count[rid] = _auto_fetch_fail_count.get(rid, 0) + 1
+                        logger.debug(
+                            "auto-fetch: %s 結果未掲載 (fail_count=%d)",
+                            rid, _auto_fetch_fail_count.get(rid, 0),
+                        )
                 except Exception as e:
                     stats["errors"] += 1
-                    logger.warning("auto-fetch: %s 失敗 %s", rid, e)
+                    # Fix-2: 例外も失敗としてカウントアップ
+                    with _auto_fetch_lock:
+                        _auto_fetch_fail_count[rid] = _auto_fetch_fail_count.get(rid, 0) + 1
+                    logger.warning(
+                        "auto-fetch: %s 失敗 %s (fail_count=%d)",
+                        rid, e, _auto_fetch_fail_count.get(rid, 0),
+                    )
 
             if stats["fetched"] > 0:
                 # 集計キャッシュを無効化（次回 today_stats 呼び出しで再計算）
@@ -5804,6 +5847,10 @@ function dNavRefreshOdds(date){{
           - daemon=True で Flask shutdown 時に自動終了
           - 環境変数 DAI_KEIBA_BACKGROUND_FETCHER_DISABLE=1 で無効化可能 (検証用)
           - 10 分毎に "background fetch tick: pending=N" をログ出力
+        Fix-3 (2026-05-11):
+          - ポーリングループ内でタイマー未セットのレースを検出し追加タイマーをセット
+          - dashboard 起動後に pred.json が追加・更新された場合の取りこぼし補完
+          - _auto_fetch_timer_set でタイマーの重複セットを防止
         """
         import os as _os
         import time as _t
@@ -5834,14 +5881,66 @@ function dNavRefreshOdds(date){{
                     _pending = sum(
                         1 for r in _races
                         if str(r.get("race_id", "")) not in _existing
-                        and r.get("post_time")
-                        and _now >= datetime.strptime(
+                        # Fix-1 連携: post_time 空でも pending にカウントする（仮発走時刻利用）
+                        and (_now >= datetime.strptime(
                             f"{today_date} {r['post_time']}", "%Y-%m-%d %H:%M"
-                        )
+                        ) if r.get("post_time") else True)
                     )
                 except Exception:
                     _pending = -1  # 算出失敗時は -1 で出力 (fetch 自体は続行)
+                    _races = []
                 logger.info("[bg_fetcher] background fetch tick: pending=%d", _pending)
+
+                # Fix-3: タイマー補完 — pred.json に含まれるレースでタイマー未セットのものを検出
+                # dashboard 起動後に pred.json が更新された場合の取りこぼしを防ぐ
+                # H2: _auto_fetch_timer_lock でスレッドセーフに check-then-act
+                _now3 = datetime.now()
+                _timer_added = 0
+                with _auto_fetch_timer_lock:
+                    for _r3 in _races:
+                        _rid3 = str(_r3.get("race_id", ""))
+                        _pt3 = _r3.get("post_time", "") or ""
+                        # タイマーセット済みならスキップ
+                        if not _rid3 or _rid3 in _auto_fetch_timer_set:
+                            continue
+                        # post_time 空のレースはタイマー不要（bg_fetcher のポーリングで対応済）
+                        if not _pt3:
+                            # タイマー追跡 set にも登録して再チェックを抑制
+                            _auto_fetch_timer_set.add(_rid3)
+                            continue
+                        try:
+                            _fire3 = (
+                                datetime.strptime(f"{today_date} {_pt3}", "%Y-%m-%d %H:%M")
+                                + timedelta(minutes=10)
+                            )
+                        except Exception:
+                            _auto_fetch_timer_set.add(_rid3)
+                            continue
+                        # 既に発火時刻を過ぎているレースは即時 fetch（delay=0 相当）
+                        _delay3 = max(0.0, (_fire3 - _now3).total_seconds())
+
+                        def _make_timer_cb(d: str = today_date):
+                            """タイマーコールバックを生成するクロージャ。"""
+                            def _cb3() -> None:
+                                threading.Thread(
+                                    target=_auto_fetch_post_races,
+                                    args=(d,),
+                                    daemon=True,
+                                    name=f"bg_timer_补完_{d}",
+                                ).start()
+                            return _cb3
+
+                        _t3 = threading.Timer(_delay3, _make_timer_cb())
+                        _t3.daemon = True
+                        _t3.start()
+                        _auto_fetch_timer_set.add(_rid3)
+                        _timer_added += 1
+                        logger.debug(
+                            "[bg_fetcher] Fix-3 タイマー補完: %s delay=%.0fs", _rid3, _delay3
+                        )
+                if _timer_added > 0:
+                    logger.info("[bg_fetcher] Fix-3 タイマー補完: %d 件追加", _timer_added)
+
                 _auto_fetch_post_races(today_date)
             except Exception as e:
                 logger.warning("[bg_fetcher] background fetch error: %s", e)
@@ -7214,39 +7313,58 @@ function dNavRefreshOdds(date){{
             logger.warning("A4 タイマーセット: pred.json 読み込み失敗 %s", _e4)
             return
 
+        # H2: _auto_fetch_timer_lock でスレッドセーフに check-then-act
         _now4 = datetime.now()
         _n4 = 0
-        for _r4 in _races_a4:
-            _pt4 = _r4.get("post_time", "") or ""
-            if not _pt4:
-                continue
-            try:
-                _fire4 = (
-                    datetime.strptime(f"{date} {_pt4}", "%Y-%m-%d %H:%M")
-                    + timedelta(minutes=10)
-                )
-            except Exception:
-                continue
-            _delay4 = max(0.0, (_fire4 - _now4).total_seconds())
+        with _auto_fetch_timer_lock:
+            for _r4 in _races_a4:
+                _rid4 = str(_r4.get("race_id", ""))
+                _pt4 = _r4.get("post_time", "") or ""
+                if not _pt4:
+                    # post_time 空は bg_fetcher の Fix-3 補完対象外にする（タイマー不要）
+                    if _rid4:
+                        _auto_fetch_timer_set.add(_rid4)
+                    continue
+                # Fix-3: 既にタイマーセット済みの race_id はスキップ（bg_fetcher 補完との重複防止）
+                if _rid4 and _rid4 in _auto_fetch_timer_set:
+                    continue
+                try:
+                    _fire4 = (
+                        datetime.strptime(f"{date} {_pt4}", "%Y-%m-%d %H:%M")
+                        + timedelta(minutes=10)
+                    )
+                except Exception:
+                    continue
+                _delay4 = max(0.0, (_fire4 - _now4).total_seconds())
 
-            def _make_cb(d: str = date) -> None:
-                def _cb() -> None:
-                    threading.Thread(
-                        target=_auto_fetch_post_races,
-                        args=(d,),
-                        daemon=True,
-                        name=f"post_race_timer_{d}",
-                    ).start()
-                return _cb
+                def _make_cb(d: str = date):
+                    """タイマーコールバックを生成するクロージャ。"""
+                    def _cb() -> None:
+                        threading.Thread(
+                            target=_auto_fetch_post_races,
+                            args=(d,),
+                            daemon=True,
+                            name=f"post_race_timer_{d}",
+                        ).start()
+                    return _cb
 
-            _t4 = threading.Timer(_delay4, _make_cb())
-            _t4.daemon = True
-            _t4.start()
-            _n4 += 1
+                _t4 = threading.Timer(_delay4, _make_cb())
+                _t4.daemon = True
+                _t4.start()
+                # Fix-3: タイマーセット済みとして記録
+                if _rid4:
+                    _auto_fetch_timer_set.add(_rid4)
+                _n4 += 1
 
         logger.info("A4 発走+10分タイマー: %d 件セット（%s）", _n4, date)
 
     _schedule_post_race_timers(datetime.now().strftime("%Y-%m-%d"))
+
+    # リクエスト終了時にスレッドローカル DB 接続を確実にクローズ（コネクションリーク防止）
+    @app.teardown_appcontext
+    def _close_db_on_teardown(exc):
+        from src.database import close_db as _close_db
+        _close_db()
 
     return app
 

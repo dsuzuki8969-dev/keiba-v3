@@ -3197,19 +3197,8 @@ def _set_cached(func_name: str, year_filter: str, result: dict) -> None:
         pass
 
 def invalidate_aggregate_cache() -> None:
-    """外部から呼び出して集計キャッシュをクリアする
-
-    マスター指示 2026-04-23:
-      sanrentan_summary._CACHE（30分TTL）も連動クリアしないと、
-      backfill 完了後に 2024/2025/全期間 で三連単F セクションが
-      0 played のまま 30 分残り続ける。
-    """
-    # sanrentan_summary の独立キャッシュも同時クリア
-    try:
-        from src.analytics.sanrentan_summary import invalidate_cache as _sanrentan_invalidate
-        _sanrentan_invalidate()
-    except Exception:
-        pass
+    """外部から呼び出して集計キャッシュをクリアする"""
+    # 注: sanrentan_summary は廃止済みのためキャッシュ連動クリアを削除
     _AGG_CACHE.clear()
     _DAILY_AGG_MEM.clear()
     _DETAIL_MEM.clear()

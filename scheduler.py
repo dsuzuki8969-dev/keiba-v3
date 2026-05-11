@@ -25,7 +25,13 @@ from apscheduler.schedulers.blocking import BlockingScheduler
 from apscheduler.schedulers.background import BackgroundScheduler  # --status の next_run_time 取得用 (L264)
 from apscheduler.events import EVENT_JOB_EXECUTED, EVENT_JOB_ERROR
 
+import atexit
+
 from config.settings import PROJECT_ROOT
+
+# プロセス終了時に DB 接続を確実にクローズ（コネクションリーク防止）
+from src.database import close_db as _close_db
+atexit.register(_close_db)
 
 # netkeiba cooldown 感知ユーティリティ (フェーズ D 段階 1)
 from src.scraper.netkeiba import _is_netkeiba_cooldown_active, _get_netkeiba_cooldown_remaining

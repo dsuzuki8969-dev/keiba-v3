@@ -12,12 +12,16 @@ Windowsタスクスケジューラ設定例:
   夕17:00 → python run_daily_auto.py --predict --date <翌日> --official
   夜22:00 → python run_daily_auto.py --results
 """
-import sys, io, os, subprocess, time, json
+import sys, io, os, subprocess, time, json, atexit
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', line_buffering=True)
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import argparse
 from datetime import datetime, timedelta
+
+# プロセス終了時に DB 接続を確実にクローズ（コネクションリーク防止）
+from src.database import close_db as _close_db
+atexit.register(_close_db)
 
 LOG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "log")
 os.makedirs(LOG_DIR, exist_ok=True)

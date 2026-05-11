@@ -42,20 +42,22 @@ netkeiba 24h クールダウン中でも代替経路で全件完走:
 
 ---
 
-## 🟣 5/9 完了タスク
+## 🟣 5/11 完了タスク
 
-### ✅ P2-3 — watchdog_check.py HTTP 強化 + 連続失敗追跡 + Slack 通知 + ログローテーション
-### ✅ P2-2 — ability_max γ案統一 (wa_deviations ベースに修正)
-### ✅ P2-1 — NAR scraper テスト 24 件 (_parse_race_mark_table 回帰テスト)
-### ✅ 品質チェック + 本番動作検証 (pred.json 57 レース・dashboard /api/health 正常)
-### ✅ 細かな改善 (テスト移動 3 件 + watchdog.log ローテーション)
-### ✅ P3-2 Phase 1+2 — APScheduler 常駐化 + DAG 統合
-- scheduler.py: mark_failed 統合 + 時刻 5 分オフセット (Windows TS 競合回避)
-- start_scheduler.bat + start_scheduler_hidden.vbs 新規作成
-- setup_scheduler.ps1: DAI_Keiba_Scheduler タスク追加
-- show_status 時刻修正 + 二重起動防止 pidfile ロック
-- scheduler_dag テスト 28 件全パス
-- **マスター手動実行必要**: `powershell -ExecutionPolicy Bypass -File scripts\setup_scheduler.ps1`
+### ✅ Task 1 — hybrid_summary キャッシュ warmup (dashboard 起動時)
+### ✅ Task 2 — ability G1 グレードボーナス (GRADE_BONUS + _calc_grade_bonus)
+### ✅ Task 3 — auto-fetch タイマー 3 件修正 (空 post_time / 指数バックオフ / timer 補完)
+### ✅ Task 4 — running_style フォールバック (normalized_position ベース 3 段)
+### ✅ Task 5 — sanrentan_summary 死コード除去 (frontend 3 件 + cache builder)
+### ✅ Task 6 — F-101 HorseHistoryChart 実装確認 (既存実装完備・変更不要)
+### ✅ Task 7 — BAT CRLF 修正 + bat_trace.log (daily_predict 11 日間 ec=255 解消)
+### ✅ setup_scheduler.ps1 実行完了 (5/11 21:30 マスター管理者 PS で全 10 タスク Ready)
+
+---
+
+## 🟣 5/9 完了タスク (アーカイブ)
+
+5/9 完了内容は `memory/handoff_2026-05-09.md` 参照
 
 ---
 
@@ -123,7 +125,7 @@ python scripts/backfill_horses_2023h_retry.py --execute
 
 | 優先度 | 項目 | 状態 / 条件 |
 |:---:|---|---|
-| ✅ 完了 (5/9) | P3-2 Phase 1+2 — APScheduler 常駐化 + 競合回避 + pidfile | 5 commit (scheduler.py / start_scheduler.bat / VBS / setup_scheduler.ps1 / DAG テスト 28 件) |
+| ✅ 完了 (5/9) + TS 登録 (5/11) | P3-2 Phase 1+2 — APScheduler 常駐化 + 競合回避 + pidfile | 5 commit + setup_scheduler.ps1 実行完了 (10 タスク Ready) |
 | 🔜 P3-2 Phase 3 | DAG 依存関係の実質化 (ジョブ実行順序の review) | マスター設計判断が必要・次セッション |
 | 🔜 P3-D (3-5 日規模) | Windows TS → APScheduler 段階的移行 | `memory/project_p3d_scheduler_integration_handoff.md` 参照 |
 
@@ -134,6 +136,7 @@ python scripts/backfill_horses_2023h_retry.py --execute
 過去セッションの完了タスクは git log + handoff_*.md に集約済。本ファイルからは削除した。
 
 参照先:
+- 5/11: `memory/handoff_2026-05-11.md` (残タスク 7 件一括完走 + BAT CRLF 修正 + TS 登録)
 - 5/9: `memory/handoff_2026-05-09.md` (P2 三件 + P3-2 Phase 1+2 + DAG テスト)
 - 5/7: `memory/handoff_2026-05-07.md` (netkeiba 並列禁止フェーズ D 全完成)
 - 5/5-5/6: `memory/handoff_2026-05-06_session_complete.md` (NAR 3 頭立てバグ全修復 + 19 時間自走)

@@ -992,6 +992,44 @@ DOMESTIC_VENUES: set = {
 # これ未満の偏差値はタイム計測不能等の異常値とみなしWA計算から除外
 INVALID_DEV_THRESHOLD: float = 20.0
 
+# G1/G2/G3 実績ボーナス: WA・MAX 両偏差値への加算値
+# 複数該当する場合は最大値のみ採用（累積加算しない）
+# NAR の JpnI/II/III は scraper が G1/G2/G3 に正規化済のため別キー不要
+# 着順グループ: "1st"=1着, "2nd"=2着, "3rd"=3着, "4-5th"=4〜5着
+GRADE_BONUS: Dict[str, Dict[str, float]] = {
+    "G1": {"1st": 5.0, "2nd": 3.0, "3rd": 2.0, "4-5th": 1.0},
+    "G2": {"1st": 3.0, "2nd": 2.0, "3rd": 1.0, "4-5th": 0.5},
+    "G3": {"1st": 2.0, "2nd": 1.0, "3rd": 0.5, "4-5th": 0.0},
+}
+
+
+def _calc_grade_bonus(wa_runs: list) -> float:
+    """
+    WA フィルタを通過した走から G1/G2/G3 実績ボーナスを算出する。
+    複数のグレードレース実績がある場合は最大ボーナス値のみ採用（累積加算しない）。
+    """
+    max_bonus = 0.0
+    for run in wa_runs:
+        grade = getattr(run, "grade", "") or ""
+        pos = getattr(run, "finish_pos", 99)
+        grade_table = GRADE_BONUS.get(grade)
+        if grade_table is None:
+            continue
+        # 着順グループを判定してボーナス値を取得
+        if pos == 1:
+            bonus = grade_table.get("1st", 0.0)
+        elif pos == 2:
+            bonus = grade_table.get("2nd", 0.0)
+        elif pos == 3:
+            bonus = grade_table.get("3rd", 0.0)
+        elif pos in (4, 5):
+            bonus = grade_table.get("4-5th", 0.0)
+        else:
+            continue
+        if bonus > max_bonus:
+            max_bonus = bonus
+    return max_bonus
+
 
 def _get_wa_weights_by_distance(distance: int) -> list:
     """距離帯別のWA重みを返す（Phase 4-1）。"""
@@ -1578,6 +1616,7 @@ def calc_ability_deviation(
     # run_deviations 自体は変更しない (トレンド計算で引き続き使用)
     wa_deviations: List[float] = []
     wa_chakusa_indices: List[float] = []
+    wa_runs: List = []  # WAフィルタを通過した走オブジェクト (グレードボーナス計算用)
     for _idx, (_run, _dev) in enumerate(zip(filtered_runs, run_deviations)):
         # 条件1: 海外レース除外 — venue が国内場リストに含まれない場合はスキップ
         _venue = getattr(_run, "venue", "") or ""
@@ -1607,6 +1646,7 @@ def calc_ability_deviation(
             continue
         wa_deviations.append(_dev)
         wa_chakusa_indices.append(chakusa_indices[_idx] if _idx < len(chakusa_indices) else 0.0)
+        wa_runs.append(_run)
 
     # 全過去走が除外された場合は中立値 50.0 で fallback
     if not wa_deviations:
@@ -1620,6 +1660,19 @@ def calc_ability_deviation(
             wa_deviations, wa_chakusa_indices, is_long_break,
             break_days=break_days, horse_age=horse.age or 4,
             distance=race_distance,
+        )
+
+    # 5a. G1/G2/G3 実績ボーナス加算 (WA + MAX 両方)
+    # WA フィルタを通過した走のうち最高グレード実績のボーナスを WA に加算する。
+    # MAX にも同額加算して alpha (WA/MAX ブレンド比) を歪ませない。
+    # 複数該当しても最大値 1 つのみ採用（累積しない）。
+    _grade_bonus = _calc_grade_bonus(wa_runs)
+    if _grade_bonus > 0.0:
+        _wa_before = wa_dev
+        wa_dev = min(DEVIATION["ability"]["max"], wa_dev + _grade_bonus)
+        logger.debug(
+            "グレードボーナス: %s wa %.1f → %.1f (+%.1f)",
+            getattr(horse, "horse_name", "?"), _wa_before, wa_dev, _grade_bonus,
         )
 
     # 5b. 芝ダ転換馬の異馬場WA割引
@@ -1645,6 +1698,8 @@ def calc_ability_deviation(
 
     # 6. MAX偏差値 — WA と同じ γ案 3 条件フィルタ適用済の wa_deviations から取得
     max_dev = max(wa_deviations) if wa_deviations else wa_dev
+    if _grade_bonus > 0.0:
+        max_dev = min(DEVIATION["ability"]["max"], max_dev + _grade_bonus)
     if is_surface_switch and wa_deviations:
         from config.settings import SURFACE_SWITCH_BASE_DISCOUNT
         max_dev = 48.0 + (max_dev - 48.0) * SURFACE_SWITCH_BASE_DISCOUNT

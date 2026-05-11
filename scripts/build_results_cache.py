@@ -7,10 +7,11 @@
 
 生成ファイル (data/cache/results/):
   summary_{year}.json            … aggregate_all(by_date 除去済) のレスポンス
-  sanrentan_summary_{year}.json  … get_sanrentan_summary のレスポンス
   detailed_{year}.json           … aggregate_detailed(by_venue の肥大項目除去済) のレスポンス
   trend_{year}.json              … cum ROI / 月別収支を事前整形（Chart.js用）
+  hybrid_summary_{year}.json     … M' 戦略 (F-015) + 三連複動的 + 単勝 T-4
   manifest.json                  … 生成時刻・対象日付数などのメタ情報
+  ※ sanrentan_summary は M' 戦略 (F-015) 本番採用に伴い廃止
 
 使い方:
   # 全 year を並列生成（既定 4 ワーカー）
@@ -70,13 +71,14 @@ _VALID_YEAR_RE = re.compile(r"^(all|\d{4})$")
 def cache_path(kind: str, year: str) -> str:
     """キャッシュ JSON のパスを返す。
 
-    kind: "summary" / "sanrentan_summary" / "detailed" / "trend" / "hybrid_summary"
+    kind: "summary" / "detailed" / "trend" / "hybrid_summary"
     year: "all" / "2026" / ...
+    ※ sanrentan_summary は M' 戦略 (F-015) 本番採用に伴い廃止
     """
     # 許可リスト検証。path traversal を根本的に防ぐ
     if not _VALID_YEAR_RE.fullmatch(year):
         raise ValueError(f"不正な year: {year!r} (許可: all/YYYY)")
-    if kind not in ("summary", "sanrentan_summary", "detailed", "trend", "hybrid_summary"):
+    if kind not in ("summary", "detailed", "trend", "hybrid_summary"):
         raise ValueError(f"不正な kind: {kind!r}")
     return os.path.join(RESULTS_CACHE_DIR, f"{kind}_{year}.json")
 
@@ -188,13 +190,12 @@ def build_year_cache(year: str, force: bool = False) -> dict:
         aggregate_all,
         aggregate_detailed,
     )
-    from src.analytics.sanrentan_summary import get_sanrentan_summary
 
     stats = {"year": year, "ok": False, "elapsed": {}, "error": None, "skipped": False}
 
     # force=False の場合は新鮮なキャッシュをスキップ
     if not force:
-        kinds = ("summary", "sanrentan_summary", "detailed", "trend", "hybrid_summary")
+        kinds = ("summary", "detailed", "trend", "hybrid_summary")
         try:
             all_exist = all(os.path.exists(cache_path(k, year)) for k in kinds)
             if all_exist:
@@ -229,13 +230,7 @@ def build_year_cache(year: str, force: bool = False) -> dict:
         detailed = _shape_detailed(detailed_raw)
         atomic_write_json(cache_path("detailed", year), detailed, separators=(",", ":"))
 
-        # 3) sanrentan_summary（force=True で内部キャッシュ無視して再計算）
-        t2 = time.time()
-        sanrentan = get_sanrentan_summary(year_filter=year, force=True)
-        stats["elapsed"]["sanrentan_summary"] = round(time.time() - t2, 2)
-        atomic_write_json(cache_path("sanrentan_summary", year), sanrentan, separators=(",", ":"))
-
-        # 4) hybrid_summary (三連複動的 + 単勝 T-4 + M' 戦略)
+        # 3) hybrid_summary (三連複動的 + 単勝 T-4 + M' 戦略)
         t3 = time.time()
         from src.analytics.hybrid_summary import get_hybrid_summary
         hybrid = get_hybrid_summary(year_filter=year, force_refresh=True)
