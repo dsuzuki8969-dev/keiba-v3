@@ -1726,7 +1726,9 @@ def load_prediction(date: str) -> Optional[dict]:
     if os.path.exists(fpath):
         try:
             with open(fpath, "r", encoding="utf-8") as f:
-                return json.load(f)
+                data = json.load(f)
+            heal_zero_composite_races(data)
+            return data
         except Exception:
             pass
     # DBフォールバック
@@ -1734,6 +1736,7 @@ def load_prediction(date: str) -> Optional[dict]:
         try:
             data = _db.load_prediction(date)
             if data:
+                heal_zero_composite_races(data)
                 return data
         except Exception:
             pass

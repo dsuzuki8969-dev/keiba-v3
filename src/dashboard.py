@@ -2075,6 +2075,8 @@ def create_app():
                     try:
                         with open(pred_file, "r", encoding="utf-8") as f:
                             pred = json.load(f)
+                        from src.results_tracker import heal_zero_composite_races
+                        heal_zero_composite_races(pred)
                         for race in pred.get("races", []):
                             if race.get("race_id") == race_id:
                                 for h in race.get("horses", []):
@@ -3389,6 +3391,8 @@ def create_app():
             if pred_path.exists():
                 with open(pred_path, encoding="utf-8") as f:
                     pred_data = _json.load(f)
+                from src.results_tracker import heal_zero_composite_races
+                heal_zero_composite_races(pred_data)
                 for r in pred_data.get("races", []):
                     if r.get("race_id") == race_id:
                         for h in r.get("horses", []):
@@ -7187,6 +7191,8 @@ function dNavRefreshOdds(date){{
 
         with open(pred_fp, "r", encoding="utf-8") as _f:
             pred = json.load(_f)
+        from src.results_tracker import heal_zero_composite_races
+        heal_zero_composite_races(pred)
 
         # 結果ファイルを読み込む（RESULTS_DIR → DB fallback）
         from config.settings import RESULTS_DIR
