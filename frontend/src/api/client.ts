@@ -322,46 +322,6 @@ export interface HybridMonthly {
   cum_roi_pct: number;
 }
 
-export interface TanshoT4Summary {
-  races_played: number;
-  races_hit: number;
-  total_stake: number;
-  total_payback: number;
-  balance: number;
-  roi_pct: number;
-  hit_rate_pct: number;
-  date_from: string;
-  date_to: string;
-  monthly: HybridMonthly[];
-}
-
-export interface SanrenpukuVariant {
-  races: number;
-  hit: number;
-  stake: number;
-  payback: number;
-  roi_pct: number;
-  hit_rate_pct: number;
-}
-
-export interface SanrenpukuDynamicSummary {
-  races_played: number;
-  races_hit: number;
-  total_stake: number;
-  total_payback: number;
-  balance: number;
-  roi_pct: number;
-  hit_rate_pct: number;
-  date_from: string;
-  date_to: string;
-  by_variant: {
-    絞り: SanrenpukuVariant;
-    中: SanrenpukuVariant;
-    広: SanrenpukuVariant;
-  };
-  monthly: HybridMonthly[];
-}
-
 // M' 戦略: 自信度別成績
 export interface MPrimeByConfidence {
   played: number;
@@ -418,8 +378,8 @@ export interface MPrimeSanrenpukuSummary {
 }
 
 export interface HybridSummaryResponse {
-  tansho_t4: TanshoT4Summary;
-  sanrenpuku_dynamic: SanrenpukuDynamicSummary;
+  tansho_t4?: unknown;
+  sanrenpuku_dynamic?: unknown;
   m_prime_sanrenpuku?: MPrimeSanrenpukuSummary | null;
   error?: string;
 }

@@ -227,7 +227,7 @@ export function TrendCharts({ data, hybrid }: Props) {
         </ChartCard>
       )}
 
-      {/* ────────── 6: M' 三連複 月別純利推移 (emerald / 棒グラフ) ────────── */}
+      {/* ────────── 4: M' 三連複 月別純利推移 (emerald / 棒グラフ) ────────── */}
       {mprimeMonthlyData.length > 0 && (
         <ChartCard accentColor={CHART_COLORS.mprime} title="M' 戦略 月別純利推移">
           <ResponsiveContainer width="100%" height={220}>

@@ -1475,14 +1475,15 @@ class RaceAnalysisEngine:
                         ev.pace.running_style = _rs
                     elif not _is_banei:
                         # _style_map 登録漏れ: 正規化位置から脚質を推定（フォールバック）
+                        # 閾値は _final_style_map と整合させる (0.25/0.78)
                         _pos = ev._normalized_position if ev._normalized_position is not None else 0.5
                         if _pos <= 0.25:
                             ev.pace.running_style = RunningStyle.SENKOU
-                        elif _pos <= 0.58:
+                        elif _pos <= 0.78:
                             ev.pace.running_style = RunningStyle.SASHIKOMI
                         else:
                             ev.pace.running_style = RunningStyle.OIKOMI
-                        logger.debug(
+                        logger.warning(
                             "running_style フォールバック: horse_no=%s pos=%.2f -> %s",
                             ev.horse.horse_no, _pos, ev.pace.running_style.value,
                         )

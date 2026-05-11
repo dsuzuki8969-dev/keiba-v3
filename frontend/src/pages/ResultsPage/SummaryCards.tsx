@@ -169,35 +169,35 @@ const M_PRIME_POINTS: Record<string, number> = {
   D: 10,
 };
 
+// M' セクション用セルコンポーネント (レンダー外定義で ESLint static-components 準拠)
+const StatCell = ({
+  label, value, sub, color, hero,
+}: { label: string; value: string; sub?: string; color: string; hero?: boolean }) => (
+  <PremiumCard
+    variant="default"
+    padding={hero ? "md" : "sm"}
+    className="text-center stylish-card-hover border border-border/60"
+  >
+    <div className={`font-semibold tracking-wider uppercase text-muted-foreground mb-1 ${hero ? "text-[11px]" : "text-[10px]"}`}>
+      {label}
+    </div>
+    <div
+      className={`stat-mono font-bold ${hero ? "text-[1.5rem] sm:text-[1.8rem]" : "text-base"}`}
+      style={{ color }}
+    >
+      {value}
+    </div>
+    {sub && (
+      <div className={`text-muted-foreground mt-0.5 tnum ${hero ? "text-[10px]" : "text-[9px]"}`}>
+        {sub}
+      </div>
+    )}
+  </PremiumCard>
+);
+
 function MPrimeSummarySection({ mp }: { mp: MPrimeSanrenpukuSummary }) {
   const EMERALD  = "#10b981";
   const PROFIT_COLOR = mp.balance >= 0 ? EMERALD : "#ef4444";
-
-  // セルレンダラー
-  const StatCell = ({
-    label, value, sub, color, hero,
-  }: { label: string; value: string; sub?: string; color: string; hero?: boolean }) => (
-    <PremiumCard
-      variant="default"
-      padding={hero ? "md" : "sm"}
-      className="text-center stylish-card-hover border border-border/60"
-    >
-      <div className={`font-semibold tracking-wider uppercase text-muted-foreground mb-1 ${hero ? "text-[11px]" : "text-[10px]"}`}>
-        {label}
-      </div>
-      <div
-        className={`stat-mono font-bold ${hero ? "text-[1.5rem] sm:text-[1.8rem]" : "text-base"}`}
-        style={{ color }}
-      >
-        {value}
-      </div>
-      {sub && (
-        <div className={`text-muted-foreground mt-0.5 tnum ${hero ? "text-[10px]" : "text-[9px]"}`}>
-          {sub}
-        </div>
-      )}
-    </PremiumCard>
-  );
 
   // 自信度別カード (SS/S/A/B/C/D)
   const confidenceOrder = ["SS", "S", "A", "B", "C", "D"] as const;
