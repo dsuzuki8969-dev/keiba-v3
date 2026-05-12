@@ -1707,9 +1707,10 @@ class OfficialNARScraper:
             return results
 
         # 成績テーブルを特定: 「着順」ヘッダを持つテーブル
+        # NAR 公式は「着　　順」等の全角空白挿入あり → 空白除去で比較
         result_table = None
         for tbl in tables:
-            header_text = tbl.get_text()
+            header_text = re.sub(r"\s+", "", tbl.get_text())
             if "着順" in header_text and "馬番" in header_text:
                 result_table = tbl
                 break
@@ -1864,12 +1865,11 @@ class OfficialNARScraper:
 
         payouts: dict = {}
 
-        # 払戻テーブルを特定: 「払戻」や券種名を含むテーブル
+        # 払戻テーブルを特定 — 最内側の小テーブルを優先
         tables = soup.select("table")
         payout_table = None
-        for tbl in tables:
+        for tbl in reversed(tables):
             tbl_text = tbl.get_text()
-            # 「単勝」と「払戻」両方を含むテーブルを探す
             if "単勝" in tbl_text and ("払戻" in tbl_text or "複勝" in tbl_text):
                 payout_table = tbl
                 break
@@ -1877,15 +1877,110 @@ class OfficialNARScraper:
         if not payout_table:
             return payouts
 
+        # 水平レイアウト検出: ヘッダ行に券種名が並ぶ形式
+        # tr[0]=タイトル, tr[1]=ヘッダ(Ｒ,単勝,...), tr[2]=サブヘッダ, tr[3]=データ
+        rows = payout_table.select("tr")
+        header_row = None
+        for r in rows:
+            cells = r.select("td, th")
+            cell_texts = [c.get_text(strip=True) for c in cells]
+            if "単勝" in cell_texts and "三連複" in cell_texts:
+                header_row = cell_texts
+                data_row_idx = rows.index(r) + 2  # サブヘッダの次がデータ
+                break
+
+        if header_row and data_row_idx < len(rows):
+            return self._parse_horizontal_payouts(
+                header_row, rows[data_row_idx], bet_type_map)
+
+        # 垂直レイアウト (従来方式): 行ごとに券種名がある形式
+        return self._parse_vertical_payouts(payout_table, bet_type_map)
+
+    def _parse_horizontal_payouts(self, header: list, data_row,
+                                  bet_type_map: dict) -> dict:
+        """水平レイアウト払戻テーブルをパース
+        header: ['Ｒ', '単勝', '複勝', ..., '三連複', '三連単']
+        data_row: tr 要素 (cells[0]=R番号, 以降 3列ずつ)
+        """
+        payouts: dict = {}
+        data_cells = data_row.select("td, th")
+        if not data_cells:
+            return payouts
+
+        col = 1  # column 0 = R番号
+        for i, bet_name in enumerate(header):
+            if i == 0:  # 'Ｒ' 列スキップ
+                continue
+            bet_key = None
+            for name, key in bet_type_map.items():
+                if name in bet_name:
+                    bet_key = key
+                    break
+            if not bet_key or col + 2 >= len(data_cells):
+                col += 3
+                continue
+
+            combo_text = data_cells[col].get_text(strip=True)
+            payout_text = data_cells[col + 1].get_text(strip=True)
+            pop_text = data_cells[col + 2].get_text(strip=True)
+
+            entries = self._parse_payout_cell(combo_text, payout_text, pop_text)
+            if entries:
+                payouts[bet_key] = entries
+            col += 3
+
+        return payouts
+
+    @staticmethod
+    def _parse_payout_cell(combo_text: str, payout_text: str,
+                           pop_text: str) -> list:
+        """組番/払戻金/人気セルから複数エントリを抽出
+        複勝・ワイド等は「9-7-1」「140円1,900円370円」のように連結されている
+        """
+        # 組番を分割: 「7-91-91-7」→「7-9」「1-9」「1-7」 (ハイフン区切りの数字グループ)
+        combos = re.findall(r"\d+(?:-\d+)*", combo_text)
+
+        # 払戻金を分割: 「140円1,900円370円」→ [140, 1900, 370]
+        raw_payouts = re.findall(r"[\d,]+円", payout_text)
+        payout_vals = []
+        for rp in raw_payouts:
+            rp = rp.replace("円", "").replace(",", "").strip()
+            try:
+                payout_vals.append(int(rp))
+            except ValueError:
+                pass
+        if not payout_vals and payout_text:
+            cleaned = payout_text.replace("円", "").replace(",", "").strip()
+            try:
+                payout_vals.append(int(cleaned))
+            except ValueError:
+                pass
+
+        # 人気を分割
+        pop_vals = [int(m) for m in re.findall(r"\d+", pop_text)]
+
+        entries = []
+        for j in range(len(combos)):
+            pv = payout_vals[j] if j < len(payout_vals) else 0
+            pp = pop_vals[j] if j < len(pop_vals) else 0
+            if pv > 0:
+                entries.append({
+                    "combo": combos[j],
+                    "payout": pv,
+                    "popularity": pp,
+                })
+        return entries
+
+    def _parse_vertical_payouts(self, payout_table, bet_type_map: dict) -> dict:
+        """垂直レイアウト払戻テーブルをパース (従来方式)"""
+        payouts: dict = {}
+
         for row in payout_table.select("tr"):
             cells = row.select("td, th")
             if len(cells) < 2:
                 continue
 
-            # 最初のセルから券種名を取得
             bet_name = cells[0].get_text(strip=True)
-
-            # 券種マッピングに一致するか確認
             bet_key = None
             for name, key in bet_type_map.items():
                 if name in bet_name:
@@ -1895,14 +1990,9 @@ class OfficialNARScraper:
             if not bet_key:
                 continue
 
-            # 複勝・ワイドは1セル内に改行区切りで複数値の場合がある
-            # 各行: (組番, 払戻金, 人気)
-            # cells[1]=組番, cells[2]=払戻金, cells[3]=人気（の場合もある）
-
             entries = []
 
             if len(cells) >= 4:
-                # 標準形式: 組番 | 払戻金 | 人気
                 combos_raw = cells[1].get_text("\n", strip=True).split("\n")
                 payouts_raw = cells[2].get_text("\n", strip=True).split("\n")
                 pops_raw = cells[3].get_text("\n", strip=True).split("\n") \
@@ -1913,7 +2003,6 @@ class OfficialNARScraper:
                     if not combo:
                         continue
 
-                    # 払戻金: 円記号・カンマ除去
                     payout_val = 0
                     if i < len(payouts_raw):
                         raw_p = payouts_raw[i].strip()
@@ -1925,7 +2014,6 @@ class OfficialNARScraper:
                         except ValueError:
                             pass
 
-                    # 人気: "1番人気" → 1 or 数字のみ
                     pop_val = 0
                     if i < len(pops_raw):
                         raw_pop = pops_raw[i].strip()
@@ -1941,7 +2029,6 @@ class OfficialNARScraper:
                         })
 
             elif len(cells) >= 3:
-                # 2セル形式: 組番+払戻金 | 人気
                 combo_payout = cells[1].get_text("\n", strip=True).split("\n")
                 pops_raw = cells[2].get_text("\n", strip=True).split("\n")
 
