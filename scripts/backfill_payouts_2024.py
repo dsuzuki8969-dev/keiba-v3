@@ -54,7 +54,9 @@ def main():
     parser.add_argument("--nar-only", action="store_true", help="NAR レースのみ (JRA 除外)")
     args = parser.parse_args()
 
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=30000")
     missing = get_missing_races(conn, args.start, args.end,
                                 jra_only=args.jra_only, nar_only=args.nar_only)
     print(f"三連複ペイアウトなし: {len(missing):,} レース ({args.start} ~ {args.end})")
@@ -145,7 +147,7 @@ def main():
     # 更新した日付の results JSON を再生成
     if dates_to_rebuild:
         print(f"\nresults JSON 再生成: {len(dates_to_rebuild)} 日")
-        conn2 = sqlite3.connect(DB_PATH)
+        conn2 = sqlite3.connect(DB_PATH, timeout=30)
         for dt in sorted(dates_to_rebuild):
             c = conn2.cursor()
             c.execute("SELECT race_id, order_json, payouts_json FROM race_results WHERE date = ? AND cancelled = 0", (dt,))
