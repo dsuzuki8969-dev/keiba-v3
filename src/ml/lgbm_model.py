@@ -3768,9 +3768,15 @@ def train_split_models(valid_days: int = 30, max_date: Optional[str] = None,
 
     # Walk-Forward 用にモデル保存先を切り替え
     if model_dir_override:
-        global MODEL_DIR
+        global MODEL_DIR, STATS_PATH, SIRE_STATS_PATH, SIRE_MAP_PATH
         _orig_model_dir = MODEL_DIR
+        _orig_stats_path = STATS_PATH
+        _orig_sire_stats_path = SIRE_STATS_PATH
+        _orig_sire_map_path = SIRE_MAP_PATH
         MODEL_DIR = model_dir_override
+        STATS_PATH = os.path.join(MODEL_DIR, "rolling_stats.pkl")
+        SIRE_STATS_PATH = os.path.join(MODEL_DIR, "sire_rolling_stats.pkl")
+        SIRE_MAP_PATH = os.path.join(MODEL_DIR, "horse_sire_map.pkl")
         os.makedirs(MODEL_DIR, exist_ok=True)
 
     try:
@@ -3837,6 +3843,9 @@ def train_split_models(valid_days: int = 30, max_date: Optional[str] = None,
     finally:
         if model_dir_override:
             MODEL_DIR = _orig_model_dir
+            STATS_PATH = _orig_stats_path
+            SIRE_STATS_PATH = _orig_sire_stats_path
+            SIRE_MAP_PATH = _orig_sire_map_path
 
 
 # ============================================================

@@ -204,13 +204,24 @@ def patch_pred_file(fpath: str, remove_odds_adj: bool = True,
             new_tickets = regenerate_tickets(race.get("horses", []), confidence)
             race["tickets"] = new_tickets
             race["formation_tickets"] = []
+            # M' 戦略パターンマップ
+            _pattern_map = {"SS": "E", "S": "C", "A": "C", "B": "D", "C": "D", "D": "D", "E": "skip"}
+            _pat = _pattern_map.get(confidence, "D")
             race["tickets_by_mode"] = {
                 "fixed": new_tickets,
                 "accuracy": [],
                 "balanced": [],
                 "recovery": [],
-                "_meta": {"skipped": False, "skip_reason": "", "race_ev_ratio": 0.0},
+                "_meta": {
+                    "format": f"M': 自信度別 三連複 (SS=E/S=C/A=C/B/C/D=D/E=skip)",
+                    "confidence": confidence,
+                    "pattern": _pat,
+                    "skipped": _pat == "skip",
+                    "skip_reason": "E rank" if _pat == "skip" else "",
+                    "race_ev_ratio": 0.0,
+                },
             }
+            race["overall_confidence"] = confidence
             stats["tickets_regenerated"] += 1
 
     if not dry_run:

@@ -178,7 +178,7 @@ def main():
         created += 1
         if (i + 1) % 50 == 0 or i == len(dates) - 1:
             pct = (i + 1) / len(dates) * 100
-            print(f"  [{i+1}/{len(dates)}] {pct:.0f}% — {dt} ({data['race_count']} races)")
+            print(f"  [{i+1}/{len(dates)}] {pct:.0f}% - {dt} ({data['race_count']} races)")
 
     conn.close()
     print(f"\n完了: {created} ファイル生成, {skipped} スキップ")

@@ -112,9 +112,19 @@ def _resolve_hoshi(horses: list) -> Optional[dict]:
     return unmarked[0]
 
 
+_TICKET_KEY_ALIASES = {
+    "三連複": ("三連複", "3連複", "sanrenpuku"),
+    "三連単": ("三連単", "sanrentan"),
+    "単勝":   ("単勝", "tansho"),
+}
+
 def _lookup_payout(payouts: dict, ticket_type: str, combo_nos: list) -> int:
     """払戻額を返す。combo_nos: 単勝=[馬番], 三連複=[昇順3頭]"""
-    bucket = payouts.get(ticket_type)
+    bucket = None
+    for key in _TICKET_KEY_ALIASES.get(ticket_type, (ticket_type,)):
+        bucket = payouts.get(key)
+        if bucket is not None:
+            break
     if bucket is None:
         return 0
     nos_str = "-".join(str(x) for x in combo_nos)
