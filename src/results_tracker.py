@@ -1720,7 +1720,9 @@ def load_prediction(date: str) -> Optional[dict]:
     """予想データを読み込む（JSON優先、フォールバックでDB）
     JSONファイルが正規データソース。DBはバックフィル時に不正データが混入する場合があるため
     フォールバックとしてのみ使用。
+    読み込み後 heal_zero_composite_races() で scrape_failed 馬・field_count 不整合を修復。
     """
+    data = None
     # JSON優先
     fpath = os.path.join(PREDICTIONS_DIR, f"{date.replace('-', '')}_pred.json")
     if os.path.exists(fpath):
@@ -1732,7 +1734,7 @@ def load_prediction(date: str) -> Optional[dict]:
         except Exception:
             pass
     # DBフォールバック
-    if _DB_AVAILABLE:
+    if data is None and _DB_AVAILABLE:
         try:
             data = _db.load_prediction(date)
             if data:
@@ -1740,7 +1742,9 @@ def load_prediction(date: str) -> Optional[dict]:
                 return data
         except Exception:
             pass
-    return None
+    if data is not None:
+        heal_zero_composite_races(data)
+    return data
 
 
 def list_prediction_dates() -> List[str]:
@@ -4276,10 +4280,15 @@ _HEAL_DEFAULTS = {
 
 
 def heal_zero_composite_races(pred_data: dict) -> int:
-    """composite=0 の馬がいるレースを修復する。
+    """composite=0 / field_count 不整合 / scrape_failed 馬のレースを包括修復する。
 
-    偏差値ベースで composite を再計算し、全馬の win_prob を softmax で再算出する。
-    既に正常値を持つ馬はスキップする (冪等性保証)。
+    (a) scrape_failed 馬の印クリア
+    (b) composite=0 の馬を偏差値ベースで再計算
+    (c) field_count を実際の出走頭数に修正
+    (d) 元 field_count≤3 のレースの三連系馬券を無効化 (stake=0)
+    (e) 全馬の win_prob を softmax で再算出
+
+    冪等: _healed フラグで二重処理を防止。
 
     Returns:
         修復したレース数
@@ -4288,39 +4297,61 @@ def heal_zero_composite_races(pred_data: dict) -> int:
     healed_count = 0
 
     for race in races:
+        if race.get("_healed"):
+            continue
+
         horses = race.get("horses", [])
         if not horses:
             continue
 
-        # composite=0 かつ odds>0 (出走取消でない) の馬を探す
-        need_heal = [
+        stubs = [h for h in horses if h.get("scrape_failed") or h.get("repair_source")]
+        need_composite_heal = [
             h for h in horses
             if h.get("composite", -1) == 0.0
             and (h.get("odds") or 0) > 0
         ]
-        if not need_heal:
+
+        non_scratched = [
+            h for h in horses
+            if not h.get("is_scratched")
+            and (h.get("odds") or 0) > 0
+        ]
+
+        orig_fc = race.get("field_count", 0)
+        fc_mismatch = len(non_scratched) > orig_fc
+
+        if not stubs and not need_composite_heal and not fc_mismatch:
             continue
 
-        # 各馬の composite を再計算
-        fixed_in_race = 0
-        for h in need_heal:
+        # (a) scrape_failed 馬の印クリア
+        for h in stubs:
+            if h.get("mark"):
+                h["mark"] = ""
+
+        # (b) composite=0 の馬を偏差値ベースで再計算
+        for h in need_composite_heal:
             comp = 0.0
             for key, weight in _HEAL_WEIGHTS.items():
                 val = h.get(key)
                 if val is None or val == 0.0:
                     val = _HEAL_DEFAULTS[key]
                 comp += val * weight
-            # クランプ [20.0, 100.0]
-            comp = max(20.0, min(100.0, comp))
-            h["composite"] = round(comp, 2)
-            fixed_in_race += 1
+            h["composite"] = round(max(20.0, min(100.0, comp)), 2)
 
-        # レース全馬の win_prob を softmax で再計算 (出走取消馬を除く)
-        non_scratched = [
-            h for h in horses
-            if not h.get("is_scratched")
-            and (h.get("odds") or 0) > 0
-        ]
+        # (c) field_count を実際の出走頭数に修正
+        if fc_mismatch:
+            race["_orig_field_count"] = orig_fc
+            race["field_count"] = len(non_scratched)
+
+        # (d) 元 field_count≤3 のレースの三連系馬券を無効化
+        if orig_fc > 0 and orig_fc <= 3:
+            for key in ("tickets", "formation_tickets", "strategy_tickets"):
+                for t in (race.get(key) or []):
+                    if "三連" in (t.get("type") or ""):
+                        t["stake"] = 0
+                        t["_disabled_reason"] = f"orig_field_count={orig_fc}"
+
+        # (e) win_prob softmax 再計算
         if non_scratched:
             composites = [h.get("composite", 20.0) for h in non_scratched]
             exp_vals = [math.exp((c - 50.0) / 10.0) for c in composites]
@@ -4335,9 +4366,11 @@ def heal_zero_composite_races(pred_data: dict) -> int:
         venue = race.get("venue", "?")
         race_no = race.get("race_no", "?")
         logger.info(
-            "heal_zero_composite: %s %sR - %d馬修復",
-            venue, race_no, fixed_in_race,
+            "heal_zero_composite: %s %sR - stubs=%d composite_fix=%d fc=%d->%d",
+            venue, race_no, len(stubs), len(need_composite_heal),
+            orig_fc, race.get("field_count", orig_fc),
         )
+        race["_healed"] = True
         healed_count += 1
 
     return healed_count

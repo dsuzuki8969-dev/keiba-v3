@@ -38,7 +38,43 @@ netkeiba 24h クールダウン中でも代替経路で全件完走:
 
 ## 🔴 作業中のタスク
 
-(なし)
+### P0: Walk-Forward バックテスト再構築 (マスター 5/12 指示)
+**背景**: 857/860 の pred.json が 2026-05-06 一括生成。2026-04-27 学習モデルで 2024 年を「予想」= 未来データで過去予測。ROI は嘘。
+
+**マスター方針**: 各年の予想はその年より前のデータだけで学習したモデルで行う。
+- 2024予想 ← 2022+2023 データで学習
+- 2025予想 ← 2022+2023+2024 データで学習
+- 2026予想 ← 2022+2023+2024+2025 データで学習
+
+**TODO**:
+- [x] Step 1: train_model() に max_date + model_dir_override 追加
+- [x] Step 2: Walk-Forward 用モデル 3 本学習 (wf_2024/wf_2025/wf_2026)
+- [x] Step 3: odds_consistency_adj + ml_composite_adj 除去 (Phase 3 パッチ)
+- [x] Step 4: チケット再生成 (confidence別: SS→4点, S/A→7点, B/C/D→10点)
+- [x] Step 5: 真の ROI 算出
+
+**結果** (5/12):
+| 指標 | バイアス入り (旧) | Walk-Forward (新) |
+|---|---|---|
+| ROI | 200.1% | **130.4%** |
+| 的中率 | 43.1% | **36.6%** |
+| 2024 ROI | 175.6% | **107.2%** |
+| 2025 ROI | 217.9% | **138.7%** |
+| 2026 ROI | 179.7% | **124.7%** |
+
+全年・全信頼度で 100% 超 (黒字維持)。ROI -70pt は look-ahead bias 除去の正常な結果。
+
+**残課題**:
+- [ ] WF モデルで ml_composite_adj を再推論 (完全 WF 化 — 要フルパイプライン)
+- [ ] STATS_PATH バグ修正 (rolling_stats.pkl の保存先がモジュールロード時に固定)
+- [ ] ダッシュボード反映 (compare_and_aggregate キャッシュクリア)
+
+### P1: heal バグ修正コミット (5/12 作業分)
+- [x] field_count 修正 (results_tracker.py)
+- [x] load_prediction に heal 統合
+- [x] scrape_failed 印クリア (dashboard.py)
+- [x] 三連複 4 頭未満ガード (betting.py)
+- [ ] master ブランチへマージ + コミット
 
 ---
 

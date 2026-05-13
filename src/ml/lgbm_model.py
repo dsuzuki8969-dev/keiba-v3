@@ -3178,14 +3178,18 @@ def _add_race_relative_features(feats: List[dict]) -> None:
 # ============================================================
 
 
-def _load_ml_races() -> List[dict]:
-    """全ML JSONファイルを日付順に読み込む"""
+def _load_ml_races(max_date: Optional[str] = None) -> List[dict]:
+    """全ML JSONファイルを日付順に読み込む。max_date指定時はその日付以前のみ。"""
     if not os.path.isdir(ML_DATA_DIR):
         return []
+
+    max_fname = max_date.replace("-", "") + ".json" if max_date else None
 
     files = sorted(
         f for f in os.listdir(ML_DATA_DIR)
         if f.endswith(".json") and not f.startswith("_")
+        and f[0].isdigit()
+        and (max_fname is None or f <= max_fname)
     )
 
     all_races = []
@@ -3629,13 +3633,14 @@ def _load_relative_dev_map() -> dict:
     return rel_dev_map
 
 
-def _collect_all_rows(valid_days: int = 30):
+def _collect_all_rows(valid_days: int = 30, max_date: Optional[str] = None):
     """
     全レースデータを一度だけ走査して行を収集する。
     train_split_models() から呼ばれ、各モデル学習で共有する。
+    max_date: 指定時はその日付以前のデータのみ使用 (Walk-Forward用)
     Returns: (all_train_rows, all_valid_groups, split_date, tracker, sire_tracker)
     """
-    races = _load_ml_races()
+    races = _load_ml_races(max_date=max_date)
     if not races:
         raise ValueError(f"ML data not found in {ML_DATA_DIR}")
     all_dates = sorted(set(r.get("date", "") for r in races if r.get("date")))
@@ -3745,78 +3750,102 @@ def _collect_all_rows(valid_days: int = 30):
     return all_train_rows, all_valid_groups, split_date, tracker, sire_tracker
 
 
-def train_split_models(valid_days: int = 30) -> dict:
+def train_split_models(valid_days: int = 30, max_date: Optional[str] = None,
+                       model_dir_override: Optional[str] = None) -> dict:
     """
     全モデルを一括学習する。
     学習順:
       global → turf/dirt → jra_turf/jra_dirt/nar
       → 競馬場別 (venue_XX) → JRA芝×SMILE / JRAダート×SMILE
 
+    max_date: 指定時はその日付以前のデータのみ使用 (Walk-Forward用)
+    model_dir_override: モデル保存先ディレクトリ (Walk-Forward用)
+
     Returns:
         {model_key: metrics_dict}
     """
-    logger.info("=== 全モデル一括学習開始 ===")
+    logger.info("=== 全モデル一括学習開始 (max_date=%s) ===", max_date or "ALL")
 
-    # 全行を1回だけ収集してキャッシュ
-    all_train_rows, all_valid_groups, split_date, tracker, sire_tracker = \
-        _collect_all_rows(valid_days=valid_days)
-    preloaded = (all_train_rows, all_valid_groups, split_date)
+    # Walk-Forward 用にモデル保存先を切り替え
+    if model_dir_override:
+        global MODEL_DIR, STATS_PATH, SIRE_STATS_PATH, SIRE_MAP_PATH
+        _orig_model_dir = MODEL_DIR
+        _orig_stats_path = STATS_PATH
+        _orig_sire_stats_path = SIRE_STATS_PATH
+        _orig_sire_map_path = SIRE_MAP_PATH
+        MODEL_DIR = model_dir_override
+        STATS_PATH = os.path.join(MODEL_DIR, "rolling_stats.pkl")
+        SIRE_STATS_PATH = os.path.join(MODEL_DIR, "sire_rolling_stats.pkl")
+        SIRE_MAP_PATH = os.path.join(MODEL_DIR, "horse_sire_map.pkl")
+        os.makedirs(MODEL_DIR, exist_ok=True)
 
-    # 学習するモデル定義: (model_key, kwargs)
-    # 競馬場コード: JRA=01~10, NAR上位
-    jra_venues = ["01","02","03","04","05","06","07","08","09","10"]
-    nar_venues = ["30","35","36","42","43","44","45","46","47","48","50","51","54","55","65"]
-    smile_cats = ["ss","s","m","i","l","e"]
+    try:
+        # 全行を1回だけ収集してキャッシュ
+        all_train_rows, all_valid_groups, split_date, tracker, sire_tracker = \
+            _collect_all_rows(valid_days=valid_days, max_date=max_date)
+        preloaded = (all_train_rows, all_valid_groups, split_date)
 
-    tasks = [
-        # Level 0: 全体
-        ("global",    dict()),
-        # Level 1: 馬場
-        ("turf",      dict(surface_filter=0)),
-        ("dirt",      dict(surface_filter=1)),
-        # Level 2: JRA/NAR × 馬場
-        ("jra_turf",  dict(surface_filter=0, jra_filter=True)),
-        ("jra_dirt",  dict(surface_filter=1, jra_filter=True)),
-        ("nar",       dict(jra_filter=False)),
-    ]
-    # Level 3: 競馬場別 (JRA全場 + NAR上位)
-    for vc in jra_venues:
-        tasks.append((f"venue_{vc}", dict(jra_filter=True, venue_filter=vc)))
-    for vc in nar_venues:
-        tasks.append((f"venue_{vc}", dict(jra_filter=False, venue_filter=vc)))
-    # Level 4: JRA × 馬場 × SMILE
-    for sm in smile_cats:
-        tasks.append((f"jra_turf_{sm}", dict(surface_filter=0, jra_filter=True, smile_filter=sm)))
-        tasks.append((f"jra_dirt_{sm}", dict(surface_filter=1, jra_filter=True, smile_filter=sm)))
+        # 学習するモデル定義: (model_key, kwargs)
+        # 競馬場コード: JRA=01~10, NAR上位
+        jra_venues = ["01","02","03","04","05","06","07","08","09","10"]
+        nar_venues = ["30","35","36","42","43","44","45","46","47","48","50","51","54","55","65"]
+        smile_cats = ["ss","s","m","i","l","e"]
 
-    results = {}
-    total = len(tasks)
-    for i, (key, kwargs) in enumerate(tasks, 1):
-        logger.info("--- [%d/%d] %s ---", i, total, key)
-        m = train_model(
-            valid_days=valid_days,
-            model_key=key,
-            tracker=tracker,
-            sire_tracker=sire_tracker,
-            _preloaded_rows=preloaded,
-            **kwargs,
-        )
-        results[key] = m
+        tasks = [
+            # Level 0: 全体
+            ("global",    dict()),
+            # Level 1: 馬場
+            ("turf",      dict(surface_filter=0)),
+            ("dirt",      dict(surface_filter=1)),
+            # Level 2: JRA/NAR × 馬場
+            ("jra_turf",  dict(surface_filter=0, jra_filter=True)),
+            ("jra_dirt",  dict(surface_filter=1, jra_filter=True)),
+            ("nar",       dict(jra_filter=False)),
+        ]
+        # Level 3: 競馬場別 (JRA全場 + NAR上位)
+        for vc in jra_venues:
+            tasks.append((f"venue_{vc}", dict(jra_filter=True, venue_filter=vc)))
+        for vc in nar_venues:
+            tasks.append((f"venue_{vc}", dict(jra_filter=False, venue_filter=vc)))
+        # Level 4: JRA × 馬場 × SMILE
+        for sm in smile_cats:
+            tasks.append((f"jra_turf_{sm}", dict(surface_filter=0, jra_filter=True, smile_filter=sm)))
+            tasks.append((f"jra_dirt_{sm}", dict(surface_filter=1, jra_filter=True, smile_filter=sm)))
 
-    # サマリー出力
-    logger.info("=== 学習完了 ===")
-    for key, m in results.items():
-        if m.get("skipped"):
-            logger.info("[%-22s] SKIPPED (train=%d)", key, m.get("train_samples", 0))
-        elif m.get("auc") is None:
-            logger.info("[%-22s] no-valid  iter=%d  n=%d",
-                        key, m["best_iteration"], m["train_samples"])
-        else:
-            logger.info("[%-22s] AUC=%.4f  Top1=%.1f%%  Top3=%.1f%%  iter=%d  n=%d",
-                        key, m["auc"],
-                        m["top1_hit_rate"] * 100, m["top3_hit_rate"] * 100,
-                        m["best_iteration"], m["train_samples"])
-    return results
+        results = {}
+        total = len(tasks)
+        for i, (key, kwargs) in enumerate(tasks, 1):
+            logger.info("--- [%d/%d] %s ---", i, total, key)
+            m = train_model(
+                valid_days=valid_days,
+                model_key=key,
+                tracker=tracker,
+                sire_tracker=sire_tracker,
+                _preloaded_rows=preloaded,
+                **kwargs,
+            )
+            results[key] = m
+
+        # サマリー出力
+        logger.info("=== 学習完了 ===")
+        for key, m in results.items():
+            if m.get("skipped"):
+                logger.info("[%-22s] SKIPPED (train=%d)", key, m.get("train_samples", 0))
+            elif m.get("auc") is None:
+                logger.info("[%-22s] no-valid  iter=%d  n=%d",
+                            key, m["best_iteration"], m["train_samples"])
+            else:
+                logger.info("[%-22s] AUC=%.4f  Top1=%.1f%%  Top3=%.1f%%  iter=%d  n=%d",
+                            key, m["auc"],
+                            m["top1_hit_rate"] * 100, m["top3_hit_rate"] * 100,
+                            m["best_iteration"], m["train_samples"])
+        return results
+    finally:
+        if model_dir_override:
+            MODEL_DIR = _orig_model_dir
+            STATS_PATH = _orig_stats_path
+            SIRE_STATS_PATH = _orig_sire_stats_path
+            SIRE_MAP_PATH = _orig_sire_map_path
 
 
 # ============================================================

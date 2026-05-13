@@ -2500,6 +2500,9 @@ def build_sanrenpuku_dynamic_tickets(
         and not e.is_scratched
     ]
 
+    if len(active) < 4:
+        return []
+
     pivot = _dt_get_pivot(active)
     if pivot is None:
         return []
