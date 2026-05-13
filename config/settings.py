@@ -157,6 +157,39 @@ COMPOSITE_PERSONNEL_WEIGHTS = {
 # JRA最大=小倉40.2% なのでJRA側に影響なし。超過分は ability に再配分。
 PACE_WEIGHT_CAP = 0.35
 
+# --- 施策#6: NAR用 PACE_WEIGHT_CAP ---
+# NARはpace支配が合理的な競馬構造のため、キャップを緩和。
+# 超過分はability（NARでは50近辺に収束しノイジー）ではなく、
+# jockey/trainerに再配分（NARでは騎手力が差になる）。
+PACE_WEIGHT_CAP_NAR = 0.50
+PACE_EXCESS_REDISTRIB_NAR = {"jockey": 0.5, "trainer": 0.5}
+
+# --- 施策#5: NAR会場の坂データ（l3f_elevation補完） ---
+# 公知情報に基づくNAR主要14場の残り600m区間高低差（メートル）
+# JRAはcourse_masterに正確な値があるが、NARは全場0.0のため手動補完
+NAR_VENUE_ELEVATION = {
+    "44": 1.2,   # 大井: 直線やや起伏あり
+    "45": 0.3,   # 川崎: ほぼ平坦
+    "43": 1.0,   # 船橋: やや起伏
+    "42": 0.2,   # 浦和: 平坦
+    "30": 0.5,   # 門別: やや起伏
+    "48": 0.3,   # 名古屋: 平坦
+    "47": 0.2,   # 笠松: 平坦
+    "46": 0.3,   # 金沢: 平坦
+    "50": 0.4,   # 園田: やや起伏
+    "55": 0.5,   # 佐賀: やや起伏
+    "54": 0.3,   # 高知: 平坦
+    "35": 0.8,   # 盛岡: 起伏あり（芝コース含む）
+    "36": 0.4,   # 水沢: やや起伏
+    "51": 0.4,   # 姫路: やや起伏
+}
+
+# NAR会場名セット（JRA/NAR判定用）
+_NAR_VENUE_NAMES = {
+    "大井", "川崎", "船橋", "浦和", "門別", "盛岡", "水沢",
+    "金沢", "笠松", "名古屋", "園田", "姫路", "高知", "佐賀", "帯広",
+}
+
 # ============================================================
 # 展開因子改善フラグ（段階的導入・A/Bテスト対応）
 # ============================================================
@@ -232,11 +265,27 @@ def get_composite_weights(venue_name: str = None, *,
         if _total > 0:
             weights = {k: v / _total for k, v in weights.items()}
 
-    # pace重みキャップ: 超過分をabilityに再配分
-    if weights.get("pace", 0) > PACE_WEIGHT_CAP:
-        excess = weights["pace"] - PACE_WEIGHT_CAP
-        weights["pace"] = PACE_WEIGHT_CAP
-        weights["ability"] = weights.get("ability", 0) + excess
+    # --- 施策#6: pace重みキャップ（JRA/NAR分離） ---
+    # NARはpace支配が合理的→キャップ緩和、超過分はjockey/trainerへ再配分
+    _is_nar_venue = venue_name in _NAR_VENUE_NAMES if venue_name else False
+    _cap = PACE_WEIGHT_CAP_NAR if _is_nar_venue else PACE_WEIGHT_CAP
+    if weights.get("pace", 0) > _cap:
+        excess = weights["pace"] - _cap
+        weights["pace"] = _cap
+        if _is_nar_venue:
+            # 施策#6: NAR→jockey/trainerに再配分（abilityはNARでノイジー）
+            for factor, ratio in PACE_EXCESS_REDISTRIB_NAR.items():
+                weights[factor] = weights.get(factor, 0) + excess * ratio
+        else:
+            # JRA: 従来通りabilityに再配分
+            weights["ability"] = weights.get("ability", 0) + excess
+
+    # --- 施策#5: NAR course重み→jockey再配分 ---
+    # NARではcourse適性データが不足し精度が低い→jockeyに再配分
+    if _is_nar_venue and weights.get("course", 0) > 0.02:
+        course_excess = weights["course"] - 0.02
+        weights["course"] = 0.02
+        weights["jockey"] = weights.get("jockey", 0) + course_excess
 
     return weights
 
@@ -569,8 +618,15 @@ TEKIPAN_GAP_JRA = 7.0              # v4: 5.0→7.0（勝率60%/出現1%へ厳選
 TEKIPAN_GAP_NAR = 5.0              # v4: 据置（NAR gap5で十分な精度）
 TEKIPAN_WIN_PROB_JRA = 0.25        # v4: 0.30→0.25（gap7で絞るためwp緩和）
 TEKIPAN_WIN_PROB_NAR = 0.35        # v4: 0.25→0.35（勝率72%達成の核心条件）
+# --- 施策#4: NAR頭数別動的TEKIPAN win_prob閾値 ---
+# 一律35%はNAR小頭数で過度に厳しい → 頭数別に緩和
+TEKIPAN_WIN_PROB_NAR_BY_FIELD = {
+    "small":  0.30,   # 8頭以下: 1/8=12.5%基準 → 30%は2.4倍
+    "medium": 0.28,   # 9-12頭: 基準10%前後 → 28%は2.8倍
+    "large":  0.25,   # 13頭以上: JRAと同等（基準7-8%）
+}
 TEKIPAN_PLACE3_PROB_JRA = 0.70     # v4: 0.65→0.70（複勝率89%へ引上げ）
-TEKIPAN_PLACE3_PROB_NAR = 0.75     # v4: 0.0→0.75（NAR◉精度の最大改善ポイント）
+TEKIPAN_PLACE3_PROB_NAR = 0.70     # 施策#4: 0.75→0.70（JRAと統一、NARだけ厳しい理由なし）
 TEKIPAN_POP_MAX_JRA = 2            # v4新設: 1-2番人気限定（市場との合意確認）
 TEKIPAN_POP_MAX_NAR = 2            # v4新設: 1-2番人気限定（勝率71.8%の核心条件）
 # ◉EV下限: 43万馬2.3年分の分析に基づく

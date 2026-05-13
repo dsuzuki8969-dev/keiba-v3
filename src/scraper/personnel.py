@@ -1268,11 +1268,25 @@ def build_nar_jockey_stats_from_race_log(
             "GROUP BY jockey_id HAVING runs >= 5",
         ).fetchall()
 
-        valid_wrs = sorted(w / r for _, r, w in all_jockeys if r >= 5)
+        # 施策#3: パーセンタイル方式→ベイズ収縮 + σ正規化（JRAと統一）
+        # min_runs を 5→15 に引き上げてノイズ削減
+        valid_wrs = sorted(w / r for _, r, w in all_jockeys if r >= 15)
         n = len(valid_wrs)
         wr = total_wins / total_runs
 
-        if n > 0:
+        if n >= 5:
+            import statistics as _stats
+            pop_wr = _stats.mean(valid_wrs)
+            pop_sigma = _stats.stdev(valid_wrs) if n >= 5 else 0.03
+            # ベイズ収縮: k=20（NARはサンプル少ないため JRA k=30 より緩和）
+            _k = 20
+            adj_wr = (total_wins + pop_wr * _k) / (total_runs + _k)
+            z = (adj_wr - pop_wr) / max(pop_sigma, 0.005)
+            dev = round(50.0 + z * 10.0, 1)
+            # クランプ: 20-100（DEVIATION["personnel"]と同等のフルレンジ）
+            dev = max(20.0, min(100.0, dev))
+        elif n > 0:
+            # フォールバック: 旧パーセンタイル方式（データ極少時）
             rank_below = sum(1 for w in valid_wrs if w < wr)
             percentile = rank_below / n
             dev = round(40.0 + percentile * 35.0, 1)
@@ -1417,28 +1431,43 @@ def build_nar_trainer_stats_from_race_log(
             "GROUP BY trainer_id HAVING runs >= 5",
         ).fetchall()
 
-        valid_wrs = sorted(w / r for _, r, w in all_trainers if r >= 5)
+        # 施策#3: パーセンタイル方式→ベイズ収縮 + σ正規化（JRAと統一）
+        valid_wrs = sorted(w / r for _, r, w in all_trainers if r >= 15)
         n = len(valid_wrs)
         wr = total_wins / total_runs
         pr = total_places / total_runs
 
-        if n > 0:
+        if n >= 5:
+            import statistics as _stats
+            pop_wr = _stats.mean(valid_wrs)
+            pop_sigma = _stats.stdev(valid_wrs) if n >= 5 else 0.04
+            _k = 20
+            adj_wr = (total_wins + pop_wr * _k) / (total_runs + _k)
+            z = (adj_wr - pop_wr) / max(pop_sigma, 0.005)
+            deviation = round(50.0 + z * 10.0, 1)
+            deviation = max(20.0, min(100.0, deviation))
+            # パーセンタイル→ランク変換（ベイズ偏差値からの逆算）
+            pct = (deviation - 40.0) / 35.0
+            pct = max(0.0, min(1.0, pct))
+        elif n > 0:
             rank_below = sum(1 for w in valid_wrs if w < wr)
             pct = rank_below / n
+            deviation = round(40.0 + pct * 35.0, 1)
+
+        if n > 0:
             rank = (
                 JushaRank.A if pct >= 0.75
                 else JushaRank.B if pct >= 0.50
                 else JushaRank.C if pct >= 0.25
                 else JushaRank.D
             )
-            # NAR絶対閾値チェック
+            # NAR絶対閾値チェック（据え置き）
             if wr < 0.10:
                 rank = JushaRank.D
             elif wr < 0.15 and rank in (JushaRank.A, JushaRank.B):
                 rank = JushaRank.C
             elif wr < 0.22 and rank == JushaRank.A:
                 rank = JushaRank.B
-            deviation = round(40.0 + pct * 35.0, 1)
         else:
             rank = JushaRank.C
             deviation = 50.0

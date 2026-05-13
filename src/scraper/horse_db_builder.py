@@ -661,10 +661,34 @@ def load_horse_db(path: str, force_reload: bool = False) -> dict:
         return {}
 
 
+def _get_alternate_horse_ids(horse_id: str, conn) -> list:
+    """施策#1: horse_id の B_prefix↔正規ID 双方向マッピングを取得"""
+    ids = [horse_id]
+    try:
+        if horse_id.startswith("B"):
+            # B_prefix → 正規ID (netkeiba_id)
+            row = conn.execute(
+                "SELECT netkeiba_id FROM horses WHERE horse_id = ?", (horse_id,)
+            ).fetchone()
+            if row and row[0]:
+                ids.append(row[0])
+        else:
+            # 正規ID → B_prefix
+            row = conn.execute(
+                "SELECT horse_id FROM horses WHERE netkeiba_id = ?", (horse_id,)
+            ).fetchone()
+            if row and row[0] and row[0] != horse_id:
+                ids.append(row[0])
+    except Exception:
+        pass  # horses テーブル不在等のフォールバック
+    return ids
+
+
 def get_past_runs_from_race_log(horse_id: str, max_runs: int = 30):
     """
     race_logテーブルからhorse_idの過去走をPastRunリストとして構築。
     HTMLキャッシュ不要。DB永続化データから確実に取得。
+    施策#1: B_prefix↔正規IDの横断検索で、ID分断された走歴を統合。
     """
     if not horse_id:
         return []
@@ -672,12 +696,15 @@ def get_past_runs_from_race_log(horse_id: str, max_runs: int = 30):
     from src.models import PaceType, PastRun
 
     conn = get_db()
+    # 施策#1: B_prefix↔正規IDの横断検索
+    all_ids = _get_alternate_horse_ids(horse_id, conn)
+    placeholders = ",".join(["?"] * len(all_ids))
     rows = conn.execute(
-        """SELECT * FROM race_log
-           WHERE horse_id = ? AND finish_pos < 90
+        f"""SELECT * FROM race_log
+           WHERE horse_id IN ({placeholders}) AND finish_pos < 90
            ORDER BY race_date DESC
            LIMIT ?""",
-        (horse_id, max_runs),
+        (*all_ids, max_runs),
     ).fetchall()
 
     past_runs = []

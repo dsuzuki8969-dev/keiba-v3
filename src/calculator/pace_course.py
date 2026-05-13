@@ -1222,18 +1222,28 @@ class PaceDeviationCalculator:
 
         # 急坂による前崩れ補正 (0.0〜0.3)
         hill_bonus = 0.0
-        if l3f_elev >= 1.5:
-            hill_bonus = 0.3
-        elif l3f_elev >= 0.8:
-            hill_bonus = 0.15
-        elif PACE_NAR_POSITION_FIX_ENABLED and l3f_elev == 0.0 and course is not None:
-            # 改善5: NAR坂データ不足フォールバック
-            # 坂データなし → コーナー数で前残り度を代替推定
+        # 施策#5: NAR坂データ補完 — settings.py NAR_VENUE_ELEVATION からフォールバック
+        _effective_elev = l3f_elev
+        if _effective_elev == 0.0 and course is not None:
             _is_jra = getattr(course, 'is_jra', True)
             if not _is_jra:
+                from config.settings import NAR_VENUE_ELEVATION
+                _vc = getattr(course, 'venue_code', '') or (getattr(course, 'venue', '') or '')
+                _effective_elev = NAR_VENUE_ELEVATION.get(_vc, 0.0)
+
+        if _effective_elev >= 1.5:
+            hill_bonus = 0.3
+        elif _effective_elev >= 0.8:
+            hill_bonus = 0.15
+        elif _effective_elev >= 0.3:
+            # 施策#5追加: 中程度の起伏でも軽微な前崩れ補正
+            hill_bonus = 0.08
+        elif PACE_NAR_POSITION_FIX_ENABLED and _effective_elev == 0.0 and course is not None:
+            # 改善5: 坂データなし（NAR_VENUE_ELEVATIONにもない場合）→コーナー数で代替
+            _is_jra2 = getattr(course, 'is_jra', True)
+            if not _is_jra2:
                 l3f_corners = getattr(course, 'l3f_corners', 1) or 1
                 if l3f_corners >= 2 and pos <= 0.4:
-                    # コーナー多い=小回り=前有利（坂の代替指標）
                     hill_bonus = 0.15
 
         # 通過順トレンド補正（全分岐共通）: 上昇中(負)=有利 / 下降中(正)=不利
@@ -1378,6 +1388,13 @@ class PaceDeviationCalculator:
 
         # ── 坂の影響（残り600m区間の高低差） ──
         l3f_elev = getattr(course, "l3f_elevation", 0.0)
+        # 施策#5: NAR坂データ補完
+        if l3f_elev == 0.0:
+            _is_jra = getattr(course, 'is_jra', True)
+            if not _is_jra:
+                from config.settings import NAR_VENUE_ELEVATION
+                _vc = getattr(course, 'venue_code', '') or (getattr(course, 'venue', '') or '')
+                l3f_elev = NAR_VENUE_ELEVATION.get(_vc, 0.0)
         if l3f_elev >= 1.5:
             # 急坂（東京2.0m, 阪神1.5m）→ 逃げ先行はスタミナ消耗で止まりやすい
             if is_front:

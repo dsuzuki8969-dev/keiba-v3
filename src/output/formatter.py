@@ -161,7 +161,18 @@ def assign_marks(evaluations: List[HorseEvaluation], is_jra: bool = True) -> Lis
 
     # ---- Step 1: ◉ or ◎ ----
     tekipan_gap = TEKIPAN_GAP_JRA if is_jra else TEKIPAN_GAP_NAR
-    tekipan_wp = TEKIPAN_WIN_PROB_JRA if is_jra else TEKIPAN_WIN_PROB_NAR
+    # 施策#4: NAR win_prob閾値を頭数別に動的化
+    if is_jra:
+        tekipan_wp = TEKIPAN_WIN_PROB_JRA
+    else:
+        from config.settings import TEKIPAN_WIN_PROB_NAR_BY_FIELD
+        _field_size = len(evaluations)
+        if _field_size <= 8:
+            tekipan_wp = TEKIPAN_WIN_PROB_NAR_BY_FIELD["small"]
+        elif _field_size <= 12:
+            tekipan_wp = TEKIPAN_WIN_PROB_NAR_BY_FIELD["medium"]
+        else:
+            tekipan_wp = TEKIPAN_WIN_PROB_NAR_BY_FIELD["large"]
     tekipan_p3 = TEKIPAN_PLACE3_PROB_JRA if is_jra else TEKIPAN_PLACE3_PROB_NAR
     from config.settings import (
         TEKIPAN_MIN_EV_JRA, TEKIPAN_MIN_EV_NAR,
