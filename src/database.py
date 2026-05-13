@@ -1802,7 +1802,7 @@ def populate_race_log_from_predictions() -> int:
     rows = conn.execute(
         """
         SELECT p.date, p.race_id, p.surface, p.distance, p.horses_json,
-               r.order_json
+               r.order_json, p.race_name, p.grade, p.venue
         FROM predictions p
         INNER JOIN race_results r ON p.race_id = r.race_id
         WHERE r.order_json IS NOT NULL
@@ -1826,6 +1826,8 @@ def populate_race_log_from_predictions() -> int:
             race_date = pred["date"]
             surface   = pred["surface"] or ""
             distance  = pred["distance"] or 0
+            race_name = pred["race_name"] or ""
+            grade     = pred["grade"] or ""
 
             # race_id からベニューコードを抽出 (YYYYVVKKDDNN 形式)
             venue_code = race_id[4:6] if len(race_id) >= 6 else ""
@@ -1902,14 +1904,12 @@ def populate_race_log_from_predictions() -> int:
                 _p4c = 0
                 _raw_corners = entry.get("corners")
                 if _raw_corners and isinstance(_raw_corners, list) and len(_raw_corners) > 0:
-                    _cv = _raw_corners[0]
-                    if isinstance(_cv, int) and _cv > 0:
-                        # netkeibaの通過順数値をパース
-                        _s = str(_cv)
-                        if all(c in "123456789" for c in _s) and 2 <= len(_s) <= 4:
-                            _parsed_c = [int(c) for c in _s]
-                            _corners_json = json.dumps(_parsed_c)
-                            _p4c = _parsed_c[-1]
+                    # corners はリスト形式 [2, 1, 3, 4] (各コーナー通過順位)
+                    # results_tracker._parse_corners() が "08-08-08-08" → [8,8,8,8] に変換済み
+                    _valid = [c for c in _raw_corners if isinstance(c, int) and c > 0]
+                    if _valid:
+                        _corners_json = json.dumps(_valid)
+                        _p4c = _valid[-1]
                 _ft_sec = 0.0
                 try:
                     _ts = entry.get("time_sec")
@@ -1938,8 +1938,8 @@ def populate_race_log_from_predictions() -> int:
                        positions_corners, position_4c,
                        finish_time_sec, last_3f_sec, horse_id,
                        margin_ahead, margin_behind,
-                       horse_name)
-                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                       horse_name, race_name, grade)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                     """,
                     (race_date, race_id, venue_code, surface, distance,
                      horse_no, finish,
@@ -1953,7 +1953,8 @@ def populate_race_log_from_predictions() -> int:
                      _corners_json, _p4c,
                      _ft_sec, _l3f, _horse_id,
                      _margins[0], _margins[1],
-                     hinfo.get("horse_name", "")),
+                     hinfo.get("horse_name", ""),
+                     race_name, grade),
                 )
                 inserted += 1
 
@@ -2105,9 +2106,204 @@ def populate_race_log_from_predictions() -> int:
     # HTMLキャッシュから自動補完する（今後データ欠損を防ぐ堅牢な処理）
     _l3f_corners_backfill(conn)
 
+    # ── 既存行の欠損フィールドをバックフィル ──
+    _backfill_race_log_missing_fields(conn)
+
     elapsed = _time.time() - t0
     print(f"[race_log投入] 完了 ({elapsed:.1f}秒) 新規={inserted:,}件挿入, スキップ={skipped:,}件", flush=True)
     return inserted
+
+
+def _backfill_race_log_missing_fields(conn) -> None:
+    """race_log の既存行で欠損しているフィールドを race_results/predictions から復元する。
+
+    対象フィールド:
+      - positions_corners: race_results.order_json の corners リストから再パース
+      - race_name: predictions.race_name から補完
+      - grade: predictions.grade から補完
+      - race_level_dev: 勝ち馬タイム + 基準タイムから算出
+    """
+    import time as _time
+
+    # ── 1. positions_corners の修復 ──
+    # 旧パースバグ（単一digit整数を連結数字と誤認）で空になった行を修復
+    need_corners = conn.execute(
+        """SELECT DISTINCT rl.race_id
+           FROM race_log rl
+           WHERE (rl.positions_corners IS NULL OR rl.positions_corners = ''
+                  OR rl.positions_corners = '[]')
+             AND rl.finish_pos < 90
+             AND SUBSTR(rl.race_id, 5, 2) != '65'"""  # ばんえい除外
+    ).fetchall()
+
+    if need_corners:
+        corner_fix = 0
+        race_ids = [r[0] for r in need_corners]
+        # race_results の order_json から corners を再取得
+        batch_size = 500
+        for bi in range(0, len(race_ids), batch_size):
+            chunk = race_ids[bi:bi + batch_size]
+            ph = ",".join(["?"] * len(chunk))
+            rr_rows = conn.execute(
+                f"SELECT race_id, order_json FROM race_results WHERE race_id IN ({ph})",
+                chunk,
+            ).fetchall()
+            for rr in rr_rows:
+                try:
+                    orders = json.loads(rr[1])
+                    for entry in orders:
+                        hno = entry.get("horse_no")
+                        raw_c = entry.get("corners")
+                        if hno is None or not raw_c or not isinstance(raw_c, list):
+                            continue
+                        valid = [c for c in raw_c if isinstance(c, int) and c > 0]
+                        if valid:
+                            r = conn.execute(
+                                """UPDATE race_log
+                                   SET positions_corners = ?, position_4c = ?
+                                   WHERE race_id = ? AND horse_no = ?
+                                     AND (positions_corners IS NULL
+                                          OR positions_corners = ''
+                                          OR positions_corners = '[]')""",
+                                (json.dumps(valid), valid[-1], rr[0], int(hno)),
+                            )
+                            corner_fix += r.rowcount
+                except (json.JSONDecodeError, TypeError):
+                    pass
+        if corner_fix > 0:
+            conn.commit()
+            print(f"[race_log補完] positions_corners 修復: {corner_fix:,}件", flush=True)
+
+    # ── 2. race_name / grade の補完 ──
+    name_fix = conn.execute(
+        """UPDATE race_log
+           SET race_name = (
+               SELECT p.race_name FROM predictions p
+               WHERE p.race_id = race_log.race_id
+               LIMIT 1
+           )
+           WHERE (race_name IS NULL OR race_name = '')
+             AND EXISTS (
+               SELECT 1 FROM predictions p
+               WHERE p.race_id = race_log.race_id AND p.race_name IS NOT NULL AND p.race_name != ''
+           )"""
+    ).rowcount
+    grade_fix = conn.execute(
+        """UPDATE race_log
+           SET grade = (
+               SELECT p.grade FROM predictions p
+               WHERE p.race_id = race_log.race_id
+               LIMIT 1
+           )
+           WHERE (grade IS NULL OR grade = '')
+             AND EXISTS (
+               SELECT 1 FROM predictions p
+               WHERE p.race_id = race_log.race_id AND p.grade IS NOT NULL AND p.grade != ''
+           )"""
+    ).rowcount
+    if name_fix > 0 or grade_fix > 0:
+        conn.commit()
+        print(f"[race_log補完] race_name={name_fix:,}件, grade={grade_fix:,}件 更新", flush=True)
+
+    # ── 3. race_level_dev の算出 ──
+    _compute_race_level_dev_for_race_log(conn)
+
+
+def _compute_race_level_dev_for_race_log(conn) -> None:
+    """race_log の race_level_dev が NULL の行に対してレースレベル偏差値を算出・設定する。
+
+    算出方式:
+      1. 各レースの1着馬タイム (finish_time_sec WHERE finish_pos=1) を取得
+      2. 基準タイム = 同一コース(venue_code+surface+distance)・良馬場の上位3着平均タイム
+      3. race_level_dev = 50 + (std_time - winner_time) * dist_coeff * k
+    """
+    from config.settings import get_conversion_constant, DEVIATION, DISTANCE_BASE
+
+    # race_level_dev が NULL/0 のレース一覧
+    need_level = conn.execute(
+        """SELECT DISTINCT race_id
+           FROM race_log
+           WHERE (race_level_dev IS NULL OR race_level_dev = 0)
+             AND finish_time_sec > 0
+             AND finish_pos < 90"""
+    ).fetchall()
+    need_ids = {r[0] for r in need_level}
+    if not need_ids:
+        return
+
+    # 各レースの勝ち馬タイムを取得
+    winner_times = {}
+    for row in conn.execute(
+        "SELECT race_id, finish_time_sec FROM race_log "
+        "WHERE finish_pos = 1 AND finish_time_sec > 0"
+    ).fetchall():
+        winner_times[row[0]] = row[1]
+
+    # コース別基準タイム（良馬場の1-3着平均）
+    # course_key = venue_code + surface + distance
+    std_times_cache = {}
+    all_top3 = conn.execute(
+        """SELECT venue_code, surface, distance, finish_time_sec
+           FROM race_log
+           WHERE finish_pos <= 3 AND finish_time_sec > 0
+             AND (condition = '良' OR condition = '' OR condition IS NULL)"""
+    ).fetchall()
+    from collections import defaultdict
+    course_runs = defaultdict(list)
+    for vc, sf, dist, ft in all_top3:
+        key = (vc or "", sf or "", dist or 0)
+        course_runs[key].append(ft)
+    import statistics
+    for key, times in course_runs.items():
+        if len(times) >= 3:
+            std_times_cache[key] = statistics.mean(times)
+
+    # 各レースの venue_code/surface/distance を取得
+    race_meta = {}
+    for row in conn.execute(
+        "SELECT DISTINCT race_id, venue_code, surface, distance "
+        "FROM race_log WHERE race_id IN ({})".format(
+            ",".join(["?"] * len(need_ids))
+        ),
+        list(need_ids),
+    ).fetchall():
+        race_meta[row[0]] = (row[1] or "", row[2] or "", row[3] or 0)
+
+    updated = 0
+    for race_id in need_ids:
+        wt = winner_times.get(race_id)
+        meta = race_meta.get(race_id)
+        if wt is None or meta is None or meta[2] <= 0:
+            continue
+
+        vc, sf, dist = meta
+        std_time = std_times_cache.get((vc, sf, dist))
+        if std_time is None:
+            # 同距離帯(±200m)にフォールバック
+            for d_off in range(-200, 201, 100):
+                st = std_times_cache.get((vc, sf, dist + d_off))
+                if st is not None:
+                    # 距離差補正（100mあたり約6秒）
+                    std_time = st + (d_off * 6.0 / 100.0)
+                    break
+        if std_time is None:
+            continue
+
+        dist_coeff = DISTANCE_BASE / dist
+        _k = get_conversion_constant(dist, vc)
+        lvl = 50 + (std_time - wt) * dist_coeff * _k
+        lvl = max(DEVIATION["ability"]["min"], min(DEVIATION["ability"]["max"], lvl))
+
+        r = conn.execute(
+            "UPDATE race_log SET race_level_dev = ? "
+            "WHERE race_id = ? AND (race_level_dev IS NULL OR race_level_dev = 0)",
+            (round(lvl, 2), race_id),
+        )
+        updated += r.rowcount
+
+    if updated > 0:
+        conn.commit()
+        print(f"[race_log補完] race_level_dev 算出: {updated:,}件更新 ({len(need_ids):,}レース対象)", flush=True)
 
 
 def _load_ml_name_map(cache_hours: int = 24) -> dict:

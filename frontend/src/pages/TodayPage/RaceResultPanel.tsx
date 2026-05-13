@@ -111,6 +111,30 @@ export function RaceResultPanel({ date, raceId }: Props) {
         </div>
       )}
 
+      {/* レース情報ヘッダ（レース名・レースレベル） */}
+      {(data?.race_name || data?.race_level_dev != null) && (
+        <div className="flex items-center gap-3 mb-1">
+          {data.race_name && (
+            <span className="text-sm font-bold text-foreground">{data.race_name}</span>
+          )}
+          {data.race_level_dev != null && (
+            <span className={`text-xs font-bold px-2 py-0.5 rounded ${
+              data.race_level_dev >= 58 ? "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300" :
+              data.race_level_dev >= 54 ? "bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-300" :
+              data.race_level_dev >= 47 ? "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300" :
+              data.race_level_dev >= 43 ? "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300" :
+              "bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-400"
+            }`}>
+              Lv {data.race_level_dev.toFixed(1)}
+              {data.race_level_dev >= 58 ? " S+" :
+               data.race_level_dev >= 54 ? " S" :
+               data.race_level_dev >= 47 ? " A" :
+               data.race_level_dev >= 43 ? " B" : " C"}
+            </span>
+          )}
+        </div>
+      )}
+
       {/* 着順テーブル */}
       <div>
         <h4 className="text-sm font-bold text-foreground mb-2 border-l-[3px] border-blue-500 pl-2">着順</h4>
@@ -140,10 +164,12 @@ export function RaceResultPanel({ date, raceId }: Props) {
                 const last3f = (o as any).last_3f as number | null | undefined;
                 // バック API は time_sec (秒数) で返すため formatTime で "m:ss.f" に変換
                 const timeSec = (o as any).time_sec as number | null | undefined;
+                // time_sec が null の場合、文字列 time ("1:09.1") をフォールバック表示
+                const timeStr = (o as any).time as string | null | undefined;
                 const margin = (o as any).margin as string | null | undefined;
                 const popularity = (o as any).popularity as number | null | undefined;
-                // バック API は win_odds で返す (旧フロント実装は odds を期待していて不一致)
-                const winOdds = (o as any).win_odds as number | null | undefined;
+                // バック API は odds で返す (race_log の win_odds も odds に統合済み)
+                const winOdds = ((o as any).odds ?? (o as any).win_odds) as number | null | undefined;
                 const compRank = compositeRanks[i];
                 const l3fRank = last3fRanks[i];
                 return (
@@ -168,7 +194,7 @@ export function RaceResultPanel({ date, raceId }: Props) {
                       {o.composite != null ? o.composite.toFixed(1) : "—"}
                     </td>
                     <td className="py-1.5 px-1.5 text-right tabular-nums text-[12px]">
-                      {timeSec != null ? formatTime(timeSec) : "—"}
+                      {timeSec != null ? formatTime(timeSec) : timeStr || "—"}
                     </td>
                     <td className="py-1.5 px-1.5 text-right tabular-nums text-[12px] text-muted-foreground">
                       {margin || "—"}

@@ -450,6 +450,10 @@ export interface RaceResultResponse {
   order?: RaceResultEntry[];
   payouts?: Record<string, RaceResultPayout | RaceResultPayout[]>;
   error?: string;
+  // レースレベル偏差値（全馬共通。勝ち馬タイム基準）
+  race_level_dev?: number | null;
+  // レース名（例: "新潟大賞典"）
+  race_name?: string;
   // 結果データ再取得待ち（スクレイパーバグで未修復レース）
   data_incomplete?: boolean;
 }

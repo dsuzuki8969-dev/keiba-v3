@@ -3430,7 +3430,7 @@ def create_app():
                     for _r in _c.execute(
                         "SELECT horse_no, positions_corners, finish_time_sec, last_3f_sec, "
                         "margin_ahead, margin_behind, position_4c, popularity, win_odds, "
-                        "horse_name, jockey_name "
+                        "horse_name, jockey_name, race_level_dev, race_name AS rl_race_name "
                         "FROM race_log WHERE race_id=?",
                         (race_id,)
                     ).fetchall():
@@ -3522,6 +3522,8 @@ def create_app():
                         m = int(_sec // 60)
                         s = _sec - m * 60
                         entry["time"] = f"{m}:{s:04.1f}" if m > 0 else f"{s:.1f}"
+                        if entry.get("time_sec") is None:
+                            entry["time_sec"] = _sec
                     # 人気・単勝オッズ・着差 (race_log に持っていれば使う)
                     if entry.get("popularity") in (None, 0) and rl.get("popularity"):
                         entry["popularity"] = rl["popularity"]
@@ -3553,9 +3555,32 @@ def create_app():
                     entry["odds"] = entry["win_odds"]
                 # 総合指数（composite）を horse_map 経由で補完 / horse_map 側を拡張
                 order.append(entry)
+
+            # レースレベル偏差値（全馬共通値）を race_log から取得
+            _race_level_dev = None
+            _result_race_name = ""
+            if racelog_map:
+                for _rl in racelog_map.values():
+                    if _rl.get("race_level_dev") is not None and _rl["race_level_dev"] != 0:
+                        _race_level_dev = round(float(_rl["race_level_dev"]), 1)
+                        break
+                    if not _result_race_name and _rl.get("rl_race_name"):
+                        _result_race_name = _rl["rl_race_name"]
+
+            # race_name は pred.json → race_log の順でフォールバック
+            _pred_race_name = ""
+            if pred_path.exists():
+                for r in pred_data.get("races", []):
+                    if r.get("race_id") == race_id:
+                        _pred_race_name = r.get("race_name", "")
+                        break
+            _final_race_name = _pred_race_name or _result_race_name
+
             return jsonify(
                 ok=True, found=True, order=order,
                 payouts=_sanitize_payouts(race_result.get("payouts", {})),
+                race_name=_final_race_name,
+                race_level_dev=_race_level_dev,
                 # 応急パッチで odds を埋めた場合、データが未完全であることを通知
                 data_incomplete=bool(_bug_detected),
             )
