@@ -34,8 +34,8 @@ export const MARKS = {
   tannuke:  { symbol: "▲", label: "単穴" },
   rendashi: { symbol: "△", label: "連下" },
   rendashi2:{ symbol: "★", label: "連下2" },
-  oana:     { symbol: "☆", label: "穴馬" },
-  kiken:    { symbol: "×", label: "危険" },
+  oana:     { symbol: "☆", label: "連下3" },
+  // v5: kiken(×) は廃止
 } as const;
 
 export type MarkType = keyof typeof MARKS;
@@ -180,7 +180,7 @@ export function posCls(pos: number | null | undefined): string {
   return "";
 }
 
-/** 印 → Tailwindクラス（◉/◎=緑, ○/☆=青, ▲/×=赤, △=紫, ★=黒） */
+/** 印 → Tailwindクラス（◉/◎=緑, ○/☆=青, ▲=赤, △=紫, ★=黒） */
 export function markCls(mark: string): string {
   switch (mark) {
     case "◉": return "text-emerald-600 font-extrabold";
@@ -190,7 +190,7 @@ export function markCls(mark: string): string {
     case "△": return "text-purple-600 font-bold";
     case "★": return "text-foreground font-bold";
     case "☆": return "text-blue-600 font-bold";
-    case "×": return "text-red-600 font-bold";
+    // v5: ×(kiken) 廃止
     default:  return "text-muted-foreground";
   }
 }

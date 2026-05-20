@@ -7,7 +7,7 @@ function fmtPct(v: number): string {
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function MarkTable({ byMark }: { byMark: Record<string, any> }) {
-  const markOrder = ["◉", "◎", "○", "▲", "△", "★", "☆", "×"];
+  const markOrder = ["◉", "◎", "○", "▲", "△", "★", "☆"];
   const marks = markOrder.filter((m) => byMark[m]);
 
   if (marks.length === 0) return <div className="text-sm text-muted-foreground">印別データなし</div>;

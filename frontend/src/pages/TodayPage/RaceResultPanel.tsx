@@ -36,7 +36,7 @@ function computeRanks(values: Array<number | null | undefined>, lowerIsBetter: b
 
 const MARK_SYMBOL: Record<string, string> = {
   tekipan: "◉", honmei: "◎", taikou: "○", tannuke: "▲",
-  rendashi: "△", rendashi2: "★", oana: "☆", kiken: "×",
+  rendashi: "△", rendashi2: "★", oana: "☆",
 };
 
 interface Props {

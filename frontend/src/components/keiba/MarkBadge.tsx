@@ -3,7 +3,7 @@ import { MARKS, type MarkType } from "@/lib/constants";
 /**
  * 印バッジ（v6.1 プレミアム刷新）
  * --------------------------------------------------------------
- * ◉鉄板・◎本命は金箔グラデ + 微発光。○/☆/▲/△/★/× は
+ * ◉鉄板・◎本命は金箔グラデ + 微発光。○/☆/▲/△/★ は
  * セマンティックカラーに統一し、ホバーで微弱な scale/glow。
  *
  * a11y: MARKS[key].label を title に載せる既存仕様を維持。
@@ -25,7 +25,6 @@ const STYLES: Record<string, Style> = {
   rendashi:  { color: "text-mark-rendashi",  glow: "rgba(124,58,237,0.45)" },
   rendashi2: { color: "text-foreground",     glow: "rgba(148,163,184,0.45)" },
   oana:      { color: "text-mark-oana",      glow: "rgba(37,99,235,0.45)" },
-  kiken:     { color: "text-mark-tannuke",   glow: "rgba(220,38,38,0.45)" },
 };
 
 interface Props {

@@ -5,7 +5,7 @@ import type { HorseData } from "./RaceDetailView";
 const MARK_COLORS: Record<string, string> = {
   "◉": "text-emerald-600", "◎": "text-emerald-600",
   "○": "text-blue-600", "▲": "text-red-600", "△": "text-purple-600",
-  "★": "text-foreground", "☆": "text-blue-600", "×": "text-red-600",
+  "★": "text-foreground", "☆": "text-blue-600",
 };
 
 interface Props {

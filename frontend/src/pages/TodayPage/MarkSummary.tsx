@@ -44,7 +44,7 @@ interface MarkDef {
   border: string;
 }
 
-// 色体系: ◉/◎=緑, ○/☆=青, ▲/×=赤, △=紫, ★=黒
+// 色体系: ◉/◎=緑, ○/☆=青, ▲=赤, △=紫, ★=黒
 const MARK_ORDER: MarkDef[] = [
   { key: "◉", sym: "◉", label: "鉄板", aliases: ["tekipan"], color: "text-emerald-700", bg: "bg-emerald-50 dark:bg-emerald-950/30", border: "border-l-emerald-200" },
   { key: "◎", sym: "◎", label: "本命", aliases: ["honmei"], color: "text-emerald-700", bg: "bg-emerald-50 dark:bg-emerald-950/30", border: "border-l-emerald-200" },
@@ -52,8 +52,7 @@ const MARK_ORDER: MarkDef[] = [
   { key: "▲", sym: "▲", label: "単穴", aliases: ["tannuke"], color: "text-red-700", bg: "bg-red-50 dark:bg-red-950/30", border: "border-l-red-200" },
   { key: "△", sym: "△", label: "連下", aliases: ["rendashi"], color: "text-purple-700", bg: "bg-purple-50 dark:bg-purple-950/30", border: "border-l-purple-200" },
   { key: "★", sym: "★", label: "連下2", aliases: ["rendashi2"], color: "text-foreground", bg: "bg-gray-50 dark:bg-gray-950/30", border: "border-l-gray-200" },
-  { key: "☆", sym: "☆", label: "穴", aliases: ["oana"], color: "text-blue-700", bg: "bg-blue-50 dark:bg-blue-950/30", border: "border-l-blue-200" },
-  { key: "×", sym: "×", label: "危険", aliases: ["kiken"], color: "text-red-700", bg: "bg-red-50/50 dark:bg-red-950/20", border: "border-l-red-200" },
+  { key: "☆", sym: "☆", label: "連下3", aliases: ["oana"], color: "text-blue-700", bg: "bg-blue-50 dark:bg-blue-950/30", border: "border-l-blue-200" },
 ];
 
 /** 全馬の値から順位・色を計算 */
@@ -296,7 +295,6 @@ export function MarkSummary({ horses: rawHorses, race }: Props) {
   }, [horses]);
 
   const tokusenHorses = horses.filter((h) => h.is_tokusen);
-  const kikenHorses = horses.filter((h) => h.is_tokusen_kiken);
 
   return (
     <PremiumCard variant="default" padding="md">
@@ -383,62 +381,6 @@ export function MarkSummary({ horses: rawHorses, race }: Props) {
                       <span className="text-muted-foreground text-xs">{popStr}</span>
                       <span className="text-muted-foreground text-xs">
                         {cg}・{comp.toFixed(1)}({compRank}位/{horses.length}頭)
-                      </span>
-                    </div>
-                  </div>
-                );
-              })}
-          </div>
-        )}
-
-        {/* 特選危険馬 → ×の行 */}
-        {kikenHorses.length > 0 && (
-          <div className="mt-4 space-y-2">
-            <h4 className="text-sm font-heading font-bold text-red-700 dark:text-red-400 border-b border-red-200 dark:border-red-800 pb-1">
-              特選危険馬
-            </h4>
-            {kikenHorses
-              .sort((a, b) => ((b.tokusen_kiken_score as number) || 0) - ((a.tokusen_kiken_score as number) || 0))
-              .map((h) => {
-                const oddsStr = h.odds != null && h.odds > 0
-                  ? `${Number(h.odds).toFixed(1)}倍`
-                  : "—";
-                const popStr = h.popularity != null ? `${h.popularity}人気` : "";
-                const comp = h.composite || 0;
-                const compRank = horses.filter((o) => (o.composite || 0) > comp).length + 1;
-
-                const reasons: string[] = [];
-                if (h.popularity != null && compRank > h.popularity + 2)
-                  reasons.push(`${h.popularity}人気だが総合${compRank}位 → 過大評価`);
-                const pastRuns = (h.past_runs || []) as Array<{ finish_pos?: number }>;
-                if (pastRuns.length > 0) {
-                  const prevFp = pastRuns[0]?.finish_pos;
-                  if (prevFp != null && prevFp >= 5)
-                    reasons.push(`前走${prevFp}着と凡走`);
-                }
-                let consec = 0;
-                for (const r of pastRuns) {
-                  if (r.finish_pos != null && r.finish_pos >= 4) consec++;
-                  else break;
-                }
-                if (consec >= 2)
-                  reasons.push(`直近${consec}走連続4着以下`);
-
-                return (
-                  <div
-                    key={h.horse_no}
-                    className="flex flex-col gap-1 text-sm py-2 px-3 rounded-md border-l-[3px] bg-red-50 dark:bg-red-950/30 border-l-red-600"
-                  >
-                    <div className="flex items-center gap-2">
-                      <span className="inline-block px-2 py-0.5 rounded-full text-[11px] font-bold bg-red-600 text-white">
-                        特選危険馬
-                      </span>
-                      <span className={`inline-flex w-5 h-5 items-center justify-center rounded-sm text-[10px] font-bold shrink-0 ${WAKU_BG[h.gate_no as number] || "bg-gray-200"}`}>{h.horse_no}</span>
-                      <span className="font-semibold">{h.horse_name}</span>
-                      <span className="text-muted-foreground text-xs">{oddsStr}</span>
-                      <span className="text-muted-foreground text-xs">{popStr}</span>
-                      <span className="text-muted-foreground text-xs">
-                        総合{comp.toFixed(1)}({compRank}位/{horses.length}頭)
                       </span>
                     </div>
                   </div>

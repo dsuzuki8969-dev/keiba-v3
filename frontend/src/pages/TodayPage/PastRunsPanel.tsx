@@ -8,7 +8,7 @@ import type { HorseData, PastRunData } from "./RaceDetailView";
 
 const MARK_SYMBOL: Record<string, string> = {
   tekipan: "◉", honmei: "◎", taikou: "○", tannuke: "▲",
-  rendashi: "△", rendashi2: "★", oana: "☆", kiken: "×",
+  rendashi: "△", rendashi2: "★", oana: "☆",
 };
 
 interface Props {

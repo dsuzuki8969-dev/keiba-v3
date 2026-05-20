@@ -11,9 +11,9 @@ import type {
 // 英字キー→印記号の変換
 const MARK_SYM: Record<string, string> = {
   tekipan: "◉", honmei: "◎", taikou: "○", tannuke: "▲",
-  rendashi: "△", rendashi2: "★", oana: "☆", kiken: "×",
+  rendashi: "△", rendashi2: "★", oana: "☆",
   "◉": "◉", "◎": "◎", "○": "○", "▲": "▲",
-  "△": "△", "★": "★", "☆": "☆", "×": "×",
+  "△": "△", "★": "★", "☆": "☆",
 };
 
 interface Props {

@@ -18,7 +18,6 @@ export const MARK_SYMBOL: Record<string, string> = {
   rendashi:  "△",
   rendashi2: "★",
   oana:      "☆",
-  kiken:     "×",
 };
 
 /**
@@ -77,7 +76,6 @@ export function symbolToMarkKey(sym: string): string {
     case "△": return "rendashi";
     case "★": return "rendashi2";
     case "☆": return "oana";
-    case "×": return "kiken";
     default:  return sym;
   }
 }

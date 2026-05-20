@@ -27,11 +27,11 @@ import { useAbilityDisplayMode } from "@/hooks/useAbilityDisplayMode";
 
 // ---------- 定数 ----------
 
-const D_MARK_OPTIONS = ["－", "◉", "◎", "○", "▲", "△", "★", "☆", "×"] as const;
+const D_MARK_OPTIONS = ["－", "◉", "◎", "○", "▲", "△", "★", "☆"] as const;
 
 const MARK_SYMBOL: Record<string, string> = {
   tekipan: "◉", honmei: "◎", taikou: "○", tannuke: "▲",
-  rendashi: "△", rendashi2: "★", oana: "☆", kiken: "×",
+  rendashi: "△", rendashi2: "★", oana: "☆",
 };
 
 const STYLE_SHORT: Record<string, string> = {

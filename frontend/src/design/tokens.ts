@@ -39,7 +39,6 @@ export const colors = {
     rendashi: "#7c3aed",
     rendashi2: "#0f172a",
     oana: "#2563eb",
-    kiken: "#dc2626",
   },
   surface: {
     turf: "#16a34a",

@@ -21,7 +21,7 @@ const WAKU_BG: Record<number, string> = {
   8: "bg-pink-400 text-white",
 };
 
-// 印スタイル（◉/◎=緑, ○/☆=青, ▲/×=赤, △=紫, ★=黒）
+// 印スタイル（◉/◎=緑, ○/☆=青, ▲=赤, △=紫, ★=黒）
 const MARK_COLORS: Record<string, string> = {
   "◉": "text-emerald-600",
   "◎": "text-emerald-600",
@@ -30,7 +30,6 @@ const MARK_COLORS: Record<string, string> = {
   "△": "text-purple-600",
   "★": "text-foreground",
   "☆": "text-blue-600",
-  "×": "text-red-600",
 };
 
 // 脚質短縮

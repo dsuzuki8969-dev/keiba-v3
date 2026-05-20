@@ -135,6 +135,21 @@ def _regen_tickets_for_race(race: dict) -> dict:
     if len(active) < 3:
         return race
 
+    # NAR C/D ランクは三連複スキップ（ROI 55-65% で大赤字のため）
+    # JRA C/D は黒字(ROI 243-307%)なので維持
+    is_jra = race.get("is_jra", False)
+    confidence = race.get("overall_confidence", "") or ""
+    if not is_jra and confidence in ("C", "D", "E", "F"):
+        race["formation_tickets"] = []
+        race["tickets"] = []
+        race["bet_decision"] = {
+            "total_stake": 0,
+            "ticket_count": 0,
+            "skip": True,
+            "skip_reason": f"NAR_{confidence}_skip",
+        }
+        return race
+
     # 印別グループ
     def _by_marks(marks_set):
         return sorted(

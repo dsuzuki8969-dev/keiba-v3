@@ -24,12 +24,13 @@ STAKE_PER_TICKET = 100
 HONMEI_MARKS = {"◉", "◎"}
 TAIKOU_MARKS = {"○", "〇"}
 RENKA_MARKS  = {"▲"}
-WIDE_MARKS   = {"△", "★"}
-OANA_MARKS   = {"☆"}
+WIDE_MARKS   = {"△", "★", "☆"}  # v5: ☆は通常6印目としてWIDEに含む
+OANA_MARKS   = set()              # v5: ☆はWIDE_MARKSに移動、動的追加不要
 
 MARK_PRIORITY: dict[str, int] = {
     "◉": 0, "◎": 1, "○": 2, "〇": 2,
     "▲": 3, "△": 4, "★": 5, "☆": 6,
+    # v5: ×は廃止のため PRIORITY に含まない
 }
 
 HOSHI_DYNAMIC_MIN_ODDS = 10.0

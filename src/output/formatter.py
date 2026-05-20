@@ -64,12 +64,14 @@ def _scoring_value(ev: "HorseEvaluation") -> float:
 
 
 def assign_marks(evaluations: List[HorseEvaluation], is_jra: bool = True) -> List[HorseEvaluation]:
-    """印付与: ◉◎○▲△★☆×（JRA/NAR分離閾値）
+    """印付与: ◉◎○▲△★☆（JRA/NAR分離閾値）
 
     ◉/◎: composite×ML合意ベース（合意時=composite1位、不一致時=win_prob1位を優先）
-    ○▲△★: composite 2-5位（各1頭、総合指数順）
-    ☆: 特選穴馬（is_tokusen の未印馬、最大2頭）
-    ×: 特選危険馬（is_tokusen_kiken — ML×composite二重否定、3人気以下限定）
+    ○▲△★☆: composite 2-6位（各1頭、総合指数順）
+
+    v5改定 (2026-05-20):
+      - ×(危険馬) 廃止: 概念自体を撤廃
+      - ☆: 特選穴馬ロジック廃止 → 単純にcomposite 6位の印として付与
 
     Plan-γ Phase 3: USE_HYBRID_SCORING=True 時はソート・gap 判定を hybrid_total ベースに切替。
     False (default) では従来通り composite を使用。
@@ -226,6 +228,7 @@ def assign_marks(evaluations: List[HorseEvaluation], is_jra: bool = True) -> Lis
         Mark.TANNUKE: _MIN_WP_TANNUKE,
         Mark.RENDASHI: _MIN_WP_RENDASHI,
         Mark.RENDASHI2: 0,
+        Mark.ANA: 0,  # v5: ☆は6頭目の印（wp下限なし）
     }
 
     # win_prob上位なのにcomposite圏外の馬を★枠に救済
@@ -243,7 +246,7 @@ def assign_marks(evaluations: List[HorseEvaluation], is_jra: bool = True) -> Lis
             _wp_rescue = _wp_cand
             break  # 最初に見つかった圏外馬を救済
 
-    marks_to_assign = [Mark.TAIKOU, Mark.TANNUKE, Mark.RENDASHI, Mark.RENDASHI2]
+    marks_to_assign = [Mark.TAIKOU, Mark.TANNUKE, Mark.RENDASHI, Mark.RENDASHI2, Mark.ANA]
     for mark in marks_to_assign:
         # ★枠はwp_rescue馬に割り当て
         if mark == Mark.RENDASHI2 and _wp_rescue and _wp_rescue.mark == Mark.NONE:
@@ -270,14 +273,14 @@ def assign_marks(evaluations: List[HorseEvaluation], is_jra: bool = True) -> Lis
         if not assigned:
             logger.warning("印付与失敗: %s — wp条件を満たす未印馬がいない(sorted_ev=%d)", mark.value, len(sorted_ev))
 
-    # ---- Step 2b: 5印完備保証（絶対ルール） ----
-    # ◎○▲△★の5印は必ず全て存在しなければならない
+    # ---- Step 2b: 6印完備保証（絶対ルール） ----
+    # ◎○▲△★☆の6印は必ず全て存在しなければならない
     # Step 2で付けられなかった印がある場合、composite順で強制付与
-    _all_5_marks = [Mark.TEKIPAN, Mark.HONMEI, Mark.TAIKOU, Mark.TANNUKE, Mark.RENDASHI, Mark.RENDASHI2]
+    _all_6_marks = [Mark.TEKIPAN, Mark.HONMEI, Mark.TAIKOU, Mark.TANNUKE, Mark.RENDASHI, Mark.RENDASHI2, Mark.ANA]
     _assigned = {ev.mark for ev in sorted_ev}
     # ◎/◉は同枠（どちらかあればOK）
     _has_honmei = Mark.TEKIPAN in _assigned or Mark.HONMEI in _assigned
-    _check_marks = [Mark.TAIKOU, Mark.TANNUKE, Mark.RENDASHI, Mark.RENDASHI2]
+    _check_marks = [Mark.TAIKOU, Mark.TANNUKE, Mark.RENDASHI, Mark.RENDASHI2, Mark.ANA]
     for _req_mark in _check_marks:
         if _req_mark in _assigned:
             continue
@@ -287,35 +290,19 @@ def assign_marks(evaluations: List[HorseEvaluation], is_jra: bool = True) -> Lis
                 ev.mark = _req_mark
                 _assigned.add(_req_mark)
                 logger.info(
-                    "5印保証: %s に %s を強制付与 (composite=%.1f)",
+                    "6印保証: %s に %s を強制付与 (composite=%.1f)",
                     ev.horse.horse_name, _req_mark.value, ev.composite,
                 )
                 break
         else:
-            # 全馬に印が付いている場合でも★は必ず付ける
+            # 全馬に印が付いている場合でもスキップ
             # → composite最下位の印付き馬の印を入れ替えはしない（ログ警告のみ）
-            logger.warning("5印保証: %s を付与する未印馬がいない", _req_mark.value)
+            logger.warning("6印保証: %s を付与する未印馬がいない", _req_mark.value)
 
-    # ---- Step 3: ☆ — 特選穴馬（is_tokusen の未印馬、最大1頭） ----
-    # マスター指示 2026-04-22: ☆ は 1頭のみ（穴馬代表）
-    tokusen_cands = sorted(
-        [ev for ev in sorted_ev if ev.is_tokusen and ev.mark == Mark.NONE],
-        key=lambda e: e.tokusen_score,
-        reverse=True,
-    )
-    for ev in tokusen_cands[:1]:
-        ev.mark = Mark.ANA
-
-    # ---- Step 3b: 印付与拡張（廃止） ----
-    # マスター指示 2026-04-22: ☆ は 1頭のみ。補助印としての ☆ 追加付与は禁止。
-    # Phase 3（三連単フォーメーション）では rank3 に「同断層内の無印馬」を自動で拾うため
-    # 補助印は不要になった（generate_sanrentan_formation 参照）。
-
-    # ---- Step 4: × — 特選危険馬（未印の馬のみ。5印を絶対に上書きしない） ----
-    _protected = {Mark.TEKIPAN, Mark.HONMEI, Mark.TAIKOU, Mark.TANNUKE, Mark.RENDASHI, Mark.RENDASHI2}
-    for ev in sorted_ev:
-        if getattr(ev, "is_tokusen_kiken", False) and ev.mark not in _protected:
-            ev.mark = Mark.KIKEN
+    # ---- (旧 Step 3/4 は v5 で廃止) ----
+    # v5改定 (2026-05-20): ☆はStep2でcomposite6位として付与済み
+    # ×(危険馬)は概念自体を廃止
+    # is_tokusen / is_tokusen_kiken フラグはデータ互換のため残存するが印判定には使用しない
 
     return evaluations
 

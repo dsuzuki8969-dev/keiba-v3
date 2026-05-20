@@ -24,12 +24,12 @@ interface Props {
 }
 
 // D印の選択肢
-const D_MARK_OPTIONS = ["－", "◉", "◎", "○", "▲", "△", "★", "☆", "×"] as const;
+const D_MARK_OPTIONS = ["－", "◉", "◎", "○", "▲", "△", "★", "☆"] as const;
 
 // 印シンボルマップ
 const MARK_SYMBOL: Record<string, string> = {
   tekipan: "◉", honmei: "◎", taikou: "○", tannuke: "▲",
-  rendashi: "△", rendashi2: "★", oana: "☆", kiken: "×",
+  rendashi: "△", rendashi2: "★", oana: "☆",
 };
 
 // 8 軸定義（PC と統一）

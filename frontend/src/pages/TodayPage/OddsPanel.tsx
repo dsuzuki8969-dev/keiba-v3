@@ -13,13 +13,13 @@ const WinProbBar = lazy(() =>
 
 const MARK_KEY_TO_SYM: Record<string, string> = {
   tekipan: "◉", honmei: "◎", taikou: "○", tannuke: "▲",
-  rendashi: "△", rendashi2: "★", oana: "☆", kiken: "×",
+  rendashi: "△", rendashi2: "★", oana: "☆",
 };
 
 const MARK_COLORS: Record<string, string> = {
   "◉": "text-emerald-600", "◎": "text-emerald-600",
   "○": "text-blue-600", "▲": "text-red-600", "△": "text-purple-600",
-  "★": "text-foreground", "☆": "text-blue-600", "×": "text-red-600",
+  "★": "text-foreground", "☆": "text-blue-600",
 };
 
 // 乖離シグナルの色

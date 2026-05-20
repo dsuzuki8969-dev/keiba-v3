@@ -189,7 +189,7 @@ export function DetailedAnalysis({ data }: Props) {
 
 // 印別テーブル
 function MarkTable({ data }: { data: Record<string, Record<string, number>> }) {
-  const marks = ["◉", "◎", "○", "▲", "△", "★", "☆", "×"].filter((m) => data[m]);
+  const marks = ["◉", "◎", "○", "▲", "△", "★", "☆"].filter((m) => data[m]);
   if (!marks.length)
     return <p className="text-xs text-muted-foreground">データなし</p>;
 

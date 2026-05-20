@@ -785,7 +785,6 @@ const MARK_RING: Record<string, string> = {
   "△": "ring-2 ring-purple-500",
   "★": "ring-2 ring-gray-600",
   "☆": "ring-2 ring-blue-400",
-  "×": "ring-2 ring-red-400",
 };
 
 // --- 位置変化インジケータ ---
