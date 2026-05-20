@@ -142,6 +142,10 @@ def _regen_tickets_for_race(race: dict) -> dict:
     if not is_jra and confidence in ("C", "D", "E", "F"):
         race["formation_tickets"] = []
         race["tickets"] = []
+        # tickets_by_mode も全クリア（dashboard _collect_strategy_tickets が参照するため）
+        if "tickets_by_mode" in race:
+            for k in race["tickets_by_mode"]:
+                race["tickets_by_mode"][k] = []
         race["bet_decision"] = {
             "total_stake": 0,
             "ticket_count": 0,
