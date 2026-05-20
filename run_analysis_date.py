@@ -58,6 +58,13 @@ IGNORE_TTL = "--ignore-ttl" in sys.argv
 RACE_IDS_FROM_DB = "--race-ids-from-db" in sys.argv
 RACE_IDS_FROM_PRED = "--race-ids-from-pred" in sys.argv
 FORCE_RERUN = "--force" in sys.argv
+# --offline: スクレイピング完全スキップ。キャッシュ/DBのみでML推論を実行。
+# netkeiba制限時やmargin修復後の能力値再計算に使用。
+OFFLINE_MODE = "--offline" in sys.argv
+if OFFLINE_MODE:
+    RACE_IDS_FROM_PRED = True  # offlineではpred.jsonからレースID取得を強制
+    IGNORE_TTL = True          # キャッシュTTL無視（ディスク上のデータを全て使用）
+    NO_PURGE = True            # キャッシュパージしない
 # --workers N: 並列プリフェッチのワーカー数（デフォルト3）
 _workers_idx = next((i for i, a in enumerate(sys.argv) if a == "--workers"), -1)
 WORKERS = int(sys.argv[_workers_idx + 1]) if _workers_idx >= 0 and _workers_idx + 1 < len(sys.argv) else 5
@@ -102,22 +109,27 @@ except ImportError:
 
 all_courses = get_all_courses()
 scraper = PremiumNetkeibaScraper(all_courses, ignore_ttl=IGNORE_TTL)
-scraper.login()
-kb_ok = scraper.training.login()
-if not kb_ok:
-    logger.warning("競馬ブックログイン失敗。3秒後にリトライ...")
-    time.sleep(3)
-    kb_ok = scraper.training.login()
-if not kb_ok:
-    P("[bold yellow]⚠ 競馬ブック未認証: 調教・厩舎コメントはnetkeiba経由のみ[/]")
+if OFFLINE_MODE:
+    P("  [bold yellow]⚠ オフラインモード: ログインスキップ、キャッシュ/DBのみ使用[/]")
+    scraper._offline_mode = True  # netkeiba fallback 無効化
+    kb_ok = False
 else:
-    grade = "プレミアム" if scraper.training.is_premium else "一般"
-    P(f"  競馬ブック: ログイン成功 ({grade})")
+    scraper.login()
+    kb_ok = scraper.training.login()
+    if not kb_ok:
+        logger.warning("競馬ブックログイン失敗。3秒後にリトライ...")
+        time.sleep(3)
+        kb_ok = scraper.training.login()
+    if not kb_ok:
+        P("[bold yellow]⚠ 競馬ブック未認証: 調教・厩舎コメントはnetkeiba経由のみ[/]")
+    else:
+        grade = "プレミアム" if scraper.training.is_premium else "一般"
+        P(f"  競馬ブック: ログイン成功 ({grade})")
 
-# 起動時に古いキャッシュを自動パージ（30日超）
+# 起動時に古いキャッシュを自動パージ（2年超のみ削除 — 2024-01-01～最新を保持）
 if not NO_PURGE:
     from src.scraper.netkeiba import purge_old_cache
-    _purge = purge_old_cache(max_age_days=30)
+    _purge = purge_old_cache(max_age_days=730)
     if _purge["removed"]:
         P(f"  キャッシュパージ: {_purge['removed']}件削除 ({_purge['freed_mb']}MB解放)")
     # race_cache（JSON形式）の期限切れもパージ
@@ -259,26 +271,31 @@ P(f"  {len(race_ids)}レース: {race_ids}")
 # ─── [3b/N] カレンダー突合検証 (T-038) ──────────────────────────────
 # kaisai_calendar.json とのカレンダー整合チェック。
 # JRA race_id が NAR の元旦に配置される等の汚染 race_id を即時排除する。
+# --offline 時: カレンダー未登録でブロックされるのを防ぐためスキップ
 from src.scraper.kaisai_calendar_util import validate_race_against_calendar
 from data.masters.venue_master import VENUE_CODE_TO_NAME, JRA_VENUE_CODES as _JRA_VC
 
 _calendar_skipped: list = []
 _calendar_valid: list = []
-for _rid in race_ids:
-    _vc = _rid[4:6] if len(_rid) >= 6 else ""
-    _vname = VENUE_CODE_TO_NAME.get(_vc, "")
-    _is_jra = _vc in _JRA_VC
-    if not _vname:
-        # 場コード不明は検証できないためスルー（ログのみ）
-        logger.warning("[T-038] race_id=%s: 場コード=%s 不明 → カレンダー検証スキップ", _rid, _vc)
-        _calendar_valid.append(_rid)
-        continue
-    _ok, _reason = validate_race_against_calendar(_rid, DATE, _vname, _is_jra)
-    if not _ok:
-        logger.warning("[T-038] カレンダー不整合 → skip: %s", _reason)
-        _calendar_skipped.append(_rid)
-    else:
-        _calendar_valid.append(_rid)
+if OFFLINE_MODE:
+    _calendar_valid = list(race_ids)
+    P("  [yellow][T-038] オフラインモード: カレンダー突合スキップ[/]")
+else:
+    for _rid in race_ids:
+        _vc = _rid[4:6] if len(_rid) >= 6 else ""
+        _vname = VENUE_CODE_TO_NAME.get(_vc, "")
+        _is_jra = _vc in _JRA_VC
+        if not _vname:
+            # 場コード不明は検証できないためスルー（ログのみ）
+            logger.warning("[T-038] race_id=%s: 場コード=%s 不明 → カレンダー検証スキップ", _rid, _vc)
+            _calendar_valid.append(_rid)
+            continue
+        _ok, _reason = validate_race_against_calendar(_rid, DATE, _vname, _is_jra)
+        if not _ok:
+            logger.warning("[T-038] カレンダー不整合 → skip: %s", _reason)
+            _calendar_skipped.append(_rid)
+        else:
+            _calendar_valid.append(_rid)
 
 if _calendar_skipped:
     P(f"  [bold yellow][T-038] カレンダー突合 skip: {len(_calendar_skipped)}件"

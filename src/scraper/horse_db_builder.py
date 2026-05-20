@@ -407,15 +407,42 @@ def parse_result_page(
     # finish_pos 順でソートして隣接差を計算
     sorted_runs = sorted(runs_raw, key=lambda r: (r["finish_pos"], r["finish_time_sec"]))
 
+    # margin_ahead_raw テキスト着差の累積マップを構築 (fallback用)
+    # netkeiba の着差テキスト ("クビ","1.1/2" 等) を秒換算し、
+    # 1着からの累積秒差を各着順馬に対応付ける
+    _cumulative_margins = {}
+    _cum = 0.0
+    for _sr in sorted_runs:
+        _raw = _sr.get("margin_ahead_raw", "")
+        if _sr["finish_pos"] == 1:
+            _cumulative_margins[_sr["horse_no"]] = 0.0
+        else:
+            _cum += _parse_margin_to_sec(_raw)
+            _cumulative_margins[_sr["horse_no"]] = _cum
+
     run_dicts = []
     for idx, r in enumerate(sorted_runs):
         margin_ahead = r["finish_time_sec"] - winner_time  # 1着からの時間差
+
+        # fallback: タイム同値 (margin_ahead=0) だが着差テキストがある場合
+        if margin_ahead == 0 and r["finish_pos"] > 1:
+            _text_margin = _cumulative_margins.get(r["horse_no"], 0.0)
+            if _text_margin > 0:
+                margin_ahead = _text_margin
+
         # margin_behind: 次の着順との時間差
         margin_behind = 0.0
         if idx + 1 < len(sorted_runs):
             next_t = sorted_runs[idx + 1]["finish_time_sec"]
             if next_t > r["finish_time_sec"]:
                 margin_behind = next_t - r["finish_time_sec"]
+            elif margin_behind == 0:
+                # fallback: 次着馬との着差テキストから推定
+                _next_r = sorted_runs[idx + 1]
+                _next_cum = _cumulative_margins.get(_next_r["horse_no"], 0.0)
+                _this_cum = _cumulative_margins.get(r["horse_no"], 0.0)
+                if _next_cum > _this_cum:
+                    margin_behind = _next_cum - _this_cum
 
         run_dict = {
             "race_id": race_id,

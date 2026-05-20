@@ -1729,17 +1729,12 @@ def load_prediction(date: str) -> Optional[dict]:
         try:
             with open(fpath, "r", encoding="utf-8") as f:
                 data = json.load(f)
-            heal_zero_composite_races(data)
-            return data
         except Exception:
             pass
     # DBフォールバック
     if data is None and _DB_AVAILABLE:
         try:
             data = _db.load_prediction(date)
-            if data:
-                heal_zero_composite_races(data)
-                return data
         except Exception:
             pass
     if data is not None:
@@ -1945,10 +1940,20 @@ def fetch_single_race_result(
     # 既に着順が入っていればそれを返す（再取得しない）
     # ただし time/popularity/odds が欠ける場合は netkeiba で補完して上書き保存する。
     # JRA公式は確定直後これらが未掲載なことがあるため、「データ更新」ボタンで後追い可能に。
+    # payouts が空の場合も netkeiba で補完する（発走直後は未掲載のケースあり）。
     cached_entry = existing.get(race_id, {})
     if isinstance(cached_entry, dict) and cached_entry.get("order"):
         cached_order = cached_entry["order"]
-        if _is_details_incomplete(cached_order) or _is_corners_empty(cached_order):
+        _needs_supplement = (
+            _is_details_incomplete(cached_order)
+            or _is_corners_empty(cached_order)
+        )
+        # payouts が空の場合も補完対象とする
+        _cached_payouts = cached_entry.get("payouts", {})
+        _payouts_empty = not _cached_payouts or not any(
+            v for v in _cached_payouts.values() if v
+        )
+        if _needs_supplement or _payouts_empty:
             vc = race_id[4:6]
             base_url = "https://race.netkeiba.com" if vc in JRA_CODES else "https://nar.netkeiba.com"
             url = f"{base_url}/race/result.html"
@@ -1957,7 +1962,17 @@ def fetch_single_race_result(
                 if soup_nk:
                     n1 = _merge_corner_passing_from_soup(cached_order, soup_nk)
                     n2 = _merge_result_details_from_soup(cached_order, soup_nk)
-                    if n1 or n2:
+                    # payouts 補完: 空の場合のみ netkeiba から取得
+                    n3 = 0
+                    if _payouts_empty:
+                        nk_payouts = _parse_payouts(soup_nk)
+                        if nk_payouts and any(v for v in nk_payouts.values() if v):
+                            cached_entry["payouts"] = nk_payouts
+                            n3 = len(nk_payouts)
+                            logger.info(
+                                "payouts補完成功 %s (%d券種)", race_id, n3,
+                            )
+                    if n1 or n2 or n3:
                         # 上書き保存
                         existing[race_id] = cached_entry
                         try:
@@ -1971,8 +1986,8 @@ def fetch_single_race_result(
                             except Exception:
                                 pass
                         logger.info(
-                            "既存結果に netkeiba 詳細を補完 %s (corners=%d, details=%d)",
-                            race_id, n1, n2,
+                            "既存結果に netkeiba 詳細を補完 %s (corners=%d, details=%d, payouts=%d)",
+                            race_id, n1, n2, n3,
                         )
                 # レートリミット緩和: 1.0s → 2.0s（netkeiba 並列負荷削減）
                 time.sleep(2.0)
@@ -2651,9 +2666,20 @@ def _parse_payouts(soup) -> dict:
 def _safe_tansho_payout(payouts: dict, winner_hno: int = 0) -> int:
     """単勝payoutを安全に取得。同着結合データは0を返す。
 
+    日本語キー("単勝") / 英語キー("tansho") の両形式に対応。
+    値が dict / list のいずれでも処理する。
+
     winner_hno: 勝ち馬の馬番。指定時はcomboとの一致を検証する。
     """
-    tp = payouts.get("単勝", {})
+    # 日本語キー優先、なければ英語キーで取得
+    tp = payouts.get("単勝") or payouts.get("tansho")
+    if tp is None:
+        return 0
+
+    # list形式の場合は先頭要素を使用（単勝は1組のみ）
+    if isinstance(tp, list):
+        tp = tp[0] if tp else {}
+
     if not isinstance(tp, dict):
         return 0
     combo = str(tp.get("combo", ""))
@@ -3026,7 +3052,8 @@ def _get_fukusho_payout(horse_no: int, payouts: dict) -> Optional[int]:
     新形式: payouts["複勝"] = [{"combo": "4", "payout": 120}, {"combo": "10", "payout": 260}, ...]
     旧形式(ML): payouts["複勝"] = {"combo": "10411", "payout": 110240170}（後方互換）
     """
-    fukusho = payouts.get("複勝")
+    # 日本語キー("複勝") / 英語キー("fukusho") の両形式に対応
+    fukusho = payouts.get("複勝") or payouts.get("fukusho")
     if not fukusho:
         return None
     # リスト形式（複数組）対応

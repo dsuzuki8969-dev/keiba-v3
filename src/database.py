@@ -1107,6 +1107,45 @@ def get_gate_bias_from_race_log(target_date: str = None) -> dict:
     return result
 
 
+# ============================================================
+# B_prefix ↔ 正規ID 双方向マッピング
+# ============================================================
+
+def get_alternate_horse_ids(horse_id: str) -> list:
+    """
+    horse_id の B_prefix ↔ 正規ID (netkeiba_id) の双方向マッピングを取得。
+    horses テーブルの netkeiba_id カラムを利用して、同一馬の別IDを返す。
+
+    戻り値: [horse_id, alt_id, ...] （元IDを先頭に含む。別IDがなければ元IDのみ）
+    """
+    if not horse_id:
+        return [horse_id] if horse_id else []
+    conn = get_db()
+    ids = [horse_id]
+    try:
+        if horse_id.startswith("B"):
+            # B_prefix → 正規ID (netkeiba_id)
+            row = conn.execute(
+                "SELECT netkeiba_id FROM horses WHERE horse_id = ?",
+                (horse_id,),
+            ).fetchone()
+            if row and row[0]:
+                ids.append(row[0])
+        else:
+            # 正規ID → B_prefix (horse_id)
+            rows = conn.execute(
+                "SELECT horse_id FROM horses WHERE netkeiba_id = ?",
+                (horse_id,),
+            ).fetchall()
+            for row in rows:
+                if row[0] and row[0] != horse_id:
+                    ids.append(row[0])
+    except Exception:
+        # horses テーブルが存在しない等のフォールバック
+        logger.debug("get_alternate_horse_ids: 検索失敗 horse_id=%s", horse_id, exc_info=True)
+    return ids
+
+
 def get_db_stats() -> dict:
     """各テーブルの件数を返す（ヘルスチェック用）"""
     conn = get_db()
@@ -1927,9 +1966,11 @@ def populate_race_log_from_predictions() -> int:
                 _horse_id = hinfo.get("horse_id", "") or ""
                 _margins = _margin_map.get(horse_no, (0.0, 0.0))
 
+                # UPSERT: 初回 INSERT + 既存行は後日補完データで上書き
+                # margin_ahead/behind 等が 0 で入った行を後から正しい値で更新する
                 txn.execute(
                     """
-                    INSERT OR IGNORE INTO race_log
+                    INSERT INTO race_log
                       (race_date, race_id, venue_code, surface, distance,
                        horse_no, finish_pos,
                        jockey_id, jockey_name, trainer_id, trainer_name,
@@ -1940,6 +1981,49 @@ def populate_race_log_from_predictions() -> int:
                        margin_ahead, margin_behind,
                        horse_name, race_name, grade)
                     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    ON CONFLICT(race_id, horse_no) DO UPDATE SET
+                      margin_ahead    = CASE WHEN excluded.margin_ahead != 0
+                                             THEN excluded.margin_ahead
+                                             ELSE race_log.margin_ahead END,
+                      margin_behind   = CASE WHEN excluded.margin_behind != 0
+                                             THEN excluded.margin_behind
+                                             ELSE race_log.margin_behind END,
+                      finish_time_sec = CASE WHEN excluded.finish_time_sec > 0
+                                             THEN excluded.finish_time_sec
+                                             ELSE race_log.finish_time_sec END,
+                      last_3f_sec     = CASE WHEN excluded.last_3f_sec > 0
+                                             THEN excluded.last_3f_sec
+                                             ELSE race_log.last_3f_sec END,
+                      win_odds        = CASE WHEN excluded.win_odds IS NOT NULL
+                                             THEN excluded.win_odds
+                                             ELSE race_log.win_odds END,
+                      tansho_odds     = CASE WHEN excluded.tansho_odds IS NOT NULL
+                                             THEN excluded.tansho_odds
+                                             ELSE race_log.tansho_odds END,
+                      positions_corners = CASE WHEN excluded.positions_corners IS NOT NULL
+                                                 AND excluded.positions_corners != ''
+                                               THEN excluded.positions_corners
+                                               ELSE race_log.positions_corners END,
+                      position_4c     = CASE WHEN excluded.position_4c IS NOT NULL
+                                               AND excluded.position_4c != 0
+                                             THEN excluded.position_4c
+                                             ELSE race_log.position_4c END,
+                      horse_id        = CASE WHEN excluded.horse_id IS NOT NULL
+                                               AND excluded.horse_id != ''
+                                             THEN excluded.horse_id
+                                             ELSE race_log.horse_id END,
+                      horse_name      = CASE WHEN excluded.horse_name IS NOT NULL
+                                               AND excluded.horse_name != ''
+                                             THEN excluded.horse_name
+                                             ELSE race_log.horse_name END,
+                      race_name       = CASE WHEN excluded.race_name IS NOT NULL
+                                               AND excluded.race_name != ''
+                                             THEN excluded.race_name
+                                             ELSE race_log.race_name END,
+                      grade           = CASE WHEN excluded.grade IS NOT NULL
+                                               AND excluded.grade != ''
+                                             THEN excluded.grade
+                                             ELSE race_log.grade END
                     """,
                     (race_date, race_id, venue_code, surface, distance,
                      horse_no, finish,

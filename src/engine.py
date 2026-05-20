@@ -762,11 +762,52 @@ class RaceAnalysisEngine:
         course_db_ref = self.std_calc.course_db
 
         # ---- past_runs フォールバック: race_logから補完 ----
+        # B_prefix ↔ 正規ID 横断検索で同一馬の全走歴を統合取得
         for horse in horses:
             if not horse.past_runs and horse.horse_id:
                 try:
                     from src.scraper.horse_db_builder import get_past_runs_from_race_log
                     horse.past_runs = get_past_runs_from_race_log(horse.horse_id)
+                except Exception:
+                    pass
+            elif horse.past_runs and horse.horse_id:
+                # スクレイパー取得済みでも B_prefix 時代の走歴が欠落している可能性
+                # race_log から横断検索して不足分をマージ
+                try:
+                    from src.database import get_alternate_horse_ids
+                    alt_ids = get_alternate_horse_ids(horse.horse_id)
+                    if len(alt_ids) > 1:
+                        from src.scraper.horse_db_builder import get_past_runs_from_race_log
+                        db_runs = get_past_runs_from_race_log(horse.horse_id)
+                        if db_runs:
+                            # 既存 past_runs の race_id セットを構築
+                            existing_race_ids = {
+                                (r.race_date, r.race_id) for r in horse.past_runs
+                                if r.race_id
+                            }
+                            existing_date_venue = {
+                                (r.race_date, r.venue, r.distance)
+                                for r in horse.past_runs
+                            }
+                            merged_count = 0
+                            for dr in db_runs:
+                                # race_id での重複判定
+                                if dr.race_id and (dr.race_date, dr.race_id) in existing_race_ids:
+                                    continue
+                                # race_id なしの場合は日付+会場+距離で重複判定
+                                if not dr.race_id and (dr.race_date, dr.venue, dr.distance) in existing_date_venue:
+                                    continue
+                                horse.past_runs.append(dr)
+                                merged_count += 1
+                            if merged_count > 0:
+                                # 日付降順でソートし直す
+                                horse.past_runs.sort(
+                                    key=lambda r: r.race_date or "", reverse=True
+                                )
+                                logger.debug(
+                                    "B_prefix横断マージ: %s ← %d走追加 (合計%d走)",
+                                    horse.horse_name, merged_count, len(horse.past_runs),
+                                )
                 except Exception:
                     pass
 

@@ -6240,6 +6240,9 @@ function dNavRefreshOdds(date){{
                                 if tt == "三連複" and (len(combo_ints) != 3 or len(set(combo_ints)) != 3):
                                     continue
                                 sanrentan["stake"] += stake
+                                # M' 自信度別の stake 蓄積
+                                if strategy_format == "M'" and _conf and _conf in _mp_by_conf:
+                                    _mp_by_conf[_conf]["stake"] += stake
                                 if tt == "三連複":
                                     tix_hit = set(combo_ints) == top3_set
                                 elif tt == "単勝":
@@ -6252,7 +6255,11 @@ function dNavRefreshOdds(date){{
                                     race_hit = True
                                     sorted_t = {**t, "combo": sorted(combo_ints)}
                                     pp = get_payout(payouts, sorted_t)
-                                    sanrentan["payback"] += pp * (stake // 100)
+                                    _payback_val = pp * (stake // 100)
+                                    sanrentan["payback"] += _payback_val
+                                    # M' 自信度別の payback 蓄積
+                                    if strategy_format == "M'" and _conf and _conf in _mp_by_conf:
+                                        _mp_by_conf[_conf]["payback"] += _payback_val
                             if race_hit:
                                 sanrentan["hit"] += 1
                                 if strategy_format == "M'" and _conf and _conf in _mp_by_conf:

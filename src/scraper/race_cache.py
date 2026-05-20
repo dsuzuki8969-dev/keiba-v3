@@ -28,7 +28,7 @@ logger = get_logger(__name__)
 
 _CACHE_VERSION = 2  # v2: training_records をシリアライズ対象に追加
 _TTL_TODAY = 2 * 3600       # 当日レース: 2時間
-_TTL_PAST = 30 * 86400      # 過去レース: 30日
+_TTL_PAST = 730 * 86400     # 過去レース: 2年保持（2024-01-01～最新）
 _TTL_HISTORY_ONLY = 7 * 86400  # 過去走のみキャッシュ: 7日
 
 try:

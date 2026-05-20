@@ -807,10 +807,13 @@ class PremiumNetkeibaScraper:
                 if race_info and not self._quiet:
                     logger.info("公式フォールバック: %s %d頭", race_info.race_name, len(horses))
             # 3. それでもなければ netkeiba にフォールバック（従来フロー）
-            if not race_info:
+            # offline_mode 時はネットワークアクセスを完全スキップ
+            if not race_info and not getattr(self, '_offline_mode', False):
                 if not self._quiet:
                     logger.info("キャッシュ/公式なし → netkeiba取得: %s", race_id)
                 race_info, horses, training_from_newspaper = self._fetch_from_netkeiba(race_id)
+            elif not race_info:
+                logger.warning("オフライン: キャッシュ/公式なし → スキップ: %s", race_id)
         else:
             # 優先順位: 公式 → 競馬ブック → キャッシュ → netkeiba
             # 1. 公式を最優先で試行
@@ -866,7 +869,11 @@ class PremiumNetkeibaScraper:
                 done_count += 1
 
             # 未キャッシュ馬のみスレッドプールで並列取得
-            if _uncached_horses:
+            # offline_mode 時はネットワーク取得をスキップ
+            if _uncached_horses and getattr(self, '_offline_mode', False):
+                if not self._quiet:
+                    logger.warning("オフライン: 未キャッシュ馬 %d頭の過去走スキップ", len(_uncached_horses))
+            elif _uncached_horses:
                 with ThreadPoolExecutor(max_workers=3) as pool:
                     futs = {pool.submit(_fetch_one, h): h for h in _uncached_horses}
                     for fut in as_completed(futs):
@@ -881,7 +888,7 @@ class PremiumNetkeibaScraper:
         # ── 性齢フォールバック: 過去走取得後も性齢が不明な馬がいたら
         # shutuba.html から再取得を試みる ──
         _unknown_sex = [h for h in horses if getattr(h, "sex", "") in ("不明", "")]
-        if _unknown_sex:
+        if _unknown_sex and not getattr(self, '_offline_mode', False):
             try:
                 shutuba_soup = self.client.get(
                     f"{RACE_URL}/race/shutuba.html", params={"race_id": race_id}
