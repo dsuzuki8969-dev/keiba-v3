@@ -5238,7 +5238,7 @@ function dNavRefreshOdds(date){{
         try:
             from src.database import compute_personnel_stats_from_race_log
             import time as _tw
-            years_to_warm = [None, "2026", "2025"]  # 重要な年度のみ先読み
+            years_to_warm = [None, "2026", "2025", "2024"]  # 全年度先読み
             for yf in years_to_warm:
                 try:
                     t0 = _tw.time()
@@ -5264,7 +5264,7 @@ function dNavRefreshOdds(date){{
         _tw.sleep(5)
         _warmup_personnel_cache()
         # results キャッシュ warmup (hybrid_summary 含む全5種)
-        for yr in ["all", "2026", "2025"]:
+        for yr in ["all", "2026", "2025", "2024"]:
             _results_cache_build_bg(yr)
 
     threading.Thread(target=_delayed_warmup, daemon=True).start()
