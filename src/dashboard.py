@@ -5266,6 +5266,17 @@ function dNavRefreshOdds(date){{
         # results キャッシュ warmup (hybrid_summary 含む全5種)
         for yr in ["all", "2026", "2025", "2024"]:
             _results_cache_build_bg(yr)
+        # feature_importance ディスクキャッシュ warmup
+        fi_cache_path = os.path.join(PROJECT_ROOT, "data", "cache", "feature_importance.json")
+        if os.path.exists(fi_cache_path):
+            try:
+                with open(fi_cache_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if data:
+                    _feature_imp_cache[:] = data
+                    logger.info("warmup: feature_importance ディスクキャッシュロード完了 (%d件)", len(data))
+            except Exception as e:
+                logger.warning("warmup: feature_importance ディスクキャッシュ読み込み失敗: %s", e)
 
     threading.Thread(target=_delayed_warmup, daemon=True).start()
 
@@ -6969,9 +6980,24 @@ function dNavRefreshOdds(date){{
 
     @app.route("/api/feature_importance")
     def api_feature_importance():
-        """LGBMPredictor 全サブモデル平均特徴量重要度を返す（キャッシュあり）"""
+        """LGBMPredictor 全サブモデル平均特徴量重要度を返す（ディスク+メモリキャッシュ）"""
         if _feature_imp_cache:
             return jsonify(_feature_imp_cache)
+
+        # ディスクキャッシュ読み込み
+        fi_cache_path = os.path.join(PROJECT_ROOT, "data", "cache", "feature_importance.json")
+        if os.path.exists(fi_cache_path):
+            try:
+                with open(fi_cache_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if data:
+                    _feature_imp_cache[:] = data
+                    logger.info("feature_importance: ディスクキャッシュからロード (%d件)", len(data))
+                    return jsonify(data)
+            except Exception as e:
+                logger.warning("feature_importance ディスクキャッシュ読み込み失敗: %s", e)
+
+        # キャッシュ無し → モデルから計算
         try:
             from collections import defaultdict
 
@@ -7018,6 +7044,16 @@ function dNavRefreshOdds(date){{
                 r["rank"] = i + 1
 
             _feature_imp_cache[:] = result
+
+            # ディスクキャッシュに保存
+            try:
+                os.makedirs(os.path.dirname(fi_cache_path), exist_ok=True)
+                with open(fi_cache_path, "w", encoding="utf-8") as f:
+                    json.dump(result, f, ensure_ascii=False)
+                logger.info("feature_importance: ディスクキャッシュ保存完了 (%d件)", len(result))
+            except Exception as e:
+                logger.warning("feature_importance ディスクキャッシュ保存失敗: %s", e)
+
             return jsonify(result)
         except Exception as e:
             return jsonify(error=str(e))
