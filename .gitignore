@@ -24,6 +24,7 @@ data/keiba.db-shm.bak_*
 data/keiba.db-wal.bak_*
 data/cache/
 data/backup/
+data/csv/
 data/export/
 data/ml/
 data/training_ml/
