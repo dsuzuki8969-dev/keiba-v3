@@ -22,11 +22,13 @@ parser = argparse.ArgumentParser()
 parser.add_argument('--start', default='20240101')
 parser.add_argument('--end', default='20240412')
 parser.add_argument('--workers', type=int, default=3)
+parser.add_argument('--force', action='store_true', help='is_already_done チェックをスキップして強制再実行')
 args = parser.parse_args()
 
 START_DATE = args.start
 END_DATE = args.end
 WORKERS = args.workers
+FORCE = args.force
 PRED_DIR = "data/predictions"
 LOG_FILE = "scripts/batch_regen_fast.log"
 
@@ -72,8 +74,11 @@ def backup_pred(dt):
         shutil.copy2(src, dst)
 
 targets = get_targets()
-# 既に完了済みをフィルタ
-pending = [(dt, rids, vs, nr) for dt, rids, vs, nr in targets if not is_already_done(dt)]
+# 既に完了済みをフィルタ (--force 時はスキップしない)
+if FORCE:
+    pending = targets
+else:
+    pending = [(dt, rids, vs, nr) for dt, rids, vs, nr in targets if not is_already_done(dt)]
 skipped = len(targets) - len(pending)
 
 total_days = len(pending)
