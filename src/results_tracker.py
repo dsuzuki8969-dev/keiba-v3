@@ -850,6 +850,36 @@ def save_prediction(date: str, analyses_by_venue: dict, *, lightweight: bool = F
     with open(fpath, "w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)
 
+    # ── 評価結果 CSV 自動保存 (戦略再計算用の中間キャッシュ) ──
+    # 印・買い目変更時に ML 再推論なしで済むよう、全馬のスカラー評価値を CSV 化
+    _csv_path = fpath.replace("_pred.json", "_eval.csv")
+    try:
+        import csv as _csv_mod
+        _csv_rows = []
+        _race_ctx_keys = [
+            "race_id", "venue", "race_no", "surface", "distance",
+            "grade", "field_count", "is_jra", "is_banei", "condition",
+            "confidence", "overall_confidence", "pace_predicted",
+        ]
+        for _race in payload.get("races", []):
+            _race_ctx = {k: _race.get(k, "") for k in _race_ctx_keys}
+            for _h in _race.get("horses", []):
+                _row = {**_race_ctx}
+                for k, v in _h.items():
+                    # スカラー値のみ CSV に含める (list/dict は除外)
+                    if isinstance(v, (int, float, str, bool)) or v is None:
+                        _row[k] = v if v is not None else ""
+                _csv_rows.append(_row)
+        if _csv_rows:
+            _all_keys = list(dict.fromkeys(k for _r in _csv_rows for k in _r.keys()))
+            with open(_csv_path, "w", newline="", encoding="utf-8") as _cf:
+                _w = _csv_mod.DictWriter(_cf, fieldnames=_all_keys, extrasaction="ignore")
+                _w.writeheader()
+                _w.writerows(_csv_rows)
+            logger.info("評価CSV保存: %s (%d馬)", _csv_path, len(_csv_rows))
+    except Exception as _csv_err:
+        logger.warning("評価CSV保存失敗 (致命的ではない): %s", _csv_err)
+
     # SQLite にも保存（デュアルライト）
     if _DB_AVAILABLE:
         try:
