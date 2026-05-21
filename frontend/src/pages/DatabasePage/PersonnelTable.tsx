@@ -1,4 +1,4 @@
-import { useState, useMemo, useCallback } from "react";
+import { useState, useMemo, useCallback, useEffect } from "react";
 import { PremiumCard, PremiumCardHeader, PremiumCardTitle, PremiumCardAccent } from "@/components/ui/premium/PremiumCard";
 import { Users } from "lucide-react";
 import { usePersonnelAgg } from "@/api/hooks";
@@ -481,6 +481,13 @@ function PersonnelDetailModal({
   const agg = data as any;
 
   const typeLabel = TYPE_LABELS[type] || type;
+
+  // Escape キーでモーダルを閉じる
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [onClose]);
 
   return (
     <div className="fixed inset-0 z-50 flex items-start justify-center pt-8 px-4" onClick={onClose}>

@@ -398,7 +398,14 @@ const HorseCard = memo(function HorseCard({
       className={`bg-card border rounded-md transition-all hover:border-brand-gold/60 hover:shadow-[0_0_8px_-2px_rgba(212,168,83,0.3)] ${rowAccent} ${open ? "shadow-md" : ""} ${isScratched ? "opacity-40" : ""}`}
     >
       {/* ======== クリックで展開するヘッダ部（2カラム構成・最上位） ======== */}
-      <div className="cursor-pointer px-2 py-1.5 flex flex-col md:flex-row gap-2 md:gap-3 md:items-stretch" onClick={() => setOpen(!open)}>
+      <div
+        className="cursor-pointer px-2 py-1.5 flex flex-col md:flex-row gap-2 md:gap-3 md:items-stretch"
+        role="button"
+        tabIndex={0}
+        aria-expanded={open}
+        onClick={() => setOpen(!open)}
+        onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setOpen(!open); } }}
+      >
 
         {/* 左カラム: 馬名行 + 父/母父/厩舎+騎手/通過順+オッズ */}
         <div className="w-full md:w-[300px] shrink-0">

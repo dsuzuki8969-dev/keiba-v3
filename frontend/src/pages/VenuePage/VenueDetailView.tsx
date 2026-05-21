@@ -69,10 +69,13 @@ export function VenueDetailView({ code }: { code: string }) {
       </PremiumCard>
 
       {/* タブ */}
-      <div className="inline-flex items-center gap-0.5 p-0.5 bg-muted/60 border border-border rounded-lg overflow-x-auto">
+      <div role="tablist" className="inline-flex items-center gap-0.5 p-0.5 bg-muted/60 border border-border rounded-lg overflow-x-auto">
         {TABS.map((t) => (
           <button
             key={t.key}
+            role="tab"
+            aria-selected={tab === t.key}
+            aria-controls={`venue-tabpanel-${t.key}`}
             className={`px-3 py-1 text-xs font-semibold rounded-md whitespace-nowrap transition-all ${
               tab === t.key
                 ? "bg-gradient-to-br from-brand-navy to-brand-navy-light text-white shadow-[0_1px_3px_rgba(0,0,0,0.2),0_0_0_1px_var(--brand-gold)]"

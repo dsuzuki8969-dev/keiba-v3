@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { PremiumCard } from "@/components/ui/premium/PremiumCard";
 import { Button } from "@/components/ui/button";
 import { useCourseList, useCourseStats } from "@/api/hooks";
@@ -155,6 +155,13 @@ function CourseDetailModal({ courseKey, onClose }: { courseKey: string; onClose:
 
   // ⑦ クラス別「その他」折りたたみ
   const [showOther, setShowOther] = useState(false);
+
+  // Escape キーでモーダルを閉じる
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [onClose]);
 
   return (
     <div className="fixed inset-0 z-50 flex items-start justify-center pt-8 px-4" onClick={onClose}>

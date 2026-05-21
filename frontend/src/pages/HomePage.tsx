@@ -258,7 +258,10 @@ export default function HomePage() {
                   <div
                     key={`${r.venue}-${r.race_no}`}
                     className="p-3 rounded-lg bg-muted/50 hover:bg-muted cursor-pointer transition-colors stylish-card-hover border border-border/40"
+                    role="button"
+                    tabIndex={0}
                     onClick={() => goToRace(r.venue, r.race_no)}
+                    onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); goToRace(r.venue, r.race_no); } }}
                   >
                     {/* 1行目: 評価 レース 印 馬名 */}
                     <div className="flex items-center gap-2 mb-2 flex-wrap">
@@ -339,7 +342,10 @@ export default function HomePage() {
                   <div
                     key={`${h.venue}-${h.race_no}-${h.horse_no}`}
                     className="flex gap-2 p-3 rounded-lg bg-muted/50 hover:bg-muted cursor-pointer transition-colors stylish-card-hover border border-border/40"
+                    role="button"
+                    tabIndex={0}
                     onClick={() => goToRace(h.venue, h.race_no)}
+                    onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); goToRace(h.venue, h.race_no); } }}
                   >
                     {/* 左カラム: 星（★3つ分の固定幅） */}
                     <div className={`w-[3em] flex-shrink-0 text-center font-bold pt-0.5 ${starCls}`}>{starStr}</div>

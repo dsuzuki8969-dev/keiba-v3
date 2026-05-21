@@ -9,10 +9,12 @@ interface Props {
 export const VenueTabs = memo(function VenueTabs({ venues, activeIndex, onChange }: Props) {
   if (!venues.length) return null;
   return (
-    <div className="inline-flex items-center gap-0.5 p-0.5 bg-muted/60 border border-border rounded-lg overflow-x-auto">
+    <div role="tablist" className="inline-flex items-center gap-0.5 p-0.5 bg-muted/60 border border-border rounded-lg overflow-x-auto">
       {venues.map((v, i) => (
         <button
           key={v}
+          role="tab"
+          aria-selected={i === activeIndex}
           onClick={() => onChange(i)}
           className={`px-3 py-1 text-xs font-semibold rounded-md whitespace-nowrap transition-all ${
             i === activeIndex

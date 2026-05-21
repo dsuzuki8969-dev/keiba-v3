@@ -134,12 +134,14 @@ export function TabGroup3Horse({
   const renderTabGrid = (fromBottom: boolean) => (
     <div className="space-y-0.5">
       {/* 1-2行目: コンテンツタブ（4列×2行） */}
-      <div className="grid grid-cols-4 p-0.5 bg-muted/60 border border-border rounded-lg">
+      <div role="tablist" className="grid grid-cols-4 p-0.5 bg-muted/60 border border-border rounded-lg">
         {contentTabs.map((tab) => {
           const isActive = tab.key === activeTab;
           return (
             <button
               key={tab.key}
+              role="tab"
+              aria-selected={isActive}
               onClick={() => handleCellClick(tab, fromBottom)}
               className={[
                 "rounded-md",
@@ -157,12 +159,14 @@ export function TabGroup3Horse({
       </div>
 
       {/* 3行目: 印断層分析・買い目指南・レース結果・レース映像 の4列コンテンツタブ */}
-      <div className="grid grid-cols-4 p-0.5 bg-muted/60 border border-border rounded-lg">
+      <div role="tablist" className="grid grid-cols-4 p-0.5 bg-muted/60 border border-border rounded-lg">
         {row3Tabs.map((tab) => {
           const isActive = tab.key === activeTab;
           return (
             <button
               key={tab.key}
+              role="tab"
+              aria-selected={isActive}
               onClick={() => handleCellClick(tab, fromBottom)}
               className={[
                 "rounded-md",
