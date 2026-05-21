@@ -743,6 +743,16 @@ class PremiumNetkeibaScraper:
                         )
                         invalidate_race_cache(race_id)
                         cached = None
+                    # 馬数が3頭以下なのに馬番が4以上の馬がいる → 3頭バグキャッシュ破棄
+                    elif len(horses) <= 3 and horses and max(getattr(h, "horse_no", 0) for h in horses) > 3:
+                        logger.info(
+                            "キャッシュ不完全（3頭バグ: %d頭, max馬番=%d）→ 再取得: %s",
+                            len(horses),
+                            max(getattr(h, "horse_no", 0) for h in horses),
+                            race_id,
+                        )
+                        invalidate_race_cache(race_id)
+                        cached = None
                     else:
                         if not self._quiet:
                             logger.info("キャッシュ復元: %s %d頭", race_info.race_name, len(horses))
@@ -801,6 +811,16 @@ class PremiumNetkeibaScraper:
             race_info, horses = self._build_from_cached_result(race_id)
             if race_info and not self._quiet:
                 logger.info("キャッシュresult.htmlから構築: %s %d頭", race_info.race_name, len(horses))
+            # 3頭バグ検知: result.htmlから構築しても3頭以下なら破棄して公式再取得
+            if race_info and horses and len(horses) <= 3:
+                _max_hn = max((getattr(h, "horse_no", 0) for h in horses), default=0)
+                if _max_hn > 3:
+                    logger.warning(
+                        "result.htmlキャッシュ 3頭バグ検知: %s %d頭 max馬番=%d → 公式再取得",
+                        race_info.race_name, len(horses), _max_hn,
+                    )
+                    race_info = None
+                    horses = []
             # 2. キャッシュなければ JRA/NAR 公式
             if not race_info:
                 race_info, horses = self._fetch_from_official(race_id, fetch_history)
@@ -950,8 +970,11 @@ class PremiumNetkeibaScraper:
         if not prefer_cache:
             self._enrich_with_official(race_id, race_info, horses)
 
-        # ── レースデータキャッシュ保存 ──
-        if use_cache and fetch_history:
+        # ── レースデータキャッシュ保存 (3頭バグガード) ──
+        if use_cache and fetch_history and not (
+            len(horses) <= 3 and horses
+            and max((getattr(h, "horse_no", 0) for h in horses), default=0) > 3
+        ):
             try:
                 from src.scraper.race_cache import save_race_cache
                 save_race_cache(race_id, race_info, horses)

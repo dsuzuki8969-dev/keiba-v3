@@ -694,7 +694,10 @@ if NO_HTML:
     ok_count = sum(1 for r in results if r[3])
     total_t  = time.time() - t0
     P(f"\n[bold green]完了: {ok_count}/{len(results)}レース  総実行時間: {total_t:.0f}秒[/]")
-    sys.exit(0)
+    # sys.exit(0) は non-daemon threads (DB pool/HTTP pool) がブロックしてハング
+    # pred.json 保存済なので os._exit(0) で即座に終了 (★ 3頭バグ修復時 3 回ハング)
+    import os as _os
+    _os._exit(0)
 
 P("[bold cyan]\\[N/N][/] 全レースまとめHTML生成...")
 ok_count = sum(1 for r in results if r[3])
