@@ -1,6 +1,7 @@
 import { useNavigate } from "react-router-dom";
-import { PremiumCard } from "@/components/ui/premium/PremiumCard";
+import { PremiumCard, PremiumCardHeader, PremiumCardTitle } from "@/components/ui/premium/PremiumCard";
 import type { VenueProfileDetail } from "@/api/client";
+import { Info, Layers, BarChart3, Users } from "lucide-react";
 
 // 競馬場の特徴テキスト（CourseExplorerのVENUE_INFOと同等）
 const VENUE_DESC: Record<string, string> = {
@@ -54,7 +55,12 @@ export function VenueProfileTab({ venue }: { venue: VenueProfileDetail }) {
     <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
       {/* 基本情報 */}
       <PremiumCard variant="default" padding="md" className="space-y-3">
-        <h2 className="font-bold text-base">基本情報</h2>
+        <PremiumCardHeader>
+          <div className="flex items-center gap-2">
+            <Info size={16} className="text-blue-600" />
+            <PremiumCardTitle className="text-base">基本情報</PremiumCardTitle>
+          </div>
+        </PremiumCardHeader>
         <div className="grid grid-cols-2 gap-2 text-sm">
           <div>
             <span className="text-muted-foreground">場コード</span>
@@ -95,7 +101,12 @@ export function VenueProfileTab({ venue }: { venue: VenueProfileDetail }) {
 
       {/* コース一覧サマリー */}
       <PremiumCard variant="default" padding="md" className="space-y-3">
-        <h2 className="font-bold text-base">コース一覧</h2>
+        <PremiumCardHeader>
+          <div className="flex items-center gap-2">
+            <Layers size={16} className="text-teal-600" />
+            <PremiumCardTitle className="text-base">コース一覧</PremiumCardTitle>
+          </div>
+        </PremiumCardHeader>
         {turfCourses.length > 0 && (
           <div className="text-sm">
             <span className="text-emerald-600 font-semibold">芝</span>
@@ -122,7 +133,12 @@ export function VenueProfileTab({ venue }: { venue: VenueProfileDetail }) {
 
       {/* composite重み */}
       <PremiumCard variant="default" padding="md" className="space-y-3">
-        <h2 className="font-bold text-base">総合評価の重み配分</h2>
+        <PremiumCardHeader>
+          <div className="flex items-center gap-2">
+            <BarChart3 size={16} className="text-purple-600" />
+            <PremiumCardTitle className="text-base">総合評価の重み配分</PremiumCardTitle>
+          </div>
+        </PremiumCardHeader>
         {/* スタックバー */}
         <div className="flex h-6 rounded-full overflow-hidden">
           {WEIGHT_LABELS.map((w) => {
@@ -153,7 +169,12 @@ export function VenueProfileTab({ venue }: { venue: VenueProfileDetail }) {
 
       {/* 類似競馬場 */}
       <PremiumCard variant="default" padding="md" className="space-y-3">
-        <h2 className="font-bold text-base">類似競馬場 TOP5</h2>
+        <PremiumCardHeader>
+          <div className="flex items-center gap-2">
+            <Users size={16} className="text-orange-600" />
+            <PremiumCardTitle className="text-base">類似競馬場 TOP5</PremiumCardTitle>
+          </div>
+        </PremiumCardHeader>
         <div className="space-y-2">
           {venue.similar_venues.map((sv, i) => (
             <div

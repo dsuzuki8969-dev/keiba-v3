@@ -579,42 +579,6 @@ class TrainingScraper:
             "partner": partner,
         }
 
-    def _infer_intensity(self, splits: dict, course: str) -> str:
-        """
-        ラップタイムから調教強度を推定する。
-        坂路の場合は4F〜1Fタイムで判断。
-        ウッドの場合は5F〜1Fタイムで判断。
-
-        設計書 J-4: 5段階（一杯/強め/馬なり/軽め/極軽め）
-        """
-        if not splits:
-            return "馬なり"
-
-        # 最後の200mタイム（上がり）
-        last_split = list(splits.values())[-1] if splits else 12.0
-
-        # 坂路基準
-        if "坂路" in course:
-            if last_split <= 11.5:
-                return "一杯"
-            if last_split <= 12.0:
-                return "強め"
-            if last_split <= 12.5:
-                return "馬なり"
-            if last_split <= 13.0:
-                return "軽め"
-            return "極軽め"
-
-        # ウッド・CW基準
-        if last_split <= 11.2:
-            return "一杯"
-        if last_split <= 11.8:
-            return "強め"
-        if last_split <= 12.3:
-            return "馬なり"
-        if last_split <= 13.0:
-            return "軽め"
-        return "極軽め"
 
 
 # ============================================================

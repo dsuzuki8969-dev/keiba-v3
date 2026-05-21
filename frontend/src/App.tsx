@@ -3,6 +3,7 @@ import { HashRouter, Routes, Route, Navigate } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { AppShell } from "@/components/layout/AppShell";
 import { ViewModeProvider } from "@/hooks/useViewMode";
+import { ErrorBoundary } from "@/components/ErrorBoundary";
 
 // ページ単位のコード分割
 const HomePage = lazy(() => import("@/pages/HomePage"));
@@ -37,20 +38,22 @@ export default function App() {
       <ViewModeProvider>
       <HashRouter>
         <AppShell>
-          <Suspense fallback={<PageFallback />}>
-            <Routes>
-              <Route path="/" element={<Navigate to="/home" replace />} />
-              <Route path="/home" element={<HomePage />} />
-              <Route path="/today" element={<TodayPage />} />
-              <Route path="/results" element={<ResultsPage />} />
-              {/* T-038: 開催カレンダーページ */}
-              <Route path="/calendar" element={<CalendarPage />} />
-              <Route path="/venue" element={<VenuePage />} />
-              <Route path="/venue/:code" element={<VenuePage />} />
-              <Route path="/db" element={<DatabasePage />} />
-              <Route path="/about" element={<AboutPage />} />
-            </Routes>
-          </Suspense>
+          <ErrorBoundary>
+            <Suspense fallback={<PageFallback />}>
+              <Routes>
+                <Route path="/" element={<Navigate to="/home" replace />} />
+                <Route path="/home" element={<HomePage />} />
+                <Route path="/today" element={<TodayPage />} />
+                <Route path="/results" element={<ResultsPage />} />
+                {/* T-038: 開催カレンダーページ */}
+                <Route path="/calendar" element={<CalendarPage />} />
+                <Route path="/venue" element={<VenuePage />} />
+                <Route path="/venue/:code" element={<VenuePage />} />
+                <Route path="/db" element={<DatabasePage />} />
+                <Route path="/about" element={<AboutPage />} />
+              </Routes>
+            </Suspense>
+          </ErrorBoundary>
         </AppShell>
       </HashRouter>
       </ViewModeProvider>

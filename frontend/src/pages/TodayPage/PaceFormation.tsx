@@ -3,6 +3,7 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { CourseMapSVG } from "./CourseMapSVG";
 import { useCourseStats } from "@/api/hooks";
 import { VENUE_NAME_TO_CODE, fmtRaceTime, confColorClass } from "@/lib/constants";
+import { PremiumCard } from "@/components/ui/premium/PremiumCard";
 import type { HorseData } from "./RaceDetailView";
 
 // 枠番背景色（HorseDiagnosis.tsx と同じ）
@@ -1383,37 +1384,39 @@ export default function PaceFormation({
   return (
     <div className="space-y-2">
       {/* ヘッダー: ペース / 展開自信度 / 予想タイム / ラップ */}
-      <div className="flex items-center gap-4 text-sm flex-wrap px-1 py-2 border-b border-border/50">
-        <span>
-          ペース: <strong>{paceLabel}</strong>
-        </span>
-        <span className="text-muted-foreground">
-          展開自信度 <strong className={confCol}>{reliLabel}</strong>
-        </span>
-        <span className="text-muted-foreground">|</span>
-        <span>
-          予想 <strong>{raceTimeStr}</strong>
-        </span>
-        <span>
-          前半3F <strong>{f3f}</strong>
-        </span>
-        {midTime !== "—" && midTime !== "0.0" && (
+      <PremiumCard variant="default" padding="sm">
+        <div className="flex items-center gap-4 text-sm flex-wrap">
           <span>
-            道中 <strong>{midTime}</strong>
+            ペース: <strong>{paceLabel}</strong>
           </span>
-        )}
-        <span>
-          後半3F <strong>{l3f}</strong>
-        </span>
-      </div>
+          <span className="text-muted-foreground">
+            展開自信度 <strong className={confCol}>{reliLabel}</strong>
+          </span>
+          <span className="text-muted-foreground">|</span>
+          <span>
+            予想 <strong>{raceTimeStr}</strong>
+          </span>
+          <span>
+            前半3F <strong>{f3f}</strong>
+          </span>
+          {midTime !== "—" && midTime !== "0.0" && (
+            <span>
+              道中 <strong>{midTime}</strong>
+            </span>
+          )}
+          <span>
+            後半3F <strong>{l3f}</strong>
+          </span>
+        </div>
+      </PremiumCard>
 
       {/* ビジュアル展開予測 */}
       <Tabs defaultValue="course">
-        <TabsList className="w-full">
-          <TabsTrigger value="course">コース詳細</TabsTrigger>
-          <TabsTrigger value="start">前半600m</TabsTrigger>
-          <TabsTrigger value="crux">最終コーナー</TabsTrigger>
-          <TabsTrigger value="finish">直 線</TabsTrigger>
+        <TabsList className="w-full p-0.5 bg-muted/60 border border-border rounded-lg h-auto">
+          <TabsTrigger value="course" className="rounded-md flex-1 data-[state=active]:bg-gradient-to-br data-[state=active]:from-brand-navy data-[state=active]:to-brand-navy-light data-[state=active]:text-white data-[state=active]:shadow-[0_1px_3px_rgba(0,0,0,0.2),0_0_0_1px_var(--brand-gold)] data-[state=inactive]:text-muted-foreground data-[state=inactive]:hover:text-foreground data-[state=inactive]:hover:bg-background/60">コース詳細</TabsTrigger>
+          <TabsTrigger value="start" className="rounded-md flex-1 data-[state=active]:bg-gradient-to-br data-[state=active]:from-brand-navy data-[state=active]:to-brand-navy-light data-[state=active]:text-white data-[state=active]:shadow-[0_1px_3px_rgba(0,0,0,0.2),0_0_0_1px_var(--brand-gold)] data-[state=inactive]:text-muted-foreground data-[state=inactive]:hover:text-foreground data-[state=inactive]:hover:bg-background/60">前半600m</TabsTrigger>
+          <TabsTrigger value="crux" className="rounded-md flex-1 data-[state=active]:bg-gradient-to-br data-[state=active]:from-brand-navy data-[state=active]:to-brand-navy-light data-[state=active]:text-white data-[state=active]:shadow-[0_1px_3px_rgba(0,0,0,0.2),0_0_0_1px_var(--brand-gold)] data-[state=inactive]:text-muted-foreground data-[state=inactive]:hover:text-foreground data-[state=inactive]:hover:bg-background/60">最終コーナー</TabsTrigger>
+          <TabsTrigger value="finish" className="rounded-md flex-1 data-[state=active]:bg-gradient-to-br data-[state=active]:from-brand-navy data-[state=active]:to-brand-navy-light data-[state=active]:text-white data-[state=active]:shadow-[0_1px_3px_rgba(0,0,0,0.2),0_0_0_1px_var(--brand-gold)] data-[state=inactive]:text-muted-foreground data-[state=inactive]:hover:text-foreground data-[state=inactive]:hover:bg-background/60">直 線</TabsTrigger>
         </TabsList>
         <TabsContent value="course">
           <CourseDetailView race={raceInfo} venue={venue} />
@@ -1428,11 +1431,11 @@ export default function PaceFormation({
           <TrackView horses={activeHorses} mode="finish" race={raceInfo} />
         </TabsContent>
         <Legend direction={direction} />
-        <TabsList className="w-full">
-          <TabsTrigger value="course">コース詳細</TabsTrigger>
-          <TabsTrigger value="start">前半600m</TabsTrigger>
-          <TabsTrigger value="crux">最終コーナー</TabsTrigger>
-          <TabsTrigger value="finish">直 線</TabsTrigger>
+        <TabsList className="w-full p-0.5 bg-muted/60 border border-border rounded-lg h-auto">
+          <TabsTrigger value="course" className="rounded-md flex-1 data-[state=active]:bg-gradient-to-br data-[state=active]:from-brand-navy data-[state=active]:to-brand-navy-light data-[state=active]:text-white data-[state=active]:shadow-[0_1px_3px_rgba(0,0,0,0.2),0_0_0_1px_var(--brand-gold)] data-[state=inactive]:text-muted-foreground data-[state=inactive]:hover:text-foreground data-[state=inactive]:hover:bg-background/60">コース詳細</TabsTrigger>
+          <TabsTrigger value="start" className="rounded-md flex-1 data-[state=active]:bg-gradient-to-br data-[state=active]:from-brand-navy data-[state=active]:to-brand-navy-light data-[state=active]:text-white data-[state=active]:shadow-[0_1px_3px_rgba(0,0,0,0.2),0_0_0_1px_var(--brand-gold)] data-[state=inactive]:text-muted-foreground data-[state=inactive]:hover:text-foreground data-[state=inactive]:hover:bg-background/60">前半600m</TabsTrigger>
+          <TabsTrigger value="crux" className="rounded-md flex-1 data-[state=active]:bg-gradient-to-br data-[state=active]:from-brand-navy data-[state=active]:to-brand-navy-light data-[state=active]:text-white data-[state=active]:shadow-[0_1px_3px_rgba(0,0,0,0.2),0_0_0_1px_var(--brand-gold)] data-[state=inactive]:text-muted-foreground data-[state=inactive]:hover:text-foreground data-[state=inactive]:hover:bg-background/60">最終コーナー</TabsTrigger>
+          <TabsTrigger value="finish" className="rounded-md flex-1 data-[state=active]:bg-gradient-to-br data-[state=active]:from-brand-navy data-[state=active]:to-brand-navy-light data-[state=active]:text-white data-[state=active]:shadow-[0_1px_3px_rgba(0,0,0,0.2),0_0_0_1px_var(--brand-gold)] data-[state=inactive]:text-muted-foreground data-[state=inactive]:hover:text-foreground data-[state=inactive]:hover:bg-background/60">直 線</TabsTrigger>
         </TabsList>
       </Tabs>
     </div>

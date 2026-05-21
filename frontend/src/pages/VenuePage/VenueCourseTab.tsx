@@ -1,10 +1,11 @@
 import { useState } from "react";
-import { PremiumCard } from "@/components/ui/premium/PremiumCard";
+import { PremiumCard, PremiumCardHeader, PremiumCardTitle } from "@/components/ui/premium/PremiumCard";
 import { Button } from "@/components/ui/button";
 import { SurfaceBadge } from "@/components/keiba/SurfaceBadge";
 import { BreakdownTable, diffColor } from "@/components/keiba/BreakdownTable";
 import { useCourseStats } from "@/api/hooks";
 import type { VenueProfileDetail } from "@/api/client";
+import { Route } from "lucide-react";
 
 function CourseDetail({ courseKey }: { courseKey: string }) {
   const { data, isLoading } = useCourseStats(courseKey);
@@ -67,7 +68,7 @@ function CourseDetail({ courseKey }: { courseKey: string }) {
                     const v = d.condition_diff[cond];
                     if (!v) return null;
                     return (
-                      <tr key={cond} className="border-b border-border/50">
+                      <tr key={cond} className="border-b border-border/50 hover:bg-brand-gold/5 transition-colors">
                         <td className="py-1 px-1 font-semibold">{cond}</td>
                         <td className="text-right py-1 px-1 tabular-nums">{v.n}</td>
                         <td className="text-right py-1 px-1 tabular-nums font-semibold">{v.avg_str}</td>
@@ -107,7 +108,7 @@ function CourseDetail({ courseKey }: { courseKey: string }) {
                     const v = d.season_diff[key];
                     if (!v) return null;
                     return (
-                      <tr key={key} className="border-b border-border/50">
+                      <tr key={key} className="border-b border-border/50 hover:bg-brand-gold/5 transition-colors">
                         <td className="py-1 px-1 font-semibold">{key}<span className="text-xs text-muted-foreground ml-1">({label})</span></td>
                         <td className="text-right py-1 px-1 tabular-nums">{v.n}</td>
                         <td className="text-right py-1 px-1 tabular-nums font-semibold">{v.avg_str}</td>
@@ -186,7 +187,7 @@ function CourseDetail({ courseKey }: { courseKey: string }) {
                     );
                   }
                   return (
-                    <tr key={cls} className={`border-b border-border/50 ${isOther ? "text-muted-foreground" : ""}`}>
+                    <tr key={cls} className={`border-b border-border/50 hover:bg-brand-gold/5 transition-colors ${isOther ? "text-muted-foreground" : ""}`}>
                       <td className="py-1 px-1 font-semibold">{cls}</td>
                       <td className="text-right py-1 px-1 tabular-nums">{v.n}</td>
                       <td className="text-right py-1 px-1 tabular-nums font-semibold">{v.avg_str}</td>
@@ -225,7 +226,8 @@ export function VenueCourseTab({ venue }: { venue: VenueProfileDetail }) {
   );
 
   return (
-    <div className="space-y-3">
+    <div className="space-y-8">
+      {/* フィルター */}
       <div className="flex gap-1">
         {(["all", "芝", "ダート"] as const).map((s) => (
           <Button
@@ -239,51 +241,61 @@ export function VenueCourseTab({ venue }: { venue: VenueProfileDetail }) {
         ))}
       </div>
 
-      <div className="overflow-x-auto">
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="border-b text-left text-muted-foreground">
-              <th className="py-2 px-2">馬場</th>
-              <th className="py-2 px-2">距離</th>
-              <th className="py-2 px-2">方向</th>
-              <th className="py-2 px-2">直線</th>
-              <th className="py-2 px-2 hidden sm:table-cell">コーナー</th>
-              <th className="py-2 px-2 hidden sm:table-cell">初角</th>
-              <th className="py-2 px-2 hidden sm:table-cell">坂</th>
-              <th className="py-2 px-2 hidden md:table-cell">内外</th>
-              <th className="py-2 px-2 hidden md:table-cell">幅員</th>
-            </tr>
-          </thead>
-          <tbody>
-            {courses.map((c) => {
-              const isOpen = selectedKey === c.course_id;
-              return (
-                <tr
-                  key={c.course_id}
-                  className={`border-b cursor-pointer hover:bg-muted/50 transition-colors ${isOpen ? "bg-muted/30" : ""}`}
-                  onClick={() => setSelectedKey(isOpen ? null : c.course_id)}
-                >
-                  <td className="py-2 px-2"><SurfaceBadge surface={c.surface} /></td>
-                  <td className="py-2 px-2 font-bold">{c.distance}m</td>
-                  <td className="py-2 px-2">{c.direction}</td>
-                  <td className="py-2 px-2">{c.straight_m}m</td>
-                  <td className="py-2 px-2 hidden sm:table-cell">{c.corner_count} {c.corner_type}</td>
-                  <td className="py-2 px-2 hidden sm:table-cell">
-                    {c.first_corner}
-                    {c.first_corner_m > 0 && (
-                      <span className="text-xs text-muted-foreground ml-0.5">({c.first_corner_m}m)</span>
-                    )}
-                  </td>
-                  <td className="py-2 px-2 hidden sm:table-cell">{c.slope_type}</td>
-                  <td className="py-2 px-2 hidden md:table-cell">{c.inside_outside}</td>
-                  <td className="py-2 px-2 hidden md:table-cell text-muted-foreground">{c.width_m || "—"}</td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
+      {/* コース一覧テーブル */}
+      <PremiumCard variant="default" padding="md">
+        <PremiumCardHeader>
+          <div className="flex items-center gap-2">
+            <Route size={16} className="text-teal-600" />
+            <PremiumCardTitle className="text-base">コース一覧</PremiumCardTitle>
+          </div>
+        </PremiumCardHeader>
+        <div className="overflow-x-auto mt-3">
+          <table className="w-full text-sm">
+            <thead className="sticky top-0 bg-muted">
+              <tr className="border-b text-left text-muted-foreground">
+                <th className="py-2 px-2 section-eyebrow">馬場</th>
+                <th className="py-2 px-2 section-eyebrow">距離</th>
+                <th className="py-2 px-2 section-eyebrow">方向</th>
+                <th className="py-2 px-2 section-eyebrow">直線</th>
+                <th className="py-2 px-2 hidden sm:table-cell section-eyebrow">コーナー</th>
+                <th className="py-2 px-2 hidden sm:table-cell section-eyebrow">初角</th>
+                <th className="py-2 px-2 hidden sm:table-cell section-eyebrow">坂</th>
+                <th className="py-2 px-2 hidden md:table-cell section-eyebrow">内外</th>
+                <th className="py-2 px-2 hidden md:table-cell section-eyebrow">幅員</th>
+              </tr>
+            </thead>
+            <tbody>
+              {courses.map((c) => {
+                const isOpen = selectedKey === c.course_id;
+                return (
+                  <tr
+                    key={c.course_id}
+                    className={`border-b border-border/40 cursor-pointer hover:bg-brand-gold/5 transition-colors ${isOpen ? "bg-muted/30" : ""}`}
+                    onClick={() => setSelectedKey(isOpen ? null : c.course_id)}
+                  >
+                    <td className="py-2 px-2"><SurfaceBadge surface={c.surface} /></td>
+                    <td className="py-2 px-2 font-bold">{c.distance}m</td>
+                    <td className="py-2 px-2">{c.direction}</td>
+                    <td className="py-2 px-2">{c.straight_m}m</td>
+                    <td className="py-2 px-2 hidden sm:table-cell">{c.corner_count} {c.corner_type}</td>
+                    <td className="py-2 px-2 hidden sm:table-cell">
+                      {c.first_corner}
+                      {c.first_corner_m > 0 && (
+                        <span className="text-xs text-muted-foreground ml-0.5">({c.first_corner_m}m)</span>
+                      )}
+                    </td>
+                    <td className="py-2 px-2 hidden sm:table-cell">{c.slope_type}</td>
+                    <td className="py-2 px-2 hidden md:table-cell">{c.inside_outside}</td>
+                    <td className="py-2 px-2 hidden md:table-cell text-muted-foreground">{c.width_m || "—"}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </PremiumCard>
 
+      {/* 選択コースの詳細 */}
       {selectedKey && <CourseDetail courseKey={selectedKey} />}
     </div>
   );

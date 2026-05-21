@@ -4,17 +4,9 @@ import { PremiumCard } from "@/components/ui/premium/PremiumCard";
 import { useRacePrediction } from "@/api/hooks";
 import { useQueryClient } from "@tanstack/react-query";
 import { GradeBadge } from "@/components/keiba/GradeBadge";
-import { surfShort } from "@/lib/constants";
+import { surfShort, NAR_LIVE_TRACK_MAP } from "@/lib/constants";
 import { api } from "@/api/client";
 import { TabGroup3Horse } from "./TabGroup3Horse";
-
-// NAR ライブ映像のトラックマップ（レースライブボタン用）
-const NAR_LIVE_TRACK_MAP: Record<string, string> = {
-  "帯広": "obihiro", "門別": "monbetsu", "盛岡": "morioka", "水沢": "mizusawa",
-  "浦和": "urawa", "船橋": "funabashi", "大井": "ooi", "川崎": "kawasaki",
-  "金沢": "kanazawa", "笠松": "kasamatsu", "名古屋": "nagoya", "園田": "sonoda",
-  "姫路": "himeji", "高知": "kouchi", "佐賀": "saga",
-};
 
 interface RaceSummaryItem {
   race_no: number;
@@ -140,7 +132,7 @@ export function RaceDetailView({
   }, [race?.race_id, date, venue, raceNo, queryClient]);
 
   return (
-    <div className="space-y-4">
+    <div className="max-w-5xl mx-auto space-y-4">
       {/* 戻る + 会場タブ + レース番号タブ（sticky） */}
       <div className="sticky top-[var(--header-h,48px)] z-20 bg-background pb-2 space-y-1.5 -mx-4 px-4 pt-2 border-b border-border/50">
         <div className="flex items-center gap-2 flex-wrap">
@@ -175,7 +167,7 @@ export function RaceDetailView({
             <span className="text-xs text-muted-foreground">{oddsMsg}</span>
           )}
         </div>
-        {/* 会場タブ */}
+        {/* 会場タブ — セグメントコントロール */}
         {venues.length > 1 && (
           <div className="flex gap-1 overflow-x-auto">
             {venues.map((v) => (
@@ -190,8 +182,8 @@ export function RaceDetailView({
                 }}
                 className={`px-3 py-1.5 text-sm font-medium rounded-md whitespace-nowrap transition-colors ${
                   v === venue
-                    ? "bg-primary text-primary-foreground"
-                    : "bg-secondary text-secondary-foreground hover:bg-muted"
+                    ? "bg-gradient-to-br from-brand-navy to-brand-navy-light text-white shadow-[0_1px_3px_rgba(0,0,0,0.2),0_0_0_1px_var(--brand-gold)]"
+                    : "text-muted-foreground hover:text-foreground hover:bg-background/60"
                 }`}
               >
                 {v}
@@ -200,7 +192,7 @@ export function RaceDetailView({
           </div>
         )}
 
-        {/* レース番号タブ */}
+        {/* レース番号タブ — セグメントコントロール */}
         <div className="flex gap-1 overflow-x-auto">
           {Array.from({ length: maxR }, (_, i) => i + 1).map((r) => (
             <button
@@ -208,8 +200,8 @@ export function RaceDetailView({
               onClick={() => onNavigate(venue, r)}
               className={`px-3 py-1.5 text-sm font-medium rounded-md whitespace-nowrap transition-colors ${
                 r === raceNo
-                  ? "bg-primary text-primary-foreground"
-                  : "bg-secondary text-secondary-foreground hover:bg-muted"
+                  ? "bg-gradient-to-br from-brand-navy to-brand-navy-light text-white shadow-[0_1px_3px_rgba(0,0,0,0.2),0_0_0_1px_var(--brand-gold)]"
+                  : "text-muted-foreground hover:text-foreground hover:bg-background/60"
               }`}
             >
               {r}R
@@ -234,35 +226,37 @@ export function RaceDetailView({
 
       {race && (
         <>
-          {/* ① レースヘッダー — コンパクトストリップ */}
-          <div className="px-1 space-y-1">
-            <div className="flex items-center gap-2 flex-wrap">
-              <span className="text-xl font-bold text-brand-gold">
-                {race.race_no}R
-              </span>
-              <span className="text-lg font-bold font-heading">
-                {race.race_name || ""}
-              </span>
-              {race.grade && <GradeBadge grade={race.grade} />}
+          {/* ① レースヘッダー — PremiumCard ストリップ */}
+          <PremiumCard variant="default" padding="sm">
+            <div className="space-y-1">
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="text-xl font-bold text-brand-gold">
+                  {race.race_no}R
+                </span>
+                <span className="text-lg font-bold font-heading">
+                  {race.race_name || ""}
+                </span>
+                {race.grade && <GradeBadge grade={race.grade} />}
+              </div>
+              <div className="flex items-center gap-2 text-sm text-muted-foreground flex-wrap">
+                {metaParts.map((p, i) => (
+                  <span key={i}>
+                    {i > 0 && <span className="mx-1 text-border">/</span>}
+                    {p}
+                  </span>
+                ))}
+                {oddsUpdatedAt ? (
+                  <span className="ml-auto text-xs">
+                    最終オッズ {oddsUpdatedAt.slice(11, 16)}
+                  </span>
+                ) : (
+                  <span className="ml-auto text-xs text-muted-foreground">
+                    ※予測オッズ
+                  </span>
+                )}
+              </div>
             </div>
-            <div className="flex items-center gap-2 text-sm text-muted-foreground flex-wrap">
-              {metaParts.map((p, i) => (
-                <span key={i}>
-                  {i > 0 && <span className="mx-1 text-border">/</span>}
-                  {p}
-                </span>
-              ))}
-              {oddsUpdatedAt ? (
-                <span className="ml-auto text-xs">
-                  最終オッズ {oddsUpdatedAt.slice(11, 16)}
-                </span>
-              ) : (
-                <span className="ml-auto text-xs text-muted-foreground">
-                  ※予測オッズ
-                </span>
-              )}
-            </div>
-          </div>
+          </PremiumCard>
 
           {/* ── タブ② コース分析（ばんえいのみ） ── */}
           {isBanei && (

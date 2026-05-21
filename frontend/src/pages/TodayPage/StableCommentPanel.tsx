@@ -1,4 +1,5 @@
 import { WAKU_BG } from "@/lib/constants";
+import { PremiumCard } from "@/components/ui/premium/PremiumCard";
 import { parseStableComment } from "@/lib/parseStableComment";
 import type { HorseData } from "./RaceDetailView";
 
@@ -35,7 +36,7 @@ export function StableCommentPanel({ horses }: Props) {
         const mark = h.mark || "";
 
         return (
-          <div key={h.horse_no} className="border border-border/50 rounded-md p-3">
+          <PremiumCard variant="default" padding="sm" key={h.horse_no}>
             <div className="flex items-center gap-2 mb-1.5">
               <span className={`inline-flex w-5 h-5 items-center justify-center rounded-sm text-[10px] font-bold shrink-0 ${WAKU_BG[h.gate_no as number] || "bg-gray-200"}`}>
                 {h.horse_no}
@@ -64,7 +65,7 @@ export function StableCommentPanel({ horses }: Props) {
                 </ul>
               );
             })()}
-          </div>
+          </PremiumCard>
         );
       })}
     </div>

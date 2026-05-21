@@ -2,11 +2,11 @@ import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { PremiumCard } from "@/components/ui/premium/PremiumCard";
+import { PremiumCard, PremiumCardHeader, PremiumCardTitle, PremiumCardAccent } from "@/components/ui/premium/PremiumCard";
 import { useVenueProfile } from "@/api/hooks";
 import type { VenueProfileItem } from "@/api/client";
 import { JRA_VENUE_CODES } from "@/lib/constants";
-import { ArrowRight, Mountain, Flag } from "lucide-react";
+import { ArrowRight, Mountain, Flag, MapPin } from "lucide-react";
 
 const JRA_SET = new Set(JRA_VENUE_CODES);
 
@@ -55,13 +55,19 @@ export function VenueListView() {
   const list = region === "jra" ? jra : nar;
 
   return (
-    <div className="space-y-4">
-      <div className="flex items-center gap-3">
-        <div>
-          <div className="section-eyebrow mb-1">Venue Research</div>
-          <h1 className="text-xl font-bold border-b border-brand-gold/30 pb-1">競馬場研究</h1>
-        </div>
-        <div className="flex gap-1">
+    <div className="space-y-8 max-w-5xl mx-auto">
+      {/* ヒーローセクション */}
+      <PremiumCard variant="gold" padding="lg">
+        <PremiumCardHeader>
+          <div className="flex flex-col gap-0.5">
+            <PremiumCardAccent>
+              <MapPin size={10} className="inline mr-1" />
+              <span className="section-eyebrow">Venue Research</span>
+            </PremiumCardAccent>
+            <PremiumCardTitle>競馬場研究</PremiumCardTitle>
+          </div>
+        </PremiumCardHeader>
+        <div className="flex gap-2 mt-4">
           <Button
             variant={region === "jra" ? "default" : "outline"}
             size="sm"
@@ -77,8 +83,9 @@ export function VenueListView() {
             地方 ({nar.length})
           </Button>
         </div>
-      </div>
+      </PremiumCard>
 
+      {/* 競馬場カード一覧 */}
       <div
         role="list"
         aria-label={`${region === "jra" ? "JRA" : "NAR"} 競馬場一覧`}

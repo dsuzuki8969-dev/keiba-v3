@@ -34,7 +34,6 @@ export const api = {
     get<Record<string, any>>(
       `/api/today_predictions?date=${date}${nocache ? "&nocache=1" : ""}`
     ),
-  shareUrl: (date: string) => get<{ url: string }>(`/api/share_url?date=${date}`),
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   racePrediction: (date: string, venue: string, raceNo: number) =>
     get<Record<string, any>>(
@@ -62,13 +61,11 @@ export const api = {
     get<HybridSummaryResponse>(`/api/results/hybrid_summary?year=${year}`),
   resultsTrend: (year: string) => get<ResultsTrendResponse>(`/api/results/trend?year=${year}`),
   resultsDetailed: (year: string) => get<ResultsDetailedResponse>(`/api/results/detailed?year=${year}`),
-  resultsFetch: (body: ResultsFetchRequest) => post<{ status: string }>("/api/results/fetch", body),
   resultsFetchBatch: (body: ResultsFetchBatchRequest) =>
     post<{ status: string }>("/api/results/fetch_batch", body),
   resultsFetchStatus: () => get<ResultsFetchStatusResponse>("/api/results/fetch_status"),
   resultsFetchCancel: () => post<{ status: string }>("/api/results/fetch_cancel", {}),
   unmatchedDates: () => get<{ dates: string[] }>("/api/results/unmatched_dates"),
-  genSimpleHtml: (body: GenHtmlRequest) => post<{ url: string }>("/api/generate_simple_html", body),
 
   // レース結果
   raceResult: (date: string, raceId: string) =>
@@ -279,10 +276,6 @@ export interface OddsUpdateStatusResponse {
   current_race?: string;
   started_at?: number;
   source?: string;
-}
-
-export interface ResultsFetchRequest {
-  date: string;
 }
 
 export interface ResultsFetchBatchRequest {
@@ -521,10 +514,6 @@ export interface CourseStatsResponse {
   key: string;
   stats: Record<string, unknown>;
   [key: string]: unknown;
-}
-
-export interface GenHtmlRequest {
-  date: string;
 }
 
 export interface DbUpdateRequest {

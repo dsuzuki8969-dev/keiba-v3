@@ -339,7 +339,7 @@ function PastRunsTable({ runs }: { runs: PastRunData[] }) {
               const dg = devVal != null ? devGrade(devVal) : "—";
 
               return (
-                <tr key={i} className="border-b border-border/30 hover:bg-muted/20">
+                <tr key={i} className="border-b border-border/30 hover:bg-brand-gold/5 transition-colors">
                   <td className="py-1 px-1.5 whitespace-nowrap">
                     {(r.race_id || r.result_cname || r.race_no) ? (
                       <a href={pastRunResultUrl(r.race_id, r.date, r.venue, r.result_cname, r.race_no)}
@@ -607,7 +607,7 @@ export function HorseDiagnosis({ horses }: Props) {
             <div key={no} className="border-t">
               {/* ===== サマリー行 ===== */}
               <div
-                className="px-3 py-2 cursor-pointer hover:bg-muted/50 select-none flex items-center gap-1.5"
+                className="px-3 py-2 cursor-pointer hover:bg-brand-gold/5 transition-colors select-none flex items-center gap-1.5"
                 onClick={() => toggle(no)}
               >
                 <span className={`w-5 h-5 flex items-center justify-center rounded-sm text-[11px] font-bold shrink-0 ${WAKU_BG[h.gate_no as number] || "bg-gray-200"}`}>
@@ -738,7 +738,7 @@ function DetailBody({ h, allRanks, wpRank, p2Rank, p3Rank }: {
               return (
                 <React.Fragment key={def.key}>
                   <tr
-                    className={`border-b border-border/30 cursor-pointer hover:bg-blue-50 ${isTotal ? "bg-muted/50" : ""} ${isExpanded ? "bg-blue-50/70" : ""}`}
+                    className={`border-b border-border/30 cursor-pointer hover:bg-brand-gold/5 transition-colors ${isTotal ? "bg-muted/50" : ""} ${isExpanded ? "bg-brand-gold/10" : ""}`}
                     onClick={() => setExpandedIdx(isExpanded ? null : def.key)}
                     title="クリックで内訳表示"
                   >

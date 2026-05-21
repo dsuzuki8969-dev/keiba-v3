@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { PremiumCard } from "@/components/ui/premium/PremiumCard";
 
 interface Props {
   /** iframe に表示するURL（同一オリジン or 外部） */
@@ -50,8 +51,8 @@ export function MovieEmbed({ url, externalUrl, label, external }: Props) {
   const showTimeout = !loaded && timedOut;
 
   return (
-    <div className="space-y-2">
-      <div className="flex items-center justify-between gap-2">
+    <PremiumCard variant="default" padding="md">
+      <div className="flex items-center justify-between gap-2 mb-2">
         <div className="text-sm font-bold text-muted-foreground">
           {label || "レース映像"}
         </div>
@@ -103,10 +104,10 @@ export function MovieEmbed({ url, externalUrl, label, external }: Props) {
       </div>
 
       {external && (
-        <div className="text-[11px] text-muted-foreground">
+        <div className="text-[11px] text-muted-foreground mt-2">
           ※ 外部サイトの映像プレイヤーを埋め込んでいます。表示されない場合は「別タブで開く」からご覧ください。
         </div>
       )}
-    </div>
+    </PremiumCard>
   );
 }

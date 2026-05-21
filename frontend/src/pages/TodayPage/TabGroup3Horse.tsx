@@ -39,19 +39,7 @@ import { PastRunsPanel } from "./PastRunsPanel";
 import { TicketSection } from "./TicketSection";
 import { MovieEmbed } from "./MovieEmbed";
 import type { HorseData, RaceDetail } from "./RaceDetailView";
-
-// NAR映像トラックマップ
-const NAR_TRACK_MAP: Record<string, string> = {
-  "帯広": "obihiro", "門別": "monbetsu", "盛岡": "morioka", "水沢": "mizusawa",
-  "浦和": "urawa", "船橋": "funabashi", "大井": "ooi", "川崎": "kawasaki",
-  "金沢": "kanazawa", "笠松": "kasamatsu", "名古屋": "nagoya", "園田": "sonoda",
-  "姫路": "himeji", "高知": "kouchi", "佐賀": "saga",
-};
-// JRA映像ターゲット: race_id (YYYY JJ KK NN RR) → (YYYY KK JJ NN RR)
-function jraVideoTarget(raceId: string): string {
-  if (!raceId || raceId.length < 12) return "";
-  return raceId.slice(0, 4) + raceId.slice(6, 8) + raceId.slice(4, 6) + raceId.slice(8, 12);
-}
+import { NAR_LIVE_TRACK_MAP, jraVideoTarget } from "@/lib/constants";
 
 // タブ項目の種類
 type TabItem =
@@ -92,7 +80,7 @@ export function TabGroup3Horse({
   // v6.1.4: useCallback + 即時呼び出し `()` は useMemo と等価なので useMemo に正規化
   const movieUrl = useMemo(() => {
     if (race.is_jra === false) {
-      const track = NAR_TRACK_MAP[race.venue || ""];
+      const track = NAR_LIVE_TRACK_MAP[race.venue || ""];
       if (!track) return "";
       return `https://keiba-lv-st.jp/movie/player?date=${dateStr}&race=${raceNo}&track=${track}`;
     } else {
@@ -144,9 +132,9 @@ export function TabGroup3Horse({
 
   // タブグリッド（上下両方で再利用） — fromBottom=true のときクリックで上へスクロール
   const renderTabGrid = (fromBottom: boolean) => (
-    <div className="space-y-0">
+    <div className="space-y-0.5">
       {/* 1-2行目: コンテンツタブ（4列×2行） */}
-      <div className="grid grid-cols-4 border-t border-l border-border">
+      <div className="grid grid-cols-4 p-0.5 bg-muted/60 border border-border rounded-lg">
         {contentTabs.map((tab) => {
           const isActive = tab.key === activeTab;
           return (
@@ -154,12 +142,12 @@ export function TabGroup3Horse({
               key={tab.key}
               onClick={() => handleCellClick(tab, fromBottom)}
               className={[
-                "border-r border-b border-border",
+                "rounded-md",
                 "px-1 py-2 sm:px-2 sm:py-2.5 text-[11px] sm:text-base font-medium text-center",
                 "transition-colors truncate",
                 isActive
-                  ? "bg-primary text-primary-foreground"
-                  : "bg-muted/50 text-foreground hover:bg-muted",
+                  ? "bg-gradient-to-br from-brand-navy to-brand-navy-light text-white shadow-[0_1px_3px_rgba(0,0,0,0.2),0_0_0_1px_var(--brand-gold)]"
+                  : "text-muted-foreground hover:text-foreground hover:bg-background/60",
               ].join(" ")}
             >
               {tab.label}
@@ -169,7 +157,7 @@ export function TabGroup3Horse({
       </div>
 
       {/* 3行目: 印断層分析・買い目指南・レース結果・レース映像 の4列コンテンツタブ */}
-      <div className="grid grid-cols-4 border-l border-border">
+      <div className="grid grid-cols-4 p-0.5 bg-muted/60 border border-border rounded-lg">
         {row3Tabs.map((tab) => {
           const isActive = tab.key === activeTab;
           return (
@@ -177,12 +165,12 @@ export function TabGroup3Horse({
               key={tab.key}
               onClick={() => handleCellClick(tab, fromBottom)}
               className={[
-                "border-r border-b border-border",
+                "rounded-md",
                 "px-1 py-2 sm:px-2 sm:py-2.5 text-[11px] sm:text-base font-medium text-center",
                 "transition-colors truncate",
                 isActive
-                  ? "bg-primary text-primary-foreground"
-                  : "bg-muted/50 text-foreground hover:bg-muted",
+                  ? "bg-gradient-to-br from-brand-navy to-brand-navy-light text-white shadow-[0_1px_3px_rgba(0,0,0,0.2),0_0_0_1px_var(--brand-gold)]"
+                  : "text-muted-foreground hover:text-foreground hover:bg-background/60",
               ].join(" ")}
             >
               {tab.label}
@@ -193,7 +181,7 @@ export function TabGroup3Horse({
         {Array.from({ length: Math.max(0, 4 - row3Tabs.length) }).map((_, i) => (
           <div
             key={`empty-${fromBottom ? "b" : "t"}-${i}`}
-            className="border-r border-b border-border bg-muted/20"
+            className="rounded-md"
           />
         ))}
       </div>

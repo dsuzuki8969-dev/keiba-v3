@@ -15,7 +15,6 @@ export const VENUE_MAP: Record<string, string> = {
 };
 
 export const JRA_VENUE_CODES = ["01","02","03","04","05","06","07","08","09","10"];
-export const NAR_VENUE_CODES = ["30","35","36","42","43","44","45","46","47","48","50","51","54","55","65"];
 
 // 会場名 → netkeibaコード（コース画像ファイル名用）
 export const VENUE_NAME_TO_CODE: Record<string, string> = Object.fromEntries(
@@ -40,13 +39,6 @@ export const MARKS = {
 
 export type MarkType = keyof typeof MARKS;
 
-// 馬場種別
-export const SURFACE_LABELS: Record<string, string> = {
-  turf: "芝",
-  dirt: "ダート",
-  obstacle: "障害",
-};
-
 // タブ定義
 export const TABS = [
   { key: "home", label: "ホーム", shortLabel: "ホーム", path: "/home" },
@@ -61,14 +53,6 @@ export const TABS = [
 
 // JRA会場コードセット
 export const JRA_CODES = new Set(JRA_VENUE_CODES);
-
-// 信頼度レベル（ソート用）
-export function confLevel(c: string): number {
-  const map: Record<string, number> = {
-    SS: 6, "S+": 5, S: 4, "A+": 3, A: 2, "B+": 1, B: 0, C: 0,
-  };
-  return map[c.replace(/\u207a/g, "+")] ?? 0;
-}
 
 // 信頼度に対応するTailwindクラス（5色体系: SS=緑, S=青, A=赤, B=黒, C/D=灰）
 export function confColorClass(c: string): string {
@@ -140,9 +124,6 @@ export function devGrade(v: number): string {
   return "E";
 }
 
-/** @deprecated devGrade に統一 */
-export const indexGrade = devGrade;
-
 // ============================================================
 // 5色体系: 緑=最良, 青=良好, 赤=注意, 黒=普通, 灰=低調
 // ============================================================
@@ -204,23 +185,6 @@ export function evCls(ev: number): string {
 }
 
 
-/** トレンド → Tailwindクラス（急上昇/上昇=緑, 横ばい/安定=黒, 下降/急下降=灰） */
-export function trendCls(trend: string | undefined): string {
-  if (!trend) return "";
-  if (trend === "急上昇" || trend === "上昇") return "text-emerald-600 font-bold";
-  if (trend === "安定" || trend === "横ばい") return "";
-  return "text-muted-foreground";
-}
-
-/** 馬体重変化 → Tailwindクラス（±0-4=緑, ±5-9=青, ±10+=赤） */
-export function weightChgCls(chg: number | null | undefined): string {
-  if (chg == null) return "";
-  const abs = Math.abs(chg);
-  if (abs <= 4) return "text-emerald-600";
-  if (abs <= 9) return "text-blue-600";
-  return "text-red-600 font-bold";
-}
-
 // NAR馬場コード（keiba.go.jp用）
 const NAR_BABA_CODE: Record<string, string> = {
   "帯広": "3", "門別": "36", "盛岡": "10", "水沢": "11",
@@ -228,6 +192,20 @@ const NAR_BABA_CODE: Record<string, string> = {
   "金沢": "22", "笠松": "23", "名古屋": "24", "園田": "27",
   "姫路": "28", "高知": "31", "佐賀": "32",
 };
+
+// NAR ライブ映像トラックスラッグ（レースライブボタン URL 用）
+export const NAR_LIVE_TRACK_MAP: Record<string, string> = {
+  "帯広": "obihiro", "門別": "monbetsu", "盛岡": "morioka", "水沢": "mizusawa",
+  "浦和": "urawa", "船橋": "funabashi", "大井": "ooi", "川崎": "kawasaki",
+  "金沢": "kanazawa", "笠松": "kasamatsu", "名古屋": "nagoya", "園田": "sonoda",
+  "姫路": "himeji", "高知": "kouchi", "佐賀": "saga",
+};
+
+// JRA映像ターゲットID変換: race_id (YYYY JJ KK NN RR) → (YYYY KK JJ NN RR)
+export function jraVideoTarget(raceId: string): string {
+  if (!raceId || raceId.length < 12) return "";
+  return raceId.slice(0, 4) + raceId.slice(6, 8) + raceId.slice(4, 6) + raceId.slice(8, 12);
+}
 
 /**
  * 過去走のレース結果URL生成

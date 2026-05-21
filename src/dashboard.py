@@ -4308,10 +4308,9 @@ function dNavRefreshOdds(date){{
 
         # 配布用・全レースまとめはそのまま返す（巨大ファイルにナビ注入しない）
         if "_配布用.html" in filename or "_share.html" in filename or "全レース" in filename:
-            return Response(
-                open(path, "r", encoding="utf-8", errors="replace").read(),
-                mimetype="text/html; charset=utf-8",
-            )
+            with open(path, "r", encoding="utf-8", errors="replace") as f:
+                content = f.read()
+            return Response(content, mimetype="text/html; charset=utf-8")
 
         with open(path, "r", encoding="utf-8", errors="replace") as f:
             html = f.read()

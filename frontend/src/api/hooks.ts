@@ -66,16 +66,6 @@ export function useRacePrediction(date: string, venue: string, raceNo: number) {
   });
 }
 
-// ポートフォリオ
-export function usePortfolio() {
-  return useQuery({
-    queryKey: ["portfolio"],
-    queryFn: () => api.portfolio(),
-    staleTime: 10 * 60 * 1000,
-    gcTime: MIN_30,
-  });
-}
-
 // 分析ステータス（ポーリング）
 export function useAnalyzeStatus(enabled: boolean) {
   return useQuery({
@@ -152,7 +142,7 @@ export function useResultsFetchStatus(enabled: boolean) {
   });
 }
 
-// 騎手/調教師集計
+// レース結果
 export function useRaceResult(date: string, raceId: string) {
   return useQuery({
     queryKey: ["raceResult", date, raceId],

@@ -1,4 +1,5 @@
 import { devGrade, gradeCls, WAKU_BG } from "@/lib/constants";
+import { PremiumCard } from "@/components/ui/premium/PremiumCard";
 import { TrainingSection } from "./HorseDiagnosis";
 import type { HorseData, TrainingRecord } from "./RaceDetailView";
 
@@ -25,7 +26,7 @@ export function TrainingPanel({ horses }: Props) {
         const grade = devGrade(tDev);
 
         return (
-          <div key={h.horse_no} className="border border-border/50 rounded-md p-3">
+          <PremiumCard variant="default" padding="sm" key={h.horse_no}>
             <div className="flex items-center gap-2 mb-2">
               <span className={`inline-flex w-7 h-7 items-center justify-center rounded-sm text-sm font-bold shrink-0 ${WAKU_BG[h.gate_no as number] || "bg-gray-200"}`}>
                 {h.horse_no}
@@ -37,7 +38,7 @@ export function TrainingPanel({ horses }: Props) {
               <span className="text-sm text-muted-foreground">({tDev.toFixed(1)})</span>
             </div>
             <TrainingSection records={recs} />
-          </div>
+          </PremiumCard>
         );
       })}
     </div>
