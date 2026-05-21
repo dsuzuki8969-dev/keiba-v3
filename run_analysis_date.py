@@ -242,7 +242,12 @@ elif RACE_IDS_FROM_DB:
     P(f"  [yellow]race_logから取得: {len(race_ids)}レース[/]")
 else:
     race_ids = scraper.fetch_date(DATE)
-# ばんえい（帯広 vc=65）: venue_65 LightGBMモデル構築済み（Phase 3）
+# ばんえい（帯広 vc=65）除外: 予想・馬券購入ともに対象外
+from data.masters.venue_master import is_banei as _is_banei_check
+_before_banei = len(race_ids)
+race_ids = [rid for rid in race_ids if not _is_banei_check(rid[4:6])]
+if _before_banei != len(race_ids):
+    P(f"  [dim]帯広(ばんえい) {_before_banei - len(race_ids)}R 除外[/]")
 
 # --venues フィルタ: 指定した競馬場のレースのみ残す
 if VENUE_FILTER:

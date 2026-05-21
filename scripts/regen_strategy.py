@@ -228,6 +228,11 @@ def process_one_day(pred_path: str, dry_run: bool = False) -> dict:
     marks_changed = 0
 
     for race in payload.get("races", []):
+        # ばんえい（帯広）除外
+        vc = str(race.get("venue_code", "") or "").zfill(2)
+        if vc in ("52", "65"):
+            continue
+
         horses = race.get("horses", [])
         is_jra = race.get("is_jra", False)
 

@@ -541,6 +541,11 @@ def process_one_day(pred_path: str, bundle: ModelBundle, dry_run: bool = False) 
     predicted_races = 0
 
     for race in payload.get("races", []):
+        # ばんえい（帯広）除外
+        vc = str(race.get("venue_code", "") or "").zfill(2)
+        if vc in ("52", "65"):
+            continue
+
         horses = race.get("horses", [])
         active = [h for h in horses if not h.get("is_scratched")]
         total_horses += len(active)

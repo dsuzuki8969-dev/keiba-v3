@@ -16,6 +16,8 @@ from itertools import combinations
 from pathlib import Path
 from typing import Dict, Optional
 
+from data.masters.venue_master import BANEI_VENUE_CODES
+
 # ────────────────────────────────────────────────────────────────
 # 定数 (dispatch_backtest.py と同値)
 # ────────────────────────────────────────────────────────────────
@@ -354,6 +356,8 @@ def _compute_tansho_t4(year_filter: str) -> dict:
 
         for r in pred.get("races", []):
             race_id = str(r.get("race_id", ""))
+            if len(race_id) >= 6 and race_id[4:6] in BANEI_VENUE_CODES:
+                continue
             horses = _filter_active(r.get("horses", []))
             if not horses:
                 continue
@@ -500,6 +504,8 @@ def _compute_sanrenpuku_dynamic(year_filter: str) -> dict:
 
         for r in pred.get("races", []):
             race_id = str(r.get("race_id", ""))
+            if len(race_id) >= 6 and race_id[4:6] in BANEI_VENUE_CODES:
+                continue
             horses = _filter_active(r.get("horses", []))
             if not horses:
                 continue
@@ -687,6 +693,8 @@ def _compute_m_prime_sanrenpuku(year_filter: str) -> dict:
 
         for r in races:
             race_id = str(r.get("race_id", ""))
+            if len(race_id) >= 6 and race_id[4:6] in BANEI_VENUE_CODES:
+                continue
 
             # M' 発動判定（skip レースは除外）
             if not _layer1_m_prime_sanrenpuku(r):
