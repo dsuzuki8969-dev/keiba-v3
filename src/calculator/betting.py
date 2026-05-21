@@ -2667,51 +2667,35 @@ def build_tansho_t4_tickets(
     evaluations: List["HorseEvaluation"],
     race_info: "RaceInfo",
 ) -> List[Dict]:
-    """T-050: 単勝 T-4 買い目を生成する。
+    """T-050: 単勝買い目を生成する (shobu_score TOP2)。
 
-    ◉◎ 馬を 1 点 + ○ 馬を 1 点 = 計 2 点 (100 円固定)。
-    どちらか一方のみ存在する場合は 1 点のみ。
-    両方なしの場合は空リスト。
-
-    Returns
-    -------
-    list of dict
-        各要素: {"type": "単勝", "horse_no": int, "mark": str,
-                 "odds": float, "stake": 100}
+    shobu_score (勝負気配) 上位2頭を各1点 = 計2点 (100円固定)。
+    オッズに依存しない判断基準 (騎手強化/厩舎好調/格上げ等)。
     """
-    # 取消・出走停止馬を除外
     active = [
         e for e in evaluations
         if not getattr(e, "is_tokusen_kiken", False)
         and not e.is_scratched
     ]
+    if not active:
+        return []
+
+    sorted_by_shobu = sorted(
+        active,
+        key=lambda e: getattr(e, "shobu_score", 0) or 0,
+        reverse=True,
+    )
 
     tickets: List[Dict] = []
-
-    # ◉◎ 馬 (最優先 1 頭)
-    honmei_list = _dt_get_mark_horses(active, _DT_HONMEI_MARKS)
-    if honmei_list:
-        h = honmei_list[0]
-        mark_val = getattr(getattr(h, "mark", None), "value", "◎")
+    for h in sorted_by_shobu[:2]:
+        mark_val = getattr(getattr(h, "mark", None), "value", "")
         tickets.append({
             "type": "単勝",
             "horse_no": int(getattr(h.horse, "horse_no", 0)),
             "mark": mark_val,
             "odds": float(h.effective_odds or 0.0),
             "stake": 100,
-        })
-
-    # ○ 馬 (最優先 1 頭)
-    taikou_list = _dt_get_mark_horses(active, _DT_TAIKOU_MARKS)
-    if taikou_list:
-        h = taikou_list[0]
-        mark_val = getattr(getattr(h, "mark", None), "value", "○")
-        tickets.append({
-            "type": "単勝",
-            "horse_no": int(getattr(h.horse, "horse_no", 0)),
-            "mark": mark_val,
-            "odds": float(h.effective_odds or 0.0),
-            "stake": 100,
+            "shobu_score": round(getattr(h, "shobu_score", 0) or 0, 2),
         })
 
     return tickets

@@ -542,6 +542,7 @@ class _MockEval:
         self.is_scratched  = False
         self.composite     = 50.0
         self.predicted_tansho_odds = odds
+        self.shobu_score   = 0.0
 
     @property
     def effective_odds(self) -> float:
@@ -678,56 +679,66 @@ class TestBuildSanrenpukuDynamicTickets:
 
 
 class TestBuildTanshoT4Tickets:
-    """build_tansho_t4_tickets の単体テスト"""
+    """build_tansho_t4_tickets の単体テスト (shobu_score TOP2)"""
 
-    def test_both_honmei_and_taikou(self):
-        """◎ + ○ 両方あり → 2 点"""
-        evals = _make_ev_race_strict()  # ◎馬1番 + ○馬2番
-        tickets = build_tansho_t4_tickets(evals, _MOCK_RACE)
-        assert len(tickets) == 2
-        assert tickets[0]["type"] == "単勝"
-        assert tickets[1]["type"] == "単勝"
-        marks = {t["mark"] for t in tickets}
-        assert "◎" in marks or "◉" in marks, "◎◉が含まれる"
-        assert "○" in marks or "〇" in marks, "○が含まれる"
-
-    def test_only_honmei_no_taikou(self):
-        """◎のみ (○なし) → 1 点"""
+    def test_shobu_top2(self):
+        """shobu_score 上位2頭が選ばれる"""
         evals = [
             _MockEval(1, "◎", 0.40, 0.60, 3.0),
-            _MockEval(2, "▲", 0.15, 0.30, 8.0),
-            _MockEval(3, "△", 0.10, 0.25, 12.0),
+            _MockEval(2, "○", 0.30, 0.50, 5.0),
+            _MockEval(3, "▲", 0.15, 0.30, 8.0),
         ]
+        evals[0].shobu_score = 1.5
+        evals[1].shobu_score = 3.0
+        evals[2].shobu_score = 2.0
+        tickets = build_tansho_t4_tickets(evals, _MOCK_RACE)
+        assert len(tickets) == 2
+        assert tickets[0]["horse_no"] == 2, "shobu_score 最高の2番馬が1番目"
+        assert tickets[1]["horse_no"] == 3, "shobu_score 2位の3番馬が2番目"
+
+    def test_all_zero_shobu(self):
+        """全頭 shobu_score=0 → 先頭2頭が返る"""
+        evals = [
+            _MockEval(1, "◎", 0.40, 0.60, 3.0),
+            _MockEval(2, "○", 0.30, 0.50, 5.0),
+            _MockEval(3, "▲", 0.15, 0.30, 8.0),
+        ]
+        tickets = build_tansho_t4_tickets(evals, _MOCK_RACE)
+        assert len(tickets) == 2
+
+    def test_scratched_excluded(self):
+        """取消馬は除外される"""
+        evals = [
+            _MockEval(1, "◎", 0.40, 0.60, 3.0),
+            _MockEval(2, "○", 0.30, 0.50, 5.0),
+            _MockEval(3, "▲", 0.15, 0.30, 8.0),
+        ]
+        evals[0].shobu_score = 5.0
+        evals[0].is_scratched = True
+        evals[1].shobu_score = 3.0
+        evals[2].shobu_score = 2.0
+        tickets = build_tansho_t4_tickets(evals, _MOCK_RACE)
+        assert len(tickets) == 2
+        horse_nos = [t["horse_no"] for t in tickets]
+        assert 1 not in horse_nos, "取消馬 1 番は除外"
+
+    def test_single_active(self):
+        """有効馬1頭のみ → 1点"""
+        evals = [_MockEval(1, "◎", 0.40, 0.60, 3.0)]
+        evals[0].shobu_score = 2.0
         tickets = build_tansho_t4_tickets(evals, _MOCK_RACE)
         assert len(tickets) == 1
-        assert tickets[0]["mark"] in ("◎", "◉")
-
-    def test_only_taikou_no_honmei(self):
-        """○のみ (◎◉なし) → 1 点"""
-        evals = [
-            _MockEval(1, "○", 0.30, 0.50, 4.0),
-            _MockEval(2, "▲", 0.15, 0.30, 8.0),
-        ]
-        tickets = build_tansho_t4_tickets(evals, _MOCK_RACE)
-        assert len(tickets) == 1
-        assert tickets[0]["mark"] in ("○", "〇")
-
-    def test_no_honmei_no_taikou(self):
-        """◎◉○なし → 空リスト"""
-        evals = [
-            _MockEval(1, "▲", 0.30, 0.50, 4.0),
-            _MockEval(2, "△", 0.20, 0.40, 6.0),
-        ]
-        tickets = build_tansho_t4_tickets(evals, _MOCK_RACE)
-        assert tickets == []
 
     def test_ticket_fields(self):
         """返却チケットのフィールド確認"""
-        tickets = build_tansho_t4_tickets(_make_ev_race_strict(), _MOCK_RACE)
+        evals = _make_ev_race_strict()
+        evals[0].shobu_score = 2.0
+        tickets = build_tansho_t4_tickets(evals, _MOCK_RACE)
         for t in tickets:
             assert "horse_no" in t
             assert "mark" in t
             assert "odds" in t
+            assert "shobu_score" in t
             assert t["stake"] == 100
             assert t["type"] == "単勝"
 

@@ -302,6 +302,9 @@ function TanshoRow({
         {(ticket.odds ?? 0) > 0 && (
           <span className="whitespace-nowrap">Odds: {(ticket.odds!).toFixed(1)}倍</span>
         )}
+        {(ticket as any).shobu_score != null && (ticket as any).shobu_score > 0 && (
+          <span className="whitespace-nowrap text-orange-600 dark:text-orange-400">勝負気配: {(ticket as any).shobu_score}</span>
+        )}
       </span>
     </div>
   );
@@ -446,7 +449,7 @@ function Phase4HybridFormation({
         <div>
           <div className="flex items-center gap-2 mb-1">
             <span className="px-2 py-0.5 bg-amber-500 text-white text-xs font-bold rounded">
-              単勝 T-4（◉◎＋○）
+              単勝（勝負気配TOP2）
             </span>
             <span className="text-xs text-muted-foreground">{tansho.length}点</span>
           </div>
@@ -757,7 +760,7 @@ export function TicketSection({ race }: Props) {
                 {isMPrimeFormat
                   ? "買い目指南（M' 戦略 自信度別 三連複）"
                   : isT050Format
-                    ? "買い目指南（三連複動的 + 単勝T-4）"
+                    ? "買い目指南（三連複動的 + 単勝）"
                     : "買い目指南（三連単フォーメーション）"}
                 <span
                   className="text-sm font-normal text-muted-foreground"
@@ -775,7 +778,7 @@ export function TicketSection({ race }: Props) {
                 {isMPrimeFormat
                   ? "M' 戦略: SS=E(4点) / S/A=C(7点) / B/C/D=D(10点) / E=見送り。1点100円固定。年純利 +¥12M / ROI 217%実証。"
                   : isT050Format
-                    ? "三連複動的フォーメーション（中7点/広10点）＋単勝T-4（◉◎＋○）— 各点 100円固定。EV は期待払戻倍率の推定値。"
+                    ? "三連複動的フォーメーション（中7点/広10点）＋単勝（勝負気配TOP2）— 各点 100円固定。"
                     : "フォーメーション ◉/◎⇔○/▲/(☆)⇒○/▲/△/★/(☆)/(同断層内無印1-2頭) — 各点 100円固定。SS / C / D 信頼度は過去成績マイナスのため見送り。EV は期待払戻倍率の推定値。"}
               </p>
             </div>
