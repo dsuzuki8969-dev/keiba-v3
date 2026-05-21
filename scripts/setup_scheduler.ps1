@@ -1,100 +1,64 @@
-﻿# D-AI競馬 タスクスケジューラ登録スクリプト
+# D-AI競馬 タスクスケジューラ登録スクリプト (v3 — 最適時刻版)
 # 管理者権限で実行してください
 # 使い方: powershell -ExecutionPolicy Bypass -File scripts\setup_scheduler.ps1
+#
+# v3 変更点:
+#   全ジョブを APScheduler (scheduler.py) に統合。WTS は 3 タスクのみ。
+#   結果取得を 23:00 に前倒し、翌日予想は 23:30 で当日結果反映。
+#   オッズ更新は 5 回定時 + 個別レース (T-15min + T-0min)。
+#
+#   APScheduler 管理 (scheduler.py):
+#     ── 夜間サイクル ──
+#     23:00  当日結果取得+DB更新       (job_results_and_db)
+#     23:30  翌日予想作成(結果反映)     (job_prediction)        [deps: results_and_db]
+#     00:00  パラフレーズ(翌日)         (job_paraphrase_tomorrow) [deps: prediction]
+#     01:00  日次メンテナンス           (job_maintenance)       [deps: results_and_db]
+#     04:00  DAG+リトライ リセット
+#     ── 朝〜日中サイクル ──
+#     06:00  当日予想作成               (job_predict_today)
+#     06:00  オッズ一括更新(初回)       (job_odds_first_batch)  [deps: predict_today]
+#     06:30  パラフレーズ(当日)         (job_paraphrase_today)  [deps: predict_today, odds_first_batch]
+#     09:00  オッズ一括更新(2回目)      (job_odds_batch)
+#     12:00  オッズ一括更新(3回目)      (job_odds_batch)
+#     15:00  オッズ一括更新(4回目)      (job_odds_batch)
+#     18:00  オッズ一括更新(5回目)      (job_odds_batch)
+#     動的   発走15分前オッズ更新       (T-15min, 06:00時に登録)
+#     動的   発走時刻オッズ更新         (T-0min, 06:00時に登録)
+#
+#   Windows TS 残留:
+#     logon  ダッシュボード常駐         (DAI_Keiba_Dashboard)
+#     logon  APScheduler 常駐          (DAI_Keiba_Scheduler)
+#     5min   Watchdog                  (DAI_Keiba_Watchdog)
 
 $ErrorActionPreference = "Stop"
 $ScriptDir = "c:\Users\dsuzu\keiba\keiba-v3"
 
-Write-Host "D-AI Keiba Task Scheduler Setup" -ForegroundColor Cyan
+Write-Host "D-AI Keiba Task Scheduler Setup (v3 - 最適時刻版)" -ForegroundColor Cyan
 Write-Host "作業ディレクトリ: $ScriptDir" -ForegroundColor Gray
+Write-Host ""
 
-# 旧タスク削除（install_scheduler.bat で登録されたもの）
-Unregister-ScheduledTask -TaskName "keiba-scheduler" -Confirm:$false -ErrorAction SilentlyContinue
-Write-Host "旧タスク keiba-scheduler を削除" -ForegroundColor Gray
+# ── 移行済みタスクの削除 ─────────────────────────────────────────
+Write-Host "APScheduler に移行済みのタスクを削除中..." -ForegroundColor Yellow
 
-$Settings = New-ScheduledTaskSettingsSet `
-    -ExecutionTimeLimit (New-TimeSpan -Hours 4) `
-    -StartWhenAvailable `
-    -RunOnlyIfNetworkAvailable `
-    -WakeToRun
+$MigratedTasks = @(
+    "keiba-scheduler",              # 旧タスク (install_scheduler.bat)
+    "DAI_Keiba_Predict",            # → job_predict_today (06:00)
+    "DAI_Keiba_Results",            # → job_results_and_db (23:00)
+    "DAI_Keiba_Maintenance",        # → job_maintenance (01:00)
+    "DAI_Keiba_Predict_Tomorrow",   # → job_prediction (23:30)
+    "DAI_Keiba_AutoOdds",           # → job_odds_batch (5回定時)
+    "DAI_Keiba_Paraphrase_Today",   # → job_paraphrase_today (06:30)
+    "DAI_Keiba_Paraphrase_Tomorrow" # → job_paraphrase_tomorrow (00:00)
+)
 
-# ── 1. 予想生成タスク（毎朝6:00）────────────────────────────
-$PredictAction = New-ScheduledTaskAction `
-    -Execute "wscript.exe" `
-    -Argument "`"$ScriptDir\scripts\daily_predict_hidden.vbs`"" `
-    -WorkingDirectory $ScriptDir
+foreach ($task in $MigratedTasks) {
+    Unregister-ScheduledTask -TaskName $task -Confirm:$false -ErrorAction SilentlyContinue
+    Write-Host "  削除: $task" -ForegroundColor Gray
+}
 
-$PredictTrigger = New-ScheduledTaskTrigger -Daily -At "06:00"
+Write-Host ""
 
-Register-ScheduledTask `
-    -TaskName "DAI_Keiba_Predict" `
-    -Description "D-AI Keiba: 予想生成 毎朝06:00" `
-    -Action $PredictAction `
-    -Trigger $PredictTrigger `
-    -Settings $Settings `
-    -RunLevel Highest `
-    -Force | Out-Null
-
-Write-Host "OK: DAI_Keiba_Predict (daily 06:00)" -ForegroundColor Green
-
-# ── 2. 結果照合タスク（毎夜22:00）───────────────────────────
-$ResultsAction = New-ScheduledTaskAction `
-    -Execute "wscript.exe" `
-    -Argument "`"$ScriptDir\scripts\daily_results_hidden.vbs`"" `
-    -WorkingDirectory $ScriptDir
-
-$ResultsTrigger = New-ScheduledTaskTrigger -Daily -At "22:00"
-
-Register-ScheduledTask `
-    -TaskName "DAI_Keiba_Results" `
-    -Description "D-AI Keiba: 結果照合 毎夜22:00" `
-    -Action $ResultsAction `
-    -Trigger $ResultsTrigger `
-    -Settings $Settings `
-    -RunLevel Highest `
-    -Force | Out-Null
-
-Write-Host "OK: DAI_Keiba_Results (daily 22:00)" -ForegroundColor Green
-
-# ── 3. 日次メンテナンス（毎夜23:00）─────────────────────────
-$MaintAction = New-ScheduledTaskAction `
-    -Execute "wscript.exe" `
-    -Argument "`"$ScriptDir\scripts\daily_maintenance_hidden.vbs`"" `
-    -WorkingDirectory $ScriptDir
-
-$MaintTrigger = New-ScheduledTaskTrigger -Daily -At "23:00"
-
-Register-ScheduledTask `
-    -TaskName "DAI_Keiba_Maintenance" `
-    -Description "D-AI Keiba: 払戻バックフィル+整合性チェック 毎夜23:00 (日曜VACUUM/月初CSV更新)" `
-    -Action $MaintAction `
-    -Trigger $MaintTrigger `
-    -Settings $Settings `
-    -RunLevel Highest `
-    -Force | Out-Null
-
-Write-Host "OK: DAI_Keiba_Maintenance (daily 23:00)" -ForegroundColor Green
-
-# ── 4. 翌日予想生成タスク（毎夕17:00）─────────────────────────
-$PredictTomorrowAction = New-ScheduledTaskAction `
-    -Execute "wscript.exe" `
-    -Argument "`"$ScriptDir\scripts\daily_predict_tomorrow_hidden.vbs`"" `
-    -WorkingDirectory $ScriptDir
-
-$PredictTomorrowTrigger = New-ScheduledTaskTrigger -Daily -At "17:00"
-
-Register-ScheduledTask `
-    -TaskName "DAI_Keiba_Predict_Tomorrow" `
-    -Description "D-AI Keiba: 翌日予想生成（公式のみ）毎夕17:00" `
-    -Action $PredictTomorrowAction `
-    -Trigger $PredictTomorrowTrigger `
-    -Settings $Settings `
-    -RunLevel Highest `
-    -Force | Out-Null
-
-Write-Host "OK: DAI_Keiba_Predict_Tomorrow (daily 17:00)" -ForegroundColor Green
-
-# ── 5. ダッシュボード常駐（ログオン時起動・自動再起動）────────────
+# ── 1. ダッシュボード常駐（ログオン時起動・自動再起動）────────────
 $DashSettings = New-ScheduledTaskSettingsSet `
     -ExecutionTimeLimit ([TimeSpan]::Zero) `
     -StartWhenAvailable `
@@ -120,9 +84,7 @@ Register-ScheduledTask `
 
 Write-Host "OK: DAI_Keiba_Dashboard (at logon, auto-restart)" -ForegroundColor Green
 
-# ── 6. Watchdog (every 5 min: dashboard + cloudflared) ──
-# watchdog_check.bat は scripts/ に直接管理。動的生成しない
-
+# ── 2. Watchdog (every 5 min: dashboard + cloudflared) ──
 $WdSettings = New-ScheduledTaskSettingsSet `
     -ExecutionTimeLimit (New-TimeSpan -Minutes 2) `
     -StartWhenAvailable `
@@ -146,77 +108,7 @@ Register-ScheduledTask `
 
 Write-Host "OK: DAI_Keiba_Watchdog (every 5 min)" -ForegroundColor Green
 
-# ── 7. 発走 15 分前 オッズ+馬体重自動取得（09:30〜21:00 の間 5 分間隔）──
-# 09:30 開始、Duration=11.5h(41400s)、RepetitionInterval=5min
-# MultipleInstances=IgnoreNew でスクリプト重複起動を防止
-# ※ Windows Task Scheduler は「UTC で実行」オプションを使わない（スクリプト内部が JST 前提）
-$AutoOddsSettings = New-ScheduledTaskSettingsSet `
-    -ExecutionTimeLimit (New-TimeSpan -Minutes 2) `
-    -StartWhenAvailable `
-    -MultipleInstances IgnoreNew
-
-$AutoOddsAction = New-ScheduledTaskAction `
-    -Execute "wscript.exe" `
-    -Argument "`"$ScriptDir\scripts\auto_fetch_odds_15min_hidden.vbs`"" `
-    -WorkingDirectory $ScriptDir
-
-# 09:30 を開始点とし、毎日 11.5 時間（09:30〜21:00）繰り返す（PS 5.1/7 両対応）
-$AutoOddsTrigger = New-ScheduledTaskTrigger -Daily -At "09:30"
-$RepetitionTemplate = New-ScheduledTaskTrigger -Once -At "09:30" `
-    -RepetitionInterval (New-TimeSpan -Minutes 5) `
-    -RepetitionDuration (New-TimeSpan -Hours 11 -Minutes 30)
-$AutoOddsTrigger.Repetition = $RepetitionTemplate.Repetition
-
-Register-ScheduledTask `
-    -TaskName "DAI_Keiba_AutoOdds" `
-    -Description "D-AI Keiba: 発走15分前オッズ+馬体重自動取得 09:30〜21:00 の間 5分間隔" `
-    -Action $AutoOddsAction `
-    -Trigger $AutoOddsTrigger `
-    -Settings $AutoOddsSettings `
-    -RunLevel Highest `
-    -Force | Out-Null
-
-Write-Host "OK: DAI_Keiba_AutoOdds (09:30-21:00 every 5 min)" -ForegroundColor Green
-
-# ── 8. 厩舎コメント paraphrase 当日分（06:30 - Predict 直後）──────────
-$ParaphraseTodayAction = New-ScheduledTaskAction `
-    -Execute "wscript.exe" `
-    -Argument "`"$ScriptDir\scripts\daily_paraphrase_today_hidden.vbs`"" `
-    -WorkingDirectory $ScriptDir
-
-$ParaphraseTodayTrigger = New-ScheduledTaskTrigger -Daily -At "06:30"
-
-Register-ScheduledTask `
-    -TaskName "DAI_Keiba_Paraphrase_Today" `
-    -Description "D-AI Keiba: 厩舎コメント paraphrase 当日分 毎朝06:30 (Predict 直後)" `
-    -Action $ParaphraseTodayAction `
-    -Trigger $ParaphraseTodayTrigger `
-    -Settings $Settings `
-    -RunLevel Highest `
-    -Force | Out-Null
-
-Write-Host "OK: DAI_Keiba_Paraphrase_Today (daily 06:30)" -ForegroundColor Green
-
-# ── 9. 厩舎コメント paraphrase 翌日分（17:30 - Predict_Tomorrow 直後）──
-$ParaphraseTomorrowAction = New-ScheduledTaskAction `
-    -Execute "wscript.exe" `
-    -Argument "`"$ScriptDir\scripts\daily_paraphrase_tomorrow_hidden.vbs`"" `
-    -WorkingDirectory $ScriptDir
-
-$ParaphraseTomorrowTrigger = New-ScheduledTaskTrigger -Daily -At "17:30"
-
-Register-ScheduledTask `
-    -TaskName "DAI_Keiba_Paraphrase_Tomorrow" `
-    -Description "D-AI Keiba: 厩舎コメント paraphrase 翌日分 毎夕17:30 (Predict_Tomorrow 直後)" `
-    -Action $ParaphraseTomorrowAction `
-    -Trigger $ParaphraseTomorrowTrigger `
-    -Settings $Settings `
-    -RunLevel Highest `
-    -Force | Out-Null
-
-Write-Host "OK: DAI_Keiba_Paraphrase_Tomorrow (daily 17:30)" -ForegroundColor Green
-
-# ── 10. APScheduler (DAG エンジン) 常駐（ログオン時起動・自動再起動）──
+# ── 3. APScheduler (DAG エンジン) 常駐（ログオン時起動・自動再起動）──
 $SchedSettings = New-ScheduledTaskSettingsSet `
     -ExecutionTimeLimit ([TimeSpan]::Zero) `
     -StartWhenAvailable `
@@ -233,14 +125,14 @@ $SchedTrigger = New-ScheduledTaskTrigger -AtLogon
 
 Register-ScheduledTask `
     -TaskName "DAI_Keiba_Scheduler" `
-    -Description "D-AI Keiba: APScheduler + DAG エンジン常駐 (ログオン時起動, 失敗時自動再起動)" `
+    -Description "D-AI Keiba: APScheduler + DAG エンジン常駐 (v3 最適時刻版, 12ジョブ管理)" `
     -Action $SchedAction `
     -Trigger $SchedTrigger `
     -Settings $SchedSettings `
     -RunLevel Highest `
     -Force | Out-Null
 
-Write-Host "OK: DAI_Keiba_Scheduler (at logon, auto-restart)" -ForegroundColor Green
+Write-Host "OK: DAI_Keiba_Scheduler (at logon, auto-restart, 12 jobs)" -ForegroundColor Green
 
 # ── 登録済みタスク一覧 ────────────────────────────────────────
 Write-Host ""
@@ -250,15 +142,24 @@ Get-ScheduledTask -TaskName "DAI_Keiba_*" | Select-Object TaskName, State, @{N="
 }}
 
 Write-Host ""
-Write-Host "スケジュール:" -ForegroundColor Cyan
-Write-Host "  06:00  DAI_Keiba_Predict              - 当日予想生成" -ForegroundColor White
-Write-Host "  06:30  DAI_Keiba_Paraphrase_Today     - 厩舎コメント paraphrase 当日分" -ForegroundColor White
-Write-Host "  17:00  DAI_Keiba_Predict_Tomorrow     - 翌日予想生成（公式のみ）" -ForegroundColor White
-Write-Host "  17:30  DAI_Keiba_Paraphrase_Tomorrow  - 厩舎コメント paraphrase 翌日分" -ForegroundColor White
-Write-Host "  22:00  DAI_Keiba_Results              - 結果照合" -ForegroundColor White
-Write-Host "  23:00  DAI_Keiba_Maintenance          - 払戻バックフィル + 整合性チェック" -ForegroundColor White
-Write-Host "                                          (日曜: VACUUM, 月初: CSV更新)" -ForegroundColor Gray
-Write-Host "  logon  DAI_Keiba_Dashboard            - ダッシュボード常駐 (自動再起動)" -ForegroundColor White
-Write-Host "  logon  DAI_Keiba_Scheduler            - APScheduler + DAG エンジン常駐" -ForegroundColor White
-Write-Host "  5min   DAI_Keiba_Watchdog             - dashboard+cloudflared watchdog" -ForegroundColor White
-Write-Host "  5min   DAI_Keiba_AutoOdds             - 発走15分前オッズ+馬体重 (09:30-21:00)" -ForegroundColor White
+Write-Host "Windows TS (残留 3 タスク):" -ForegroundColor Cyan
+Write-Host "  logon  DAI_Keiba_Dashboard   - ダッシュボード常駐 (自動再起動)" -ForegroundColor White
+Write-Host "  logon  DAI_Keiba_Scheduler   - APScheduler + DAG エンジン常駐" -ForegroundColor White
+Write-Host "  5min   DAI_Keiba_Watchdog    - dashboard+cloudflared watchdog" -ForegroundColor White
+Write-Host ""
+Write-Host "APScheduler 管理 (scheduler.py --status で確認):" -ForegroundColor Cyan
+Write-Host "  ── 夜間サイクル ──" -ForegroundColor DarkCyan
+Write-Host "  23:00  結果取得+DB更新(当日)  job_results_and_db" -ForegroundColor White
+Write-Host "  23:30  翌日予想作成(結果反映)  job_prediction        [deps: results_and_db]" -ForegroundColor White
+Write-Host "  00:00  パラフレーズ(翌日)      job_paraphrase_tomorrow [deps: prediction]" -ForegroundColor White
+Write-Host "  01:00  日次メンテナンス        job_maintenance       [deps: results_and_db]" -ForegroundColor White
+Write-Host "  04:00  DAG+リトライ リセット" -ForegroundColor White
+Write-Host "  ── 朝〜日中サイクル ──" -ForegroundColor DarkCyan
+Write-Host "  06:00  当日予想作成            job_predict_today" -ForegroundColor White
+Write-Host "  06:00  オッズ一括(初回)        job_odds_first_batch  [deps: predict_today]" -ForegroundColor White
+Write-Host "  06:30  パラフレーズ(当日)      job_paraphrase_today  [deps: predict_today, odds_first_batch]" -ForegroundColor White
+Write-Host "  09:00  オッズ一括(2回目)       job_odds_batch" -ForegroundColor White
+Write-Host "  12:00  オッズ一括(3回目)       job_odds_batch" -ForegroundColor White
+Write-Host "  15:00  オッズ一括(4回目)       job_odds_batch" -ForegroundColor White
+Write-Host "  18:00  オッズ一括(5回目)       job_odds_batch" -ForegroundColor White
+Write-Host "  動的   発走15分前+発走時刻     個別レースオッズ (06:00時に登録)" -ForegroundColor White

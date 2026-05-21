@@ -1,7 +1,7 @@
 """
 scheduler_dag.py — DAG モジュール (フェーズ D 段階 2-A)
 
-依存関係予約 + 循環依存検査 + トポロジカルソート。
+依存関係予約 + 循環依存検査 + トポロジカルソート + カスケード中断 + 状態永続化。
 
 使い方:
   from src.scheduler_dag import register_task, can_run, mark_done, validate_dag, topological_order
@@ -19,14 +19,20 @@ scheduler_dag.py — DAG モジュール (フェーズ D 段階 2-A)
 
 設計方針:
   - thread-safe (全 API が _LOCK で保護)
-  - 永続化なし (プロセス再起動で reset・日次バッチで reset_state() 推奨)
+  - 状態永続化: tmp/dag_state.json に completed/failed を保存 (best-effort)
+  - カスケード中断: mark_failed() で下流タスクも _FAILED に伝播
   - DFS ベースの循環依存検査 (register_task 時に即チェック)
 """
 
+import json
+import os
+import tempfile
 import threading
 from collections import deque
+from datetime import datetime
 from typing import Dict, List, Optional, Set
 
+from config.settings import PROJECT_ROOT
 from src.log import get_logger
 
 logger = get_logger(__name__)
@@ -37,8 +43,14 @@ _DAG: Dict[str, List[str]] = {}
 # 完了したタスク名のセット
 _COMPLETED: Set[str] = set()
 
+# 失敗したタスク名のセット (カスケード伝播先含む)
+_FAILED: Set[str] = set()
+
 # 全 API 共通 Lock
 _LOCK = threading.Lock()
+
+# 状態永続化ファイルパス
+_STATE_FILE = os.path.join(PROJECT_ROOT, "tmp", "dag_state.json")
 
 
 # ================================================================
@@ -100,6 +112,97 @@ def _validate_no_cycle(dag: Dict[str, List[str]]) -> None:
 
 
 # ================================================================
+# 内部ユーティリティ — 下流タスク探索 (ロック外で呼ぶこと)
+# ================================================================
+
+def _find_all_downstream(name: str, dag: Dict[str, List[str]]) -> Set[str]:
+    """指定タスクの全下流タスクを DFS で探索して返す。
+
+    「下流」= name を (直接・間接に) 依存するタスク群。
+    name 自身は含まない。
+    """
+    downstream: Set[str] = set()
+    stack = [name]
+    while stack:
+        current = stack.pop()
+        for task, deps in dag.items():
+            if current in deps and task not in downstream:
+                downstream.add(task)
+                stack.append(task)
+    return downstream
+
+
+# ================================================================
+# 内部ユーティリティ — 状態永続化 (ロック内から呼ぶこと)
+# ================================================================
+
+def _save_state() -> None:
+    """_COMPLETED と _FAILED を JSON ファイルに保存する (best-effort)。
+
+    atomic write: tmpfile → os.replace で中途半端な状態を防ぐ。
+    _LOCK 保持中に呼ぶ想定。
+    """
+    try:
+        state_dir = os.path.dirname(_STATE_FILE)
+        os.makedirs(state_dir, exist_ok=True)
+        data = {
+            "completed": sorted(_COMPLETED),
+            "failed": sorted(_FAILED),
+            "saved_at": datetime.now().isoformat(),
+        }
+        # 同じディレクトリに tmpfile を作って atomic replace
+        fd, tmp_path = tempfile.mkstemp(
+            dir=state_dir, suffix=".tmp", prefix="dag_state_"
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+            os.replace(tmp_path, _STATE_FILE)
+        except Exception:
+            # tmpfile の後始末
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
+        logger.debug("DAG: 状態を永続化 completed=%d failed=%d", len(_COMPLETED), len(_FAILED))
+    except Exception as e:
+        logger.warning("DAG: 状態永続化に失敗 (best-effort): %s", e)
+
+
+def _load_state() -> None:
+    """JSON ファイルから _COMPLETED と _FAILED を復元する (best-effort)。
+
+    ファイルが存在しなければ何もしない。_LOCK 保持中に呼ぶ想定。
+    """
+    try:
+        if not os.path.exists(_STATE_FILE):
+            return
+        with open(_STATE_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        _COMPLETED.update(data.get("completed", []))
+        _FAILED.update(data.get("failed", []))
+        logger.info(
+            "DAG: 状態を復元 completed=%d failed=%d (from %s)",
+            len(_COMPLETED), len(_FAILED), data.get("saved_at", "unknown"),
+        )
+    except Exception as e:
+        logger.warning("DAG: 状態復元に失敗 (best-effort): %s", e)
+
+
+def load_state() -> None:
+    """外部から呼べる状態復元 API。プロセス起動時に 1 度呼ぶ想定。"""
+    with _LOCK:
+        _load_state()
+
+
+def save_state() -> None:
+    """外部から呼べる状態保存 API。明示的に保存したい場合に使用。"""
+    with _LOCK:
+        _save_state()
+
+
+# ================================================================
 # 公開 API
 # ================================================================
 
@@ -139,13 +242,19 @@ def can_run(name: str) -> bool:
         name: 判定対象タスク名
 
     Returns:
-        True: 依存タスク全完了 (or 未登録) → 実行可能
-        False: 依存タスクに未完了あり → 待機すべき
+        True: 依存タスク全完了 (or 未登録) かつ自身・依存先が失敗していない → 実行可能
+        False: 依存タスクに未完了/失敗あり → 待機すべき
     """
     with _LOCK:
+        # 自身が _FAILED に入っている場合 (カスケード伝播済み) → 実行不可
+        if name in _FAILED:
+            return False
         if name not in _DAG:
             # 未登録タスクは依存なしとして扱う (互換性確保)
             return True
+        # 依存先に失敗タスクがあれば実行不可
+        if any(dep in _FAILED for dep in _DAG[name]):
+            return False
         return all(dep in _COMPLETED for dep in _DAG[name])
 
 
@@ -154,11 +263,14 @@ def mark_done(name: str) -> None:
     with _LOCK:
         _COMPLETED.add(name)
         # name の完了によって can_run が True になるタスクを列挙 (ログ用)
+        # 失敗タスクは unblock 対象外
         unblocked = [
             t for t, deps in _DAG.items()
             if t not in _COMPLETED
+            and t not in _FAILED
             and name in deps
             and all(d in _COMPLETED for d in deps)
+            and not any(d in _FAILED for d in deps)
         ]
         if unblocked:
             logger.info(
@@ -167,30 +279,37 @@ def mark_done(name: str) -> None:
             )
         else:
             logger.info("DAG: タスク完了 name=%s (累計完了 %d 件)", name, len(_COMPLETED))
+        _save_state()
 
 
 def mark_failed(name: str) -> None:
-    """タスク失敗を記録する。依存タスクの待機タイムアウトを早めるためログ出力のみ。
-    _COMPLETED には追加しない (依存タスクは実行されない)。"""
+    """タスク失敗を記録し、全下流タスクにカスケード伝播する。
+
+    _COMPLETED には追加しない。_FAILED に自身 + 全下流を追加して
+    can_run() が即座に False を返すようにする。
+    """
     with _LOCK:
-        blocked = [
-            t for t, deps in _DAG.items()
-            if t not in _COMPLETED and name in deps
-        ]
-        if blocked:
+        _FAILED.add(name)
+        # 全下流タスクを DFS で探索してカスケード伝播
+        downstream = _find_all_downstream(name, _DAG)
+        _FAILED.update(downstream)
+        if downstream:
             logger.warning(
-                "DAG: タスク失敗 name=%s → ブロック中: %s (dag_reset_state まで待機)",
-                name, blocked,
+                "DAG: タスク失敗 name=%s → カスケード中断: %s (計 %d 件ブロック)",
+                name, sorted(downstream), len(downstream),
             )
         else:
-            logger.warning("DAG: タスク失敗 name=%s (依存タスクなし)", name)
+            logger.warning("DAG: タスク失敗 name=%s (下流タスクなし)", name)
+        _save_state()
 
 
 def reset_state() -> None:
-    """完了状態をリセットする (日次バッチで翌日タスクのため呼ぶ想定)。"""
+    """完了・失敗状態をリセットする (日次バッチで翌日タスクのため呼ぶ想定)。"""
     with _LOCK:
         _COMPLETED.clear()
-        logger.info("DAG: 完了状態をリセット (登録タスク %d 件は維持)", len(_DAG))
+        _FAILED.clear()
+        logger.info("DAG: 完了・失敗状態をリセット (登録タスク %d 件は維持)", len(_DAG))
+        _save_state()
 
 
 def get_dag_state() -> dict:
@@ -199,8 +318,10 @@ def get_dag_state() -> dict:
         return {
             "registered_count": len(_DAG),
             "completed_count": len(_COMPLETED),
+            "failed_count": len(_FAILED),
             "registered": sorted(_DAG.keys()),
             "completed": sorted(_COMPLETED),
+            "failed": sorted(_FAILED),
             "deps": dict(_DAG),
         }
 
@@ -211,6 +332,46 @@ def get_pending_deps(name: str) -> List[str]:
         if name not in _DAG:
             return []
         return [d for d in _DAG[name] if d not in _COMPLETED]
+
+
+def clear_failure(name: str) -> None:
+    """リトライ前に失敗状態をクリアする。自身 + カスケード下流を _FAILED から除去。"""
+    with _LOCK:
+        if name not in _FAILED:
+            return
+        _FAILED.discard(name)
+        downstream = _find_all_downstream(name, _DAG)
+        for task in downstream:
+            _FAILED.discard(task)
+        _save_state()
+        logger.info("DAG: 失敗状態クリア name=%s (下流 %d 件も解除)", name, len(downstream))
+
+
+def is_blocked(name: str) -> Optional[str]:
+    """指定タスクが失敗した依存先によってブロックされているか判定する。
+
+    Args:
+        name: 判定対象タスク名
+
+    Returns:
+        ブロック原因の失敗タスク名 (最初に見つかったもの)。ブロックなしなら None。
+    """
+    with _LOCK:
+        # 自身が _FAILED に入っている場合 (カスケード伝播済み)
+        if name in _FAILED:
+            # 直接の依存先で失敗しているものを返す (あれば)
+            if name in _DAG:
+                for dep in _DAG[name]:
+                    if dep in _FAILED:
+                        return dep
+            # 自身が直接 mark_failed された場合
+            return name
+        if name not in _DAG:
+            return None
+        for dep in _DAG[name]:
+            if dep in _FAILED:
+                return dep
+        return None
 
 
 def validate_dag() -> List[str]:

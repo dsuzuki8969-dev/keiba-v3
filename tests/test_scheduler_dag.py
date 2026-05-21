@@ -1,17 +1,25 @@
 """scheduler_dag モジュールのテスト。
 
 register_task / can_run / mark_done / mark_failed / reset_state /
-validate_dag / topological_order / get_dag_state / get_pending_deps を網羅。
+validate_dag / topological_order / get_dag_state / get_pending_deps /
+is_blocked / save_state / load_state を網羅。
 """
+
+import json
+import os
+import tempfile
 
 import pytest
 
 from src.scheduler_dag import (
     _COMPLETED,
     _DAG,
+    _FAILED,
+    _STATE_FILE,
     can_run,
     get_dag_state,
     get_pending_deps,
+    is_blocked,
     mark_done,
     mark_failed,
     register_task,
@@ -19,6 +27,7 @@ from src.scheduler_dag import (
     topological_order,
     validate_dag,
 )
+import src.scheduler_dag as _dag_module
 
 
 @pytest.fixture(autouse=True)
@@ -26,9 +35,11 @@ def _clean_dag():
     """各テスト前後に DAG 状態をクリア。"""
     _DAG.clear()
     _COMPLETED.clear()
+    _FAILED.clear()
     yield
     _DAG.clear()
     _COMPLETED.clear()
+    _FAILED.clear()
 
 
 # ── register_task ──────────────────────────────────────────
@@ -237,3 +248,124 @@ class TestTopologicalOrder:
         assert order.index("a") < order.index("c")
         assert order.index("b") < order.index("d")
         assert order.index("c") < order.index("d")
+
+
+# ── カスケード中断 (Fix 1) ────────────────────────────────────
+
+class TestCascadeFailure:
+    def test_mark_failed_cascades_to_downstream(self):
+        """mark_failed が全下流タスクにカスケード伝播すること。
+        a → b → c のチェーンで a が失敗すると b, c も _FAILED に入る。"""
+        register_task("a", deps=[])
+        register_task("b", deps=["a"])
+        register_task("c", deps=["b"])
+        mark_failed("a")
+        assert "a" in _FAILED
+        assert "b" in _FAILED
+        assert "c" in _FAILED
+        # _COMPLETED には入らない
+        assert "a" not in _COMPLETED
+
+    def test_is_blocked_returns_failed_dep(self):
+        """is_blocked が失敗した依存先の名前を返すこと。"""
+        register_task("a", deps=[])
+        register_task("b", deps=["a"])
+        register_task("c", deps=["b"])
+        mark_failed("a")
+        # b は a に依存しているので、a が返る
+        result = is_blocked("b")
+        assert result == "a"
+        # c はカスケードで _FAILED に入っているが、直接の依存は b
+        result_c = is_blocked("c")
+        assert result_c == "b"
+        # ブロックされていないタスクは None
+        register_task("d", deps=[])
+        assert is_blocked("d") is None
+        # 未登録タスクも None
+        assert is_blocked("unknown") is None
+
+    def test_can_run_false_when_dep_failed(self):
+        """依存タスクが失敗していれば can_run=False。"""
+        register_task("a", deps=[])
+        register_task("b", deps=["a"])
+        # a が失敗 → b は実行不可
+        mark_failed("a")
+        assert can_run("b") is False
+        # b 自身もカスケードで _FAILED に入っているので実行不可
+        assert can_run("b") is False
+        # a 自身も実行不可
+        assert can_run("a") is False
+
+    def test_reset_clears_failed(self):
+        """reset_state が _FAILED もクリアすること。"""
+        register_task("a", deps=[])
+        register_task("b", deps=["a"])
+        mark_failed("a")
+        assert len(_FAILED) > 0
+        reset_state()
+        assert len(_FAILED) == 0
+        assert len(_COMPLETED) == 0
+        # リセット後は再実行可能
+        mark_done("a")
+        assert can_run("b") is True
+
+    def test_get_dag_state_includes_failed(self):
+        """get_dag_state に failed が含まれること。"""
+        register_task("a", deps=[])
+        register_task("b", deps=["a"])
+        mark_failed("a")
+        state = get_dag_state()
+        assert "failed" in state
+        assert "a" in state["failed"]
+        assert "b" in state["failed"]
+        assert "failed_count" in state
+        assert state["failed_count"] == 2
+
+
+# ── 状態永続化 (Fix 2) ────────────────────────────────────────
+
+class TestStatePersistence:
+    def test_save_load_state(self, tmp_path):
+        """永続化の round-trip テスト: save → 状態クリア → load で復元。"""
+        # 一時ファイルパスに差し替え
+        original_state_file = _dag_module._STATE_FILE
+        test_state_file = os.path.join(str(tmp_path), "dag_state.json")
+        _dag_module._STATE_FILE = test_state_file
+        try:
+            register_task("a", deps=[])
+            register_task("b", deps=["a"])
+            register_task("c", deps=["b"])
+            # a を完了、c を失敗としてマーク
+            mark_done("a")
+            mark_failed("c")
+            # ファイルが作成されたことを確認
+            assert os.path.exists(test_state_file)
+            # ファイル内容を検証
+            with open(test_state_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            assert "a" in data["completed"]
+            assert "c" in data["failed"]
+            assert "saved_at" in data
+            # 状態をクリアして復元
+            _COMPLETED.clear()
+            _FAILED.clear()
+            assert len(_COMPLETED) == 0
+            assert len(_FAILED) == 0
+            _dag_module._load_state()
+            assert "a" in _COMPLETED
+            assert "c" in _FAILED
+        finally:
+            # 元に戻す
+            _dag_module._STATE_FILE = original_state_file
+
+    def test_load_state_no_file(self, tmp_path):
+        """永続化ファイルが存在しない場合、load_state は何もしない。"""
+        original_state_file = _dag_module._STATE_FILE
+        _dag_module._STATE_FILE = os.path.join(str(tmp_path), "nonexistent.json")
+        try:
+            # エラーにならずに何もしない
+            _dag_module._load_state()
+            assert len(_COMPLETED) == 0
+            assert len(_FAILED) == 0
+        finally:
+            _dag_module._STATE_FILE = original_state_file

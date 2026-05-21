@@ -163,8 +163,8 @@ python scripts/backfill_horses_2023h_retry.py --execute
 | 優先度 | 項目 | 状態 / 条件 |
 |:---:|---|---|
 | ✅ 完了 (5/9) + TS 登録 (5/11) | P3-2 Phase 1+2 — APScheduler 常駐化 + 競合回避 + pidfile | 5 commit + setup_scheduler.ps1 実行完了 (10 タスク Ready) |
-| 🔜 P3-2 Phase 3 | DAG 依存関係の実質化 (ジョブ実行順序の review) | マスター設計判断が必要・次セッション |
-| 🔜 P3-D (3-5 日規模) | Windows TS → APScheduler 段階的移行 | `memory/project_p3d_scheduler_integration_handoff.md` 参照 |
+| ✅ 完了 (5/21) | P3-2 Phase 3 — DAG 実質化 (カスケード中断 + 状態永続化 + 失敗リトライ) | scheduler_dag.py + scheduler.py + テスト 35/35 PASS |
+| ✅ 完了 (5/21) | P3-D — WTS→APScheduler 全面移行 + スケジュール最適化 v3 | 結果23:00→翌日予想23:30 (当日結果反映) / オッズ5回定時+個別レースT-15min+T-0min / WTS残留3タスクのみ |
 
 ---
 
