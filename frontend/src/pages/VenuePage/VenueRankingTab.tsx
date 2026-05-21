@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { PremiumCard, PremiumCardHeader, PremiumCardTitle, PremiumCardAccent } from "@/components/ui/premium/PremiumCard";
+import { PremiumCard, PremiumCardHeader, PremiumCardTitle } from "@/components/ui/premium/PremiumCard";
 import { Button } from "@/components/ui/button";
 import { usePersonnelAgg } from "@/api/hooks";
 import { Award } from "lucide-react";

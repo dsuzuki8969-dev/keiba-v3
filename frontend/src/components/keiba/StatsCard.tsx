@@ -51,7 +51,6 @@ export function StatsCard({
     if (isRefreshing || cooldown) return;
     forceRefresh(date, {
       onSuccess: (result) => {
-        console.info("LIVE STATS 手動更新完了:", result);
         void refetch();
         alert(
           `更新完了: 取得 ${result.fetched}R, 集計 ${result.aggregated}R` +

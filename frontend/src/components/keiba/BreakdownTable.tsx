@@ -107,7 +107,7 @@ export function BreakdownTable({
             const p3rStyle = t ? rankStyle(p3rVal, p3rRanked, p3rAvg) : {};
             const roiStyle = hasRoiData && roi != null ? rankStyle(roi, roiRanked, roiAvg) : {};
             return (
-              <tr key={key} className="border-b border-border/50">
+              <tr key={key} className="border-b border-border/50 hover:bg-brand-gold/5 transition-colors">
                 <td className="py-1 px-1 font-semibold">{key}</td>
                 <td className="text-right py-1 px-1 tabular-nums">{t}</td>
                 <td className="text-right py-1 px-1 text-muted-foreground tabular-nums text-xs">{record}</td>

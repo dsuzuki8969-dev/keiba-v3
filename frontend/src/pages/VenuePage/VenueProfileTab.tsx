@@ -1,5 +1,5 @@
 import { useNavigate } from "react-router-dom";
-import { PremiumCard, PremiumCardHeader, PremiumCardTitle, PremiumCardAccent } from "@/components/ui/premium/PremiumCard";
+import { PremiumCard, PremiumCardHeader, PremiumCardTitle } from "@/components/ui/premium/PremiumCard";
 import type { VenueProfileDetail } from "@/api/client";
 import { Info, Layers, BarChart3, Users } from "lucide-react";
 

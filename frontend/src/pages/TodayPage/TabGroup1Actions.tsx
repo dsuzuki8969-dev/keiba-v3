@@ -1,14 +1,8 @@
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { MovieEmbed } from "./MovieEmbed";
 import type { RaceDetail } from "./RaceDetailView";
+import { NAR_LIVE_TRACK_MAP, jraVideoTarget } from "@/lib/constants";
 
-// NAR映像トラックマップ
-const NAR_TRACK_MAP: Record<string, string> = {
-  "帯広": "obihiro", "門別": "monbetsu", "盛岡": "morioka", "水沢": "mizusawa",
-  "浦和": "urawa", "船橋": "funabashi", "大井": "ooi", "川崎": "kawasaki",
-  "金沢": "kanazawa", "笠松": "kasamatsu", "名古屋": "nagoya", "園田": "sonoda",
-  "姫路": "himeji", "高知": "kouchi", "佐賀": "saga",
-};
 // NAR結果用babaCode
 const NAR_BABA_CODE: Record<string, string> = {
   "帯広": "3", "門別": "36", "盛岡": "10", "水沢": "11",
@@ -16,12 +10,6 @@ const NAR_BABA_CODE: Record<string, string> = {
   "金沢": "22", "笠松": "23", "名古屋": "24", "園田": "27",
   "姫路": "28", "高知": "31", "佐賀": "32",
 };
-
-// JRA映像ターゲット: race_id (YYYY JJ KK NN RR) → (YYYY KK JJ NN RR)
-function jraVideoTarget(raceId: string): string {
-  if (!raceId || raceId.length < 12) return "";
-  return raceId.slice(0, 4) + raceId.slice(6, 8) + raceId.slice(4, 6) + raceId.slice(8, 12);
-}
 
 interface Props {
   race: RaceDetail;
@@ -53,7 +41,7 @@ export function TabGroup1Actions({ race, date, raceNo, oddsFetching, oddsMsg, on
   // レース映像URL
   const movieUrl = (() => {
     if (race.is_jra === false) {
-      const track = NAR_TRACK_MAP[race.venue || ""];
+      const track = NAR_LIVE_TRACK_MAP[race.venue || ""];
       if (!track) return "";
       return `http://keiba-lv-st.jp/movie/player?date=${dateStr}&race=${raceNo}&track=${track}`;
     } else {
@@ -81,7 +69,7 @@ export function TabGroup1Actions({ race, date, raceNo, oddsFetching, oddsMsg, on
   // レースライブURL
   const liveUrl = (() => {
     if (race.is_jra === false) {
-      const track = NAR_TRACK_MAP[race.venue || ""];
+      const track = NAR_LIVE_TRACK_MAP[race.venue || ""];
       if (!track) return "";
       return `https://simple.keiba-lv-st.jp/?track=${track}`;
     } else {

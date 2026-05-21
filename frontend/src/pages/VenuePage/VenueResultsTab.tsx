@@ -1,4 +1,4 @@
-import { PremiumCard, PremiumCardHeader, PremiumCardTitle, PremiumCardAccent } from "@/components/ui/premium/PremiumCard";
+import { PremiumCard, PremiumCardHeader, PremiumCardTitle } from "@/components/ui/premium/PremiumCard";
 import { useResultsDetailed } from "@/api/hooks";
 import { Target, Shield } from "lucide-react";
 

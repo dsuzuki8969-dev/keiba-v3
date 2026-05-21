@@ -37,45 +37,4 @@ export function computeWinPctRanks(
   return map;
 }
 
-/**
- * PaceFlowChart 用のデータエントリ型。
- */
-export interface PaceEntry {
-  label: string;
-  逃げ: number;
-  先行: number;
-  差し: number;
-  追込: number;
-}
 
-/**
- * 脚質別カウント（`{逃げ: 2, 先行: 5, ...}`）から PaceEntry を構築。
- */
-export function buildPaceEntry(
-  label: string,
-  counts: Partial<Record<"逃げ" | "先行" | "差し" | "追込", number>>,
-): PaceEntry {
-  return {
-    label,
-    逃げ: counts["逃げ"] ?? 0,
-    先行: counts["先行"] ?? 0,
-    差し: counts["差し"] ?? 0,
-    追込: counts["追込"] ?? 0,
-  };
-}
-
-/**
- * 印シンボル文字列 → 印キー（逆引き）
- */
-export function symbolToMarkKey(sym: string): string {
-  switch (sym) {
-    case "◉": return "tekipan";
-    case "◎": return "honmei";
-    case "○": return "taikou";
-    case "▲": return "tannuke";
-    case "△": return "rendashi";
-    case "★": return "rendashi2";
-    case "☆": return "oana";
-    default:  return sym;
-  }
-}

@@ -204,17 +204,19 @@ function VenueTabs({
   onSelect: (i: number) => void;
 }) {
   return (
-    <div className="flex gap-1 flex-wrap mb-3">
+    <div className="inline-flex items-center gap-0.5 p-0.5 bg-muted/60 border border-border rounded-lg flex-wrap mb-3">
       {venues.map((v, i) => (
-        <Button
+        <button
           key={v}
-          size="sm"
-          variant={i === activeIdx ? "default" : "outline"}
-          className="h-7 text-xs"
+          className={`px-3 py-1 text-xs font-semibold rounded-md whitespace-nowrap transition-all ${
+            i === activeIdx
+              ? "bg-gradient-to-br from-brand-navy to-brand-navy-light text-white shadow-[0_1px_3px_rgba(0,0,0,0.2),0_0_0_1px_var(--brand-gold)]"
+              : "text-muted-foreground hover:text-foreground hover:bg-background/60"
+          }`}
           onClick={() => onSelect(i)}
         >
           {v}
-        </Button>
+        </button>
       ))}
     </div>
   );

@@ -61,56 +61,6 @@ export const colors = {
   },
 } as const;
 
-export const typography = {
-  fs: {
-    "2xs": "0.6875rem",
-    xs: "0.75rem",
-    sm: "0.8125rem",
-    md: "0.875rem",
-    base: "1rem",
-    lg: "1.125rem",
-    xl: "1.25rem",
-    "2xl": "1.5rem",
-    "3xl": "1.875rem",
-    "4xl": "2.25rem",
-    "5xl": "3rem",
-  },
-  lh: {
-    tight: 1.15,
-    snug: 1.35,
-    normal: 1.55,
-    relaxed: 1.75,
-  },
-  fw: {
-    regular: 400,
-    medium: 500,
-    semibold: 600,
-    bold: 700,
-    extra: 800,
-  },
-} as const;
-
-export const motion = {
-  dur: {
-    fast: 120,
-    base: 180,
-    slow: 320,
-  },
-  ease: {
-    out: "cubic-bezier(0.2, 0.8, 0.2, 1)",
-    inOut: "cubic-bezier(0.4, 0.0, 0.2, 1)",
-    spring: "cubic-bezier(0.34, 1.56, 0.64, 1)",
-  },
-} as const;
-
-export const radii = {
-  sm: "0.375rem",
-  md: "0.5rem",
-  lg: "0.625rem",
-  xl: "0.875rem",
-  "2xl": "1.125rem",
-} as const;
-
 /** グレード（偏差値帯）判定：SS/S/A/B/C/D/E
  * E を新設（2026-04-26 A案 マスター承認）
  * clamp 範囲が -50〜100 に拡張されたため 35 未満を「真の大敗」グレード E に分類

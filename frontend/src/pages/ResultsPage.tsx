@@ -34,6 +34,7 @@ export default function ResultsPage() {
   // M' 戦略 (F-015) 採用成績: hybrid_summary API から m_prime_sanrenpuku を取得
   // 年度タブ用に全年度分を並列取得（React Query がキャッシュ + 重複排除）
   const { data: hybrid } = useHybridSummary(year);
+  // NOTE: React hooks ルール上ループ内で呼べないため年度別に個別定義。年度追加時はここに hook を追加
   const { data: hybridAll } = useHybridSummary("all");
   const { data: hybrid2024 } = useHybridSummary("2024");
   const { data: hybrid2025 } = useHybridSummary("2025");

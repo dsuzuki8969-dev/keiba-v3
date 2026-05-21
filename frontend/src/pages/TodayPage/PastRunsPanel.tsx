@@ -1,4 +1,4 @@
-import { PastRunsTable } from "./HorseCardPC";
+import { PastRunsTable } from "./PastRunsTable";
 import { WAKU_BG, markCls } from "@/lib/constants";
 import { PremiumCard } from "@/components/ui/premium/PremiumCard";
 import type { HorseData, PastRunData } from "./RaceDetailView";

@@ -4,17 +4,9 @@ import { PremiumCard } from "@/components/ui/premium/PremiumCard";
 import { useRacePrediction } from "@/api/hooks";
 import { useQueryClient } from "@tanstack/react-query";
 import { GradeBadge } from "@/components/keiba/GradeBadge";
-import { surfShort } from "@/lib/constants";
+import { surfShort, NAR_LIVE_TRACK_MAP } from "@/lib/constants";
 import { api } from "@/api/client";
 import { TabGroup3Horse } from "./TabGroup3Horse";
-
-// NAR ライブ映像のトラックマップ（レースライブボタン用）
-const NAR_LIVE_TRACK_MAP: Record<string, string> = {
-  "帯広": "obihiro", "門別": "monbetsu", "盛岡": "morioka", "水沢": "mizusawa",
-  "浦和": "urawa", "船橋": "funabashi", "大井": "ooi", "川崎": "kawasaki",
-  "金沢": "kanazawa", "笠松": "kasamatsu", "名古屋": "nagoya", "園田": "sonoda",
-  "姫路": "himeji", "高知": "kouchi", "佐賀": "saga",
-};
 
 interface RaceSummaryItem {
   race_no: number;

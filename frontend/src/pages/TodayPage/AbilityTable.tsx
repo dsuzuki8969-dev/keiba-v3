@@ -191,7 +191,7 @@ export function AbilityTable({ horses, isBanei }: Props) {
             const markSym = h.mark ? MARK_SYMBOL[h.mark] || h.mark : "";
             const mCls = markSym ? markCls(markSym) : "";
             return (
-              <tr key={h.horse_no} className="border-b border-border/50 hover:bg-muted/30">
+              <tr key={h.horse_no} className="border-b border-border/50 hover:bg-brand-gold/5 transition-colors">
                 <td className="py-1.5 px-1 text-center">
                   <span className={`inline-flex w-5 h-5 items-center justify-center rounded-sm text-[10px] font-bold ${WAKU_BG[h.gate_no as number] || "bg-gray-200"}`}>
                     {h.horse_no}

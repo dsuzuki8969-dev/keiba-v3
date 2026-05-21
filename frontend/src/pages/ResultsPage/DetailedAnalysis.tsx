@@ -1,7 +1,6 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { PremiumCard, PremiumCardHeader, PremiumCardTitle, PremiumCardAccent } from "@/components/ui/premium/PremiumCard";
-import { Button } from "@/components/ui/button";
 import { BarChart3 } from "lucide-react";
 
 interface Props {
@@ -69,19 +68,22 @@ export function DetailedAnalysis({ data }: Props) {
       </PremiumCardHeader>
       <div className="space-y-4">
         {/* カテゴリタブ */}
-        <div className="flex gap-1">
+        <div className="inline-flex items-center gap-0.5 p-0.5 bg-muted/60 border border-border rounded-lg">
           {CAT_TABS.map((t) => (
-            <Button
+            <button
               key={t.key}
-              size="sm"
-              variant={cat === t.key ? "default" : "outline"}
+              className={`px-3 py-1 text-xs font-semibold rounded-md whitespace-nowrap transition-all ${
+                cat === t.key
+                  ? "bg-gradient-to-br from-brand-navy to-brand-navy-light text-white shadow-[0_1px_3px_rgba(0,0,0,0.2),0_0_0_1px_var(--brand-gold)]"
+                  : "text-muted-foreground hover:text-foreground hover:bg-background/60"
+              }`}
               onClick={() => {
                 setCat(t.key);
                 setSelectedVenue(null);
               }}
             >
               {t.label}
-            </Button>
+            </button>
           ))}
         </div>
 
@@ -155,7 +157,7 @@ export function DetailedAnalysis({ data }: Props) {
                   {top10.map((x, i) => (
                     <tr
                       key={`${x.date}-${x.venue}-${x.race_no}-${i}`}
-                      className="border-b border-border/50 cursor-pointer hover:bg-muted/50 transition-colors"
+                      className="border-b border-border/50 cursor-pointer hover:bg-brand-gold/5 transition-colors"
                       onClick={() => {
                         const d = String(x.date || "");
                         const v = String(x.venue || "");
@@ -209,7 +211,7 @@ function MarkTable({ data }: { data: Record<string, Record<string, number>> }) {
           {marks.map((m) => {
             const s = data[m];
             return (
-              <tr key={m} className="border-b border-border/50">
+              <tr key={m} className="border-b border-border/50 hover:bg-brand-gold/5 transition-colors">
                 <td className="py-1 px-1 font-bold">{m}</td>
                 <td className="text-right py-1 px-1 tabular-nums">
                   {s.total}
@@ -256,7 +258,7 @@ function ConfTable({ data }: { data: Record<string, Record<string, number>> }) {
             const roi = s.roi ?? 0;
             const roiColor = roi >= 100 ? "text-positive" : "text-negative";
             return (
-              <tr key={c} className="border-b border-border/50">
+              <tr key={c} className="border-b border-border/50 hover:bg-brand-gold/5 transition-colors">
                 <td className="py-1 px-1 font-bold">{c}</td>
                 <td className="text-right py-1 px-1 tabular-nums">
                   {s.total}

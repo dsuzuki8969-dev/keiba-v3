@@ -265,7 +265,12 @@ function MPrimeSummarySection({ mp, mpByYear }: {
   const EMERALD  = "#10b981";
 
   // M' セクション独自の年度タブ
-  const MP_YEARS = ["all", "2024", "2025", "2026"] as const;
+  const MP_YEARS = (() => {
+    const cur = new Date().getFullYear();
+    const ys: string[] = ["all"];
+    for (let y = 2024; y <= cur; y++) ys.push(String(y));
+    return ys;
+  })();
   const [mpYear, setMpYear] = useState<string>("all");
 
   // 選択中の年度データ（タブ切替で参照先を変更）
@@ -401,7 +406,7 @@ function MPrimeSummarySection({ mp, mpByYear }: {
                 </thead>
                 <tbody>
                   {activeMp.top_payouts!.map((tp: MPrimeTopPayout, i: number) => (
-                    <tr key={i} className="border-b border-border/20 hover:bg-muted/30">
+                    <tr key={i} className="border-b border-border/20 hover:bg-brand-gold/5 transition-colors">
                       <td className="px-2 py-1">{i + 1}</td>
                       <td className="px-2 py-1 text-right font-bold" style={{ color: EMERALD }}>
                         {fmtNum(tp.payback)}円
