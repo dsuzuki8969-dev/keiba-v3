@@ -1,6 +1,8 @@
 import { useMemo } from "react";
 import { useRaceResult } from "@/api/hooks";
 import { WAKU_BG, posCls, markCls, rankCls } from "@/lib/constants";
+import { PremiumCard, PremiumCardHeader } from "@/components/ui/premium/PremiumCard";
+import { Trophy, Banknote } from "lucide-react";
 import type { RaceResultEntry, RaceResultPayout } from "@/api/client";
 
 /** 走破タイム秒を「m:ss.f」形式に変換 (例: 89.8 → "1:29.8" / 65.4 → "1:05.4")
@@ -136,12 +138,15 @@ export function RaceResultPanel({ date, raceId }: Props) {
       )}
 
       {/* 着順テーブル */}
-      <div>
-        <h4 className="text-sm font-bold text-foreground mb-2 border-l-[3px] border-blue-500 pl-2">着順</h4>
+      <PremiumCard variant="default" padding="md">
+        <PremiumCardHeader>
+          <Trophy size={14} className="text-brand-gold" />
+          着順
+        </PremiumCardHeader>
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
-              <tr className="border-b border-border text-[11px] text-muted-foreground bg-muted/30">
+              <tr className="border-b border-border text-[11px] text-muted-foreground bg-muted/80 backdrop-blur sticky top-0">
                 <th className="py-1.5 px-1.5 text-center w-9">着</th>
                 <th className="py-1.5 px-1.5 text-center w-9">枠</th>
                 <th className="py-1.5 px-1.5 text-center w-9">馬番</th>
@@ -173,7 +178,7 @@ export function RaceResultPanel({ date, raceId }: Props) {
                 const compRank = compositeRanks[i];
                 const l3fRank = last3fRanks[i];
                 return (
-                  <tr key={o.horse_no} className="border-b border-border/30 hover:bg-muted/20">
+                  <tr key={o.horse_no} className="border-b border-border/30 hover:bg-brand-gold/5">
                     <td className={`py-1.5 px-1.5 text-center font-bold text-[15px] ${posCls(o.finish)}`}>
                       {o.finish}
                     </td>
@@ -221,15 +226,18 @@ export function RaceResultPanel({ date, raceId }: Props) {
             </tbody>
           </table>
         </div>
-      </div>
+      </PremiumCard>
 
       {/* 払戻金
        *  バック API は英字キー (tansho/fukusho/...) で返す。
        *  日本語キー (単勝/複勝/...) との互換性のため両方フォールバックで参照する。
        *  2026-04-28 修正: フロント↔バック キー名不一致で全 PayoutCard が空欄だった真因解消
        */}
-      <div>
-        <h4 className="text-sm font-bold text-foreground mb-2 border-l-[3px] border-emerald-500 pl-2">払戻金</h4>
+      <PremiumCard variant="default" padding="md">
+        <PremiumCardHeader>
+          <Banknote size={14} className="text-brand-gold" />
+          払戻金
+        </PremiumCardHeader>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
           {/* 単勝・複勝 */}
           <PayoutCard title="単勝" data={(payouts as any).tansho ?? payouts["単勝"]} />
@@ -245,7 +253,7 @@ export function RaceResultPanel({ date, raceId }: Props) {
           <PayoutCard title="三連複" data={(payouts as any).sanrenpuku ?? payouts["三連複"]} />
           <PayoutCard title="三連単" data={(payouts as any).sanrentan ?? payouts["三連単"]} />
         </div>
-      </div>
+      </PremiumCard>
     </div>
   );
 }

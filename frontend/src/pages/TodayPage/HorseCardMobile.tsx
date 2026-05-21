@@ -473,7 +473,7 @@ export function HorseCardMobile({ horses, isBanei, dMarks, onDMarkSelect }: Prop
           >
             {/* タップ可能なカード本体 */}
             <div
-              className={`px-2 py-2 cursor-pointer active:bg-muted/50 transition-colors ${rowAccent}`}
+              className={`px-2 py-2 cursor-pointer active:bg-muted/50 hover:bg-brand-gold/5 transition-colors ${rowAccent}`}
               onClick={() => setOpenNo(isOpen ? null : h.horse_no)}
             >
               {/* ---- 行1: 馬番 | MY印 | AI印 | 馬名 | 単勝オッズ ---- */}

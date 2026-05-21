@@ -1,7 +1,8 @@
 import { useState } from "react";
-import { PremiumCard } from "@/components/ui/premium/PremiumCard";
+import { PremiumCard, PremiumCardHeader, PremiumCardTitle, PremiumCardAccent } from "@/components/ui/premium/PremiumCard";
 import { Button } from "@/components/ui/button";
 import { usePersonnelAgg } from "@/api/hooks";
+import { Award } from "lucide-react";
 
 const TYPES = [
   { key: "jockey", label: "騎手" },
@@ -28,22 +29,22 @@ function RankingTable({ type, code }: { type: PersonType; code: string }) {
   return (
     <div className="overflow-x-auto">
       <table className="w-full text-sm">
-        <thead>
+        <thead className="sticky top-0 bg-muted">
           <tr className="border-b text-left text-muted-foreground">
-            <th className="py-1.5 px-2 w-8">#</th>
-            <th className="py-1.5 px-2">名前</th>
-            <th className="py-1.5 px-2 text-right">出走</th>
-            <th className="py-1.5 px-2 text-right">勝率</th>
-            <th className="py-1.5 px-2 text-right">連対率</th>
-            <th className="py-1.5 px-2 text-right">複勝率</th>
-            <th className="py-1.5 px-2 text-right">回収率</th>
+            <th className="py-1.5 px-2 w-8 section-eyebrow">#</th>
+            <th className="py-1.5 px-2 section-eyebrow">名前</th>
+            <th className="py-1.5 px-2 text-right section-eyebrow">出走</th>
+            <th className="py-1.5 px-2 text-right section-eyebrow">勝率</th>
+            <th className="py-1.5 px-2 text-right section-eyebrow">連対率</th>
+            <th className="py-1.5 px-2 text-right section-eyebrow">複勝率</th>
+            <th className="py-1.5 px-2 text-right section-eyebrow">回収率</th>
           </tr>
         </thead>
         <tbody>
           {persons.map((p, i) => {
             const roi = p.roi ?? 0;
             return (
-              <tr key={p.name || i} className="border-b hover:bg-muted/30">
+              <tr key={p.name || i} className="border-b border-border/40 hover:bg-brand-gold/5 transition-colors">
                 <td className="py-1.5 px-2 text-muted-foreground font-medium">{i + 1}</td>
                 <td className="py-1.5 px-2 font-semibold">{p.name}</td>
                 <td className="py-1.5 px-2 text-right tabular-nums">{p.starts ?? p.total ?? 0}</td>
@@ -72,7 +73,8 @@ export function VenueRankingTab({ code, venueName }: { code: string; venueName: 
   const [type, setType] = useState<PersonType>("jockey");
 
   return (
-    <div className="space-y-3">
+    <div className="space-y-8">
+      {/* ランキング種別切替 */}
       <div className="flex items-center gap-2">
         <span className="text-sm font-medium text-muted-foreground">{venueName}での成績</span>
         <div className="flex gap-1">
@@ -89,8 +91,19 @@ export function VenueRankingTab({ code, venueName }: { code: string; venueName: 
         </div>
       </div>
 
+      {/* ランキングテーブル */}
       <PremiumCard variant="default" padding="md">
-        <RankingTable type={type} code={code} />
+        <PremiumCardHeader>
+          <div className="flex items-center gap-2">
+            <Award size={16} className="text-amber-600" />
+            <PremiumCardTitle className="text-base">
+              {TYPES.find(t => t.key === type)?.label ?? ""}ランキング TOP30
+            </PremiumCardTitle>
+          </div>
+        </PremiumCardHeader>
+        <div className="mt-3">
+          <RankingTable type={type} code={code} />
+        </div>
       </PremiumCard>
     </div>
   );

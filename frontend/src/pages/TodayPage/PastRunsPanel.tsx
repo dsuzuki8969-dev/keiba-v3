@@ -1,5 +1,6 @@
 import { PastRunsTable } from "./HorseCardPC";
 import { WAKU_BG, markCls } from "@/lib/constants";
+import { PremiumCard } from "@/components/ui/premium/PremiumCard";
 import type { HorseData, PastRunData } from "./RaceDetailView";
 
 // ============================================================
@@ -40,10 +41,7 @@ export function PastRunsPanel({ horses }: Props) {
           ? horses.filter((o) => (o.composite || 0) > comp).length + 1
           : 0;
         return (
-          <div
-            key={h.horse_no}
-            className="rounded border border-border/60 bg-card/40 p-2 space-y-2"
-          >
+          <PremiumCard variant="default" padding="sm" key={h.horse_no} className="space-y-2">
             {/* 馬ヘッダ */}
             <div className="flex items-center gap-2 flex-wrap">
               {gate > 0 && (
@@ -86,7 +84,7 @@ export function PastRunsPanel({ horses }: Props) {
                 前三走データなし
               </div>
             )}
-          </div>
+          </PremiumCard>
         );
       })}
     </div>

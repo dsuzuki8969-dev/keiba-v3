@@ -1,8 +1,9 @@
 import { useState } from "react";
-import { PremiumCard } from "@/components/ui/premium/PremiumCard";
+import { PremiumCard, PremiumCardHeader, PremiumCardTitle, PremiumCardAccent } from "@/components/ui/premium/PremiumCard";
 import { Button } from "@/components/ui/button";
 import { BreakdownTable } from "@/components/keiba/BreakdownTable";
 import { useVenueBias } from "@/api/hooks";
+import { Columns3, Footprints, TrendingUp } from "lucide-react";
 
 export function VenueBiasTab({ code }: { code: string }) {
   const { data, isLoading } = useVenueBias(code);
@@ -29,7 +30,7 @@ export function VenueBiasTab({ code }: { code: string }) {
   const surfLabel = (s: string) => s === "芝" ? "text-emerald-600" : "text-amber-700";
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-8">
       {/* コース切替 */}
       <div className="flex flex-wrap gap-1">
         <Button
@@ -58,7 +59,12 @@ export function VenueBiasTab({ code }: { code: string }) {
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         {/* 枠番別成績 */}
         <PremiumCard variant="default" padding="md" className="space-y-3">
-          <h2 className="font-bold text-base">枠番別成績</h2>
+          <PremiumCardHeader>
+            <div className="flex items-center gap-2">
+              <Columns3 size={16} className="text-blue-600" />
+              <PremiumCardTitle className="text-base">枠番別成績</PremiumCardTitle>
+            </div>
+          </PremiumCardHeader>
           {Object.keys(gateBias).length > 0 ? (
             <BreakdownTable
               data={gateBias}
@@ -73,7 +79,12 @@ export function VenueBiasTab({ code }: { code: string }) {
 
         {/* 脚質別成績 */}
         <PremiumCard variant="default" padding="md" className="space-y-3">
-          <h2 className="font-bold text-base">脚質別成績</h2>
+          <PremiumCardHeader>
+            <div className="flex items-center gap-2">
+              <Footprints size={16} className="text-emerald-600" />
+              <PremiumCardTitle className="text-base">脚質別成績</PremiumCardTitle>
+            </div>
+          </PremiumCardHeader>
           {Object.keys(runningStyle).length > 0 ? (
             <BreakdownTable
               data={runningStyle}
@@ -90,7 +101,12 @@ export function VenueBiasTab({ code }: { code: string }) {
       {/* 人気別成績（全コース合計のみ） */}
       {courseFilter === "all" && d.popularity && Object.keys(d.popularity).length > 0 && (
         <PremiumCard variant="default" padding="md" className="space-y-3">
-          <h2 className="font-bold text-base">人気別成績</h2>
+          <PremiumCardHeader>
+            <div className="flex items-center gap-2">
+              <TrendingUp size={16} className="text-purple-600" />
+              <PremiumCardTitle className="text-base">人気別成績</PremiumCardTitle>
+            </div>
+          </PremiumCardHeader>
           <BreakdownTable
             data={d.popularity}
             keyLabel="人気"

@@ -8,6 +8,8 @@ import { RaceDetailView } from "./TodayPage/RaceDetailView";
 import { OperationsPanel } from "./TodayPage/OperationsPanel";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
+import { PremiumCard, PremiumCardAccent } from "@/components/ui/premium/PremiumCard";
+import { Calendar } from "lucide-react";
 
 export default function TodayPage() {
   const location = useLocation();
@@ -101,33 +103,40 @@ export default function TodayPage() {
   }
 
   return (
-    <div className="space-y-4">
-      {/* 日付選択バー */}
-      <div className="flex items-center gap-3 flex-wrap">
-        <Input
-          type="date"
-          value={dateInput}
-          onChange={(e) => setDateInput(e.target.value)}
-          className="w-40"
-        />
-        <Button onClick={handleDateChange} size="sm">
-          表示
-        </Button>
-        <Button onClick={() => refetch()} variant="outline" size="sm">
-          更新
-        </Button>
-        <span className="stat-mono text-sm text-foreground">{date}</span>
-        {oddsTs && (
-          <span className="text-xs text-muted-foreground ml-auto">
-            最終オッズ取得 <span className="stat-mono">{oddsTs.slice(11, 16)}</span>
-          </span>
-        )}
-        {!oddsTs && pred && (
-          <span className="text-xs text-muted-foreground ml-auto">
-            ※予測オッズのみ
-          </span>
-        )}
-      </div>
+    <div className="max-w-5xl mx-auto space-y-6">
+      {/* ゴールドヒーロー: 日付選択 + オッズタイムスタンプ */}
+      <PremiumCard variant="gold" padding="md">
+        <PremiumCardAccent className="flex items-center gap-1.5 mb-2">
+          <Calendar className="h-3.5 w-3.5" />
+          Today&apos;s Predictions
+        </PremiumCardAccent>
+        <h2 className="text-xl font-bold font-heading mb-3">本日の予想</h2>
+        <div className="flex items-center gap-3 flex-wrap">
+          <Input
+            type="date"
+            value={dateInput}
+            onChange={(e) => setDateInput(e.target.value)}
+            className="w-40"
+          />
+          <Button onClick={handleDateChange} size="sm">
+            表示
+          </Button>
+          <Button onClick={() => refetch()} variant="outline" size="sm">
+            更新
+          </Button>
+          <span className="stat-mono text-sm text-foreground">{date}</span>
+          {oddsTs && (
+            <span className="text-xs text-muted-foreground ml-auto">
+              最終オッズ取得 <span className="stat-mono">{oddsTs.slice(11, 16)}</span>
+            </span>
+          )}
+          {!oddsTs && pred && (
+            <span className="text-xs text-muted-foreground ml-auto">
+              ※予測オッズのみ
+            </span>
+          )}
+        </div>
+      </PremiumCard>
 
       {/* 読み込み中 */}
       {isLoading && (
@@ -161,13 +170,15 @@ export default function TodayPage() {
 
           {/* 天気バー */}
           {weather && (
-            <div className="flex items-center gap-3 text-sm px-2 py-1.5 bg-muted rounded-md">
-              <span className="font-semibold">{currentVenue}</span>
-              {weather.condition && <span>{weather.condition}</span>}
-              {weather.precip_prob != null && (
-                <span className="text-info">降水 {weather.precip_prob}%</span>
-              )}
-            </div>
+            <PremiumCard variant="default" padding="sm">
+              <div className="flex items-center gap-3 text-sm">
+                <span className="font-semibold">{currentVenue}</span>
+                {weather.condition && <span>{weather.condition}</span>}
+                {weather.precip_prob != null && (
+                  <span className="text-info">降水 {weather.precip_prob}%</span>
+                )}
+              </div>
+            </PremiumCard>
           )}
 
           {/* レースカード一覧 */}

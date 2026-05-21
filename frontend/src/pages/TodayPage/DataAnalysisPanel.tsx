@@ -2,6 +2,8 @@ import { useMemo } from "react";
 import { VENUE_NAME_TO_CODE, WAKU_BG } from "@/lib/constants";
 import { usePersonnelAggCourse, useCourseStats } from "@/api/hooks";
 import { useViewMode } from "@/hooks/useViewMode";
+import { PremiumCard, PremiumCardHeader } from "@/components/ui/premium/PremiumCard";
+import { BarChart3, Users } from "lucide-react";
 import type { HorseData, RaceDetail } from "./RaceDetailView";
 
 // ============================================================
@@ -183,15 +185,18 @@ export function DataAnalysisPanel({ horses, race }: Props) {
     <div className="space-y-4">
       {/* ── コースデータ ── */}
       {courseKey && (
-        <div>
-          <h4 className="text-xs font-bold text-muted-foreground mb-2">
-            コースデータ — {race.venue} {surface} {distance}m
-            {record && (
-              <span className="font-normal ml-2">
-                レコード {record.time_str as string}（{record.date as string} {record.class_name as string}）
-              </span>
-            )}
-          </h4>
+        <PremiumCard variant="default" padding="md">
+          <PremiumCardHeader>
+            <div className="flex items-center gap-1.5 text-xs font-bold text-muted-foreground">
+              <BarChart3 size={14} className="text-brand-gold" />
+              コースデータ — {race.venue} {surface} {distance}m
+              {record && (
+                <span className="font-normal ml-2">
+                  レコード {record.time_str as string}（{record.date as string} {record.class_name as string}）
+                </span>
+              )}
+            </div>
+          </PremiumCardHeader>
           {courseDesc && (
             <p className="text-xs text-muted-foreground mb-2">{courseDesc}</p>
           )}
@@ -310,7 +315,7 @@ export function DataAnalysisPanel({ horses, race }: Props) {
               )}
             </div>
           )}
-        </div>
+        </PremiumCard>
       )}
 
       {/* ── 出走騎手 ── */}
@@ -352,12 +357,15 @@ function PersonnelSection({ title, venue, surface, distance, persons, showLocati
     : venue;
 
   return (
-    <div>
-      <h4 className="text-xs font-bold text-muted-foreground mb-1">
-        {title}
-        <span className="font-normal ml-1">（{scopeLabel}）</span>
-        <span className="font-normal text-[10px] ml-1">{sorted.length}件</span>
-      </h4>
+    <PremiumCard variant="default" padding="md">
+      <PremiumCardHeader>
+        <div className="flex items-center gap-1.5 text-xs font-bold text-muted-foreground">
+          <Users size={14} className="text-brand-gold" />
+          {title}
+          <span className="font-normal ml-1">（{scopeLabel}）</span>
+          <span className="font-normal text-[10px] ml-1">{sorted.length}件</span>
+        </div>
+      </PremiumCardHeader>
       {isLoading ? (
         <div className="text-xs text-muted-foreground py-1">読み込み中...</div>
       ) : sorted.length === 0 ? (
@@ -391,7 +399,7 @@ function PersonnelSection({ title, venue, surface, distance, persons, showLocati
                 const location = (p.location as string) || "";
 
                 return (
-                  <tr key={name} className="border-b border-border/30 hover:bg-muted/30">
+                  <tr key={name} className="border-b border-border/30 hover:bg-brand-gold/5">
                     <td className="py-1 px-1 font-bold whitespace-nowrap">{name}</td>
                     {showLocation && <td className="py-1 px-1 text-muted-foreground whitespace-nowrap">{location}</td>}
                     <td className="py-1 px-1 text-right tabular-nums">{total}</td>
@@ -407,6 +415,6 @@ function PersonnelSection({ title, venue, surface, distance, persons, showLocati
           </table>
         </div>
       )}
-    </div>
+    </PremiumCard>
   );
 }

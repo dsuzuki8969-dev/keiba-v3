@@ -1,5 +1,6 @@
-import { PremiumCard } from "@/components/ui/premium/PremiumCard";
+import { PremiumCard, PremiumCardHeader, PremiumCardTitle, PremiumCardAccent } from "@/components/ui/premium/PremiumCard";
 import { useResultsDetailed } from "@/api/hooks";
+import { Target, Shield } from "lucide-react";
 
 function fmtPct(v: number): string {
   return (v ?? 0).toFixed(1) + "%";
@@ -15,7 +16,7 @@ function MarkTable({ byMark }: { byMark: Record<string, any> }) {
   return (
     <div className="overflow-x-auto">
       <table className="w-full text-sm">
-        <thead>
+        <thead className="sticky top-0 bg-muted">
           <tr className="border-b text-left text-muted-foreground">
             <th className="py-1.5 px-2">印</th>
             <th className="py-1.5 px-2 text-right">出走</th>
@@ -29,7 +30,7 @@ function MarkTable({ byMark }: { byMark: Record<string, any> }) {
           {marks.map((m) => {
             const s = byMark[m];
             return (
-              <tr key={m} className="border-b">
+              <tr key={m} className="border-b border-border/40 hover:bg-brand-gold/5 transition-colors">
                 <td className="py-1.5 px-2 font-bold text-base">{m}</td>
                 <td className="py-1.5 px-2 text-right tabular-nums">{s.total || 0}</td>
                 <td className="py-1.5 px-2 text-right tabular-nums font-bold text-emerald-600">{fmtPct(s.win_rate)}</td>
@@ -57,7 +58,7 @@ function ConfTable({ byConf }: { byConf: Record<string, any> }) {
   return (
     <div className="overflow-x-auto">
       <table className="w-full text-sm">
-        <thead>
+        <thead className="sticky top-0 bg-muted">
           <tr className="border-b text-left text-muted-foreground">
             <th className="py-1.5 px-2">自信度</th>
             <th className="py-1.5 px-2 text-right">出走</th>
@@ -70,7 +71,7 @@ function ConfTable({ byConf }: { byConf: Record<string, any> }) {
           {confs.map((c) => {
             const s = byConf[c];
             return (
-              <tr key={c} className="border-b">
+              <tr key={c} className="border-b border-border/40 hover:bg-brand-gold/5 transition-colors">
                 <td className="py-1.5 px-2 font-bold">{c}</td>
                 <td className="py-1.5 px-2 text-right tabular-nums">{s.total || 0}</td>
                 <td className="py-1.5 px-2 text-right tabular-nums font-bold text-emerald-600">{fmtPct(s.win_rate)}</td>
@@ -108,7 +109,7 @@ export function VenueResultsTab({ venueName }: { venueName: string }) {
   const byConf = venueData.by_conf || {};
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-8">
       {/* サマリー */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
         <PremiumCard variant="default" padding="sm" className="text-center">
@@ -136,13 +137,23 @@ export function VenueResultsTab({ venueName }: { venueName: string }) {
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         {/* 印別成績 */}
         <PremiumCard variant="default" padding="md" className="space-y-2">
-          <h2 className="font-bold text-base">印別成績</h2>
+          <PremiumCardHeader>
+            <div className="flex items-center gap-2">
+              <Target size={16} className="text-emerald-600" />
+              <PremiumCardTitle className="text-base">印別成績</PremiumCardTitle>
+            </div>
+          </PremiumCardHeader>
           <MarkTable byMark={byMark} />
         </PremiumCard>
 
         {/* 自信度別成績 */}
         <PremiumCard variant="default" padding="md" className="space-y-2">
-          <h2 className="font-bold text-base">自信度別成績</h2>
+          <PremiumCardHeader>
+            <div className="flex items-center gap-2">
+              <Shield size={16} className="text-blue-600" />
+              <PremiumCardTitle className="text-base">自信度別成績</PremiumCardTitle>
+            </div>
+          </PremiumCardHeader>
           <ConfTable byConf={byConf} />
         </PremiumCard>
       </div>

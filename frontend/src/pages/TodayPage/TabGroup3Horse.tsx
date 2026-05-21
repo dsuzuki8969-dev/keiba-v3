@@ -144,9 +144,9 @@ export function TabGroup3Horse({
 
   // タブグリッド（上下両方で再利用） — fromBottom=true のときクリックで上へスクロール
   const renderTabGrid = (fromBottom: boolean) => (
-    <div className="space-y-0">
+    <div className="space-y-0.5">
       {/* 1-2行目: コンテンツタブ（4列×2行） */}
-      <div className="grid grid-cols-4 border-t border-l border-border">
+      <div className="grid grid-cols-4 p-0.5 bg-muted/60 border border-border rounded-lg">
         {contentTabs.map((tab) => {
           const isActive = tab.key === activeTab;
           return (
@@ -154,12 +154,12 @@ export function TabGroup3Horse({
               key={tab.key}
               onClick={() => handleCellClick(tab, fromBottom)}
               className={[
-                "border-r border-b border-border",
+                "rounded-md",
                 "px-1 py-2 sm:px-2 sm:py-2.5 text-[11px] sm:text-base font-medium text-center",
                 "transition-colors truncate",
                 isActive
-                  ? "bg-primary text-primary-foreground"
-                  : "bg-muted/50 text-foreground hover:bg-muted",
+                  ? "bg-gradient-to-br from-brand-navy to-brand-navy-light text-white shadow-[0_1px_3px_rgba(0,0,0,0.2),0_0_0_1px_var(--brand-gold)]"
+                  : "text-muted-foreground hover:text-foreground hover:bg-background/60",
               ].join(" ")}
             >
               {tab.label}
@@ -169,7 +169,7 @@ export function TabGroup3Horse({
       </div>
 
       {/* 3行目: 印断層分析・買い目指南・レース結果・レース映像 の4列コンテンツタブ */}
-      <div className="grid grid-cols-4 border-l border-border">
+      <div className="grid grid-cols-4 p-0.5 bg-muted/60 border border-border rounded-lg">
         {row3Tabs.map((tab) => {
           const isActive = tab.key === activeTab;
           return (
@@ -177,12 +177,12 @@ export function TabGroup3Horse({
               key={tab.key}
               onClick={() => handleCellClick(tab, fromBottom)}
               className={[
-                "border-r border-b border-border",
+                "rounded-md",
                 "px-1 py-2 sm:px-2 sm:py-2.5 text-[11px] sm:text-base font-medium text-center",
                 "transition-colors truncate",
                 isActive
-                  ? "bg-primary text-primary-foreground"
-                  : "bg-muted/50 text-foreground hover:bg-muted",
+                  ? "bg-gradient-to-br from-brand-navy to-brand-navy-light text-white shadow-[0_1px_3px_rgba(0,0,0,0.2),0_0_0_1px_var(--brand-gold)]"
+                  : "text-muted-foreground hover:text-foreground hover:bg-background/60",
               ].join(" ")}
             >
               {tab.label}
@@ -193,7 +193,7 @@ export function TabGroup3Horse({
         {Array.from({ length: Math.max(0, 4 - row3Tabs.length) }).map((_, i) => (
           <div
             key={`empty-${fromBottom ? "b" : "t"}-${i}`}
-            className="border-r border-b border-border bg-muted/20"
+            className="rounded-md"
           />
         ))}
       </div>

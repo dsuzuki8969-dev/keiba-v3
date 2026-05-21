@@ -243,7 +243,7 @@ export function PastRunsTable({ runs }: { runs: PastRunData[] }) {
               // A案（2026-04-26）: clamp が -50 まで拡張されたためマイナスも数値表示
               // isFloorClamped は撤回。null のみ「—」表示
               return (
-                <tr key={r.race_id ?? `${r.date}-${r.venue}-${r.race_no}-${i}`} className="border-b border-border/30 hover:bg-muted/20">
+                <tr key={r.race_id ?? `${r.date}-${r.venue}-${r.race_no}-${i}`} className="border-b border-border/30 hover:bg-brand-gold/5">
                   <td className="py-1 px-1.5 whitespace-nowrap">
                     {(() => {
                       const url = pastRunResultUrl(r.race_id, r.date, r.venue, r.result_cname, r.race_no);
@@ -507,7 +507,7 @@ function HorseCard({
 
   return (
     <div
-      className={`bg-card border rounded-md transition-all hover:border-muted-foreground/50 ${rowAccent} ${open ? "shadow-md" : ""} ${isScratched ? "opacity-40" : ""}`}
+      className={`bg-card border rounded-md transition-all hover:border-brand-gold/60 hover:shadow-[0_0_8px_-2px_rgba(212,168,83,0.3)] ${rowAccent} ${open ? "shadow-md" : ""} ${isScratched ? "opacity-40" : ""}`}
     >
       {/* ======== クリックで展開するヘッダ部（2カラム構成・最上位） ======== */}
       <div className="cursor-pointer px-2 py-1.5 flex flex-col md:flex-row gap-2 md:gap-3 md:items-stretch" onClick={() => setOpen(!open)}>
