@@ -1,3 +1,4 @@
+import { memo } from "react";
 import { Badge } from "@/components/ui/badge";
 
 /**
@@ -21,7 +22,7 @@ interface Props {
   className?: string;
 }
 
-export function GradeBadge({ grade, className = "" }: Props) {
+export const GradeBadge = memo(function GradeBadge({ grade, className = "" }: Props) {
   if (!grade) return null;
   const isG1 = grade === "G1";
 
@@ -46,4 +47,5 @@ export function GradeBadge({ grade, className = "" }: Props) {
       {grade}
     </Badge>
   );
-}
+});
+GradeBadge.displayName = "GradeBadge";

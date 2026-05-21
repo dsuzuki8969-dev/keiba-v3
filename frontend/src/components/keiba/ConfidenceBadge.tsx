@@ -1,3 +1,4 @@
+import { memo } from "react";
 import { Badge } from "@/components/ui/badge";
 import type { ConfidenceRank } from "@/lib/constants";
 
@@ -24,7 +25,7 @@ interface Props {
   className?: string;
 }
 
-export function ConfidenceBadge({ rank, className = "" }: Props) {
+export const ConfidenceBadge = memo(function ConfidenceBadge({ rank, className = "" }: Props) {
   const style = STYLES[rank] ?? STYLES.C;
 
   // SS のみ金箔グラデ背景を直接スタイルで（Tailwind クラスでは表現しづらい多段グラデ）
@@ -43,4 +44,5 @@ export function ConfidenceBadge({ rank, className = "" }: Props) {
       {rank}
     </Badge>
   );
-}
+});
+ConfidenceBadge.displayName = "ConfidenceBadge";

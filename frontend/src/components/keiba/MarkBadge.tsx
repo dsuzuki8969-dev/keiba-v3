@@ -1,3 +1,4 @@
+import { memo } from "react";
 import { MARKS, type MarkType } from "@/lib/constants";
 
 /**
@@ -35,7 +36,7 @@ interface Props {
   className?: string;
 }
 
-export function MarkBadge({ mark, size = "md", subtle = false, className = "" }: Props) {
+export const MarkBadge = memo(function MarkBadge({ mark, size = "md", subtle = false, className = "" }: Props) {
   const m = MARKS[mark as MarkType];
   if (!m) return null;
 
@@ -71,4 +72,5 @@ export function MarkBadge({ mark, size = "md", subtle = false, className = "" }:
       {m.symbol}
     </span>
   );
-}
+});
+MarkBadge.displayName = "MarkBadge";

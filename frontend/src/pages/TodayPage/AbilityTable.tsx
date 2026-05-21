@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, memo } from "react";
 import { devGrade, gradeCls, markCls, WAKU_BG } from "@/lib/constants";
 import type { HorseData } from "./RaceDetailView";
 import type { AbilityEntry } from "@/components/charts/AbilityHeatmap";
@@ -60,7 +60,7 @@ interface Props {
   isBanei: boolean;
 }
 
-export function AbilityTable({ horses, isBanei }: Props) {
+export const AbilityTable = memo(function AbilityTable({ horses, isBanei }: Props) {
   // デフォルト: 馬番順（昇順）
   const [sortKey, setSortKey] = useState<SortKey>("horse_no");
   const [sortAsc, setSortAsc] = useState(true);
@@ -229,4 +229,5 @@ export function AbilityTable({ horses, isBanei }: Props) {
     </div>
     </div>
   );
-}
+});
+AbilityTable.displayName = "AbilityTable";

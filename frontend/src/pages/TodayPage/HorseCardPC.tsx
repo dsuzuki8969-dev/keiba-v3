@@ -9,7 +9,7 @@
  * 各軸列は縦3段（グレード文字 + 偏差値 + 順位）で表示される。
  * アコーディオン展開部（前三走・調教・厩舎コメント）は変更なし。
  */
-import { useState, useMemo, useCallback, useEffect, useRef } from "react";
+import { useState, useMemo, useCallback, useEffect, useRef, memo } from "react";
 import { createPortal } from "react-dom";
 import {
   devGrade,
@@ -317,7 +317,7 @@ function AxisCell({
 
 // ---------- 1馬カード（縦カード型） ----------
 
-function HorseCard({
+const HorseCard = memo(function HorseCard({
   h, idxRanks, wpRank, p2Rank, p3Rank,
   raceId, dMarks, setDMarks, hasAnyOdds, isBanei, isRelativeMode,
 }: {
@@ -526,7 +526,8 @@ function HorseCard({
       )}
     </div>
   );
-}
+});
+HorseCard.displayName = "HorseCard";
 
 // ---------- メインコンポーネント ----------
 

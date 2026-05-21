@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useMemo, memo } from "react";
 
 // ランキングスタイル: 1位=緑太字, 2位=青太字, 3位=赤太字, 平均=黒普通, 平均以下=灰色
 // v6.1.21: hex ハードコード → design-token CSS 変数参照に統一
@@ -21,7 +21,7 @@ export function diffColor(diff: number | null | undefined): string {
 }
 
 // 汎用ブレイクダウンテーブル（脚質別/枠番別等）— ランキング色分け + 回収率対応
-export function BreakdownTable({
+export const BreakdownTable = memo(function BreakdownTable({
   data,
   keyLabel,
   sortKeys,
@@ -126,4 +126,5 @@ export function BreakdownTable({
       </table>
     </div>
   );
-}
+});
+BreakdownTable.displayName = "BreakdownTable";

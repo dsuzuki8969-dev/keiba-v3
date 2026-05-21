@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useMemo, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import { PremiumCard, PremiumCardHeader, PremiumCardTitle, PremiumCardAccent } from "@/components/ui/premium/PremiumCard";
 import { useTodayPredictions, useHomeInfo } from "@/api/hooks";
@@ -92,9 +92,25 @@ export default function HomePage() {
   // 厳選穴馬 — ☆印 + 高乖離馬（バックエンドで計算済み）
   const anaHorses = (pred?.ana_horses || []).slice(0, 5) as AnaHorse[];
 
-  const goToRace = (venue: string, raceNo: number) => {
+  const goToRace = useCallback((venue: string, raceNo: number) => {
     navigate("/today", { state: { venue, raceNo } });
-  };
+  }, [navigate]);
+
+  // ヒーロー用 TOP3 レースリスト — jikuList が変わらない限り再生成しない
+  const heroRaces = useMemo(() => jikuList.slice(0, 3).map((r) => ({
+    venue: r.venue,
+    race_no: r.race_no,
+    name: r.name || r.race_name,
+    post_time: r.post_time,
+    grade: r.grade,
+    overall_confidence: r.overall_confidence,
+    honmei_mark: r.honmei_mark,
+    honmei_name: r.honmei_name,
+    honmei_no: r.honmei_no,
+    honmei_win_pct: r.honmei_win_pct,
+    honmei_composite: r.honmei_composite,
+    honmei_odds: r.honmei_odds,
+  })), [jikuList]);
 
   return (
     <div className="space-y-6 max-w-5xl mx-auto">
@@ -106,20 +122,7 @@ export default function HomePage() {
         date={date}
         venueCount={order.length}
         venuesLabel={order.join(" / ")}
-        races={jikuList.slice(0, 3).map((r) => ({
-          venue: r.venue,
-          race_no: r.race_no,
-          name: r.name || r.race_name,
-          post_time: r.post_time,
-          grade: r.grade,
-          overall_confidence: r.overall_confidence,
-          honmei_mark: r.honmei_mark,
-          honmei_name: r.honmei_name,
-          honmei_no: r.honmei_no,
-          honmei_win_pct: r.honmei_win_pct,
-          honmei_composite: r.honmei_composite,
-          honmei_odds: r.honmei_odds,
-        }))}
+        races={heroRaces}
         onSelect={goToRace}
       />
 

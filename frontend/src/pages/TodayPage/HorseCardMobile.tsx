@@ -4,7 +4,7 @@
  * 8軸を縦1行ずつ表示し、印と指数が必ず同行に揃う。
  * 横スクロールなし。アコーディオン展開部は変更なし。
  */
-import { useState, useRef, useEffect, useMemo } from "react";
+import { useState, useRef, useEffect, useMemo, memo } from "react";
 import {
   devGrade, gradeCls, posCls, markCls, rankCls, WAKU_BG, pastRunResultUrl,
 } from "@/lib/constants";
@@ -353,7 +353,7 @@ function CardDetail({ h }: { h: HorseData }) {
 }
 
 // ---------- メインコンポーネント ----------
-export function HorseCardMobile({ horses, isBanei, dMarks, onDMarkSelect }: Props) {
+export const HorseCardMobile = memo(function HorseCardMobile({ horses, isBanei, dMarks, onDMarkSelect }: Props) {
   const [openNo, setOpenNo] = useState<number | null>(null);
 
   // 8軸の順位を全頭で事前計算
@@ -645,4 +645,5 @@ export function HorseCardMobile({ horses, isBanei, dMarks, onDMarkSelect }: Prop
       })}
     </div>
   );
-}
+});
+HorseCardMobile.displayName = "HorseCardMobile";

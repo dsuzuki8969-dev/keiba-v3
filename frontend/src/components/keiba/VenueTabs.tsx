@@ -1,10 +1,12 @@
+import { memo } from "react";
+
 interface Props {
   venues: string[];
   activeIndex: number;
   onChange: (index: number) => void;
 }
 
-export function VenueTabs({ venues, activeIndex, onChange }: Props) {
+export const VenueTabs = memo(function VenueTabs({ venues, activeIndex, onChange }: Props) {
   if (!venues.length) return null;
   return (
     <div className="inline-flex items-center gap-0.5 p-0.5 bg-muted/60 border border-border rounded-lg overflow-x-auto">
@@ -23,4 +25,5 @@ export function VenueTabs({ venues, activeIndex, onChange }: Props) {
       ))}
     </div>
   );
-}
+});
+VenueTabs.displayName = "VenueTabs";

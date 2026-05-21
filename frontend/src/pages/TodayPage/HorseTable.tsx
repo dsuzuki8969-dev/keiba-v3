@@ -1,4 +1,4 @@
-import { useState, useEffect, lazy, Suspense } from "react";
+import { useState, useEffect, useCallback, lazy, Suspense } from "react";
 import { useViewMode } from "@/hooks/useViewMode";
 import type { HorseData } from "./RaceDetailView";
 
@@ -46,6 +46,18 @@ export function HorseTable({ horses, isBanei, raceId }: Props) {
   const showMobileCards = viewMode === "auto" ? undefined : isMobile;
   const showDesktopTable = viewMode === "auto" ? undefined : !isMobile;
 
+  // HorseCardMobile の memo 効果を活かすため useCallback で参照を安定化
+  const handleDMarkSelect = useCallback((horseNo: number, mark: string) => {
+    if (!raceId) return;
+    setDMarks((prev) => {
+      const updated = { ...prev };
+      if (mark === "－") delete updated[horseNo];
+      else updated[horseNo] = mark;
+      saveDMarks(raceId, updated);
+      return updated;
+    });
+  }, [raceId]);
+
   return (
     <>
     {/* モバイル: カード表示 */}
@@ -59,16 +71,7 @@ export function HorseTable({ horses, isBanei, raceId }: Props) {
           horses={horses}
           isBanei={isBanei}
           dMarks={dMarks}
-          onDMarkSelect={(horseNo, mark) => {
-            if (!raceId) return;
-            setDMarks((prev) => {
-              const updated = { ...prev };
-              if (mark === "－") delete updated[horseNo];
-              else updated[horseNo] = mark;
-              saveDMarks(raceId, updated);
-              return updated;
-            });
-          }}
+          onDMarkSelect={handleDMarkSelect}
         />
       </Suspense>
     </div>

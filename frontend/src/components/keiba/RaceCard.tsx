@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, memo } from "react";
 import { PremiumCard } from "@/components/ui/premium/PremiumCard";
 import { SurfaceBadge } from "./SurfaceBadge";
 import { GradeBadge } from "./GradeBadge";
@@ -91,7 +91,7 @@ function cardVariantByRank(rank?: number): "gold" | "navy-glow" | "default" {
 // 既存の import 互換のため re-export する。
 export { computeWinPctRanks } from "@/lib/keibaUtils";
 
-export function RaceCard({ race, onClick, winPctRank, hitResult }: Props) {
+export const RaceCard = memo(function RaceCard({ race, onClick, winPctRank, hitResult }: Props) {
   const conf = (race.overall_confidence || "C").replace(/⁺/g, "+");
   const surf = surfShort(race.surface || "");
   // [HIGH-1 修正] isMobile を検知して RaceCardOddsLine に渡す
@@ -197,4 +197,5 @@ export function RaceCard({ race, onClick, winPctRank, hitResult }: Props) {
       )}
     </PremiumCard>
   );
-}
+});
+RaceCard.displayName = "RaceCard";

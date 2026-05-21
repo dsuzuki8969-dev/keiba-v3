@@ -16,6 +16,8 @@
  *   odds が null / 0 / undefined の場合はオッズ部分を非表示（フォールバック禁止）
  */
 
+import { memo } from "react";
+
 // 人気数字 → 白丸数字に変換（1〜20対応）
 const CIRCLE_NUMBERS: Record<number, string> = {
   1: "①", 2: "②", 3: "③", 4: "④", 5: "⑤",
@@ -76,7 +78,7 @@ function hasValidOdds(odds?: number | null): odds is number {
  * レイアウト:
  *   [馬名]  [勝XX.X%]  [X.X倍 / X番人気]
  */
-export function RaceCardOddsLinePC({
+export const RaceCardOddsLinePC = memo(function RaceCardOddsLinePC({
   horseName,
   mark,
   winPct,
@@ -121,7 +123,8 @@ export function RaceCardOddsLinePC({
       )}
     </div>
   );
-}
+});
+RaceCardOddsLinePC.displayName = "RaceCardOddsLinePC";
 
 /**
  * RaceCardOddsLine — 本命馬行（モバイル版）
@@ -130,7 +133,7 @@ export function RaceCardOddsLinePC({
  *   [馬名]  [勝XX.X%]  [① X.X倍]
  *   人気は ①②③ の白丸数字で省スペース表示
  */
-export function RaceCardOddsLineMobile({
+export const RaceCardOddsLineMobile = memo(function RaceCardOddsLineMobile({
   horseName,
   mark,
   winPct,
@@ -175,7 +178,8 @@ export function RaceCardOddsLineMobile({
       )}
     </div>
   );
-}
+});
+RaceCardOddsLineMobile.displayName = "RaceCardOddsLineMobile";
 
 /**
  * RaceCardOddsLine — PC / モバイル自動切替版（デフォルトエクスポート）

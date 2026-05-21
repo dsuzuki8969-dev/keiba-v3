@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect, useMemo } from "react";
 import { useLocation, useSearchParams } from "react-router-dom";
 import { useTodayPredictions, useHomeInfo, useRaceCardResults } from "@/api/hooks";
 import { localDate } from "@/lib/constants";
@@ -10,6 +10,9 @@ import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { PremiumCard, PremiumCardAccent } from "@/components/ui/premium/PremiumCard";
 import { Calendar } from "lucide-react";
+
+// モジュールスコープで参照固定: races undefined 時の fallback として useMemo deps を毎render新参照化させない
+const EMPTY_RACES: RaceSummaryItem[] = [];
 
 export default function TodayPage() {
   const location = useLocation();
@@ -58,7 +61,7 @@ export default function TodayPage() {
 
   const venues = pred?.order || [];
   const currentVenue = venues[venueIdx] || "";
-  const races = (pred?.races as Record<string, RaceSummaryItem[]>)?.[currentVenue] || [];
+  const races = (pred?.races as Record<string, RaceSummaryItem[]>)?.[currentVenue] ?? EMPTY_RACES;
 
   // 天気情報
   const weather =
@@ -85,6 +88,9 @@ export default function TodayPage() {
   const closeDetail = useCallback(() => {
     setSelectedRace(null);
   }, []);
+
+  // 会場内の勝率ランクマップ — races が変わらない限り再計算しない
+  const rankMap = useMemo(() => computeWinPctRanks(races), [races]);
 
   // レース詳細表示中
   if (selectedRace) {
@@ -183,23 +189,20 @@ export default function TodayPage() {
 
           {/* レースカード一覧 */}
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-            {(() => {
-              const rankMap = computeWinPctRanks(races);
-              return races.map((r: RaceSummaryItem) => (
-                <RaceCard
-                  key={r.race_no}
-                  race={r}
-                  winPctRank={rankMap.get(r.race_no)}
-                  onClick={() => openRace(currentVenue, r.race_no)}
-                  hitResult={
-                    // T-039: race_id を持つ場合はバッジ情報を渡す。なければ undefined（非表示）
-                    r.race_id != null
-                      ? raceCardResults?.results?.[r.race_id as string] ?? null
-                      : undefined
-                  }
-                />
-              ));
-            })()}
+            {races.map((r: RaceSummaryItem) => (
+              <RaceCard
+                key={r.race_no}
+                race={r}
+                winPctRank={rankMap.get(r.race_no)}
+                onClick={() => openRace(currentVenue, r.race_no)}
+                hitResult={
+                  // T-039: race_id を持つ場合はバッジ情報を渡す。なければ undefined（非表示）
+                  r.race_id != null
+                    ? raceCardResults?.results?.[r.race_id as string] ?? null
+                    : undefined
+                }
+              />
+            ))}
           </div>
 
           {/* 操作パネル（admin のみ） */}

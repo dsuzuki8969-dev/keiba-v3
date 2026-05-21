@@ -5,7 +5,7 @@
  * - ホームページ: showRefreshButton=true（デフォルト）
  * - 過去成績ページ: showRefreshButton=false（更新ボタン非表示）
  */
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, memo } from "react";
 import {
   PremiumCard,
   PremiumCardAccent,
@@ -25,7 +25,7 @@ export interface StatsCardProps {
   showRefreshButton?: boolean;
 }
 
-export function StatsCard({
+export const StatsCard = memo(function StatsCard({
   date,
   title = "本日のリアルタイム成績",
   showRefreshButton = true,
@@ -286,4 +286,5 @@ export function StatsCard({
       </div>
     </PremiumCard>
   );
-}
+});
+StatsCard.displayName = "StatsCard";
