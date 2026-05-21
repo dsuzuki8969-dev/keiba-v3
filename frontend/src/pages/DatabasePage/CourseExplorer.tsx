@@ -3,7 +3,8 @@ import { PremiumCard } from "@/components/ui/premium/PremiumCard";
 import { Button } from "@/components/ui/button";
 import { useCourseList, useCourseStats } from "@/api/hooks";
 import { VENUE_MAP } from "@/lib/constants";
-import { BreakdownTable, diffColor } from "@/components/keiba/BreakdownTable";
+import { BreakdownTable } from "@/components/keiba/BreakdownTable";
+import { diffColor } from "@/components/keiba/breakdownStyles";
 
 const VENUE_INFO: Record<string, { name: string; surface: string; desc: string }> = {
   "01": { name: "福島", surface: "芝・ダート", desc: "右回り小回り。直線292m。先行有利。" },

@@ -8,7 +8,8 @@ import { api } from "@/api/client";
 import { PremiumCard, PremiumCardHeader, PremiumCardTitle, PremiumCardAccent } from "@/components/ui/premium/PremiumCard";
 import { CalendarDays } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { RaceCard, computeWinPctRanks } from "@/components/keiba/RaceCard";
+import { RaceCard } from "@/components/keiba/RaceCard";
+import { computeWinPctRanks } from "@/lib/keibaUtils";
 import { useRaceCardResults } from "@/api/hooks";
 import { RaceDetailView } from "@/pages/TodayPage/RaceDetailView";
 import { ChevronLeft, ChevronRight } from "lucide-react";
@@ -324,6 +325,12 @@ export function PastPredictions({ initialDate }: { initialDate?: string }) {
     setSelectedRace(null);
   }, []);
 
+  // RaceCard onOpen 用 stable handler — memo 効果維持のため
+  const handleOpenRace = useCallback(
+    (raceNo: number) => setSelectedRace({ venue: venues[venueIdx], raceNo }),
+    [venues, venueIdx]
+  );
+
   // レース詳細表示中
   if (selectedRace && selectedDate) {
     return (
@@ -402,12 +409,7 @@ export function PastPredictions({ initialDate }: { initialDate?: string }) {
                       key={r.race_no}
                       race={r as unknown as Parameters<typeof RaceCard>[0]["race"]}
                       winPctRank={rankMap.get(r.race_no)}
-                      onClick={() =>
-                        setSelectedRace({
-                          venue: venues[venueIdx],
-                          raceNo: r.race_no,
-                        })
-                      }
+                      onOpen={handleOpenRace}
                       hitResult={
                         // T-039: race_id がある場合は的中バッジ情報を渡す
                         r.race_id != null

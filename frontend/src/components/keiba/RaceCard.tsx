@@ -1,4 +1,4 @@
-import { useState, useEffect, memo } from "react";
+import { useState, useEffect, memo, useCallback } from "react";
 import { PremiumCard } from "@/components/ui/premium/PremiumCard";
 import { SurfaceBadge } from "./SurfaceBadge";
 import { GradeBadge } from "./GradeBadge";
@@ -73,7 +73,8 @@ interface RaceData {
 
 interface Props {
   race: RaceData;
-  onClick: () => void;
+  /** memo 最適化のため raceNo を引数に取る形に変更。親側で useCallback 安定参照を渡すこと */
+  onOpen: (raceNo: number) => void;
   /** 競馬場内の勝率ランク (1=最高) */
   winPctRank?: number;
   /** T-039: 的中バッジ情報（親 component が useRaceCardResults で取得して渡す） */
@@ -87,15 +88,16 @@ function cardVariantByRank(rank?: number): "gold" | "navy-glow" | "default" {
   return "default";
 }
 
-// computeWinPctRanks は Fast Refresh 互換のため @/lib/keibaUtils に移動。
-// 既存の import 互換のため re-export する。
-export { computeWinPctRanks } from "@/lib/keibaUtils";
+// computeWinPctRanks は @/lib/keibaUtils に移動済。Fast Refresh 互換のため
+// このファイルからの re-export は廃止。利用側で `@/lib/keibaUtils` から直接 import すること。
 
-export const RaceCard = memo(function RaceCard({ race, onClick, winPctRank, hitResult }: Props) {
+export const RaceCard = memo(function RaceCard({ race, onOpen, winPctRank, hitResult }: Props) {
   const conf = (race.overall_confidence || "C").replace(/⁺/g, "+");
   const surf = surfShort(race.surface || "");
   // [HIGH-1 修正] isMobile を検知して RaceCardOddsLine に渡す
   const isMobile = useIsMobile();
+  // memo 効果維持のため race.race_no と onOpen に依存した stable handler
+  const handleClick = useCallback(() => onOpen(race.race_no), [onOpen, race.race_no]);
 
   const markKey = race.honmei_mark || "";
 
@@ -120,7 +122,7 @@ export const RaceCard = memo(function RaceCard({ race, onClick, winPctRank, hitR
       variant={cardVariantByRank(winPctRank)}
       padding="md"
       interactive
-      onClick={onClick}
+      onClick={handleClick}
       className={cn("group space-y-2.5", hitBorderClass)}
       as="button"
     >

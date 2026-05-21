@@ -3,7 +3,8 @@ import { useLocation, useSearchParams } from "react-router-dom";
 import { useTodayPredictions, useHomeInfo, useRaceCardResults } from "@/api/hooks";
 import { localDate } from "@/lib/constants";
 import { VenueTabs } from "@/components/keiba/VenueTabs";
-import { RaceCard, computeWinPctRanks } from "@/components/keiba/RaceCard";
+import { RaceCard } from "@/components/keiba/RaceCard";
+import { computeWinPctRanks } from "@/lib/keibaUtils";
 import { RaceDetailView } from "./TodayPage/RaceDetailView";
 import { OperationsPanel } from "./TodayPage/OperationsPanel";
 import { Input } from "@/components/ui/input";
@@ -83,6 +84,12 @@ export default function TodayPage() {
       setSelectedRace({ venue, raceNo });
     },
     []
+  );
+
+  // RaceCard onOpen 用 stable handler: currentVenue は地味に変動するため deps に含める
+  const handleOpenRace = useCallback(
+    (raceNo: number) => openRace(currentVenue, raceNo),
+    [currentVenue, openRace]
   );
 
   const closeDetail = useCallback(() => {
@@ -194,7 +201,7 @@ export default function TodayPage() {
                 key={r.race_no}
                 race={r}
                 winPctRank={rankMap.get(r.race_no)}
-                onClick={() => openRace(currentVenue, r.race_no)}
+                onOpen={handleOpenRace}
                 hitResult={
                   // T-039: race_id を持つ場合はバッジ情報を渡す。なければ undefined（非表示）
                   r.race_id != null

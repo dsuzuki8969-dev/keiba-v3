@@ -194,7 +194,7 @@ export function TabGroup3Horse({
       <div
         ref={topTabsRef}
         className="sticky z-30 glass -mx-4 px-4 pt-1 pb-1 shadow-[var(--shadow-sm)]"
-        style={{ top: "var(--header-h, 56px)" }}
+        style={{ top: "calc(var(--header-h, 56px) + var(--race-detail-bar-h, 0px))" }}
       >
         {renderTabGrid(false)}
       </div>

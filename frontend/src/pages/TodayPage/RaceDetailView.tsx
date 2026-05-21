@@ -39,6 +39,25 @@ export function RaceDetailView({
   const [oddsFetching, setOddsFetching] = useState(false);
   const [oddsMsg, setOddsMsg] = useState("");
 
+  // T-Z-INDEX 修正: この sticky bar の実高さを CSS 変数 --race-detail-bar-h に publish。
+  // TabGroup3Horse がその下に重ならず張り付けるよう参照される。
+  const stickyBarRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = stickyBarRef.current;
+    if (!el) return;
+    const update = () => {
+      const h = el.getBoundingClientRect().height;
+      document.documentElement.style.setProperty("--race-detail-bar-h", `${h}px`);
+    };
+    update();
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    return () => {
+      ro.disconnect();
+      document.documentElement.style.removeProperty("--race-detail-bar-h");
+    };
+  }, []);
+
   // マスター指示 2026-04-23: レース詳細ビュー開いた時に裏でオッズ自動取得（cooldown付）
   // レース結果タブの自動取得は /api/results/race 側で自動判定（発走+10分経過時）
   const autoTriggeredRef = useRef<string>("");
@@ -134,7 +153,7 @@ export function RaceDetailView({
   return (
     <div className="max-w-5xl mx-auto space-y-4">
       {/* 戻る + 会場タブ + レース番号タブ（sticky） */}
-      <div className="sticky top-[var(--header-h,48px)] z-20 bg-background pb-2 space-y-1.5 -mx-4 px-4 pt-2 border-b border-border/50">
+      <div ref={stickyBarRef} className="sticky top-[var(--header-h,48px)] z-20 bg-background pb-2 space-y-1.5 -mx-4 px-4 pt-2 border-b border-border/50">
         <div className="flex items-center gap-2 flex-wrap">
           <Button variant="outline" size="sm" onClick={onClose}>
             ← レース一覧に戻る
