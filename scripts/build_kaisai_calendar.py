@@ -401,7 +401,6 @@ def build_calendar(
 
     # 期間内の全日付について "jra"/"nar" キーが必ずあるよう補完
     start_date = date(start_year, start_month, 1)
-    end_date = date(end_year, end_month, 31 if end_month == 12 else end_month * 30)
     # 実際の末日を使う
     import calendar as _cal
     last_day = _cal.monthrange(end_year, end_month)[1]

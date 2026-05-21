@@ -335,12 +335,14 @@ export interface MPrimeByConfidence {
 
 // M' 戦略: 月別成績
 export interface MPrimeMonthly {
+  month: string;        // "YYYY-MM" 形式
   played: number;
   hit: number;
   stake: number;
   payback: number;
   balance: number;
   roi_pct: number;
+  cum_roi_pct?: number; // 累積 ROI
 }
 
 // M' 戦略: 全体サマリ
@@ -373,12 +375,35 @@ export interface MPrimeSanrenpukuSummary {
     D?: MPrimeByConfidence;
     E?: MPrimeByConfidence;
   };
-  monthly: Record<string, MPrimeMonthly>;
+  monthly: MPrimeMonthly[];
   top_payouts?: MPrimeTopPayout[];
 }
 
+// 単勝 T-4 戦略: 全体サマリ
+export interface TanshoT4Summary {
+  races_played: number;
+  races_hit: number;
+  hit_rate_pct: number;
+  roi_pct: number;
+  total_stake: number;
+  total_payback: number;
+  balance: number;
+  date_from: string;
+  date_to: string;
+  by_confidence: {
+    SS?: MPrimeByConfidence;
+    S?: MPrimeByConfidence;
+    A?: MPrimeByConfidence;
+    B?: MPrimeByConfidence;
+    C?: MPrimeByConfidence;
+    D?: MPrimeByConfidence;
+    E?: MPrimeByConfidence;
+  };
+  monthly: MPrimeMonthly[];
+}
+
 export interface HybridSummaryResponse {
-  tansho_t4?: unknown;
+  tansho_t4?: TanshoT4Summary | null;
   sanrenpuku_dynamic?: unknown;
   m_prime_sanrenpuku?: MPrimeSanrenpukuSummary | null;
   error?: string;

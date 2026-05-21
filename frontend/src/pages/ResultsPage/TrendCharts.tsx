@@ -94,12 +94,12 @@ export function TrendCharts({ data, hybrid }: Props) {
   }));
 
   // ──── M' 月別データ ────
-  // monthly は Record<string, MPrimeMonthly> 形式なのでエントリを月順にソート
-  const mprimeMonthlyRaw = hybrid?.m_prime_sanrenpuku?.monthly ?? {};
-  const mprimeMonthlyData = Object.entries(mprimeMonthlyRaw)
-    .sort(([a], [b]) => a.localeCompare(b))
-    .map(([month, v]) => ({
-      name: month,
+  // monthly は MPrimeMonthly[] 配列 (各要素に month: "YYYY-MM" フィールドあり)
+  const mprimeMonthlyArr = hybrid?.m_prime_sanrenpuku?.monthly ?? [];
+  const mprimeMonthlyData = [...mprimeMonthlyArr]
+    .sort((a, b) => a.month.localeCompare(b.month))
+    .map((v) => ({
+      name: v.month,   // "2024-01" 等の YYYY-MM ラベル
       roi: v.roi_pct,
       balance: v.balance,
     }));

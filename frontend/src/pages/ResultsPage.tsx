@@ -30,12 +30,25 @@ export default function ResultsPage() {
   const { data: trend } = useResultsTrend(year);
   const { data: detailed } = useResultsDetailed(year);
   // M' 戦略 (F-015) 採用成績: hybrid_summary API から m_prime_sanrenpuku を取得
+  // 年度タブ用に全年度分を並列取得（React Query がキャッシュ + 重複排除）
   const { data: hybrid } = useHybridSummary(year);
+  const { data: hybridAll } = useHybridSummary("all");
+  const { data: hybrid2024 } = useHybridSummary("2024");
+  const { data: hybrid2025 } = useHybridSummary("2025");
+  const { data: hybrid2026 } = useHybridSummary("2026");
 
   const summaryData = summary as Record<string, unknown> | undefined;
   const trendData = trend as Record<string, unknown> | undefined;
   const detailedData = detailed as Record<string, unknown> | undefined;
   const hybridData = hybrid ?? null;
+
+  // M' セクション用: 全年度マップ
+  const mpByYear: Record<string, import("@/api/client").MPrimeSanrenpukuSummary | null | undefined> = {
+    all: hybridAll?.m_prime_sanrenpuku,
+    "2024": hybrid2024?.m_prime_sanrenpuku,
+    "2025": hybrid2025?.m_prime_sanrenpuku,
+    "2026": hybrid2026?.m_prime_sanrenpuku,
+  };
 
   return (
     <div className="space-y-4">
@@ -78,7 +91,7 @@ export default function ResultsPage() {
       {loadingSummary && <SummaryCardsSkeleton />}
 
       {/* サマリーカード（上段: 単勝ベース / 下段: M' 戦略 三連複） */}
-      {summaryData && <SummaryCards data={summaryData} hybrid={hybridData} />}
+      {summaryData && <SummaryCards data={summaryData} hybrid={hybridData} mpByYear={mpByYear} />}
 
       {/* データなし */}
       {summaryData && !summaryData.total_races && (

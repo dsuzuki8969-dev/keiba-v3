@@ -320,6 +320,10 @@ def _compute_tansho_t4(year_filter: str) -> dict:
         "date_from":     "",
         "date_to":       "",
     }
+    # 自信度別内訳 (M' と同じ構造)
+    _CONF_LEVELS = ("SS", "S", "A", "B", "C", "D", "E")
+    by_confidence: dict = {lv: {"races": 0, "hit": 0, "stake": 0, "payback": 0}
+                           for lv in _CONF_LEVELS}
     by_month: dict = {}
 
     for fp in sorted(pred_dir.glob("*_pred.json")):
@@ -379,6 +383,18 @@ def _compute_tansho_t4(year_filter: str) -> dict:
             if race_hit:
                 stats["races_hit"] += 1
 
+            # 自信度別集計
+            tbm = r.get("tickets_by_mode", {}) or {}
+            meta = tbm.get("_meta", {}) or {}
+            confidence = meta.get("confidence", "") or r.get("overall_confidence", "") or ""
+            if confidence in by_confidence:
+                bc = by_confidence[confidence]
+                bc["races"]   += 1
+                bc["stake"]   += stake
+                bc["payback"] += payback
+                if race_hit:
+                    bc["hit"] += 1
+
             month_key = f"{date_str[:4]}-{date_str[4:6]}"
             bm = by_month.setdefault(month_key, {
                 "played": 0, "hit": 0, "stake": 0, "payback": 0
@@ -397,6 +413,16 @@ def _compute_tansho_t4(year_filter: str) -> dict:
     stats["balance"]       = tpb - ts
     stats["roi_pct"]       = round(tpb / ts * 100, 1) if ts > 0 else 0.0
     stats["hit_rate_pct"]  = round(rh / rp * 100, 1) if rp > 0 else 0.0
+
+    # 自信度別 ROI / hit_rate 計算
+    for lv, lv_data in by_confidence.items():
+        lv_s = lv_data["stake"]
+        lv_r = lv_data["races"]
+        lv_data["roi_pct"] = round(lv_data["payback"] / lv_s * 100, 1) if lv_s > 0 else 0.0
+        lv_data["hit_rate_pct"] = round(lv_data["hit"] / lv_r * 100, 1) if lv_r > 0 else 0.0
+    stats["by_confidence"] = {
+        lv: v for lv, v in by_confidence.items() if v["races"] > 0
+    }
 
     # 月別 (累積 ROI 付き)
     cum_stake, cum_payback = 0, 0
