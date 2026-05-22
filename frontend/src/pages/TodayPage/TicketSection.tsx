@@ -558,13 +558,25 @@ function MPrimeFormation({
   const subPattern = meta?.sub_pattern;
   const confidence = meta?.confidence;
 
-  // ◉◎本命馬を抽出して「印通り単勝」を生成
-  // (2026-05-22 マスター指示: 印が出ている以上、印通り単勝も載せろ)
-  // M' 戦略は三連複のみ発行だが、UI で参考買い目として併記する。
-  const honmeiHorses = _horses.filter((h) => {
-    const sym = MARK_SYM[h.mark || ""] || h.mark || "";
-    return sym === "◉" || sym === "◎";
-  });
+  // 単勝 shobu_score TOP2 を抽出 (5/21 commit d6e3389 で確定した正式仕様)
+  // ◎○印ベースではなくオッズ非依存の勝負気配スコア上位 2 頭。
+  // M' 戦略は三連複のみ発行するが、印が出ている以上 UI で単勝(shobu_score TOP2) も併記する
+  // (2026-05-22 マスター指示「単勝の買い目は変わったんだろ？載せなきゃわからん」)。
+  const tanshoTop2 = _horses
+    .filter((h) => {
+      // 取消・出走停止馬は除外
+      const scratched = (h as { is_scratched?: boolean }).is_scratched === true;
+      const kiken = (h as { is_tokusen_kiken?: boolean }).is_tokusen_kiken === true;
+      return !scratched && !kiken;
+    })
+    .slice()
+    .sort((a, b) => {
+      const sa = (a as { shobu_score?: number }).shobu_score ?? 0;
+      const sb = (b as { shobu_score?: number }).shobu_score ?? 0;
+      return sb - sa;
+    })
+    .slice(0, 2)
+    .filter((h) => ((h as { shobu_score?: number }).shobu_score ?? 0) > 0);
 
   return (
     <div className="space-y-3">
@@ -647,29 +659,26 @@ function MPrimeFormation({
             </p>
           )}
 
-          {/* 印通り単勝 (参考) — M' 戦略は三連複のみ発行だが、◉◎本命の単勝も併記
-              2026-05-22 マスター指示「印通りに買わないんだろ？なんで載せない？」対応 */}
-          {honmeiHorses.length > 0 && (
+          {/* 単勝（勝負気配 TOP2）— 5/21 commit d6e3389 で確定した正式仕様
+              shobu_score 上位 2 頭・各 100 円固定 (1点100円)。
+              ◎○印ではなくオッズ非依存の勝負気配 (騎手強化/厩舎好調/格上げ等のシグナル)
+              で選定。M' 戦略は三連複のみ発行のため、ここで併記している。
+              2026-05-22 マスター指示「単勝の買い目は変わったんだろ？載せなきゃわからん」対応 */}
+          {tanshoTop2.length > 0 && (
             <div className="mt-3 pt-3 border-t border-border/40">
               <div className="flex items-center gap-2 mb-2">
                 <span className="px-2 py-0.5 bg-amber-500 text-white text-xs font-bold rounded">
-                  単勝（印通り・参考）
+                  単勝（勝負気配 TOP{tanshoTop2.length}）
                 </span>
                 <span className="text-xs text-muted-foreground">
-                  ◉◎本命{honmeiHorses.length}頭・各100円想定
+                  各100円・計¥{(tanshoTop2.length * 100).toLocaleString()}
                 </span>
               </div>
               <div className="flex flex-wrap gap-x-6 gap-y-0.5">
-                {honmeiHorses.map((h) => {
+                {tanshoTop2.map((h) => {
                   const sym = MARK_SYM[h.mark || ""] || h.mark || "";
                   const oddsVal = typeof h.odds === "number" ? h.odds : 0;
-                  const winPct = typeof (h as { honmei_win_pct?: number }).honmei_win_pct === "number"
-                    ? (h as { honmei_win_pct?: number }).honmei_win_pct
-                    : (typeof (h as { win_pct?: number }).win_pct === "number"
-                      ? (h as { win_pct?: number }).win_pct
-                      : 0);
-                  // EV = 勝率 × オッズ × 100
-                  const ev = winPct && oddsVal ? winPct * oddsVal * 100 : 0;
+                  const shobu = (h as { shobu_score?: number }).shobu_score ?? 0;
                   return (
                     <div key={h.horse_no} className="flex flex-wrap items-center gap-2 text-sm py-0.5">
                       <strong className="whitespace-nowrap">
@@ -682,22 +691,17 @@ function MPrimeFormation({
                         )}
                       </strong>
                       <span className="text-xs text-muted-foreground inline-flex flex-wrap items-baseline gap-x-2">
-                        {(winPct ?? 0) > 0 && (
-                          <span className="whitespace-nowrap">勝率: {((winPct ?? 0) * 100).toFixed(1)}%</span>
-                        )}
+                        <span className="whitespace-nowrap text-orange-600 dark:text-orange-400 font-semibold">
+                          勝負気配 {shobu.toFixed(1)}
+                        </span>
                         {oddsVal > 0 && (
                           <span className="whitespace-nowrap">Odds: {oddsVal.toFixed(1)}倍</span>
-                        )}
-                        {ev > 0 && (
-                          <span className={`whitespace-nowrap ${ev >= 100 ? "text-positive font-semibold" : ""}`}>
-                            EV: {ev.toFixed(1)}%
-                          </span>
                         )}
                       </span>
                     </div>
                   );
                 })}
-              </div>
+            </div>
             </div>
           )}
         </div>
