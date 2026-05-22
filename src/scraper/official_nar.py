@@ -1865,36 +1865,52 @@ class OfficialNARScraper:
 
         payouts: dict = {}
 
-        # 払戻テーブルを特定 — 最内側の小テーブルを優先
+        # 払戻テーブルを「全て」収集 — NAR は単勝/複勝/枠連/馬連/枠単 (Table 1) と
+        # 馬単/ワイド/三連複/三連単 (Table 2) の 2 テーブルに分かれているケースがある。
+        # 2026-05-22 修正: 旧実装は「単勝」を含む 1 テーブルだけ対象にしており、
+        # Table 2 を完全に取りこぼしていた (ワイド/三連複/三連単 0 件問題の原因)。
         tables = soup.select("table")
-        payout_table = None
-        for tbl in reversed(tables):
+        payout_tables = []
+        bet_names = tuple(bet_type_map.keys())  # 単勝/複勝/.../三連単
+        for tbl in tables:
             tbl_text = tbl.get_text()
-            if "単勝" in tbl_text and ("払戻" in tbl_text or "複勝" in tbl_text):
-                payout_table = tbl
-                break
+            # 主要券種いずれかと「円」を含む小テーブルを払戻候補とする
+            if any(name in tbl_text for name in bet_names) and "円" in tbl_text:
+                payout_tables.append(tbl)
 
-        if not payout_table:
+        if not payout_tables:
             return payouts
 
-        # 水平レイアウト検出: ヘッダ行に券種名が並ぶ形式
-        # tr[0]=タイトル, tr[1]=ヘッダ(Ｒ,単勝,...), tr[2]=サブヘッダ, tr[3]=データ
-        rows = payout_table.select("tr")
-        header_row = None
-        for r in rows:
-            cells = r.select("td, th")
-            cell_texts = [c.get_text(strip=True) for c in cells]
-            if "単勝" in cell_texts and "三連複" in cell_texts:
-                header_row = cell_texts
-                data_row_idx = rows.index(r) + 2  # サブヘッダの次がデータ
-                break
+        # 全テーブルをパースして結果をマージ (同一券種が両テーブルにあれば後者を追加)
+        for payout_table in payout_tables:
+            # 水平レイアウト検出: ヘッダ行に券種名が並ぶ形式
+            # tr[0]=タイトル, tr[1]=ヘッダ(Ｒ,単勝,...), tr[2]=サブヘッダ, tr[3]=データ
+            rows = payout_table.select("tr")
+            header_row = None
+            data_row_idx = None
+            for r in rows:
+                cells = r.select("td, th")
+                cell_texts = [c.get_text(strip=True) for c in cells]
+                if "単勝" in cell_texts and "三連複" in cell_texts:
+                    header_row = cell_texts
+                    data_row_idx = rows.index(r) + 2  # サブヘッダの次がデータ
+                    break
 
-        if header_row and data_row_idx < len(rows):
-            return self._parse_horizontal_payouts(
-                header_row, rows[data_row_idx], bet_type_map)
+            if header_row and data_row_idx is not None and data_row_idx < len(rows):
+                sub_payouts = self._parse_horizontal_payouts(
+                    header_row, rows[data_row_idx], bet_type_map)
+            else:
+                # 垂直レイアウト (従来方式): 行ごとに券種名がある形式
+                sub_payouts = self._parse_vertical_payouts(payout_table, bet_type_map)
 
-        # 垂直レイアウト (従来方式): 行ごとに券種名がある形式
-        return self._parse_vertical_payouts(payout_table, bet_type_map)
+            # マージ: 同一券種があれば extend (Table 1/2 の重複はないが念のため)
+            for k, v in sub_payouts.items():
+                if k in payouts:
+                    payouts[k].extend(v)
+                else:
+                    payouts[k] = v
+
+        return payouts
 
     def _parse_horizontal_payouts(self, header: list, data_row,
                                   bet_type_map: dict) -> dict:
@@ -1972,8 +1988,14 @@ class OfficialNARScraper:
         return entries
 
     def _parse_vertical_payouts(self, payout_table, bet_type_map: dict) -> dict:
-        """垂直レイアウト払戻テーブルをパース (従来方式)"""
+        """垂直レイアウト払戻テーブルをパース (従来方式)
+
+        2026-05-22 修正: 複勝/ワイドの 2/3 着行は「券種名なし・3 列」で続く形式
+        (NAR 公式の現行レイアウト) を直前券種の続き行として処理するよう拡張。
+        旧実装は券種名のない行をスキップしていたため複勝 1 着しか取れていなかった。
+        """
         payouts: dict = {}
+        current_bet_key = None  # 直前の券種を記憶 (続き行処理用)
 
         for row in payout_table.select("tr"):
             cells = row.select("td, th")
@@ -1987,7 +2009,35 @@ class OfficialNARScraper:
                     bet_key = key
                     break
 
-            if not bet_key:
+            if bet_key:
+                # 新しい券種行: cells[0]=券種名, cells[1:]=データ
+                current_bet_key = bet_key
+            elif current_bet_key and len(cells) == 3:
+                # 続き行: cells=[馬番, 払戻, 人気] (券種名なし・複勝/ワイドの 2-3 着)
+                bet_key = current_bet_key
+                entry_combo = cells[0].get_text(strip=True)
+                entry_payout_text = cells[1].get_text(strip=True)
+                entry_pop_text = cells[2].get_text(strip=True)
+                raw_p = entry_payout_text.replace("円", "").replace(",", "") \
+                                         .replace("￥", "").replace("¥", "") \
+                                         .replace("、", "").strip()
+                try:
+                    payout_val = int(raw_p)
+                except ValueError:
+                    continue
+                pop_val = 0
+                m_pop = re.search(r"(\d+)", entry_pop_text)
+                if m_pop:
+                    pop_val = int(m_pop.group(1))
+                if payout_val > 0 and entry_combo:
+                    payouts.setdefault(bet_key, []).append({
+                        "combo": entry_combo,
+                        "payout": payout_val,
+                        "popularity": pop_val,
+                    })
+                continue
+            else:
+                # 券種名なし・列数も合わない → スキップ
                 continue
 
             entries = []
