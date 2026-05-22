@@ -141,8 +141,8 @@ python scripts/backfill_horses_2023h_retry.py --execute
 | ✅ | kaisai_calendar.json 修復 + 5月更新 | 5/21 完了 (1826日/1604開催日) |
 | ✅ 分析完了 | 危険馬(×) → v5廃止済。is_tokusen_kiken ROI 33.2% (正常動作) | 危B条件調整要検討 |
 | ✅ 分析完了 | NAR 出血源 — 水沢88.8%/盛岡90.0%/門別90.4%/園田91.1%/笠松92.2% | venue別ベット倍率要検討 |
-| 🔄 進行中 | 2024-11月 三連複 payout 欠損 899件 backfill (JRA 71件済 / NAR 828件要netkeiba) | backfill実行中 |
-| 🔜 | NAR 三連複 netkeiba backfill (2024残50件 + 2026年5件) | backfill完了後 |
+| ✅ 5/22 完了 | ~~2024-11月 三連複 payout 欠損 899件 backfill~~ | **真因 = NAR 公式 scraper Table 2 取りこぼしバグ (3a38f87 修正済)。実 NAR (15場) の過去全期間 31,651 件は既に三連複完備 (再調査確認済)。新規 backfill 不要** |
+| 🆕 | ばんえい(帯広) 三連複 backfill 204件 | NAR 公式 `keiba.go.jp` に帯広は存在せず別経路 (オッズパーク等) が必要。優先度 LOW (5/13 commit 9dd6ed5 でパイプライン除外済) |
 
 ### P2 (インフラ — 完了済)
 
