@@ -169,35 +169,34 @@ export const StatsCard = memo(function StatsCard({
       </PremiumCardHeader>
 
       <div className="space-y-3">
-        {/* ◉◎単勝 */}
+        {/* ◉◎単勝 — 三連複と同形式 (予想R/的中R/的中率) に統一 (2026-05-22 マスター指示) */}
         <div>
           <div className="text-[11px] text-muted-foreground mb-1">◉◎単勝</div>
           <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1">
-            <span className="stat-mono text-lg">
-              <span className="text-positive">{win}</span>
-              <span className="text-muted-foreground text-sm">-</span>
-              {second}
-              <span className="text-muted-foreground text-sm">-</span>
-              {third}
-              <span className="text-muted-foreground text-sm">-</span>
-              <span className="text-muted-foreground">{out}</span>
+            <span className="tabular-nums text-sm">
+              予想 <span className="text-foreground font-bold">{total}R</span>
+              <span className="text-muted-foreground mx-1">/</span>
+              的中 <span className="text-positive font-bold">{win}R</span>
             </span>
             <span className="text-xs text-muted-foreground tabular-nums">
-              勝率{" "}
+              的中率{" "}
               <span className="stat-mono text-foreground">
                 {winRate.toFixed(1)}%
               </span>
             </span>
-            <span className="text-xs text-muted-foreground tabular-nums">
-              連対{" "}
-              <span className="stat-mono text-foreground">
-                {rentai.toFixed(1)}%
-              </span>
-            </span>
-            <span className="text-xs text-muted-foreground tabular-nums">
-              複勝{" "}
-              <span className="stat-mono text-foreground">
-                {fukusho.toFixed(1)}%
+            <span
+              className={`text-xs tabular-nums ${
+                tanRet - tanStake >= 0 ? "text-positive" : "text-negative"
+              }`}
+            >
+              収支{" "}
+              <span
+                className={
+                  tanRet - tanStake >= 0 ? "stat-mono-gold" : "stat-mono"
+                }
+              >
+                {tanRet - tanStake >= 0 ? "+" : ""}
+                {(tanRet - tanStake).toLocaleString()}円
               </span>
             </span>
             <span
@@ -212,6 +211,25 @@ export const StatsCard = memo(function StatsCard({
             </span>
             <span className="text-xs text-muted-foreground tabular-nums">
               {tanStake.toLocaleString()} → {tanRet.toLocaleString()}円
+            </span>
+          </div>
+
+          {/* 着順詳細 + 連対率/複勝率 を補足情報として下段に表示 */}
+          <div className="text-[11px] text-muted-foreground tabular-nums mt-1 flex flex-wrap gap-x-3">
+            <span>
+              着順 <span className="text-positive">{win}</span>
+              <span className="text-muted-foreground/70">-</span>
+              {second}
+              <span className="text-muted-foreground/70">-</span>
+              {third}
+              <span className="text-muted-foreground/70">-</span>
+              <span className="text-muted-foreground/70">{out}</span>
+            </span>
+            <span>
+              連対 <span className="text-foreground">{rentai.toFixed(1)}%</span>
+            </span>
+            <span>
+              複勝 <span className="text-foreground">{fukusho.toFixed(1)}%</span>
             </span>
           </div>
         </div>
