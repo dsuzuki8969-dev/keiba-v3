@@ -36,6 +36,29 @@ netkeiba 24h クールダウン中でも代替経路で全件完走:
 
 ---
 
+## 🟢 完了タスク (5/22)
+
+### 5/22 夜間メンテナンス ✅ (P1 バグ 5 件 + コード品質改善)
+- [x] P1-A: StatsCard `||` → `??` 統一 (偏差値 0 偽値トラップ)
+- [x] P1-B: `classifyHorsesByMark` himo を `[△★☆]` に修正 (partner ○▲ 重複解消)
+- [x] P1-C: `Phase4HybridFormation` totalStake を `meta.stake_total` 優先
+- [x] P1-D: `TicketsByMode._meta` 型定義拡充 → `as` キャスト除去
+- [x] P1-E: `_parse_vertical/horizontal_payouts` setdefault().extend() (上書きバグ修正)
+- [x] `||` → `??` 統一 60 箇所以上 (全 numeric フィールド偽値トラップ修正)
+- [x] RaceResultPanel `as any` 25 件 → 0 件 (RaceResultEntry 型拡充)
+- [x] RaceDetailView setTimeout リーク防止 (oddsMsgTimerRef + useEffect cleanup)
+- [x] HorseCardMobile rank 計算 useMemo 化
+- [x] TabGroup1Actions.tsx orphan 155 行削除
+- [x] ESLint 46 errors → 10 errors (36 修正)
+- [x] dashboard.py hmac.compare_digest 化 (タイミング攻撃防止)
+- [x] official_nar.py DB 接続 with 文化 + regex 改善
+- commits: `649f933` (P1), `e618866` (メンテナンス)
+- 詳細: `memory/handoff_2026-05-22_night.md`
+
+### 5/22 フロントエンド大規模クリーンアップ ✅
+- dead code -1,750行 + バンドル69%縮小 + デザイン統一 + ErrorBoundary
+- 詳細: `memory/handoff_2026-05-22.md`
+
 ## 🟢 完了タスク (5/21)
 
 ### 3頭バグ防御 + M' ダッシュボード改善 ✅ (5/21)
