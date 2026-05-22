@@ -558,6 +558,14 @@ function MPrimeFormation({
   const subPattern = meta?.sub_pattern;
   const confidence = meta?.confidence;
 
+  // ◉◎本命馬を抽出して「印通り単勝」を生成
+  // (2026-05-22 マスター指示: 印が出ている以上、印通り単勝も載せろ)
+  // M' 戦略は三連複のみ発行だが、UI で参考買い目として併記する。
+  const honmeiHorses = _horses.filter((h) => {
+    const sym = MARK_SYM[h.mark || ""] || h.mark || "";
+    return sym === "◉" || sym === "◎";
+  });
+
   return (
     <div className="space-y-3">
       {/* ヘッダーサマリー */}
@@ -637,6 +645,60 @@ function MPrimeFormation({
             <p className="text-sm text-muted-foreground italic">
               買い目データがありません。
             </p>
+          )}
+
+          {/* 印通り単勝 (参考) — M' 戦略は三連複のみ発行だが、◉◎本命の単勝も併記
+              2026-05-22 マスター指示「印通りに買わないんだろ？なんで載せない？」対応 */}
+          {honmeiHorses.length > 0 && (
+            <div className="mt-3 pt-3 border-t border-border/40">
+              <div className="flex items-center gap-2 mb-2">
+                <span className="px-2 py-0.5 bg-amber-500 text-white text-xs font-bold rounded">
+                  単勝（印通り・参考）
+                </span>
+                <span className="text-xs text-muted-foreground">
+                  ◉◎本命{honmeiHorses.length}頭・各100円想定
+                </span>
+              </div>
+              <div className="flex flex-wrap gap-x-6 gap-y-0.5">
+                {honmeiHorses.map((h) => {
+                  const sym = MARK_SYM[h.mark || ""] || h.mark || "";
+                  const oddsVal = typeof h.odds === "number" ? h.odds : 0;
+                  const winPct = typeof (h as { honmei_win_pct?: number }).honmei_win_pct === "number"
+                    ? (h as { honmei_win_pct?: number }).honmei_win_pct
+                    : (typeof (h as { win_pct?: number }).win_pct === "number"
+                      ? (h as { win_pct?: number }).win_pct
+                      : 0);
+                  // EV = 勝率 × オッズ × 100
+                  const ev = winPct && oddsVal ? winPct * oddsVal * 100 : 0;
+                  return (
+                    <div key={h.horse_no} className="flex flex-wrap items-center gap-2 text-sm py-0.5">
+                      <strong className="whitespace-nowrap">
+                        <span className={markCls(sym)}>{sym}</span>
+                        {circledNum(h.horse_no)}
+                        {h.horse_name && (
+                          <span className="ml-1 text-foreground/80 text-xs font-normal">
+                            {h.horse_name}
+                          </span>
+                        )}
+                      </strong>
+                      <span className="text-xs text-muted-foreground inline-flex flex-wrap items-baseline gap-x-2">
+                        {(winPct ?? 0) > 0 && (
+                          <span className="whitespace-nowrap">勝率: {((winPct ?? 0) * 100).toFixed(1)}%</span>
+                        )}
+                        {oddsVal > 0 && (
+                          <span className="whitespace-nowrap">Odds: {oddsVal.toFixed(1)}倍</span>
+                        )}
+                        {ev > 0 && (
+                          <span className={`whitespace-nowrap ${ev >= 100 ? "text-positive font-semibold" : ""}`}>
+                            EV: {ev.toFixed(1)}%
+                          </span>
+                        )}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
           )}
         </div>
       )}
