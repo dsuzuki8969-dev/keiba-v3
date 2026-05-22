@@ -1087,7 +1087,7 @@ function CourseBias({ venue, surface, distance }: { venue: string; surface?: str
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const gb: Record<string, any> = d.gate_bias || {};
   const styles = ["逃げ", "先行", "差し", "追込"] as const;
-  const getN = (v: any) => v?.total ?? v?.runs ?? 0;
+  const getN = (v: Record<string, number> | undefined) => v?.total ?? v?.runs ?? 0;
   const hasRS = styles.some(s => getN(rs[s]) > 0);
 
   // 枠バイアス: 1〜8枠個別

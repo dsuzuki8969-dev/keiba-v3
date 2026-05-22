@@ -40,13 +40,13 @@ const STYLE_SHORT: Record<string, string> = {
 
 /** 8 軸定義（表示順） */
 const INDEX_DEFS = [
-  { label: "総合", key: "comp",  getValue: (h: HorseData) => h.composite || 0 },
-  { label: "能力", key: "abi",   getValue: (h: HorseData) => h.ability_total || 0 },
-  { label: "展開", key: "pace",  getValue: (h: HorseData) => h.pace_total || 0 },
-  { label: "適性", key: "crs",   getValue: (h: HorseData) => h.course_total || 0 },
-  { label: "騎手", key: "jkd",   getValue: (h: HorseData) => h.jockey_dev || 50 },
-  { label: "調教師", key: "trd", getValue: (h: HorseData) => h.trainer_dev || 50 },
-  { label: "血統", key: "bld",   getValue: (h: HorseData) => h.bloodline_dev || 50 },
+  { label: "総合", key: "comp",  getValue: (h: HorseData) => h.composite ?? 0 },
+  { label: "能力", key: "abi",   getValue: (h: HorseData) => h.ability_total ?? 0 },
+  { label: "展開", key: "pace",  getValue: (h: HorseData) => h.pace_total ?? 0 },
+  { label: "適性", key: "crs",   getValue: (h: HorseData) => h.course_total ?? 0 },
+  { label: "騎手", key: "jkd",   getValue: (h: HorseData) => h.jockey_dev ?? 50 },
+  { label: "調教師", key: "trd", getValue: (h: HorseData) => h.trainer_dev ?? 50 },
+  { label: "血統", key: "bld",   getValue: (h: HorseData) => h.bloodline_dev ?? 50 },
   { label: "追切", key: "trn",   getValue: (h: HorseData) => h.training_dev ?? 0 },
 ];
 
@@ -99,7 +99,7 @@ function oddsCls(pop: number | null | undefined): string {
 
 /** EV 色 */
 function evColorCls(ev: number | undefined): string {
-  if (!ev) return "text-muted-foreground";
+  if (ev == null) return "text-muted-foreground";
   if (ev >= 1.20) return "text-emerald-600 font-bold";
   if (ev >= 1.00) return "text-blue-600 font-bold";
   if (ev >= 0.80) return "text-foreground";
@@ -352,9 +352,9 @@ const HorseCard = memo(function HorseCard({
     ? ""
     : (h.popularity != null ? h.popularity + "人気" : h.predicted_rank != null ? h.predicted_rank + "位*" : "—");
   const ev = h.ev;
-  const wp = ((h.win_prob || 0) * 100);
-  const p2 = ((h.place2_prob || 0) * 100);
-  const p3 = ((h.place3_prob || 0) * 100);
+  const wp = ((h.win_prob ?? 0) * 100);
+  const p2 = ((h.place2_prob ?? 0) * 100);
+  const p3 = ((h.place3_prob ?? 0) * 100);
   const summary = generateHorseSummary(h);
 
   // 行アクセント（印別）
@@ -556,9 +556,9 @@ export function HorseCardPC({ horses, raceId, isBanei, dMarks, setDMarks }: Prop
     return result;
   }, [horses]);
 
-  const wpRanks = useMemo(() => calcRanks(horses, (h) => h.win_prob || 0), [horses]);
-  const p2Ranks = useMemo(() => calcRanks(horses, (h) => h.place2_prob || 0), [horses]);
-  const p3Ranks = useMemo(() => calcRanks(horses, (h) => h.place3_prob || 0), [horses]);
+  const wpRanks = useMemo(() => calcRanks(horses, (h) => h.win_prob ?? 0), [horses]);
+  const p2Ranks = useMemo(() => calcRanks(horses, (h) => h.place2_prob ?? 0), [horses]);
+  const p3Ranks = useMemo(() => calcRanks(horses, (h) => h.place3_prob ?? 0), [horses]);
 
   // レース全体でオッズが1頭でもあるか（全馬nullならオッズ未取得＝取消判定しない）
   const hasAnyOdds = useMemo(

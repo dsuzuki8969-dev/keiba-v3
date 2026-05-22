@@ -98,7 +98,7 @@ export const StatsCard = memo(function StatsCard({
   const sRoi = sanrentan.roi_pct ?? 0;
   const sHitRate = sanrentan.hit_rate_pct ?? 0;
   const sBalance = sanrentan.balance ?? (sRet - sStake);
-  const lastUpdated = (d as { last_updated?: string }).last_updated || "";
+  const lastUpdated = (d as { last_updated?: string }).last_updated ?? "";
   const resultsPending = (d as { results_pending?: boolean }).results_pending;
 
   // T-001 (2026-04-25): 3 段表記用メタ情報。reviewer HIGH 対応で typeof ガード追加

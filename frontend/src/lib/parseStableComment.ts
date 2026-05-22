@@ -60,7 +60,7 @@ export function parseStableComment(raw: string): StableBullet[] {
   let sentences = cleaned
     .split(/[。．\n]/)
     .map((s) => s.trim())
-    // 半角・全角スペース、冒頭の「。」「．」「　」を除去
+    // 半角・全角スペース、冒頭の「。」「．」を除去
     .map((s) => s.replace(/^[。．\s　]+/, "").trim())
     .filter((s) => s.length >= 5);
 

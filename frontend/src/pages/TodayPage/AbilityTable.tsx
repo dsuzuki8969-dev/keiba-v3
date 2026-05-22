@@ -24,13 +24,13 @@ interface IndexDef {
 }
 
 const INDEX_DEFS: IndexDef[] = [
-  { label: "総合", key: "composite", getValue: (h) => h.composite || 0 },
-  { label: "能力", key: "ability", getValue: (h) => h.ability_total || 0 },
-  { label: "展開", key: "pace", getValue: (h) => h.pace_total || 0 },
-  { label: "適性", key: "course", getValue: (h) => h.course_total || 0 },
-  { label: "騎手", key: "jockey", getValue: (h) => h.jockey_dev || gradeToApproxDev(h.jockey_grade) },
-  { label: "調教師", key: "trainer", getValue: (h) => h.trainer_dev || gradeToApproxDev(h.trainer_grade) },
-  { label: "血統", key: "bloodline", getValue: (h) => h.bloodline_dev || gradeToApproxDev(h.sire_grade) },
+  { label: "総合", key: "composite", getValue: (h) => h.composite ?? 0 },
+  { label: "能力", key: "ability", getValue: (h) => h.ability_total ?? 0 },
+  { label: "展開", key: "pace", getValue: (h) => h.pace_total ?? 0 },
+  { label: "適性", key: "course", getValue: (h) => h.course_total ?? 0 },
+  { label: "騎手", key: "jockey", getValue: (h) => h.jockey_dev ?? gradeToApproxDev(h.jockey_grade) },
+  { label: "調教師", key: "trainer", getValue: (h) => h.trainer_dev ?? gradeToApproxDev(h.trainer_grade) },
+  { label: "血統", key: "bloodline", getValue: (h) => h.bloodline_dev ?? gradeToApproxDev(h.sire_grade) },
   { label: "追切", key: "training", getValue: (h) => h.training_dev ?? 50 },
 ];
 
@@ -69,7 +69,7 @@ export const AbilityTable = memo(function AbilityTable({ horses, isBanei }: Prop
   const heatmapEntries: AbilityEntry[] = useMemo(
     () =>
       [...horses]
-        .sort((a, b) => (b.composite || 0) - (a.composite || 0))
+        .sort((a, b) => (b.composite ?? 0) - (a.composite ?? 0))
         .slice(0, 5)
         .map((h) => ({
           horse_no: h.horse_no,
@@ -106,11 +106,11 @@ export const AbilityTable = memo(function AbilityTable({ horses, isBanei }: Prop
   const sorted = [...horses].sort((a, b) => {
     let va: number, vb: number;
     if (sortKey === "gate_no") {
-      va = a.gate_no || 0;
-      vb = b.gate_no || 0;
+      va = a.gate_no ?? 0;
+      vb = b.gate_no ?? 0;
     } else if (sortKey === "horse_no") {
-      va = a.horse_no || 0;
-      vb = b.horse_no || 0;
+      va = a.horse_no ?? 0;
+      vb = b.horse_no ?? 0;
     } else if (sortKey === "odds") {
       va = a.odds ?? a.predicted_tansho_odds ?? 9999;
       vb = b.odds ?? b.predicted_tansho_odds ?? 9999;
@@ -212,7 +212,7 @@ export const AbilityTable = memo(function AbilityTable({ horses, isBanei }: Prop
                 {defs.map((d) => {
                   const val = d.getValue(h);
                   const grade = devGrade(val);
-                  const rank = allRanks[d.key]?.[h.horse_no] || 0;
+                  const rank = allRanks[d.key]?.[h.horse_no] ?? 0;
                   return (
                     <td key={d.key} className="py-1.5 px-1 text-center whitespace-nowrap">
                       <span className={`${gradeCls(grade)} text-sm`}>{grade}</span>

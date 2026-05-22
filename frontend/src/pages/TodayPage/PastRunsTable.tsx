@@ -8,16 +8,16 @@
 import { devGrade, gradeCls, posCls, pastRunResultUrl } from "@/lib/constants";
 import type { PastRunData } from "./RaceDetailView";
 
-/** タイム表示 */
-export function fmtTime(sec: number | null | undefined): string {
+/** タイム表示 (このファイル内でのみ使用) */
+function fmtTime(sec: number | null | undefined): string {
   if (sec == null || sec <= 0) return "—";
   const m = Math.floor(sec / 60);
   const s = sec - m * 60;
   return m > 0 ? `${m}:${s.toFixed(1).padStart(4, "0")}` : s.toFixed(1);
 }
 
-/** 馬場状態カラー */
-export function condCls(cond: string | undefined): string {
+/** 馬場状態カラー (このファイル内でのみ使用) */
+function condCls(cond: string | undefined): string {
   if (cond === "重" || cond === "不良") return "text-blue-600";
   return "";
 }

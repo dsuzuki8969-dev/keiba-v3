@@ -38,6 +38,13 @@ export function RaceDetailView({
   const queryClient = useQueryClient();
   const [oddsFetching, setOddsFetching] = useState(false);
   const [oddsMsg, setOddsMsg] = useState("");
+  // setTimeout リーク防止: アンマウント時にクリア
+  const oddsMsgTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    return () => {
+      if (oddsMsgTimerRef.current !== null) clearTimeout(oddsMsgTimerRef.current);
+    };
+  }, []);
 
   // T-Z-INDEX 修正: この sticky bar の実高さを CSS 変数 --race-detail-bar-h に publish。
   // TabGroup3Horse がその下に重ならず張り付けるよう参照される。
@@ -127,7 +134,7 @@ export function RaceDetailView({
       const r = res as unknown as Record<string, unknown>;
       if (!r.ok) {
         setOddsMsg(r.error as string || "オッズ未発売");
-        setTimeout(() => setOddsMsg(""), 4000);
+        oddsMsgTimerRef.current = setTimeout(() => setOddsMsg(""), 4000);
         return;
       }
       await queryClient.invalidateQueries({ queryKey: ["racePrediction", date, venue, raceNo] });
@@ -141,10 +148,10 @@ export function RaceDetailView({
       } else {
         setOddsMsg("取得完了（オッズ・確率・印を更新）");
       }
-      setTimeout(() => setOddsMsg(""), 4000);
+      oddsMsgTimerRef.current = setTimeout(() => setOddsMsg(""), 4000);
     } catch {
       setOddsMsg("取得失敗");
-      setTimeout(() => setOddsMsg(""), 3000);
+      oddsMsgTimerRef.current = setTimeout(() => setOddsMsg(""), 3000);
     } finally {
       setOddsFetching(false);
     }

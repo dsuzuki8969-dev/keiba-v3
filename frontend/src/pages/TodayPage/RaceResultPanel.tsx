@@ -50,16 +50,17 @@ export function RaceResultPanel({ date, raceId }: Props) {
   const { data, isLoading, error } = useRaceResult(date, raceId);
 
   // hooks は条件分岐より前に全て呼ぶ必要がある（React error #310 対策）
-  const order = data?.order || [];
-  const payouts = data?.payouts || {};
+  // useMemo で参照安定化 (|| [] は毎 render 新配列を生成するため deps が毎回変わる)
+  const order = useMemo(() => data?.order ?? [], [data?.order]);
+  const payouts = useMemo(() => data?.payouts ?? {}, [data?.payouts]);
 
   // 順位色分け用: 総合指数（高い順） / 後3F（低い順）
   const compositeRanks = useMemo(
-    () => computeRanks(order.map((o) => (o as any).composite ?? null), false),
+    () => computeRanks(order.map((o) => o.composite ?? null), false),
     [order],
   );
   const last3fRanks = useMemo(
-    () => computeRanks(order.map((o) => (o as any).last_3f ?? null), true),
+    () => computeRanks(order.map((o) => o.last_3f ?? null), true),
     [order],
   );
 
@@ -77,16 +78,15 @@ export function RaceResultPanel({ date, raceId }: Props) {
   }
 
   // 通過順カラムを表示するか（少なくとも1馬で通過順がある場合のみ）
-  const hasCorners = order.some((o) => Array.isArray((o as any).corners) && (o as any).corners.length > 0);
-  const hasLast3F = order.some((o) => (o as any).last_3f != null);
+  const hasCorners = order.some((o) => Array.isArray(o.corners) && o.corners.length > 0);
+  const hasLast3F = order.some((o) => o.last_3f != null);
 
   // 結果データの完全性チェック
   // バック API (`/api/results/race`) のフィールド名:
   //   time_sec (秒数), win_odds (単勝オッズ), popularity (人気)
-  // 旧フロント実装は time/odds を期待しており不一致だった (2026-04-28 修正)
-  const hasAnyTime = order.some((o) => (o as any).time_sec != null);
-  const hasAnyPopularity = order.some((o) => (o as any).popularity != null);
-  const hasAnyOdds = order.some((o) => (o as any).win_odds != null);
+  const hasAnyTime = order.some((o) => o.time_sec != null);
+  const hasAnyPopularity = order.some((o) => o.popularity != null);
+  const hasAnyOdds = order.some((o) => o.win_odds != null);
   const hasAnyPayouts = Object.keys(payouts).length > 0;
   // 全部欠落 → 着順のみ（試合直後で詳細未反映）
   const isFullyPartial = !hasAnyTime && !hasAnyPopularity && !hasAnyOdds && !hasAnyPayouts;
@@ -107,7 +107,7 @@ export function RaceResultPanel({ date, raceId }: Props) {
         </div>
       )}
       {/* スクレイパーバグで壊れた古いデータ（HTMLキャッシュ無し）：結果データ再取得待ち */}
-      {(data as { data_incomplete?: boolean } | undefined)?.data_incomplete && (
+      {data?.data_incomplete && (
         <div className="rounded border-2 border-orange-400/80 bg-orange-50 dark:bg-orange-900/20 px-3 py-2 text-sm text-orange-800 dark:text-orange-200 font-semibold">
           🔧 結果データ再取得待ち — このレースはスクレイパーのバグで人気・オッズが壊れています。単勝オッズは1位馬のみ払戻金から逆算表示、他馬は「—」です。再取得バッチで修復予定。
         </div>
@@ -165,16 +165,16 @@ export function RaceResultPanel({ date, raceId }: Props) {
               {order.map((o: RaceResultEntry, i: number) => {
                 const markSym = o.mark ? (MARK_SYMBOL[o.mark] || o.mark) : "";
                 const mCls = markSym ? markCls(markSym) : "";
-                const corners = (o as any).corners as number[] | undefined;
-                const last3f = (o as any).last_3f as number | null | undefined;
+                const corners = o.corners;
+                const last3f = o.last_3f;
                 // バック API は time_sec (秒数) で返すため formatTime で "m:ss.f" に変換
-                const timeSec = (o as any).time_sec as number | null | undefined;
+                const timeSec = o.time_sec;
                 // time_sec が null の場合、文字列 time ("1:09.1") をフォールバック表示
-                const timeStr = (o as any).time as string | null | undefined;
-                const margin = (o as any).margin as string | null | undefined;
-                const popularity = (o as any).popularity as number | null | undefined;
+                const timeStr = o.time;
+                const margin = o.margin;
+                const popularity = o.popularity;
                 // バック API は odds で返す (race_log の win_odds も odds に統合済み)
-                const winOdds = ((o as any).odds ?? (o as any).win_odds) as number | null | undefined;
+                const winOdds = o.odds ?? o.win_odds;
                 const compRank = compositeRanks[i];
                 const l3fRank = last3fRanks[i];
                 return (
@@ -240,18 +240,18 @@ export function RaceResultPanel({ date, raceId }: Props) {
         </PremiumCardHeader>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
           {/* 単勝・複勝 */}
-          <PayoutCard title="単勝" data={(payouts as any).tansho ?? payouts["単勝"]} />
-          <PayoutCard title="複勝" data={(payouts as any).fukusho ?? payouts["複勝"]} />
+          <PayoutCard title="単勝" data={payouts["tansho"] ?? payouts["単勝"]} />
+          <PayoutCard title="複勝" data={payouts["fukusho"] ?? payouts["複勝"]} />
           {/* 枠連・馬連 */}
-          <PayoutCard title="枠連" data={(payouts as any).wakuren ?? payouts["枠連"]} />
-          <PayoutCard title="馬連" data={(payouts as any).umaren ?? payouts["馬連"]} />
+          <PayoutCard title="枠連" data={payouts["wakuren"] ?? payouts["枠連"]} />
+          <PayoutCard title="馬連" data={payouts["umaren"] ?? payouts["馬連"]} />
           {/* ワイド */}
-          <PayoutCard title="ワイド" data={(payouts as any).wide ?? payouts["ワイド"]} />
+          <PayoutCard title="ワイド" data={payouts["wide"] ?? payouts["ワイド"]} />
           {/* 馬単 */}
-          <PayoutCard title="馬単" data={(payouts as any).umatan ?? payouts["馬単"]} />
+          <PayoutCard title="馬単" data={payouts["umatan"] ?? payouts["馬単"]} />
           {/* 三連複・三連単 */}
-          <PayoutCard title="三連複" data={(payouts as any).sanrenpuku ?? payouts["三連複"]} />
-          <PayoutCard title="三連単" data={(payouts as any).sanrentan ?? payouts["三連単"]} />
+          <PayoutCard title="三連複" data={payouts["sanrenpuku"] ?? payouts["三連複"]} />
+          <PayoutCard title="三連単" data={payouts["sanrentan"] ?? payouts["三連単"]} />
         </div>
       </PremiumCard>
     </div>

@@ -84,13 +84,13 @@ interface IndexDef {
   getValue: (h: HorseData) => number;
 }
 const INDEX_DEFS: IndexDef[] = [
-  { label: "総合", key: "composite", getValue: (h) => h.composite || 0 },
-  { label: "能力", key: "ability", getValue: (h) => h.ability_total || 0 },
-  { label: "展開", key: "pace", getValue: (h) => h.pace_total || 0 },
-  { label: "適性", key: "course", getValue: (h) => h.course_total || 0 },
-  { label: "騎手", key: "jockey", getValue: (h) => h.jockey_dev || gradeToApproxDev(h.jockey_grade) },
-  { label: "調教師", key: "trainer", getValue: (h) => h.trainer_dev || gradeToApproxDev(h.trainer_grade) },
-  { label: "血統", key: "bloodline", getValue: (h) => h.bloodline_dev || gradeToApproxDev(h.sire_grade) },
+  { label: "総合", key: "composite", getValue: (h) => h.composite ?? 0 },
+  { label: "能力", key: "ability", getValue: (h) => h.ability_total ?? 0 },
+  { label: "展開", key: "pace", getValue: (h) => h.pace_total ?? 0 },
+  { label: "適性", key: "course", getValue: (h) => h.course_total ?? 0 },
+  { label: "騎手", key: "jockey", getValue: (h) => h.jockey_dev ?? gradeToApproxDev(h.jockey_grade) },
+  { label: "調教師", key: "trainer", getValue: (h) => h.trainer_dev ?? gradeToApproxDev(h.trainer_grade) },
+  { label: "血統", key: "bloodline", getValue: (h) => h.bloodline_dev ?? gradeToApproxDev(h.sire_grade) },
   { label: "追切", key: "training", getValue: (h) => h.training_dev ?? 50 },
 ];
 
@@ -385,12 +385,8 @@ function PastRunsTable({ runs }: { runs: PastRunData[] }) {
   );
 }
 
-// 調教強度ラベルの色（中立化: 主観を避け一律の見た目で表示）
-// 「一杯に追う」「強めに追う」等の強度判定は本来それ自体で評価すべき事象ではないため、
-// 追い方ラベルでの色塗りは撤廃。時計（スプリット秒数）の絶対値でのみ好悪を表現する。
-function getIntensityCls(_label: string): string {
-  return "text-foreground";
-}
+// 調教強度ラベルの色: 中立化（追い方での色塗り撤廃。時計の絶対値でのみ好悪を表現）
+const INTENSITY_CLS = "text-foreground";
 
 // 時計の優秀さ判定
 // 「素晴らしい時計」= 緑太字 / 「惜しい時計（+0.5秒以内）」= 青太字
@@ -478,7 +474,7 @@ export function TrainingSection({ records }: { records: TrainingRecord[] }) {
           const trackCond = rec.track_condition || "";
           const rider = rec.rider || "";
           const splitEntries = getSplitEntries(rec.splits);
-          const intensityCls = getIntensityCls(rec.intensity_label);
+          const intensityCls = INTENSITY_CLS;
           // 強度ラベル: "通常" は非表示
           const intensityText = rec.intensity_label === "通常" ? "" : rec.intensity_label;
           // 2件目以降のコメントは併せ馬情報（レコード直下に表示）

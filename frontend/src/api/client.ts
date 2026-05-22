@@ -25,8 +25,8 @@ export const api = {
 
   // ホーム
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- API レスポンス型未定義 (将来的に型定義追加予定)
   homeInfo: (date: string) => get<Record<string, any>>(`/api/home_info?date=${date}`),
-  // 本日のリアルタイム成績
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   homeTodayStats: (date: string) => get<Record<string, any>>(`/api/home/today_stats?date=${date}`),
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -450,8 +450,10 @@ export interface RaceResultEntry {
   gate_no?: number;
   // race_log 補完項目（レース結果画面表示用）
   time?: string;
+  time_sec?: number | null;
   margin?: string;
   popularity?: number | null;
+  win_odds?: number | null;
   last_3f?: number | null;
   corners?: number[];
   composite?: number;

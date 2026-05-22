@@ -34,13 +34,13 @@ const MARK_SYMBOL: Record<string, string> = {
 
 // 8 軸定義（PC と統一）
 const INDEX_DEFS = [
-  { label: "総合", key: "comp",  getValue: (h: HorseData) => h.composite || 0 },
-  { label: "能力", key: "abi",   getValue: (h: HorseData) => h.ability_total || 0 },
-  { label: "展開", key: "pace",  getValue: (h: HorseData) => h.pace_total || 0 },
-  { label: "適性", key: "crs",   getValue: (h: HorseData) => h.course_total || 0 },
-  { label: "騎手", key: "jkd",   getValue: (h: HorseData) => h.jockey_dev || 50 },
-  { label: "調教師", key: "trd", getValue: (h: HorseData) => h.trainer_dev || 50 },
-  { label: "血統", key: "bld",   getValue: (h: HorseData) => h.bloodline_dev || 50 },
+  { label: "総合", key: "comp",  getValue: (h: HorseData) => h.composite ?? 0 },
+  { label: "能力", key: "abi",   getValue: (h: HorseData) => h.ability_total ?? 0 },
+  { label: "展開", key: "pace",  getValue: (h: HorseData) => h.pace_total ?? 0 },
+  { label: "適性", key: "crs",   getValue: (h: HorseData) => h.course_total ?? 0 },
+  { label: "騎手", key: "jkd",   getValue: (h: HorseData) => h.jockey_dev ?? 50 },
+  { label: "調教師", key: "trd", getValue: (h: HorseData) => h.trainer_dev ?? 50 },
+  { label: "血統", key: "bld",   getValue: (h: HorseData) => h.bloodline_dev ?? 50 },
   { label: "追切", key: "trn",   getValue: (h: HorseData) => h.training_dev ?? 0 },
 ];
 
@@ -356,14 +356,17 @@ function CardDetail({ h }: { h: HorseData }) {
 export const HorseCardMobile = memo(function HorseCardMobile({ horses, isBanei, dMarks, onDMarkSelect }: Props) {
   const [openNo, setOpenNo] = useState<number | null>(null);
 
-  // 8軸の順位を全頭で事前計算
-  const idxRanks: Record<string, Record<number, number>> = {};
-  for (const def of INDEX_DEFS) {
-    idxRanks[def.key] = calcRanks(horses, def.getValue);
-  }
-  const wpRanks = calcRanks(horses, (h) => h.win_prob || 0);
-  const p2Ranks = calcRanks(horses, (h) => h.place2_prob || 0);
-  const p3Ranks = calcRanks(horses, (h) => h.place3_prob || 0);
+  // 8軸の順位を全頭で事前計算 (useMemo でメモ化 — horses 不変ならキャッシュ)
+  const idxRanks = useMemo(() => {
+    const ranks: Record<string, Record<number, number>> = {};
+    for (const def of INDEX_DEFS) {
+      ranks[def.key] = calcRanks(horses, def.getValue);
+    }
+    return ranks;
+  }, [horses]);
+  const wpRanks = useMemo(() => calcRanks(horses, (h) => h.win_prob ?? 0), [horses]);
+  const p2Ranks = useMemo(() => calcRanks(horses, (h) => h.place2_prob ?? 0), [horses]);
+  const p3Ranks = useMemo(() => calcRanks(horses, (h) => h.place3_prob ?? 0), [horses]);
 
   // Plan-γ Phase 5: 絶対指数/相対指��� 切替トグル（グローバルモード・PC版と共有）
   const { mode, toggle } = useAbilityDisplayMode();

@@ -237,7 +237,7 @@ function SanrentanFormationView({
             {patternA.map((t, i) => (
               <div key={`A-${i}`} className="flex flex-wrap items-center gap-2 text-sm py-0.5">
                 <ComboDisplay ticket={t} noToMark={noToMark} />
-                <FmtStats prob={t.prob || 0} odds={t.odds || 0} ev={t.ev || 0} oddsSource={t.odds_source} />
+                <FmtStats prob={t.prob ?? 0} odds={t.odds ?? 0} ev={t.ev ?? 0} oddsSource={t.odds_source} />
               </div>
             ))}
           </div>
@@ -257,7 +257,7 @@ function SanrentanFormationView({
             {patternB.map((t, i) => (
               <div key={`B-${i}`} className="flex flex-wrap items-center gap-2 text-sm py-0.5">
                 <ComboDisplay ticket={t} noToMark={noToMark} />
-                <FmtStats prob={t.prob || 0} odds={t.odds || 0} ev={t.ev || 0} oddsSource={t.odds_source} />
+                <FmtStats prob={t.prob ?? 0} odds={t.odds ?? 0} ev={t.ev ?? 0} oddsSource={t.odds_source} />
               </div>
             ))}
           </div>
@@ -271,7 +271,7 @@ function SanrentanFormationView({
             {otherTickets.map((t, i) => (
               <div key={`X-${i}`} className="flex flex-wrap items-center gap-2 text-sm py-0.5">
                 <ComboDisplay ticket={t} noToMark={noToMark} />
-                <FmtStats prob={t.prob || 0} odds={t.odds || 0} ev={t.ev || 0} oddsSource={t.odds_source} />
+                <FmtStats prob={t.prob ?? 0} odds={t.odds ?? 0} ev={t.ev ?? 0} oddsSource={t.odds_source} />
               </div>
             ))}
           </div>
@@ -436,9 +436,9 @@ function Phase4HybridFormation({
               <div key={`SR-${i}`} className="flex flex-wrap items-center gap-2 text-sm py-0.5">
                 <ComboDisplay ticket={t} noToMark={noToMark} />
                 <FmtStats
-                  prob={t.prob || 0}
-                  odds={t.odds || 0}
-                  ev={t.ev || 0}
+                  prob={t.prob ?? 0}
+                  odds={t.odds ?? 0}
+                  ev={t.ev ?? 0}
                   oddsSource={t.odds_source}
                 />
               </div>
@@ -640,9 +640,9 @@ function MPrimeFormation({
                     <ComboDisplay ticket={t} noToMark={noToMark} />
                   )}
                   <FmtStats
-                    prob={t.prob || 0}
-                    odds={t.odds || 0}
-                    ev={t.ev || 0}
+                    prob={t.prob ?? 0}
+                    odds={t.odds ?? 0}
+                    ev={t.ev ?? 0}
                     oddsSource={t.odds_source}
                   />
                 </div>
@@ -898,9 +898,9 @@ export function TicketSection({ race }: Props) {
                     >
                       <ComboDisplay ticket={t} noToMark={noToMark} />
                       <FmtStats
-                        prob={t.prob || 0}
-                        odds={t.odds || 0}
-                        ev={t.ev || 0}
+                        prob={t.prob ?? 0}
+                        odds={t.odds ?? 0}
+                        ev={t.ev ?? 0}
                         oddsSource={t.odds_source}
                       />
                     </div>
@@ -926,9 +926,9 @@ export function TicketSection({ race }: Props) {
                     >
                       <ComboDisplay ticket={t} noToMark={noToMark} />
                       <FmtStats
-                        prob={t.prob || 0}
-                        odds={t.odds || 0}
-                        ev={t.ev || 0}
+                        prob={t.prob ?? 0}
+                        odds={t.odds ?? 0}
+                        ev={t.ev ?? 0}
                         oddsSource={t.odds_source}
                       />
                     </div>
@@ -972,9 +972,9 @@ export function TicketSection({ race }: Props) {
                 >
                   <ComboDisplay ticket={t} noToMark={noToMark} />
                   <FmtStats
-                    prob={t.prob || 0}
-                    odds={t.odds || 0}
-                    ev={t.ev || 0}
+                    prob={t.prob ?? 0}
+                    odds={t.odds ?? 0}
+                    ev={t.ev ?? 0}
                     oddsSource={t.odds_source}
                   />
                 </div>

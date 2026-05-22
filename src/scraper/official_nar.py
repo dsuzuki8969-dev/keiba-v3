@@ -314,16 +314,16 @@ class OfficialNARScraper:
                 date_key = race_date.replace("/", "")
                 rid = f"{date_key[:4]}{netkeiba_vc}{date_key[4:8]}{race_no:02d}"
 
-            conn = sqlite3.connect(DATABASE_PATH)
-            conn.row_factory = sqlite3.Row
-            c = conn.cursor()
-            c.execute("""
-                SELECT * FROM race_log
-                WHERE race_id = ?
-                ORDER BY horse_no
-            """, (rid,))
-            rows = c.fetchall()
-            conn.close()
+            # with 文で DB 接続を保護 (例外時のリーク防止)
+            with sqlite3.connect(DATABASE_PATH) as conn:
+                conn.row_factory = sqlite3.Row
+                c = conn.cursor()
+                c.execute("""
+                    SELECT * FROM race_log
+                    WHERE race_id = ?
+                    ORDER BY horse_no
+                """, (rid,))
+                rows = c.fetchall()
 
             if not rows or len(rows) < 5:
                 return None, []
@@ -2098,8 +2098,8 @@ class OfficialNARScraper:
                 # 続き行: cells=[馬番, 払戻, 人気] (券種名なし・複勝/ワイドの 2-3 着)
                 # 馬番形式チェック: 数字またはハイフン区切り (サブヘッダ行との誤判定防止)
                 entry_combo = cells[0].get_text(strip=True)
-                if not re.match(r"^\d[\d\-]*$", entry_combo):
-                    current_bet_key = None
+                if not re.match(r"^\d+(-\d+)*$", entry_combo):
+                    # 馬番形式でなければこの行をスキップ (次の行でリトライ可能にするためリセットしない)
                     continue
                 bet_key = current_bet_key
                 entry_payout_text = cells[1].get_text(strip=True)

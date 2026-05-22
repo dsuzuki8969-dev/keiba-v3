@@ -2,6 +2,7 @@
 統合ダッシュボード - ポートフォリオ・データ収集・レース分析を1つのWeb UIに
 """
 
+import hmac
 import json
 import os
 import re
@@ -1099,7 +1100,11 @@ def _check_auth(req) -> bool:
     auth = req.authorization
     if not auth:
         return False
-    return auth.username == AUTH_USERNAME and auth.password == AUTH_PASSWORD
+    # タイミング攻撃防止: hmac.compare_digest で定数時間比較
+    return (
+        hmac.compare_digest(auth.username or "", AUTH_USERNAME)
+        and hmac.compare_digest(auth.password or "", AUTH_PASSWORD)
+    )
 
 
 def _auth_required():

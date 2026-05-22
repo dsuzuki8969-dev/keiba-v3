@@ -19,5 +19,15 @@ export default defineConfig([
       ecmaVersion: 2020,
       globals: globals.browser,
     },
+    rules: {
+      // 日本語テキスト内の全角スペース (U+3000) は意図的に使用
+      'no-irregular-whitespace': ['error', {
+        skipStrings: true,
+        skipRegExps: true,
+        skipComments: true,
+        skipTemplates: true,
+        skipJSXText: true,
+      }],
+    },
   },
 ])
