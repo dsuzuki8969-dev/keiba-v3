@@ -432,6 +432,11 @@ export interface HorseData {
   race_relative_dev?: number;
   // Plan-γ Phase 3: ハイブリッド合算指数 = ability_total*(1-β) + race_relative_dev*β
   hybrid_total?: number;
+  // 勝負気配スコア（5/21 d6e3389: 単勝 TOP2 選出用、騎手強化/厩舎好調/格上げ等のシグナル）
+  shobu_score?: number;
+  // 取消・出走停止フラグ
+  is_scratched?: boolean;
+  is_tokusen_kiken?: boolean;
   [key: string]: unknown;
 }
 
@@ -488,6 +493,7 @@ export interface TicketData {
   is_reference?: boolean;       // 参考ヒモフラグ（買わない時）
   skip_reason?: string;         // low_ev / low_recovery / torigami / confidence_kelly_zero
   pattern?: string;             // T-050 三連複パターン識別（中/広/絞り）
+  shobu_score?: number;         // 勝負気配スコア（単勝 TOP2 選出用、5/21 d6e3389）
 }
 
 /** 買う/買わない判定 (Phase 1-b) */
@@ -514,5 +520,16 @@ export interface TicketsByMode {
     // T-050 内訳カウント
     sanrenpuku_count?: number;
     tansho_count?: number;
+    // M' 戦略用フィールド
+    sub_pattern?: string;
+    ticket_count?: number;
+    stake_total?: number;
+    confidence?: string;
+    // 三連単フォーメーション構造
+    formation_sanrentan?: {
+      rank1?: Array<{ horse_no: number; mark: string }>;
+      rank2?: Array<{ horse_no: number; mark: string }>;
+      rank3?: Array<{ horse_no: number; mark: string }>;
+    };
   };
 }

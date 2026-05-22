@@ -302,8 +302,8 @@ function TanshoRow({
         {(ticket.odds ?? 0) > 0 && (
           <span className="whitespace-nowrap">Odds: {(ticket.odds!).toFixed(1)}倍</span>
         )}
-        {(ticket as any).shobu_score != null && (ticket as any).shobu_score > 0 && (
-          <span className="whitespace-nowrap text-orange-600 dark:text-orange-400">勝負気配: {(ticket as any).shobu_score}</span>
+        {ticket.shobu_score != null && ticket.shobu_score > 0 && (
+          <span className="whitespace-nowrap text-orange-600 dark:text-orange-400">勝負気配: {ticket.shobu_score.toFixed(1)}</span>
         )}
       </span>
     </div>
@@ -324,9 +324,10 @@ function classifyHorsesByMark(horses: HorseData[]) {
     const m = normMark(h);
     return m === "○" || m === "▲";
   });
+  // partner (○▲) と重複しないようヒモは △★☆ のみ
   const himo = horses.filter((h) => {
     const m = normMark(h);
-    return ["○", "▲", "△", "★", "☆"].includes(m);
+    return ["△", "★", "☆"].includes(m);
   });
   return { axis, partner, himo };
 }
@@ -387,13 +388,15 @@ function Phase4HybridFormation({
     format?: string;
     sanrenpuku_count?: number;
     tansho_count?: number;
+    stake_total?: number;
   };
 }) {
   // 券種別グループ分け
   const sanrenpuku = tickets.filter((t) => t.type === "三連複");
   const tansho = tickets.filter((t) => t.type === "単勝");
   const totalPoints = sanrenpuku.length + tansho.length;
-  const totalStake = totalPoints * 100;
+  // meta に stake_total があればそれを使い、なければ全点×100円フォールバック
+  const totalStake = meta?.stake_total ?? totalPoints * 100;
 
   return (
     <div className="space-y-3">
@@ -565,18 +568,11 @@ function MPrimeFormation({
   const tanshoTop2 = _horses
     .filter((h) => {
       // 取消・出走停止馬は除外
-      const scratched = (h as { is_scratched?: boolean }).is_scratched === true;
-      const kiken = (h as { is_tokusen_kiken?: boolean }).is_tokusen_kiken === true;
-      return !scratched && !kiken;
+      return h.is_scratched !== true && h.is_tokusen_kiken !== true;
     })
-    .slice()
-    .sort((a, b) => {
-      const sa = (a as { shobu_score?: number }).shobu_score ?? 0;
-      const sb = (b as { shobu_score?: number }).shobu_score ?? 0;
-      return sb - sa;
-    })
-    .slice(0, 2)
-    .filter((h) => ((h as { shobu_score?: number }).shobu_score ?? 0) > 0);
+    .filter((h) => (h.shobu_score ?? 0) > 0)
+    .sort((a, b) => (b.shobu_score ?? 0) - (a.shobu_score ?? 0))
+    .slice(0, 2);
 
   return (
     <div className="space-y-3">
@@ -678,7 +674,7 @@ function MPrimeFormation({
                 {tanshoTop2.map((h) => {
                   const sym = MARK_SYM[h.mark || ""] || h.mark || "";
                   const oddsVal = typeof h.odds === "number" ? h.odds : 0;
-                  const shobu = (h as { shobu_score?: number }).shobu_score ?? 0;
+                  const shobu = h.shobu_score ?? 0;
                   return (
                     <div key={h.horse_no} className="flex flex-wrap items-center gap-2 text-sm py-0.5">
                       <strong className="whitespace-nowrap">
@@ -773,25 +769,8 @@ export function TicketSection({ race }: Props) {
   // 後方互換: 旧 3モードキーがあっても無視。新方式は fixed のみ。
   const hasModes = hasFixed;
   const decision = race.bet_decision;
-  // _meta: TicketsByMode 型に追加済みのフィールドを直接参照
-  const tbmMeta = tbm?._meta as {
-    skip_reason?: string;
-    race_ev_ratio?: number;
-    format?: string;
-    sanrenpuku_count?: number;
-    tansho_count?: number;
-    formation_sanrentan?: {
-      rank1?: Array<{ horse_no: number; mark: string }>;
-      rank2?: Array<{ horse_no: number; mark: string }>;
-      rank3?: Array<{ horse_no: number; mark: string }>;
-    };
-    // M' 戦略用フィールド
-    sub_pattern?: string;
-    ticket_count?: number;
-    stake_total?: number;
-    confidence?: string;
-    skipped?: boolean;
-  } | undefined;
+  // _meta: TicketsByMode 型定義に全フィールド追加済み — as キャスト不要
+  const tbmMeta = tbm?._meta;
 
   // T-050 フォーマット判定（"T-050:" で始まる format 文字列）
   const isT050Format = !!(tbmMeta?.format?.startsWith("T-050:"));

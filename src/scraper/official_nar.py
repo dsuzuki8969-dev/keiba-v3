@@ -1694,12 +1694,17 @@ class OfficialNARScraper:
     def _parse_race_mark_table(self, soup: BeautifulSoup) -> list:
         """成績テーブルをパースして着順リストを返す
 
-        列順: 着順, 枠番, 馬番, 馬名, 所属, 性齢, 負担重量, 騎手, 調教師,
-              馬体重, 差, タイム, 着差, 上り3F, 人気
+        2026-05-22 修正: ハードコードのカラム位置ではなく、ヘッダ行から動的にカラムを検出。
+        NAR 公式は会場・時期によりカラム数・順序が変わりうる (15列/16列)。
+        実測例 (2026-05-22 大井):
+          着順, 枠, 馬番, 馬名, 所属, 性齢, 負担重量, 騎手, 調教師,
+          馬体重, タイム, 着差, 上がり3F, コーナー通過順, 人気, 単勝オッズ
 
         Returns:
             [{"horse_no": int, "finish": int, "last_3f": float,
-              "time_sec": float, "weight_kg": float, "horse_weight": int}, ...]
+              "time_sec": float, "weight_kg": float, "horse_weight": int,
+              "horse_name": str, "jockey_name": str, "popularity": int,
+              "margin": str, "odds": float}, ...]
         """
         results = []
         tables = soup.select("table")
@@ -1718,91 +1723,162 @@ class OfficialNARScraper:
         if not result_table:
             return results
 
+        # ── ヘッダ行からカラム位置を動的に検出 ──
+        # 固定位置: 着順=0, 枠=1, 馬番=2, 馬名=3 (これらは全レイアウト共通)
+        # 可変位置: タイム, 着差, 上がり3F, 人気, 単勝オッズ 等
+        col_idx = {
+            "finish": 0, "gate_no": 1, "horse_no": 2, "horse_name": 3,
+        }
+        # ヘッダ行を探索して可変カラムを特定
+        for row in result_table.select("tr"):
+            ths = row.select("th, td")
+            if len(ths) < 5:
+                continue
+            headers = [re.sub(r"\s+", "", h.get_text(strip=True)) for h in ths]
+            # ヘッダ行の判定: 着順 + 馬番 が存在
+            if not any("着順" in h or "着" == h for h in headers):
+                continue
+            for i, h in enumerate(headers):
+                if h in ("着順", "着"):
+                    col_idx["finish"] = i
+                elif h in ("枠", "枠番"):
+                    col_idx["gate_no"] = i
+                elif h in ("馬番", "番"):
+                    col_idx["horse_no"] = i
+                elif h in ("馬名",):
+                    col_idx["horse_name"] = i
+                elif h in ("負担重量", "斤量"):
+                    col_idx["weight_kg"] = i
+                elif "騎手" in h:
+                    col_idx["jockey_name"] = i
+                elif "調教師" in h:
+                    col_idx["trainer"] = i
+                elif "馬体重" in h:
+                    col_idx["horse_weight"] = i
+                elif h in ("タイム", "走破タイム"):
+                    col_idx["time"] = i
+                elif h in ("着差", "差"):
+                    col_idx["margin"] = i
+                elif h in ("上がり3F", "上り3F", "上がり", "上り"):
+                    col_idx["last_3f"] = i
+                elif h in ("人気",):
+                    col_idx["popularity"] = i
+                elif "単勝" in h or "オッズ" in h:
+                    col_idx["odds"] = i
+                elif "コーナー" in h or "通過順" in h:
+                    col_idx["corners"] = i
+            break
+
+        logger.debug("NAR RaceMarkTable カラム検出: %s", col_idx)
+
+        # ── データ行をパース ──
         for row in result_table.select("tr"):
             cells = row.select("td")
-            # 5/5 マスター激怒指摘修正: 12 列必須 → 4 列必須に緩和
-            # 4 着以降の馬で一部列が省略 (cells < 12) されているケースで全部 skip され
-            # race_log に 3 頭しか取り込まれない構造バグ (5/5 で 78 件・全期間 133 件)。
-            # 必須は着順 + 馬番のみ、他列は欠損許容で取り込む。
+            # 必須は着順 + 馬番のみ、他列は欠損許容で取り込む
             if len(cells) < 4:
                 continue
 
             texts = [c.get_text(strip=True) for c in cells]
 
-            # 着順列（先頭）が数字でなければスキップ（取消・除外・ヘッダ行）
-            if not texts[0].isdigit():
+            # 着順列が数字でなければスキップ（取消・除外・ヘッダ行）
+            finish_idx = col_idx.get("finish", 0)
+            if finish_idx >= len(texts) or not texts[finish_idx].isdigit():
                 continue
+            finish = int(texts[finish_idx])
 
-            finish = int(texts[0])
-
-            # 馬番 (3列目, index=2)
-            if len(texts) <= 2 or not texts[2].isdigit():
+            # 馬番
+            hno_idx = col_idx.get("horse_no", 2)
+            if len(texts) <= hno_idx or not texts[hno_idx].isdigit():
                 continue
-            horse_no = int(texts[2])
+            horse_no = int(texts[hno_idx])
             if not horse_no:
                 continue
 
-            # 5/6 マスター指摘修正: 馬名・騎手・人気・オッズも取得
-            # 馬名 (4列目, index=3)
-            horse_name = texts[3] if len(texts) > 3 else ""
-            # 騎手 (8列目, index=7)
-            jockey_name = texts[7] if len(texts) > 7 else ""
+            # 馬名
+            name_idx = col_idx.get("horse_name", 3)
+            horse_name = texts[name_idx] if len(texts) > name_idx else ""
 
-            # 負担重量 (7列目, index=6)
+            # 騎手
+            jockey_idx = col_idx.get("jockey_name", 7)
+            jockey_name = texts[jockey_idx] if len(texts) > jockey_idx else ""
+
+            # 負担重量
             weight_kg = 55.0
-            try:
-                wk = float(texts[6])
-                if 40 <= wk <= 70:
-                    weight_kg = wk
-            except (ValueError, IndexError):
-                pass
+            wk_idx = col_idx.get("weight_kg", 6)
+            if len(texts) > wk_idx:
+                try:
+                    wk = float(texts[wk_idx])
+                    if 40 <= wk <= 70:
+                        weight_kg = wk
+                except (ValueError, IndexError):
+                    pass
 
-            # 馬体重 (10列目, index=9): "480" or "480(+4)"
+            # 馬体重: "480" or "480(+4)"
             horse_weight = None
-            if len(texts) > 9:
-                m_hw = re.match(r"(\d{3,4})", texts[9])
+            hw_idx = col_idx.get("horse_weight", 9)
+            if len(texts) > hw_idx:
+                m_hw = re.match(r"(\d{3,4})", texts[hw_idx])
                 if m_hw:
                     hw = int(m_hw.group(1))
                     if 200 <= hw <= 800:
                         horse_weight = hw
 
-            # タイム (12列目, index=11): "M:SS.S" or "SS.S"
+            # タイム: "M:SS.S" or "SS.S"
             time_sec = 0.0
-            if len(texts) > 11:
-                m_t = re.match(r"(\d+):(\d{2}\.\d)", texts[11])
+            time_str = ""
+            t_idx = col_idx.get("time")
+            if t_idx is not None and len(texts) > t_idx:
+                raw_t = texts[t_idx]
+                m_t = re.match(r"(\d+):(\d{2}\.\d)", raw_t)
                 if m_t:
                     time_sec = int(m_t.group(1)) * 60 + float(m_t.group(2))
+                    time_str = raw_t
                 else:
-                    m_t2 = re.match(r"(\d{2,3}\.\d)", texts[11])
+                    m_t2 = re.match(r"(\d{2,3}\.\d)", raw_t)
                     if m_t2:
                         time_sec = float(m_t2.group(1))
+                        time_str = raw_t
 
-            # 上り3F (14列目, index=13)
+            # 上り3F
             last_3f = 0.0
-            if len(texts) > 13:
+            l3_idx = col_idx.get("last_3f")
+            if l3_idx is not None and len(texts) > l3_idx:
                 try:
-                    val = float(texts[13])
+                    val = float(texts[l3_idx])
                     if 30 <= val <= 50:
                         last_3f = val
                 except ValueError:
                     pass
 
-            # 人気 (15列目, index=14)
+            # 人気
             popularity = None
-            if len(texts) > 14:
+            pop_idx = col_idx.get("popularity")
+            if pop_idx is not None and len(texts) > pop_idx:
                 try:
-                    pop = int(texts[14])
+                    pop = int(texts[pop_idx])
                     if 1 <= pop <= 50:
                         popularity = pop
                 except ValueError:
                     pass
 
-            # 着差 (13列目, index=12)
+            # 着差
             margin = ""
-            if len(texts) > 12:
-                margin = texts[12].strip() or ""
+            mg_idx = col_idx.get("margin")
+            if mg_idx is not None and len(texts) > mg_idx:
+                margin = texts[mg_idx].strip() or ""
 
-            results.append({
+            # 単勝オッズ (NAR 公式に直接掲載)
+            odds = None
+            odds_idx = col_idx.get("odds")
+            if odds_idx is not None and len(texts) > odds_idx:
+                try:
+                    o = float(texts[odds_idx])
+                    if 1.0 <= o <= 9999.9:
+                        odds = o
+                except ValueError:
+                    pass
+
+            entry = {
                 "horse_no": horse_no,
                 "finish": finish,
                 "horse_name": horse_name,
@@ -1813,7 +1889,12 @@ class OfficialNARScraper:
                 "horse_weight": horse_weight,
                 "popularity": popularity,
                 "margin": margin,
-            })
+            }
+            if time_str:
+                entry["time"] = time_str
+            if odds is not None:
+                entry["odds"] = odds
+            results.append(entry)
 
         return results
 
@@ -1888,12 +1969,12 @@ class OfficialNARScraper:
             rows = payout_table.select("tr")
             header_row = None
             data_row_idx = None
-            for r in rows:
+            for row_idx, r in enumerate(rows):
                 cells = r.select("td, th")
                 cell_texts = [c.get_text(strip=True) for c in cells]
                 if "単勝" in cell_texts and "三連複" in cell_texts:
                     header_row = cell_texts
-                    data_row_idx = rows.index(r) + 2  # サブヘッダの次がデータ
+                    data_row_idx = row_idx + 2  # サブヘッダの次がデータ
                     break
 
             if header_row and data_row_idx is not None and data_row_idx < len(rows):
@@ -1932,7 +2013,7 @@ class OfficialNARScraper:
                 if name in bet_name:
                     bet_key = key
                     break
-            if not bet_key or col + 2 >= len(data_cells):
+            if not bet_key or col + 2 > len(data_cells) - 1:
                 col += 3
                 continue
 
@@ -1942,7 +2023,8 @@ class OfficialNARScraper:
 
             entries = self._parse_payout_cell(combo_text, payout_text, pop_text)
             if entries:
-                payouts[bet_key] = entries
+                # 上書きではなく既存リストに追加 (同一券種が複数列に分かれるケース対応)
+                payouts.setdefault(bet_key, []).extend(entries)
             col += 3
 
         return payouts
@@ -2014,8 +2096,12 @@ class OfficialNARScraper:
                 current_bet_key = bet_key
             elif current_bet_key and len(cells) == 3:
                 # 続き行: cells=[馬番, 払戻, 人気] (券種名なし・複勝/ワイドの 2-3 着)
-                bet_key = current_bet_key
+                # 馬番形式チェック: 数字またはハイフン区切り (サブヘッダ行との誤判定防止)
                 entry_combo = cells[0].get_text(strip=True)
+                if not re.match(r"^\d[\d\-]*$", entry_combo):
+                    current_bet_key = None
+                    continue
+                bet_key = current_bet_key
                 entry_payout_text = cells[1].get_text(strip=True)
                 entry_pop_text = cells[2].get_text(strip=True)
                 raw_p = entry_payout_text.replace("円", "").replace(",", "") \
@@ -2107,7 +2193,8 @@ class OfficialNARScraper:
                         })
 
             if entries:
-                payouts[bet_key] = entries
+                # 上書きではなく既存リストに追加 (同一券種が複数行に分かれるケース対応)
+                payouts.setdefault(bet_key, []).extend(entries)
 
         return payouts
 
