@@ -42,13 +42,19 @@ def get_results(conn, race_id):
         elif f == 3: t = o["horse_no"]
 
     sanren_payout = 0
-    sp = payouts.get("sanrenpuku") or []
-    has_payout = bool(sp)
-    for p in sp:
-        if isinstance(p, dict):
-            sanren_payout = p.get("payout", 0) or 0
-        elif isinstance(p, (int, float)):
-            sanren_payout = p or 0
+    # romaji キー("sanrenpuku") と日本語キー("三連複") の両方に対応
+    sp = payouts.get("sanrenpuku") or payouts.get("三連複")
+    has_payout = sp is not None
+    if isinstance(sp, list):
+        # romaji形式: [{"combo": "...", "payout": N}]
+        for p in sp:
+            if isinstance(p, dict):
+                sanren_payout = p.get("payout", 0) or 0
+            elif isinstance(p, (int, float)):
+                sanren_payout = p or 0
+    elif isinstance(sp, dict):
+        # 日本語形式: {"combo": "...", "payout": N}
+        sanren_payout = sp.get("payout", 0) or 0
 
     return {
         "winner": w, "second": s, "third": t,

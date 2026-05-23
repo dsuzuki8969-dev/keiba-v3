@@ -1978,11 +1978,16 @@ def fetch_single_race_result(
             _is_details_incomplete(cached_order)
             or _is_corners_empty(cached_order)
         )
-        # payouts が空の場合も補完対象とする
+        # payouts が空、または三連複キーが欠落している場合も補完対象とする
+        # 自動取得で tansho/fukusho のみ取得→三連複未取得の不完全データを防止
         _cached_payouts = cached_entry.get("payouts", {})
+        _has_sanren = bool(
+            _cached_payouts.get("sanrenpuku")
+            or _cached_payouts.get("三連複")
+        )
         _payouts_empty = not _cached_payouts or not any(
             v for v in _cached_payouts.values() if v
-        )
+        ) or not _has_sanren
         if _needs_supplement or _payouts_empty:
             vc = race_id[4:6]
             base_url = "https://race.netkeiba.com" if vc in JRA_CODES else "https://nar.netkeiba.com"
@@ -2114,8 +2119,11 @@ def fetch_single_race_result(
         except Exception:
             pass
 
-    # 払戻金の補完（着順取れたがpayouts空 → netkeibaで補完）
-    if order and not payouts and source != "netkeiba":
+    # 払戻金の補完（着順取れたがpayouts空 or 三連複欠落 → netkeibaで補完）
+    _missing_sanren_single = payouts and not (
+        payouts.get("sanrenpuku") or payouts.get("三連複")
+    )
+    if order and (not payouts or _missing_sanren_single) and source != "netkeiba":
         vc = race_id[4:6]
         base_url = "https://race.netkeiba.com" if vc in JRA_CODES else "https://nar.netkeiba.com"
         url = f"{base_url}/race/result.html"
@@ -2296,8 +2304,11 @@ def fetch_actual_results(
                 payouts = result.get("payouts", {})
                 source = "rakuten"
 
-        # 払戻金の補完（公式/ブック/楽天で着順取得できたが払戻なし → netkeibaで補完）
-        if order and not payouts and source != "netkeiba":
+        # 払戻金の補完（公式/ブック/楽天で着順取得できたが払戻なし or 三連複欠落 → netkeibaで補完）
+        _missing_sanren = payouts and not (
+            payouts.get("sanrenpuku") or payouts.get("三連複")
+        )
+        if order and (not payouts or _missing_sanren) and source != "netkeiba":
             vc = race_id[4:6]
             base_url = "https://race.netkeiba.com" if vc in JRA_CODES else "https://nar.netkeiba.com"
             url = f"{base_url}/race/result.html"
