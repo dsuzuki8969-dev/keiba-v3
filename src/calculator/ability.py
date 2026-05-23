@@ -547,20 +547,30 @@ class StandardTimeCalculator:
         dist_coeff = self.calc_distance_coefficient(distance)
         avg_time = statistics.mean([r.finish_time_sec for r in top3_runs])
 
-        # JRA/NAR別の基準タイム算出方式
-        # JRA: スコア外挿（クラス多様性があり、k値・補正テーブルが最適化済み）
-        # NAR: avg_time直接使用（クラス分布偏りが大きく、スコア外挿で過大偏差値が発生）
+        # JRA/NAR共通: スコア外挿による基準タイム算出
+        # JRA: フル外挿（k値・補正テーブル最適化済み）
+        # NAR: VENUE_CLASS_SCORE v2テーブル（移籍馬12,774頭）基盤で外挿
+        #       減衰係数でNAR馬場補正データの不確実性を吸収
+        from config.settings import (
+            NAR_SCORE_EXTRAPOLATION_FACTOR,
+            NAR_SCORE_EXTRAP_MAX_ADJ_SEC,
+        )
         _JRA_CODES = {"01", "02", "03", "04", "05", "06", "07", "08", "09", "10"}
         vc = course_id.split("_")[0] if course_id else ""
 
+        avg_score = statistics.mean([self.calc_score_total(r) for r in top3_runs])
         if vc in _JRA_CODES:
-            # JRA: 従来のスコア外挿
-            avg_score = statistics.mean([self.calc_score_total(r) for r in top3_runs])
+            # JRA: フル外挿（従来通り）
             standard_time = avg_time - (avg_score * dist_coeff)
         else:
-            # NAR: avg_timeを基準タイムとして使用
-            # スコア外挿はNARのクラス構造・馬場補正データ不足で不正確
-            standard_time = avg_time
+            # NAR: 減衰係数付きスコア外挿（施策#7）
+            # 旧: standard_time = avg_time（クラス差を無視）
+            # 新: クラススコアを反映し、C3/B1等の基準タイム差を正規化
+            adjustment = avg_score * dist_coeff * NAR_SCORE_EXTRAPOLATION_FACTOR
+            # 短距離低クラスでの過大偏差値を防止するキャップ
+            adjustment = max(-NAR_SCORE_EXTRAP_MAX_ADJ_SEC,
+                             min(NAR_SCORE_EXTRAP_MAX_ADJ_SEC, adjustment))
+            standard_time = avg_time - adjustment
 
         return standard_time, reliability
 

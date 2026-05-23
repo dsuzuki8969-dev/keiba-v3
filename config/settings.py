@@ -164,6 +164,17 @@ PACE_WEIGHT_CAP = 0.35
 PACE_WEIGHT_CAP_NAR = 0.50
 PACE_EXCESS_REDISTRIB_NAR = {"jockey": 0.5, "trainer": 0.5}
 
+# --- 施策#7: NAR基準タイム スコア外挿 ---
+# calc_standard_time() で JRA と同様のスコア外挿をNARにも適用。
+# VENUE_CLASS_SCORE v2テーブル（移籍馬12,774頭）で校正済みのため
+# クラス別基準タイム補正が可能。
+# 減衰係数: 1.0=JRA同等フル外挿, 0.0=旧方式(avg_time直接)
+# 0.8: NAR馬場補正データがJRAより少ないことへの安全マージン
+NAR_SCORE_EXTRAPOLATION_FACTOR = 0.8
+# 外挿による基準タイム調整の最大値(秒)。短距離低クラスで過大偏差値を防止。
+# 1.2秒 → 900m: max Δdev≈6.4pt / 1400m: max Δdev≈3.4pt
+NAR_SCORE_EXTRAP_MAX_ADJ_SEC = 1.2
+
 # --- 施策#5: NAR会場の坂データ（l3f_elevation補完） ---
 # 公知情報に基づくNAR主要14場の残り600m区間高低差（メートル）
 # JRAはcourse_masterに正確な値があるが、NARは全場0.0のため手動補完
