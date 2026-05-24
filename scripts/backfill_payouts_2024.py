@@ -137,7 +137,7 @@ def main():
 
         if (i + 1) % 50 == 0 or i == len(targets) - 1:
             pct = (i + 1) / len(targets) * 100
-            print(f"  [{i+1}/{len(targets)}] {pct:.0f}% — "
+            print(f"  [{i+1}/{len(targets)}] {pct:.0f}% - "
                   f"更新={updated:,}, 三連複なし={no_sanren:,}, 失敗={failed:,}")
 
         time.sleep(args.rate)
