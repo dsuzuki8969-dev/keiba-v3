@@ -463,8 +463,7 @@ def reassign_marks_dict(horses: List[dict], is_jra: bool = True) -> None:
     TEKIPAN_POP_MAX = TEKIPAN_POP_MAX_JRA if is_jra else TEKIPAN_POP_MAX_NAR
     TEKIPAN_MIN_EV = TEKIPAN_MIN_EV_JRA if is_jra else TEKIPAN_MIN_EV_NAR
 
-    # wpガード閾値（formatter.pyと統一）
-    _MIN_WP_HONMEI = 0.05  # ◎: wp >= 5%（未満ならwp1位に切替）
+    # wpガード閾値（○▲△★ のみ・B-1 削除で ◎ の wp 切替は廃止）
     _MIN_WP_TAIKOU = 0.02  # ○: wp >= 2%
     _MIN_WP_TANNUKE = 0.01  # ▲: wp >= 1%
     _MIN_WP_RENDASHI = 0.005  # △: wp >= 0.5%
@@ -502,28 +501,13 @@ def reassign_marks_dict(horses: List[dict], is_jra: bool = True) -> None:
         if hno in special_marks:
             h["mark"] = special_marks[hno]
 
-    # ---- Step 0: ML合意チェック + wpガード（formatter.pyと統一）----
-    # composite1位とwp1位を比較
+    # ---- Step 0: ◎候補 = composite 1位 (B-1 削除 2026-05-25: ML 合議は効果ゼロ実証済) ----
+    # 旧: composite1位とwp1位を比較し、wp 不足や僅差+乖離時に wp1位を ◎ 昇格
+    # 削除根拠: 5/24 R-1 分析 8,156R 乖離レースで composite1位 23.5% vs wp1位 23.3% = -0.2pt
     _active = [h for h in sorted_h if not h.get("mark")]
     if not _active:
         return
-
-    comp_top = _active[0]
-    wp_top = max(_active, key=lambda h: h.get("win_prob", 0))
-    comp_top_wp = comp_top.get("win_prob", 0)
-
-    # composite1位のwp < 5% かつ wp1位が別の馬 → wp1位に◎を付与
-    if comp_top_wp < _MIN_WP_HONMEI and comp_top.get("horse_no") != wp_top.get("horse_no"):
-        honmei_horse = wp_top
-    else:
-        honmei_horse = comp_top
-        # composite僅差 + wp大幅乖離 → wp1位を優先
-        if comp_top.get("horse_no") != wp_top.get("horse_no"):
-            c2 = _active[1].get("composite", 0) if len(_active) >= 2 else 0
-            gap = comp_top.get("composite", 0) - c2
-            wp_ratio = (wp_top.get("win_prob", 0)) / max(0.01, comp_top_wp)
-            if gap <= 2.0 and wp_ratio >= 1.5:
-                honmei_horse = wp_top
+    honmei_horse = _active[0]
 
     # ◉/◎判定 — formatter.py と同じ5条件AND（gap/wp/p3/pop/EV）
     c1 = honmei_horse.get("composite", 0)

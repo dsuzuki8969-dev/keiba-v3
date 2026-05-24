@@ -112,54 +112,11 @@ def assign_marks(evaluations: List[HorseEvaluation], is_jra: bool = True) -> Lis
     if not sorted_ev:
         return evaluations
 
-    # ---- Step 0: ML合意チェック + win_prob最低閾値フィルタ ----
-    # composite1位とwin_prob1位が一致するか判定
-    # 不一致時はwin_prob1位を◎候補に昇格（精度+23.8pt改善）
-    #
-    # 追加: win_prob最低閾値
-    #   ◎/鉄板候補: win_prob >= 5% 必須（0.3%で◎は意味がない）
-    # ◎候補の最低win_prob（これ未満はwin_prob1位に◎を譲る）
-    # ただしcomposite1位は必ず○以下の印がつく（無印にはしない）
-    _MIN_WP_HONMEI = 0.05
-
-    # sorted_ev[0] が判定値（composite or hybrid_total）の1位
-    comp_top = sorted_ev[0]
-    wp_top = max(evaluations, key=lambda e: e.win_prob or 0)
-    ml_agrees = (comp_top.horse.horse_no == wp_top.horse.horse_no)
-
-    # 判定値1位のwin_probが最低閾値未満 → 強制的にwin_prob1位に切り替え
-    _comp_top_wp = comp_top.win_prob or 0
-    if _comp_top_wp < _MIN_WP_HONMEI and not ml_agrees:
-        top = wp_top
-        logger.info(
-            "ML合議: 判定値1位のwin_prob不足で除外 %s(wp=%.1f%% < %.0f%%) → %s(wp=%.1f%%) [hybrid=%s]",
-            comp_top.horse.horse_name, _comp_top_wp * 100, _MIN_WP_HONMEI * 100,
-            wp_top.horse.horse_name, (wp_top.win_prob or 0) * 100, USE_HYBRID_SCORING,
-        )
-    else:
-        # 従来ロジック: 判定値僅差かつwin_prob大幅乖離時に入れ替え
-        top = comp_top
-        if not ml_agrees:
-            _comp_gap_top2 = (
-                _scoring_value(comp_top)
-                - (_scoring_value(sorted_ev[1]) if len(sorted_ev) >= 2 else 0)
-            )
-            _wp_ratio = (wp_top.win_prob or 0) / max(0.01, _comp_top_wp)
-            # 判定値差が2pt以内 かつ win_prob比が1.5倍以上 → win_prob1位を◎に
-            if _comp_gap_top2 <= 2.0 and _wp_ratio >= 1.5:
-                top = wp_top
-                logger.info(
-                    "ML合議: win_prob1位を◎に昇格 %s(wp=%.1f%%) > %s(score=%.1f, gap=%.1f) [hybrid=%s]",
-                    wp_top.horse.horse_name, (wp_top.win_prob or 0) * 100,
-                    comp_top.horse.horse_name, _scoring_value(comp_top), _comp_gap_top2,
-                    USE_HYBRID_SCORING,
-                )
-            else:
-                logger.debug(
-                    "ML不一致(判定値優先): 1位=%s(%.1f) vs win_prob1位=%s(%.4f) [hybrid=%s]",
-                    comp_top.horse.horse_name, _scoring_value(comp_top),
-                    wp_top.horse.horse_name, wp_top.win_prob or 0, USE_HYBRID_SCORING,
-                )
+    # ---- Step 0: ◎候補 = 判定値 (composite or hybrid_total) 1位 ----
+    # B-1 削除 (2026-05-25): ML 合議 (composite vs win_prob 比較 → wp1位昇格) は効果ゼロ実証済
+    # 削除根拠: 5/24 R-1 分析 8,156R 乖離レースで composite1位 23.5% vs wp1位 23.3% = -0.2pt
+    # 過去コメント「精度+23.8pt改善」は当時の検証手法不明、直近 全期間データで効果ゼロ判明
+    top = sorted_ev[0]
 
     # ---- Step 1: ◉ or ◎ ----
     tekipan_gap = TEKIPAN_GAP_JRA if is_jra else TEKIPAN_GAP_NAR
@@ -185,10 +142,8 @@ def assign_marks(evaluations: List[HorseEvaluation], is_jra: bool = True) -> Lis
 
     second = sorted_ev[1] if len(sorted_ev) >= 2 else None
     # gap計算は判定値（composite or hybrid_total）ベース
+    # B-1 削除後: top = sorted_ev[0] 固定なので gap >= 0 必至 (旧 wp1位切替フォールバック不要)
     gap = (_scoring_value(top) - _scoring_value(second)) if second else 99.0
-    if gap < 0:
-        # win_prob1位に切り替えた場合、gapは負になりうる → 判定値1位基準のgapを使用
-        gap = (_scoring_value(comp_top) - _scoring_value(second)) if second else 99.0
 
     # EV条件（v4: 撤廃済み — TEKIPAN_MIN_EV=0.0）
     eff_odds = top.effective_odds
@@ -333,6 +288,12 @@ class HTMLFormatter(GradeMixin, PastRunsMixin, NarrativeMixin, MarksMixin, Betti
             if analysis.overall_confidence
             else "B",
             "confidence_score": round(analysis.confidence_score, 3),
+            "tansho_confidence": analysis.tansho_confidence.value
+            if analysis.tansho_confidence
+            else "B",
+            "sanrenpuku_confidence": analysis.sanrenpuku_confidence.value
+            if analysis.sanrenpuku_confidence
+            else "B",
             "honmei_no": honmei_ev.horse.horse_no if honmei_ev else 0,
             "honmei_name": honmei_ev.horse.horse_name if honmei_ev else "",
             "honmei_mark": honmei_ev.mark.value if honmei_ev else "",
