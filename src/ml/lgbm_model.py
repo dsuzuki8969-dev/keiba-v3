@@ -3834,6 +3834,13 @@ def train_split_models(valid_days: int = 30, max_date: Optional[str] = None,
             tasks.append((f"jra_turf_{sm}", dict(surface_filter=0, jra_filter=True, smile_filter=sm)))
             tasks.append((f"jra_dirt_{sm}", dict(surface_filter=1, jra_filter=True, smile_filter=sm)))
 
+        # Level 4b: NAR × SMILE (Phase 1, 2026-05-24)
+        # NAR はダート主体のため surface_filter なし。距離別分割のみ。
+        # SS/S/M/I は学習可 (各 13,548 頭以上), L/E はサンプル不足で自動 SKIPPED
+        # 効果: NAR 距離別予測精度向上 (JRA SMILE モデル 7 個 vs NAR 0 個 → 4 個追加)
+        for sm in smile_cats:
+            tasks.append((f"nar_{sm}", dict(jra_filter=False, smile_filter=sm)))
+
         results = {}
         total = len(tasks)
         for i, (key, kwargs) in enumerate(tasks, 1):
@@ -3911,9 +3918,14 @@ class LGBMPredictor:
                 if mdl:
                     return mdl, 4
 
-        # Level 3: JRA × 馬場 × SMILE
+        # Level 3: JRA × 馬場 × SMILE  OR  NAR × SMILE (Phase 1, 2026-05-24)
         if is_jra and surf and smile_cat:
             mdl = m.get(f"jra_{surf}_{smile_cat}")
+            if mdl:
+                return mdl, 3
+        elif not is_jra and smile_cat:
+            # Phase 1: NAR × SMILE (nar_ss/s/m/i, L/E はサンプル不足で未生成)
+            mdl = m.get(f"nar_{smile_cat}")
             if mdl:
                 return mdl, 3
 
