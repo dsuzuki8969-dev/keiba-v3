@@ -324,14 +324,15 @@ def _process_month(
     if n_valid_races == 0:
         return {"month": target_ym, "status": "no_valid", "n_train": n_train}
 
-    # numpy変換
+    # numpy変換 (2026-05-25 修正: FEATURE_COLUMNS と f の key 不一致をガード)
     def _to_np(rows):
         mat = []
         for f in rows:
-            mat.append([
-                float(f[c]) if f[c] is not None else float("nan")
-                for c in FEATURE_COLUMNS
-            ])
+            row = []
+            for c in FEATURE_COLUMNS:
+                v = f.get(c) if isinstance(f, dict) else (f[c] if c in f else None)
+                row.append(float(v) if v is not None else float("nan"))
+            mat.append(row)
         return np.array(mat, dtype=np.float32)
 
     X_train = _to_np(train_feats)
