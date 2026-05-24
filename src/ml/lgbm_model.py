@@ -3561,25 +3561,47 @@ def train_model(
         logger.info("  %-25s %10.0f", name, val)
 
     # ---- ⑦ キャリブレーション (Platt scaling) ----
-    if len(valid_y) > 0:
-        try:
-            import json as _json
+    # Phase 2-A (2026-05-24): 検証データ0件時のフォールバック追加。
+    # 冬期休止venue (札函福新/門別/盛岡) は全期間共通の split_date で valid_y=0 となり、
+    # 旧コードでは Platt 較正がスキップされ _cal.json が生成されなかった。
+    # フォールバック: 訓練データの最後 10% (時系列最新側) を Platt 較正用に転用。
+    try:
+        import json as _json
+        from sklearn.linear_model import LogisticRegression
+        cal_path = save_path.replace(".txt", "_cal.json")
 
-            from sklearn.linear_model import LogisticRegression
+        if len(valid_y) > 0:
+            # 通常: 検証データで Platt 較正
             cal_X = y_pred.reshape(-1, 1)
-            cal_model = LogisticRegression(C=1.0, max_iter=200)
-            cal_model.fit(cal_X, y_valid)
-            cal_a = float(cal_model.coef_[0][0])
-            cal_b = float(cal_model.intercept_[0])
-            cal_path = save_path.replace(".txt", "_cal.json")
-            with open(cal_path, "w") as _cf:
-                _json.dump({"a": cal_a, "b": cal_b}, _cf)
-            metrics["cal_a"] = round(cal_a, 4)
-            metrics["cal_b"] = round(cal_b, 4)
-            logger.info("Platt calibration: a=%.4f b=%.4f → saved %s",
-                        cal_a, cal_b, os.path.basename(cal_path))
-        except Exception as _ce:
-            logger.debug("キャリブレーション保存失敗: %s", _ce)
+            cal_y_fit = y_valid
+            cal_source = f"valid(n={len(valid_y)})"
+        else:
+            # Phase 2-A フォールバック: 検証データなし → 訓練データ末尾 10% を転用
+            n_fallback = max(1000, int(len(y_train) * 0.10))
+            if len(y_train) < 1000:
+                logger.warning("[%s] Platt fallback: 訓練データ不足 (%d < 1000), 較正スキップ",
+                              label, len(y_train))
+                raise RuntimeError("insufficient_train_data_for_fallback")
+            n_fallback = min(n_fallback, len(y_train))
+            cal_X = model.predict(X_train[-n_fallback:]).reshape(-1, 1)
+            cal_y_fit = y_train[-n_fallback:]
+            cal_source = f"train_tail(n={n_fallback})"
+            logger.info("[%s] Platt fallback: 検証データ0件 → 訓練データ末尾 %d 件で較正",
+                        label, n_fallback)
+
+        cal_model = LogisticRegression(C=1.0, max_iter=200)
+        cal_model.fit(cal_X, cal_y_fit)
+        cal_a = float(cal_model.coef_[0][0])
+        cal_b = float(cal_model.intercept_[0])
+        with open(cal_path, "w") as _cf:
+            _json.dump({"a": cal_a, "b": cal_b}, _cf)
+        metrics["cal_a"] = round(cal_a, 4)
+        metrics["cal_b"] = round(cal_b, 4)
+        metrics["cal_source"] = cal_source
+        logger.info("[%s] Platt calibration: a=%.4f b=%.4f source=%s → saved %s",
+                    label, cal_a, cal_b, cal_source, os.path.basename(cal_path))
+    except Exception as _ce:
+        logger.warning("[%s] キャリブレーション保存失敗: %s", label, _ce)
 
     # ---- 保存 ----
     os.makedirs(MODEL_DIR, exist_ok=True)
