@@ -135,14 +135,16 @@ def _regen_tickets_for_race(race: dict) -> dict:
     if len(active) < 3:
         return race
 
-    # NAR C/D ランクは三連複スキップ（ROI 55-65% で大赤字のため）
-    # JRA C/D は黒字(ROI 243-307%)なので維持
-    is_jra = race.get("is_jra", False)
-    confidence = race.get("overall_confidence", "") or ""
-    if not is_jra and confidence in ("C", "D", "E", "F"):
+    # 購入ルール: JRA/NAR 同一 (2026-05-23 マスター指示)
+    # sanrenpuku_confidence E → 三連複スキップ、tansho_confidence E → 単勝スキップ
+    # ※ 旧ルール (NAR C/D スキップ) は廃止
+    s_conf = race.get("sanrenpuku_confidence", "") or ""
+    t_conf = race.get("tansho_confidence", "") or ""
+    overall = race.get("overall_confidence", "") or ""
+    # overall E (M' skip) は全券種スキップ
+    if overall in ("E", "F"):
         race["formation_tickets"] = []
         race["tickets"] = []
-        # tickets_by_mode も全クリア（dashboard _collect_strategy_tickets が参照するため）
         if "tickets_by_mode" in race:
             for k in race["tickets_by_mode"]:
                 race["tickets_by_mode"][k] = []
@@ -150,7 +152,7 @@ def _regen_tickets_for_race(race: dict) -> dict:
             "total_stake": 0,
             "ticket_count": 0,
             "skip": True,
-            "skip_reason": f"NAR_{confidence}_skip",
+            "skip_reason": f"overall_{overall}_skip",
         }
         return race
 
@@ -180,36 +182,73 @@ def _regen_tickets_for_race(race: dict) -> dict:
 
     col3 = sorted(set(col3_base))
 
-    # 三連複チケット生成
-    tickets = []
-    if col1 and len(col2) >= 2 and len(col3) >= 3:
-        seen = set()
-        for a in col1:
-            for b in col2:
-                if b == a:
-                    continue
-                for c in col3:
-                    if c == a or c == b:
+    # ---- 三連複チケット生成 (sanrenpuku_confidence E → スキップ) ----
+    sanren_tickets = []
+    if s_conf != "E":
+        if col1 and len(col2) >= 2 and len(col3) >= 3:
+            seen = set()
+            for a in col1:
+                for b in col2:
+                    if b == a:
                         continue
-                    combo = tuple(sorted([a, b, c]))
-                    if combo not in seen:
-                        seen.add(combo)
-                        tickets.append({
-                            "type": "三連複",
-                            "combo": list(combo),
-                            "stake": STAKE_PER_TICKET,
-                        })
+                    for c in col3:
+                        if c == a or c == b:
+                            continue
+                        combo = tuple(sorted([a, b, c]))
+                        if combo not in seen:
+                            seen.add(combo)
+                            sanren_tickets.append({
+                                "type": "三連複",
+                                "combo": list(combo),
+                                "stake": STAKE_PER_TICKET,
+                            })
 
-    race["formation_tickets"] = tickets
-    race["tickets"] = tickets  # 互換性
+    # ---- 単勝チケット生成 (tansho_confidence E → スキップ) ----
+    # shobu_score TOP2 × 100円 (engine.py build_tansho_t4_tickets と同等ロジック)
+    tansho_tickets = []
+    if t_conf != "E":
+        non_kiken = [h for h in active if not h.get("is_tokusen_kiken", False)]
+        by_shobu = sorted(
+            non_kiken,
+            key=lambda h: h.get("shobu_score", 0) or 0,
+            reverse=True,
+        )
+        for h in by_shobu[:2]:
+            tansho_tickets.append({
+                "type": "単勝",
+                "horse_no": int(h.get("horse_no", 0)),
+                "mark": h.get("mark", "-"),
+                "odds": float(h.get("odds") or h.get("predicted_tansho_odds") or 0),
+                "stake": 100,
+                "shobu_score": round(h.get("shobu_score", 0) or 0, 2),
+            })
+
+    # 全チケット統合
+    all_tickets = sanren_tickets + tansho_tickets
+    race["formation_tickets"] = sanren_tickets  # 三連複のみ (互換性)
+    race["tickets"] = all_tickets
+    # C-1 修正 (2026-05-25): tickets_by_mode["fixed"] も同期更新して集計バグ防止
+    if isinstance(race.get("tickets_by_mode"), dict):
+        race["tickets_by_mode"]["fixed"] = all_tickets
 
     # bet_decision 更新
-    total_stake = len(tickets) * STAKE_PER_TICKET
+    total_stake = (len(sanren_tickets) * STAKE_PER_TICKET
+                   + len(tansho_tickets) * 100)
+    skip_reasons = []
+    if s_conf == "E":
+        skip_reasons.append("sanrenpuku_confidence_E")
+    if t_conf == "E":
+        skip_reasons.append("tansho_confidence_E")
+
     race["bet_decision"] = {
         "total_stake": total_stake,
-        "ticket_count": len(tickets),
-        "skip": len(tickets) == 0,
+        "ticket_count": len(all_tickets),
+        "skip": len(all_tickets) == 0,
+        "sanren_count": len(sanren_tickets),
+        "tansho_count": len(tansho_tickets),
     }
+    if skip_reasons:
+        race["bet_decision"]["skip_reasons"] = skip_reasons
 
     return race
 
