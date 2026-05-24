@@ -91,6 +91,7 @@ class ModelBundle:
         self.prob_predictor = None       # ProbabilityPredictor (win/top2/top3)
         self.torch_predictor = None      # TorchPredictor (win/top2/top3)
         self.lgbm_ranker = None          # LGBMRanker (rank score)
+        self.post_calibrator = None      # PostCalibrator (Isotonic JRA/NAR 分離 - Phase 3)
         self.sire_map = {}               # horse_id → (sire_id, bms_id)
         self._loaded = False
 
@@ -149,6 +150,20 @@ class ModelBundle:
         except Exception as e:
             print(f"  WARNING: LGBMRanker スキップ: {e}")
             self.lgbm_ranker = None
+
+        # (6) PostCalibrator (Isotonic JRA/NAR 分離 - Phase 3)
+        try:
+            from config.settings import USE_POST_CALIBRATOR
+            if USE_POST_CALIBRATOR:
+                from src.ml.calibrator import PostCalibrator
+                self.post_calibrator = PostCalibrator()
+                if not self.post_calibrator.load():
+                    self.post_calibrator = None
+                else:
+                    print(f"  [6/5] PostCalibrator ロード完了 (mode={self.post_calibrator.mode})")
+        except Exception as e:
+            print(f"  WARNING: PostCalibrator スキップ: {e}")
+            self.post_calibrator = None
 
         self._loaded = True
         print(f"  全モデルロード完了: {time.time() - t0:.1f}秒")
@@ -498,6 +513,16 @@ def run_inference_for_race(
 
         # モデルレベル保存
         h["model_level"] = lgbm_level
+
+    # ================================================================
+    # (H) 事後キャリブレーション (Isotonic JRA/NAR 分離 - Phase 3)
+    # engine.py L1950 と同様、確率の絶対値を改善
+    # ================================================================
+    if bundle.post_calibrator and bundle.post_calibrator.is_available:
+        # is_jra 判定: race_dict の is_jra or venue
+        _is_jra = bool(race_dict.get("is_jra", True))
+        # active のみ較正 (scratched 馬は除外済)
+        bundle.post_calibrator.apply_dict(active, is_jra=_is_jra)
 
     return True
 
