@@ -123,8 +123,11 @@ def main():
 
             confidence = "B"
             tbm = race.get("tickets_by_mode", {})
+            # 古い pred.json では tickets_by_mode が list の場合あり (ガード)
+            if not isinstance(tbm, dict):
+                tbm = {}
             meta = tbm.get("_meta", {})
-            if meta.get("confidence"):
+            if isinstance(meta, dict) and meta.get("confidence"):
                 confidence = meta["confidence"]
             elif race.get("overall_confidence"):
                 confidence = race["overall_confidence"]

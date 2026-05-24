@@ -1946,8 +1946,9 @@ class RaceAnalysisEngine:
                 ev.place3_prob = max(ev.place3_prob or 0.0, ev.place2_prob)
 
         # ---- 事後キャリブレーション (Isotonic Regression) ----
+        # Phase 3 (2026-05-24): JRA/NAR 別 Isotonic を is_jra で切替
         if self._post_calibrator and self._post_calibrator.is_available:
-            self._post_calibrator.apply(evaluations)
+            self._post_calibrator.apply(evaluations, is_jra=self.is_jra)
             # キャリブレータが確率を書き換えるため、Σ=1.0/2.0/3.0に再正規化
             _cal_tw = sum(ev.win_prob or 0 for ev in evaluations)
             _cal_t2 = sum(ev.place2_prob or 0 for ev in evaluations)
@@ -2140,6 +2141,14 @@ class RaceAnalysisEngine:
             is_banei=_is_banei,
         )
 
+        # 単勝/三連複 独立自信度 (2026-05-23 追加)
+        # 旧: overall_confidence (M' 戦略用) 1 つで全券種判定
+        # 新: tansho_confidence + sanrenpuku_confidence で独立判定
+        # 効果: 単勝向き / 三連複向きレースを別々に評価可能
+        from src.calculator.betting import judge_tansho_confidence, judge_sanrenpuku_confidence
+        tansho_confidence = judge_tansho_confidence(evaluations)
+        # 三連複は tickets が必要 → M' tickets 生成後に再計算
+
         # ---- Step 10b: フォーメーション買い目生成（表示廃止、formation構造のみ保持） ----
         formation = generate_formation_tickets(evaluations, race, confidence.value)
         tickets = []
@@ -2149,11 +2158,39 @@ class RaceAnalysisEngine:
         # SS=E(4点) / S/A=C(7点) / B/C/D=D(10点) / E=skip
         tickets_by_mode = generate_m_prime_tickets(evaluations, race, confidence.value)
 
-        # ---- bet_decision 判定 (M' skip 情報を優先利用) ----
-        _fixed_tickets = (tickets_by_mode or {}).get("fixed", []) if isinstance(tickets_by_mode, dict) else []
+        # 三連複自信度: M' チケット生成後に正式計算（チケット数が coverage_ratio に影響）
+        _all_tickets_for_sanren = []
+        if isinstance(tickets_by_mode, dict):
+            _all_tickets_for_sanren = tickets_by_mode.get("fixed", [])
+        sanrenpuku_confidence = judge_sanrenpuku_confidence(evaluations, _all_tickets_for_sanren)
+
+        # ---- 購入ルール: tansho/sanrenpuku confidence SS〜D → 購入、E → スキップ ----
+        # JRA/NAR 同一ルール (2026-05-23 マスター指示)
         _meta = (tickets_by_mode or {}).get("_meta", {}) if isinstance(tickets_by_mode, dict) else {}
-        if _meta.get("skipped"):
-            # M' 戦略が skip 判定 (E 自信度) → 買わない
+        _m_prime_skipped = _meta.get("skipped", False)
+
+        # 三連複: sanrenpuku_confidence E → チケット除去
+        if sanrenpuku_confidence.value == "E" and not _m_prime_skipped:
+            if isinstance(tickets_by_mode, dict):
+                _old_fixed = tickets_by_mode.get("fixed", [])
+                tickets_by_mode["fixed"] = [t for t in _old_fixed if t.get("type") != "三連複"]
+                if "_meta" in tickets_by_mode:
+                    tickets_by_mode["_meta"]["sanren_skipped_by_confidence"] = True
+
+        # 単勝: tansho_confidence SS〜D → shobu TOP2 単勝生成
+        _tansho_tickets = []
+        if tansho_confidence.value != "E" and not _m_prime_skipped:
+            from src.calculator.betting import build_tansho_t4_tickets
+            _tansho_tickets = build_tansho_t4_tickets(evaluations, race)
+            if isinstance(tickets_by_mode, dict) and _tansho_tickets:
+                tickets_by_mode.setdefault("fixed", []).extend(_tansho_tickets)
+                if "_meta" in tickets_by_mode:
+                    tickets_by_mode["_meta"]["tansho_count"] = len(_tansho_tickets)
+
+        # ---- bet_decision 判定 (M' skip + 新 confidence skip を統合) ----
+        _fixed_tickets = (tickets_by_mode or {}).get("fixed", []) if isinstance(tickets_by_mode, dict) else []
+        if _m_prime_skipped:
+            # M' 戦略が skip 判定 (overall_confidence E) → 全券種買わない
             bet_decision = {
                 "skip": True,
                 "reasons": ["m_prime_skip"],
