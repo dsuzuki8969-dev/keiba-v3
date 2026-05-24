@@ -714,6 +714,8 @@ def _scan_today_predictions(date_str: str) -> dict:
 
     # pred JSONから馬券自信度 + 馬データ + チケットデータを取得
     _pred_conf = {}     # {(venue, race_no): confidence}
+    _pred_tansho_conf = {}   # {(venue, race_no): tansho_confidence}
+    _pred_sanren_conf = {}   # {(venue, race_no): sanrenpuku_confidence}
     _pred_race_id = {}  # T-039: {(venue, race_no): race_id}
     _pred_horses = {}   # {(venue, race_no): [horse_dict, ...]}
     _pred_tickets = {}  # {(venue, race_no): [ticket_dict, ...]}
@@ -739,6 +741,8 @@ def _scan_today_predictions(date_str: str) -> dict:
                     continue
                 key = (venue, rno)
                 _pred_conf[key] = pr.get("confidence", "")
+                _pred_tansho_conf[key] = pr.get("tansho_confidence", "")
+                _pred_sanren_conf[key] = pr.get("sanrenpuku_confidence", "")
                 _pred_race_id[key] = _rid  # T-039: race_id を保存
                 _horses = pr.get("horses", [])
                 # 取消馬処理 + 印再割り当て（個別ページと同じロジック）
@@ -831,6 +835,8 @@ def _scan_today_predictions(date_str: str) -> dict:
                 "head_count": html_meta.get("head_count", 0),
                 "grade": html_meta.get("grade", ""),
                 "overall_confidence": "?" if _has_scrape_failed else conf,
+                "tansho_confidence": "?" if _has_scrape_failed else _pred_tansho_conf.get((venue, race_no), ""),
+                "sanrenpuku_confidence": "?" if _has_scrape_failed else _pred_sanren_conf.get((venue, race_no), ""),
                 # B 案: 補完馬含む race は honmei 系を 0 / 空に (信頼性低のため)
                 "honmei_no": 0 if _has_scrape_failed else html_meta.get("honmei_no", 0),
                 "honmei_name": "" if _has_scrape_failed else html_meta.get("honmei_name", ""),
@@ -956,6 +962,8 @@ def _scan_today_predictions(date_str: str) -> dict:
                         "head_count": pr.get("field_count", 0),
                         "grade": pr.get("grade", ""),
                         "overall_confidence": "?" if _pr_has_sf else pr.get("confidence", ""),
+                        "tansho_confidence": "?" if _pr_has_sf else pr.get("tansho_confidence", ""),
+                        "sanrenpuku_confidence": "?" if _pr_has_sf else pr.get("sanrenpuku_confidence", ""),
                         "honmei_no": honmei.get("horse_no", 0) if honmei else 0,
                         "honmei_name": honmei.get("horse_name", "") if honmei else "",
                         "honmei_mark": honmei.get("mark", "") if honmei else "",
@@ -1382,19 +1390,19 @@ def _is_m_prime_race(race: dict) -> bool:
 
 
 def _collect_strategy_tickets(race: dict) -> list[dict]:
-    """M' / T-050: pred.json から三連複チケットを取得（重複除去）。
+    """M' 戦略: pred.json から三連複+単勝チケットを取得（重複除去）。
 
-    M' 戦略では単勝チケットは発生しないため、三連複のみを対象とする。
-    旧 T-050 フォーマット（三連複+単勝混在）との後方互換を維持するため、
-    単勝チケットも引き続き処理できるが、M' データでは 0 件になる（期待動作）。
+    2026-05-23 改修: M' に単勝 (shobu TOP2) を統合。
+    tansho_confidence SS〜D → 単勝チケット生成、E → スキップ。
+    三連複は sanrenpuku_confidence SS〜D → 購入、E → スキップ。
+    JRA/NAR 同一ルール。
 
     探索範囲:
         race["tickets"] + race["formation_tickets"]
         + race["tickets_by_mode"]["fixed"|"accuracy"|"balanced"|"recovery"]
 
     Returns:
-        type == "三連複" のチケット dict の list（重複除去済）
-        ※ 旧 T-050 データとの後方互換のため "単勝" も含む（M' では 0 件）
+        type == "三連複" | "単勝" のチケット dict の list（重複除去済）
     """
     all_tix = list(race.get("tickets", []) or [])
     all_tix += list(race.get("formation_tickets", []) or [])
@@ -1405,11 +1413,15 @@ def _collect_strategy_tickets(race: dict) -> list[dict]:
     result = []
     for t in all_tix:
         tt = t.get("type", "")
-        # M' 戦略では三連複のみ発生する。単勝は旧 T-050 後方互換のため残置
+        # M' 戦略: 三連複 + 単勝 (shobu TOP2) の 2 券種
         if tt not in ("三連複", "単勝"):
             continue
-        combo = tuple(int(x) for x in (t.get("combo") or []))
-        key = (tt, combo, int(t.get("stake", 0) or 0))
+        # 三連複: combo=[a,b,c], 単勝: horse_no=N (combo なし)
+        if tt == "単勝":
+            key = (tt, int(t.get("horse_no", 0)), int(t.get("stake", 0) or 0))
+        else:
+            combo = tuple(int(x) for x in (t.get("combo") or []))
+            key = (tt, combo, int(t.get("stake", 0) or 0))
         if key not in seen:
             seen.add(key)
             result.append(t)
@@ -2426,6 +2438,36 @@ def create_app():
             except Exception:
                 logger.debug("api/state JSON read failed", exc_info=True)
         return jsonify(st)
+
+    @app.route("/api/roi_summary")
+    def api_roi_summary():
+        """G-3 (2026-05-25): リアルタイム ROI 表示用 endpoint。
+
+        最新の verify_all_tickets ログ + analyze_r1 ログを軽量パースして JSON で返す。
+        無ければ stub 値を返す。
+        """
+        summary = {"verify": None, "r1": None, "updated_at": None}
+        import time as _t
+
+        verify_log = os.path.join(PROJECT_ROOT, "log", "verify_all_tickets_after_fix.log")
+        if os.path.exists(verify_log):
+            summary["updated_at"] = _t.strftime("%Y-%m-%d %H:%M:%S", _t.localtime(os.path.getmtime(verify_log)))
+            try:
+                with open(verify_log, "r", encoding="utf-8", errors="ignore") as f:
+                    text = f.read()
+                summary["verify"] = {"raw_tail": text[-2000:]}
+            except Exception:
+                logger.debug("api/roi_summary verify log read failed", exc_info=True)
+
+        r1_log = os.path.join(PROJECT_ROOT, "log", "analyze_r1_after_a1.log")
+        if os.path.exists(r1_log):
+            try:
+                with open(r1_log, "r", encoding="utf-8", errors="ignore") as f:
+                    text = f.read()
+                summary["r1"] = {"raw_tail": text[-2000:]}
+            except Exception:
+                logger.debug("api/roi_summary r1 log read failed", exc_info=True)
+        return jsonify(summary)
 
     @app.route("/api/start", methods=["POST"])
     def api_start():
@@ -7334,31 +7376,63 @@ function dNavRefreshOdds(date){{
             winner_no = top3_ordered[0] if top3_ordered else None
             top3_set = set(top3_ordered[:3]) if len(top3_ordered) >= 3 else set()
 
+            # チケット種別を分離: 単勝チケットと三連複チケット
+            tansho_tix = [t for t in strategy_tix if t.get("type") == "単勝"]
+            sanren_tix = [t for t in strategy_tix if t.get("type") == "三連複"]
+
             # 旧 sanrentan_hit (三連複 OR 単勝チケット): 後方互換
             sanrentan_hit: bool | None = None
-            # 新 sanrenpuku_hit (三連複のみ): 4 状態判定用
-            sanrenpuku_hit: bool | None = None
-            if strategy_tix and len(top3_ordered) >= 3:
-                sanrentan_hit = False
-                sanrenpuku_hit = False
-                for _t in strategy_tix:
-                    _tt = _t.get("type", "")
-                    _combo = _t.get("combo", [])
-                    if _tt == "三連複":
+            # 新: 3 状態判定 — True=的中 / False=不的中 / "skipped"=未購入 / None=結果未取得
+            sanrenpuku_hit: bool | str | None = None
+            tansho_ticket_hit: bool | str | None = None
+
+            if len(top3_ordered) >= 3:
+                # 三連複判定
+                if sanren_tix:
+                    sanrenpuku_hit = False
+                    sanrentan_hit = False
+                    for _t in sanren_tix:
+                        _combo = _t.get("combo", [])
                         _cset = {int(x) for x in _combo} if _combo else set()
                         if _cset == top3_set and len(_cset) == 3:
-                            sanrentan_hit = True
                             sanrenpuku_hit = True
-                    elif _tt == "単勝":
-                        if _combo and winner_no is not None and int(_combo[0]) == winner_no:
                             sanrentan_hit = True
+                else:
+                    # 三連複チケットなし = 未購入
+                    sanrenpuku_hit = "skipped"
+
+                # 単勝チケット判定 (horse_no フィールドで照合)
+                if tansho_tix:
+                    tansho_ticket_hit = False
+                    for _t in tansho_tix:
+                        # 単勝チケットは horse_no (int) で馬番を保持
+                        _hno = _t.get("horse_no")
+                        if _hno is not None and winner_no is not None and int(_hno) == winner_no:
+                            tansho_ticket_hit = True
+                            if sanrentan_hit is None or sanrentan_hit is False:
+                                sanrentan_hit = True
+                else:
+                    # 単勝チケットなし = 未購入
+                    tansho_ticket_hit = "skipped"
+
+            # bet_decision.skip 判定: M' skip のレースは全馬券未購入
+            _bd = race.get("bet_decision", {}) or {}
+            if _bd.get("skip"):
+                sanrenpuku_hit = "skipped"
+                tansho_ticket_hit = "skipped"
+
+            # 単勝的中: 単勝チケットの存在で購入判定（shobu TOP2 ではなく実チケット基準）
+            # tansho_tix が存在 → 購入済み → tansho_ticket_hit で判定
+            # tansho_tix が空 → 未購入 → "skipped"
+            # bet_decision.skip で全券種スキップ済みの場合も "skipped"
+            tansho_hit_val: bool | str | None = tansho_ticket_hit
 
             race_results[race_id] = {
                 # 旧フィールド (後方互換):
                 "win_hit": win_hit,
                 "sanrentan_hit": sanrentan_hit,
-                # 新フィールド (4 状態判定用): 単勝のみ → 青 / 三連複のみ → 赤 / 両方 → 緑
-                "tansho_hit": win_hit,
+                # 新フィールド: True=的中 / False=不的中 / "skipped"=未購入 / None=結果未取得
+                "tansho_hit": tansho_hit_val,
                 "sanrenpuku_hit": sanrenpuku_hit,
             }
 

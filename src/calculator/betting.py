@@ -707,6 +707,144 @@ def judge_confidence(
 
 
 # ============================================================
+# 5-3b: 単勝 / 三連複 独立 confidence スコア & judge
+# ============================================================
+
+# 単勝/三連複 自信度閾値 (Grid Search 2026-01-01〜05-22 最適化済)
+TANSHO_CONFIDENCE_THRESHOLDS = {"SS": 0.78, "S": 0.55, "A": 0.42, "B": 0.30, "C": 0.20, "D": 0.08}
+SANRENPUKU_CONFIDENCE_THRESHOLDS = {"SS": 0.75, "S": 0.62, "A": 0.55, "B": 0.50, "C": 0.47, "D": 0.44}
+
+
+def calc_tansho_confidence_score(evaluations: List[HorseEvaluation]) -> float:
+    """
+    単勝自信度スコア v2 (0.0〜1.0)
+
+    4信号: win_prob(35%) + composite_agreement(30%) + field_dominance(20%) + shobu_gap(15%)
+    shobu_score TOP2 の確信度を測定。
+    """
+    if len(evaluations) < 2:
+        return 0.5
+
+    by_shobu = sorted(evaluations, key=lambda e: getattr(e, 'shobu_score', 0), reverse=True)
+    by_comp = sorted(evaluations, key=lambda e: e.composite, reverse=True)
+    comp_top3_nos = {e.horse.horse_no for e in by_comp[:3]}
+    shobu_top2_nos = {by_shobu[0].horse.horse_no, by_shobu[1].horse.horse_no}
+
+    # 1. win_prob (35%) — shobu TOP1 の勝率。0.25 以上で満点
+    wp = by_shobu[0].win_prob
+    wp_norm = min(wp / 0.25, 1.0)
+
+    # 2. composite_agreement (30%) — shobu TOP2 が composite TOP3 に含まれるか
+    agreement = len(shobu_top2_nos & comp_top3_nos) / 2.0
+
+    # 3. field_dominance (20%) — shobu TOP1 の win_prob が 2位以下とどれだけ離れているか
+    by_wp = sorted(evaluations, key=lambda e: e.win_prob, reverse=True)
+    wp_2nd = by_wp[1].win_prob if len(by_wp) >= 2 else 0
+    wp_gap = wp - wp_2nd
+    dominance = min(wp_gap / 0.12, 1.0) if wp_gap > 0 else 0.0
+
+    # 4. shobu_gap (15%) — 正規化: 差 3.0 以上で満点
+    shobu1 = getattr(by_shobu[0], 'shobu_score', 0)
+    shobu2 = getattr(by_shobu[1], 'shobu_score', 0)
+    shobu_gap = shobu1 - shobu2
+    gap_norm = min(shobu_gap / 3.0, 1.0) if shobu_gap > 0 else 0.0
+
+    return wp_norm * 0.35 + agreement * 0.30 + dominance * 0.20 + gap_norm * 0.15
+
+
+def calc_sanrenpuku_confidence_score(evaluations: List[HorseEvaluation], tickets: List[Dict]) -> float:
+    """
+    三連複自信度スコア v3 (0.0〜1.0)
+
+    5信号: wall(20%) + top3_prob_share(25%) + ml_agreement(20%) + edge_stability(20%) + coverage_ratio(15%)
+    """
+    n = len(evaluations)
+    if n < 4:
+        return 0.10 if n >= 3 else 0.0
+
+    by_comp = sorted(evaluations, key=lambda e: e.composite, reverse=True)
+    by_wp = sorted(evaluations, key=lambda e: e.win_prob, reverse=True)
+    top3_nos = {e.horse.horse_no for e in by_comp[:3]}
+
+    # 1. top3_wall (20%) — 3位-4位の composite 差。10pt で満点
+    comp3 = by_comp[2].composite
+    comp4 = by_comp[3].composite
+    wall = comp3 - comp4
+    wall_norm = min(wall / 10.0, 1.0) if wall > 0 else 0.0
+
+    # 2. top3_prob_share (25%) — TOP3 の win_prob が全体に占めるシェア
+    total_wp = sum(e.win_prob for e in evaluations)
+    top3_wp = sum(e.win_prob for e in evaluations if e.horse.horse_no in top3_nos)
+    share = (top3_wp / total_wp) if total_wp > 0 else 0
+    share_norm = min(share / 0.60, 1.0)
+
+    # 3. top3_ml_agreement (20%) — ML win_prob TOP3 と composite TOP3 の一致度
+    ml_top3_nos = {e.horse.horse_no for e in by_wp[:3]}
+    ml_agreement = len(top3_nos & ml_top3_nos) / 3.0
+
+    # 4. edge_stability (20%) — 3位と4-5位の平均 composite 差
+    comp5 = by_comp[4].composite if n >= 5 else comp4
+    avg_edge = (wall + (comp3 - comp5)) / 2.0
+    edge_norm = min(avg_edge / 6.0, 1.0) if avg_edge > 0 else 0.0
+
+    # 5. coverage_ratio (15%) — チケット数 / 全組合せ数 の逆数
+    from math import comb
+    sanren_tix = [t for t in tickets if t.get("type") == "三連複"]
+    n_tickets = len(sanren_tix)
+    total_combos = comb(n, 3)
+    if total_combos > 0 and n_tickets > 0:
+        cov_rate = n_tickets / total_combos
+        cov_score = max(0, 1.0 - cov_rate / 0.05)
+    else:
+        cov_score = 0.0
+
+    return (wall_norm * 0.20 + share_norm * 0.25 + ml_agreement * 0.20
+            + edge_norm * 0.20 + cov_score * 0.15)
+
+
+def judge_tansho_confidence(evaluations: List[HorseEvaluation]) -> ConfidenceLevel:
+    """単勝自信度を判定 (SS〜E)"""
+    if not evaluations:
+        return ConfidenceLevel.D
+    score = calc_tansho_confidence_score(evaluations)
+    th = TANSHO_CONFIDENCE_THRESHOLDS
+    if score >= th["SS"]:
+        return ConfidenceLevel.SS
+    if score >= th["S"]:
+        return ConfidenceLevel.S
+    if score >= th["A"]:
+        return ConfidenceLevel.A
+    if score >= th["B"]:
+        return ConfidenceLevel.B
+    if score >= th["C"]:
+        return ConfidenceLevel.C
+    if score >= th["D"]:
+        return ConfidenceLevel.D
+    return ConfidenceLevel.E
+
+
+def judge_sanrenpuku_confidence(evaluations: List[HorseEvaluation], tickets: List[Dict]) -> ConfidenceLevel:
+    """三連複自信度を判定 (SS〜E)"""
+    if not evaluations:
+        return ConfidenceLevel.D
+    score = calc_sanrenpuku_confidence_score(evaluations, tickets)
+    th = SANRENPUKU_CONFIDENCE_THRESHOLDS
+    if score >= th["SS"]:
+        return ConfidenceLevel.SS
+    if score >= th["S"]:
+        return ConfidenceLevel.S
+    if score >= th["A"]:
+        return ConfidenceLevel.A
+    if score >= th["B"]:
+        return ConfidenceLevel.B
+    if score >= th["C"]:
+        return ConfidenceLevel.C
+    if score >= th["D"]:
+        return ConfidenceLevel.D
+    return ConfidenceLevel.E
+
+
+# ============================================================
 # 5-4: レース選別（買い/見送り）
 # ============================================================
 
@@ -2671,6 +2809,8 @@ def build_tansho_t4_tickets(
 
     shobu_score (勝負気配) 上位2頭を各1点 = 計2点 (100円固定)。
     オッズに依存しない判断基準 (騎手強化/厩舎好調/格上げ等)。
+
+    D-8 (2026-05-25): ◎単勝オッズ <= 1.5 倍は skip (配当伸びないレース除外)
     """
     active = [
         e for e in evaluations
@@ -2678,6 +2818,14 @@ def build_tansho_t4_tickets(
         and not e.is_scratched
     ]
     if not active:
+        return []
+
+    # D-8: ◎単勝オッズ 下限ガード
+    honmei_eval = next(
+        (e for e in evaluations if getattr(getattr(e, "mark", None), "value", "") == "◎"),
+        None,
+    )
+    if honmei_eval and honmei_eval.effective_odds and honmei_eval.effective_odds <= 1.5:
         return []
 
     sorted_by_shobu = sorted(
@@ -2737,10 +2885,12 @@ _MP_E_2ND               = {"○", "〇"}                 # E パターン 2 着
 _MP_E_3RD               = {"▲", "△", "★", "☆"}       # E パターン 3 着
 
 # ── M' 戦略: 自信度 → サブパターン マッピング ──
+# D-3 (2026-05-25): R-1 集計で A=541.8% (JRA) が最高 ROI 判明 → A を C→D パターンに昇格
+# C パターン 7 ticket → D パターン 10 ticket で取りこぼし減・ROI 維持期待
 _M_PRIME_STRATEGY: Dict[str, Optional[str]] = {
     "SS": "E",
     "S":  "C",
-    "A":  "C",
+    "A":  "D",   # D-3: C→D 昇格 (R-1 A=541% 最高 ROI)
     "B":  "D",
     "C":  "D",
     "D":  "D",
