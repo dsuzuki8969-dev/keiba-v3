@@ -16,10 +16,13 @@ from collections import defaultdict
 from glob import glob
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, PROJECT_ROOT)
+
 PREDICTIONS_DIR = os.path.join(PROJECT_ROOT, "data", "predictions")
 RESULTS_DIR = os.path.join(PROJECT_ROOT, "data", "results")
 
-_TICKET_KEY_ALIASES = ["三連複", "3連複", "sanrenpuku"]
+# F-2 (2026-05-25): payout 形式統一モジュール経由で JRA dict / NAR list 混在を解消
+from src.utils.payout_normalizer import normalize_payouts, get_first_payout
 
 
 def load_results(fpath):
@@ -36,19 +39,6 @@ def load_results(fpath):
         return result
 
     return data
-
-
-def get_sanrenpuku_payout(payouts):
-    """三連複の払戻金額を取得"""
-    for key in _TICKET_KEY_ALIASES:
-        val = payouts.get(key)
-        if val is not None:
-            if isinstance(val, dict):
-                return val.get("combo", ""), val.get("payout", 0)
-            elif isinstance(val, list):
-                if val:
-                    return val[0].get("combo", ""), val[0].get("payout", 0)
-    return "", 0
 
 
 def get_top3_set(result_data):
@@ -115,7 +105,8 @@ def main():
                 continue
 
             payouts_data = result.get("payouts", {})
-            combo_str, payout_amount = get_sanrenpuku_payout(payouts_data)
+            normalized = normalize_payouts(payouts_data)
+            payout_amount = get_first_payout(normalized, "sanrenpuku")
 
             active = [h for h in horses if not h.get("is_scratched") and not h.get("scrape_failed")]
             total = len(horses)

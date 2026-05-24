@@ -1,5 +1,8 @@
 # -*- coding: utf-8 -*-
-"""R-1: 券種別 × 自信度別 ROI 集計 (全期間 2024-2026)"""
+"""R-1: 券種別 × 自信度別 ROI 集計 (全期間 2024-2026)
+
+F-2 (2026-05-25): payout 形式統一を src/utils/payout_normalizer 共通モジュール化。
+"""
 import json
 import sqlite3
 import sys
@@ -9,58 +12,18 @@ from collections import defaultdict
 sys.stdout.reconfigure(encoding='utf-8')
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(PROJECT_ROOT))
+
 PRED_DIR = PROJECT_ROOT / "data" / "predictions"
 DB_PATH = PROJECT_ROOT / "data" / "keiba.db"
 
 NAR_VENUES = {'大井','船橋','川崎','浦和','園田','姫路','名古屋','笠松','金沢','門別','盛岡','水沢','高知','佐賀'}
 
+# F-2: 共通モジュール経由で payout 形式統一
+from src.utils.payout_normalizer import normalize_payouts, combo_match, TICKET_TYPE_KEY_MAP
 
-def normalize_payouts(payouts):
-    """payouts (romaji+JP混在) を正規化"""
-    norm = {}
-    KEY_MAP = {
-        '単勝':'tansho','tansho':'tansho',
-        '複勝':'fukusho','fukusho':'fukusho',
-        '馬連':'umaren','umaren':'umaren',
-        '馬単':'umatan','umatan':'umatan',
-        'ワイド':'wide','wide':'wide',
-        '三連複':'sanrenpuku','sanrenpuku':'sanrenpuku',
-        '三連単':'sanrentan','sanrentan':'sanrentan',
-    }
-    for k, v in payouts.items():
-        nk = KEY_MAP.get(k)
-        if not nk:
-            continue
-        if isinstance(v, list):
-            norm.setdefault(nk, []).extend([item for item in v if isinstance(item, dict)])
-        elif isinstance(v, dict):
-            norm.setdefault(nk, []).append(v)
-    return norm
-
-
-def combo_match(combo_a, combo_b, ticket_type):
-    """ticket combo と payout combo の一致判定"""
-    if not combo_a or not combo_b:
-        return False
-    if isinstance(combo_a, list):
-        ca = [str(x) for x in combo_a]
-    else:
-        ca = str(combo_a).replace('=','-').split('-')
-    if isinstance(combo_b, str):
-        cb = combo_b.replace('=','-').replace('→','-').replace(' ','').split('-')
-    else:
-        cb = [str(x) for x in (combo_b or [])]
-    if not ca or not cb:
-        return False
-    if ticket_type in ('三連単','馬単','sanrentan','umatan'):
-        return [str(x) for x in ca] == [str(x) for x in cb]
-    return sorted(str(x) for x in ca) == sorted(str(x) for x in cb)
-
-
-TICKET_TYPE_MAP = {
-    '単勝':'tansho','複勝':'fukusho','馬連':'umaren','馬単':'umatan',
-    'ワイド':'wide','三連複':'sanrenpuku','三連単':'sanrentan',
-}
+# ticket type の日本語 → romaji マップ (R-1 集計用・key map と内容同一)
+TICKET_TYPE_MAP = TICKET_TYPE_KEY_MAP
 
 
 def main():
