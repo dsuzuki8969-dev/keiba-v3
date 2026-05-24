@@ -446,6 +446,12 @@ def _process_month(
                     top1_hit += 1
 
     # DB保存 (日付ごと)
+    # A-3b 修正 (2026-05-25): pred.json にも export して regen_strategy/verify/r1 が
+    # WF 結果を読めるようにする (旧: DB のみ保存 → pred.json に WF 効果反映されず)
+    import os as _os
+    pred_json_dir = _os.path.join(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))), "data", "predictions")
+    _os.makedirs(pred_json_dir, exist_ok=True)
+
     for date_str in sorted(dates_data.keys()):
         dd = dates_data[date_str]
         if not force:
@@ -458,6 +464,14 @@ def _process_month(
             preds_saved += len(dd["races"])
         except Exception as e:
             print(f"    [WARN] pred save {date_str}: {e}")
+
+        # A-3b 修正: pred.json export (regen/verify/r1 が WF 予想を読めるように)
+        try:
+            pred_json_path = _os.path.join(pred_json_dir, f"{date_str}_pred.json")
+            with open(pred_json_path, "w", encoding="utf-8") as _f:
+                json.dump(payload, _f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            print(f"    [WARN] pred.json export {date_str}: {e}")
 
         if dd["results"]:
             try:
