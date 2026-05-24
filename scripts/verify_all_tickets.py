@@ -123,7 +123,12 @@ def main():
             elif race.get("overall_confidence"):
                 confidence = race["overall_confidence"]
 
-            race_stake = sum(t.get("stake", 100) for t in tickets)
+            # F-2 修正 (2026-05-25): 三連複専用の集計なので stake も三連複に絞る
+            # 旧バグ: D-1 単勝チケット追加後、全 ticket stake で割っていたため ROI 過小評価
+            sanren_tickets = [t for t in tickets if t.get("type") in ("三連複", "3連複", "sanrenpuku")]
+            if not sanren_tickets:
+                continue
+            race_stake = sum(t.get("stake", 100) for t in sanren_tickets)
 
             key_year = year
             key_conf = confidence
@@ -131,8 +136,8 @@ def main():
 
             stats[key_year]["races"] += 1
             stats[key_all]["races"] += 1
-            stats[key_year]["tickets"] += len(tickets)
-            stats[key_all]["tickets"] += len(tickets)
+            stats[key_year]["tickets"] += len(sanren_tickets)
+            stats[key_all]["tickets"] += len(sanren_tickets)
             stats[key_year]["stake"] += race_stake
             stats[key_all]["stake"] += race_stake
 
@@ -141,7 +146,7 @@ def main():
                 stats[key_all]["degenerate_races"] += 1
 
             hit = False
-            for ticket in tickets:
+            for ticket in sanren_tickets:
                 combo = ticket.get("combo", [])
                 if set(combo) == top3:
                     hit = True
