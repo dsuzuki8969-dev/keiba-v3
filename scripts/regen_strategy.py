@@ -224,18 +224,40 @@ def _regen_tickets_for_race(race: dict) -> dict:
                                 "stake": STAKE_PER_TICKET,
                             })
 
-    # ---- 単勝チケット生成 (◎ 単勝のみ・1点) ----
-    # D-1 ROLLBACK (2026-05-25 緊急): shobu_score TOP2 → ◎単勝 (1点) に変更
-    # 真因: 戦略B は 80% 無印馬 → 実 ticket と LIVE STATS (◎単勝集計) が不一致でマスター混乱
+    # ---- 単勝チケット生成 (マスター承認 6 パターン × 自信度別) ----
+    # マスター承認 (2026-05-25): 42 通り検証 → 純利益最大組合せ採用
+    #   SS, D → E案: 能力1位 + 展開1位
+    #   S, A, B, C → F案: 能力1位 + 適性1位
     tansho_tickets = []
     if t_conf != "E":
-        honmei_h = next((h for h in active if h.get("mark") in ("◎", "◉")), None)
-        if honmei_h:
+        def _top1_by(field):
+            cand = sorted(
+                [h for h in active if not h.get("is_tokusen_kiken", False)],
+                key=lambda h: float(h.get(field, 0) or 0),
+                reverse=True,
+            )
+            return cand[0] if cand else None
+
+        if conf_for_formation in ("SS", "D"):
+            # E案: 能力1位 + 展開1位
+            picks = [_top1_by("ability_total"), _top1_by("pace_total")]
+        else:
+            # F案: 能力1位 + 適性1位 (S/A/B/C/E その他)
+            picks = [_top1_by("ability_total"), _top1_by("course_total")]
+
+        seen = set()
+        for h in picks:
+            if not h:
+                continue
+            hno = int(h.get("horse_no", 0))
+            if hno in seen or hno == 0:
+                continue
+            seen.add(hno)
             tansho_tickets.append({
                 "type": "単勝",
-                "horse_no": int(honmei_h.get("horse_no", 0)),
-                "mark": honmei_h.get("mark", "◎"),
-                "odds": float(honmei_h.get("odds") or honmei_h.get("predicted_tansho_odds") or 0),
+                "horse_no": hno,
+                "mark": h.get("mark", "-"),
+                "odds": float(h.get("odds") or h.get("predicted_tansho_odds") or 0),
                 "stake": 100,
             })
 
