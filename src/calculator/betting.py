@@ -2810,7 +2810,7 @@ def build_tansho_t4_tickets(
     shobu_score (勝負気配) 上位2頭を各1点 = 計2点 (100円固定)。
     オッズに依存しない判断基準 (騎手強化/厩舎好調/格上げ等)。
 
-    D-8 (2026-05-25): ◎単勝オッズ <= 1.5 倍は skip (配当伸びないレース除外)
+    D-8 ROLLBACK (2026-05-25 緊急): オッズガード削除で現役運用復旧
     """
     active = [
         e for e in evaluations
@@ -2818,14 +2818,6 @@ def build_tansho_t4_tickets(
         and not e.is_scratched
     ]
     if not active:
-        return []
-
-    # D-8: ◎単勝オッズ 下限ガード
-    honmei_eval = next(
-        (e for e in evaluations if getattr(getattr(e, "mark", None), "value", "") == "◎"),
-        None,
-    )
-    if honmei_eval and honmei_eval.effective_odds and honmei_eval.effective_odds <= 1.5:
         return []
 
     sorted_by_shobu = sorted(

@@ -170,33 +170,23 @@ def _regen_tickets_for_race(race: dict) -> dict:
     oana = _by_marks(OANA_MARKS)
 
     # 三連複フォーメーション構築 (col1/col2/col3)
-    # B-2 (2026-05-25): △★☆ を col3 から除外 (買い目で使わない、印は維持)
-    # 根拠: △ 1着率 9.5% / ★ 7.1% / ☆ 5.6% で低・ticket 数削減で ROI 改善期待
-    # 旧: col3 = honmei + taikou + renka + wide + oana(動的)
-    # 新: col3 = honmei + taikou + renka のみ (wide/oana 除外)
+    # B-2 ROLLBACK (2026-05-25 緊急): 1点買い化問題で現役運用破壊 → 5/24 形式に復元
     col1 = [h["horse_no"] for h in honmei]
     col2 = [h["horse_no"] for h in honmei + taikou + renka]
-    col3_base = [h["horse_no"] for h in honmei + taikou + renka]
+    col3_base = [h["horse_no"] for h in honmei + taikou + renka + wide]
+
+    # ☆: 動的追加 (オッズ条件)
+    for h in oana:
+        odds = h.get("odds") or h.get("predicted_tansho_odds") or 0
+        if odds >= HOSHI_DYNAMIC_MIN_ODDS:
+            col3_base.append(h["horse_no"])
+
     col3 = sorted(set(col3_base))
 
-    # ◎ horse (D-7/D-8 共通): mark が ◎ or ◉ の馬を 1 頭取得
-    honmei_horse = next((h for h in active if h.get("mark") in ("◎", "◉")), None)
-    honmei_wp = (honmei_horse or {}).get("win_prob", 0) if honmei_horse else 0
-    honmei_odds = (honmei_horse or {}).get("odds") or (honmei_horse or {}).get("predicted_tansho_odds") or 0
-
-    # D-7 (2026-05-25): bet_decision skip 強化
-    # 低自信度 (C/D) かつ ◎ 勝率 < 8% のレースは三連複も skip
-    weak_confidence_low_wp = (s_conf in ("C", "D")) and (honmei_wp < 0.08)
-
-    # G-2 (2026-05-25): 会場別買い目戦略 - 金沢悪化対策
-    # 根拠: 金沢 2026 三連複 ROI 67.7% / Phase 改善後も -41.5pt 悪化継続
-    # A-3 WF 再構築完了で改善見込みあるため、暫定的に C/D 自信度のみ skip
-    LOW_PERF_VENUES = {"金沢"}
-    weak_venue_skip = (race.get("venue") in LOW_PERF_VENUES) and (s_conf in ("C", "D"))
-
-    # ---- 三連複チケット生成 (sanrenpuku_confidence E or D-7 弱化 or G-2 弱会場 → スキップ) ----
+    # D-7/G-2 ROLLBACK (2026-05-25 緊急): skip 強化全廃で現役運用復旧
+    # ---- 三連複チケット生成 (sanrenpuku_confidence E のみ skip) ----
     sanren_tickets = []
-    if s_conf != "E" and not weak_confidence_low_wp and not weak_venue_skip:
+    if s_conf != "E":
         if col1 and len(col2) >= 2 and len(col3) >= 3:
             seen = set()
             for a in col1:
@@ -217,9 +207,9 @@ def _regen_tickets_for_race(race: dict) -> dict:
 
     # ---- 単勝チケット生成 (tansho_confidence E → スキップ) ----
     # shobu_score TOP2 × 100円 (engine.py build_tansho_t4_tickets と同等ロジック)
-    # D-8 (2026-05-25): ◎単勝オッズ <= 1.5 倍は skip (honmei_horse/honmei_odds は上で定義済)
+    # D-8 ROLLBACK (2026-05-25 緊急): オッズガード削除で現役運用復旧
     tansho_tickets = []
-    if t_conf != "E" and not (honmei_odds and honmei_odds <= 1.5):
+    if t_conf != "E":
         non_kiken = [h for h in active if not h.get("is_tokusen_kiken", False)]
         by_shobu = sorted(
             non_kiken,
