@@ -2805,12 +2805,10 @@ def build_tansho_t4_tickets(
     evaluations: List["HorseEvaluation"],
     race_info: "RaceInfo",
 ) -> List[Dict]:
-    """T-050: 単勝買い目を生成する (shobu_score TOP2)。
+    """単勝買い目を生成する (◎ 単勝 1 点)。
 
-    shobu_score (勝負気配) 上位2頭を各1点 = 計2点 (100円固定)。
-    オッズに依存しない判断基準 (騎手強化/厩舎好調/格上げ等)。
-
-    D-8 ROLLBACK (2026-05-25 緊急): オッズガード削除で現役運用復旧
+    D-1 ROLLBACK (2026-05-25 緊急): shobu_score TOP2 → ◎単勝 1 点に変更
+    真因: 戦略B は 80% 無印馬 → 実 ticket と LIVE STATS (◎単勝集計) が不一致
     """
     active = [
         e for e in evaluations
@@ -2820,25 +2818,22 @@ def build_tansho_t4_tickets(
     if not active:
         return []
 
-    sorted_by_shobu = sorted(
-        active,
-        key=lambda e: getattr(e, "shobu_score", 0) or 0,
-        reverse=True,
+    honmei = next(
+        (e for e in evaluations
+         if getattr(getattr(e, "mark", None), "value", "") in ("◎", "◉")
+         and not e.is_scratched),
+        None,
     )
+    if not honmei:
+        return []
 
-    tickets: List[Dict] = []
-    for h in sorted_by_shobu[:2]:
-        mark_val = getattr(getattr(h, "mark", None), "value", "")
-        tickets.append({
-            "type": "単勝",
-            "horse_no": int(getattr(h.horse, "horse_no", 0)),
-            "mark": mark_val,
-            "odds": float(h.effective_odds or 0.0),
-            "stake": 100,
-            "shobu_score": round(getattr(h, "shobu_score", 0) or 0, 2),
-        })
-
-    return tickets
+    return [{
+        "type": "単勝",
+        "horse_no": int(getattr(honmei.horse, "horse_no", 0)),
+        "mark": getattr(getattr(honmei, "mark", None), "value", "◎"),
+        "odds": float(honmei.effective_odds or 0.0),
+        "stake": 100,
+    }]
 
 
 def dispatch_tickets(

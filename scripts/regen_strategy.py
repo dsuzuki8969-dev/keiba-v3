@@ -205,25 +205,19 @@ def _regen_tickets_for_race(race: dict) -> dict:
                                 "stake": STAKE_PER_TICKET,
                             })
 
-    # ---- 単勝チケット生成 (tansho_confidence E → スキップ) ----
-    # shobu_score TOP2 × 100円 (engine.py build_tansho_t4_tickets と同等ロジック)
-    # D-8 ROLLBACK (2026-05-25 緊急): オッズガード削除で現役運用復旧
+    # ---- 単勝チケット生成 (◎ 単勝のみ・1点) ----
+    # D-1 ROLLBACK (2026-05-25 緊急): shobu_score TOP2 → ◎単勝 (1点) に変更
+    # 真因: 戦略B は 80% 無印馬 → 実 ticket と LIVE STATS (◎単勝集計) が不一致でマスター混乱
     tansho_tickets = []
     if t_conf != "E":
-        non_kiken = [h for h in active if not h.get("is_tokusen_kiken", False)]
-        by_shobu = sorted(
-            non_kiken,
-            key=lambda h: h.get("shobu_score", 0) or 0,
-            reverse=True,
-        )
-        for h in by_shobu[:2]:
+        honmei_h = next((h for h in active if h.get("mark") in ("◎", "◉")), None)
+        if honmei_h:
             tansho_tickets.append({
                 "type": "単勝",
-                "horse_no": int(h.get("horse_no", 0)),
-                "mark": h.get("mark", "-"),
-                "odds": float(h.get("odds") or h.get("predicted_tansho_odds") or 0),
+                "horse_no": int(honmei_h.get("horse_no", 0)),
+                "mark": honmei_h.get("mark", "◎"),
+                "odds": float(honmei_h.get("odds") or honmei_h.get("predicted_tansho_odds") or 0),
                 "stake": 100,
-                "shobu_score": round(h.get("shobu_score", 0) or 0, 2),
             })
 
     # 全チケット統合
