@@ -205,10 +205,27 @@ def run_maintenance():
                     v.get("order") for v in cached.values()
                     if isinstance(v, dict)
                 )
+                # G-5/G-6 (2026-05-26): payouts 完整性も検証
                 if has_any_order:
-                    continue  # 既に結果あり → スキップ
-                # 結果なし → 再取得のためファイルを削除
-                os.remove(fpath)
+                    from src.results_tracker import _is_payouts_incomplete
+                    with_order_races = [
+                        v for v in cached.values()
+                        if isinstance(v, dict) and v.get("order")
+                    ]
+                    incomplete = sum(
+                        1 for v in with_order_races
+                        if _is_payouts_incomplete(v.get("payouts", {}))
+                    )
+                    total = len(with_order_races)
+                    # 不完全率 30% 超なら再取得
+                    if total > 0 and incomplete / total > 0.30:
+                        print(f"  [DETECT] {d}: payouts 不完全 {incomplete}/{total} → 再取得")
+                        os.remove(fpath)
+                    else:
+                        continue  # 既に結果あり + payouts 完整 → スキップ
+                else:
+                    # 結果なし → 再取得のためファイルを削除
+                    os.remove(fpath)
             except Exception:
                 pass
 

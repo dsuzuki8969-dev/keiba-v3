@@ -2210,9 +2210,29 @@ def fetch_actual_results(
                 v.get("order") for v in cached.values()
                 if isinstance(v, dict)
             )
+            # G-5/G-6 (2026-05-26): payouts 完整性も検証
+            # 全 race の order が揃っていても、Table 2 欠落 race が一定割合超なら再 fetch
             if has_any_order:
-                return cached
-            os.remove(fpath)
+                with_order_races = [
+                    v for v in cached.values()
+                    if isinstance(v, dict) and v.get("order")
+                ]
+                incomplete = sum(
+                    1 for v in with_order_races
+                    if _is_payouts_incomplete(v.get("payouts", {}))
+                )
+                total = len(with_order_races)
+                # 不完全率 30% 超なら再 fetch (一部 race は払戻なしも正常範囲)
+                if total > 0 and incomplete / total > 0.30:
+                    logger.warning(
+                        "results.json キャッシュは payouts 不完全 race %d/%d (%.0f%%) "
+                        "→ 再 fetch", incomplete, total, incomplete / total * 100,
+                    )
+                    os.remove(fpath)
+                else:
+                    return cached
+            else:
+                os.remove(fpath)
         else:
             return cached
 
@@ -2304,17 +2324,23 @@ def fetch_actual_results(
                 payouts = result.get("payouts", {})
                 source = "rakuten"
 
-        # 払戻金の補完（公式/ブック/楽天で着順取得できたが払戻なし or 三連複欠落 → netkeibaで補完）
-        _missing_sanren = payouts and not (
-            payouts.get("sanrenpuku") or payouts.get("三連複")
-        )
-        if order and (not payouts or _missing_sanren) and source != "netkeiba":
+        # 払戻金の補完（公式/ブック/楽天で着順取得できたが払戻なし or Table 1/2 欠落 → netkeibaで補完）
+        # G-5/G-6 (2026-05-26): Table 2 (wide/umatan/sanrenpuku/sanrentan) 欠落を全券種でチェック
+        _missing_payout = _is_payouts_incomplete(payouts)
+        if order and (not payouts or _missing_payout) and source != "netkeiba":
             vc = race_id[4:6]
             base_url = "https://race.netkeiba.com" if vc in JRA_CODES else "https://nar.netkeiba.com"
             url = f"{base_url}/race/result.html"
             soup = client.get(url, params={"race_id": race_id})
             if soup:
-                payouts = _parse_payouts(soup)
+                nk_payouts = _parse_payouts(soup)
+                # 既存 payouts に欠けている券種だけ補完 (上書きしない)
+                if payouts:
+                    for k, v in nk_payouts.items():
+                        if k not in payouts and v:
+                            payouts[k] = v
+                else:
+                    payouts = nk_payouts
                 time.sleep(1.5)
 
         if order:
@@ -2373,6 +2399,47 @@ def _is_corners_empty(order: List[dict]) -> bool:
     filled = sum(1 for o in order if o.get("corners"))
     # 1頭でも埋まっていれば有効とみなす（部分的な欠落はそのまま）
     return filled == 0
+
+
+def _is_payouts_incomplete(payouts: dict) -> bool:
+    """払戻データが「不完全」かを判定 (G-5/G-6 2026-05-26 追加)。
+
+    Table 2 (wide/umatan/sanrenpuku/sanrentan) 欠落検知用。
+    完全と判定する条件:
+      - 単勝が存在 + 複勝が存在 (Table 1 必須)
+      - Table 2 のいずれか (wide / umatan / sanrenpuku / sanrentan) が 1 件以上存在
+        (取消等で 4 頭立て以下のレースは Table 2 がなくても完全とみなす可能性があるが、
+         国内競馬では 5 頭立て以上が大半のため、欠落チェック対象とする)
+
+    Args:
+        payouts: results.json の payouts 辞書 (日本語キー / 英語キー両対応)
+    Returns:
+        True: 不完全 (再 fetch 必要)
+        False: 完全 (skip 可)
+    """
+    if not payouts or not isinstance(payouts, dict):
+        return True
+
+    def _has(*keys):
+        return any(payouts.get(k) for k in keys)
+
+    # Table 1: 単勝 + 複勝 必須
+    if not _has("単勝", "tansho"):
+        return True
+    if not _has("複勝", "fukusho"):
+        return True
+
+    # Table 2: いずれか 1 件以上必要 (国内競馬 5 頭立て以上想定)
+    has_table2 = _has(
+        "ワイド", "wide",
+        "馬単", "umatan",
+        "三連複", "sanrenpuku", "3連複",
+        "三連単", "sanrentan", "3連単",
+    )
+    if not has_table2:
+        return True
+
+    return False
 
 
 def _merge_corner_passing_from_soup(order: List[dict], soup) -> int:
@@ -3827,6 +3894,13 @@ def _add_to_detail_stats(stats: dict, race_by_type: dict,
             bc[conf]["hits"] += 1
             bc[conf]["ret"] += tansho["ret"]
             bc[conf]["payouts"].append(tansho["ret"])
+            # G-4 (2026-05-26): tansho.hit=True かつ ret=0 は payouts 取得失敗のシグナル。
+            # G-7 修復後は発生しないはずだが、再発防止のため検知ログを残す。
+            if tansho["ret"] == 0:
+                logger.warning(
+                    "tansho.hit=True なのに ret=0 - payouts 取得失敗の可能性 (conf=%s)",
+                    conf,
+                )
 
 
 def _finalize_detail_stats(stats: dict) -> None:

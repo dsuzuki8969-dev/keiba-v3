@@ -186,7 +186,13 @@ def _build_horse_entry(h: dict, hid: str, prob: float, mk: str,
         "course_jockey": 0.0,
         "ml_win_prob": round(prob * 0.40, 4),
         "ml_top2_prob": round(prob * 0.70, 4),
-        "jockey_change_score": 0.0, "shobu_score": 0.0,
+        "jockey_change_score": 0.0,
+        # A-3c (2026-05-26): フル engine を通さない WF backtest 専用の近似 shobu_score。
+        # 真の shobu_score は J-2 公式 (騎手強化 + 厩舎好調 + 休み明け...) で 0-8 程度。
+        # 近似式: ML win_prob × 8.0 でレンジ揃え (上位馬ほど高 shobu_score になる)。
+        # これにより「shobu_score TOP2」選定が ML 推論基準の TOP2 となり、
+        # 戦略 B (shobu_score TOP2) の WF 効果測定が可能になる。
+        "shobu_score": round(prob * 8.0, 2),
         "odds_consistency_adj": 0.0,
         "ana_score": 0.0, "kiken_score": 0.0,
         "predicted_tansho_odds": None, "odds_divergence": None,

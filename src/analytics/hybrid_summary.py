@@ -598,16 +598,26 @@ def _compute_sanrenpuku_dynamic(year_filter: str) -> dict:
 def _is_m_prime_pred(races: list) -> bool:
     """pred.json のレースリストが M' 戦略フォーマットかを判定する。
 
-    tickets_by_mode._meta.format が "M':" で始まる場合 M' と判定。
-    最初の有効なレースの _meta で判断する。
+    判定優先順位 (G-8 2026-05-26 追加: 過去 pred.json の _meta.format 欠落対応):
+      1. tickets_by_mode._meta.format が "M'" で始まる → M' 確定
+      2. _meta.format が他文字列で始まる → 非 M'
+      3. _meta.format 未設定 → tickets に三連複が含まれていれば M' とみなす
+         (regen_strategy が _meta.format を書かなかったレガシー pred.json 対応)
     """
+    legacy_has_sanrenpuku = False
     for r in races:
         tbm = r.get("tickets_by_mode", {}) or {}
         meta = tbm.get("_meta", {}) or {}
         fmt = meta.get("format", "") or ""
         if fmt:
             return fmt.startswith("M'")
-    return False
+        # _meta.format 空: tickets に三連複があれば候補
+        if not legacy_has_sanrenpuku:
+            for t in (r.get("tickets", []) or []):
+                if t.get("type") == "三連複":
+                    legacy_has_sanrenpuku = True
+                    break
+    return legacy_has_sanrenpuku
 
 
 def _layer1_m_prime_sanrenpuku(race: dict) -> bool:
@@ -712,10 +722,21 @@ def _compute_m_prime_sanrenpuku(year_filter: str) -> dict:
             if payouts.get("三連複") is None and payouts.get("sanrenpuku") is None:
                 continue
 
-            # 自信度取得（_meta.confidence → overall_confidence の順でフォールバック）
+            # 自信度取得（_meta.confidence → overall_confidence → sanrenpuku_confidence の順でフォールバック）
+            # G-8 (2026-05-26): 過去 pred.json の _meta.confidence/overall_confidence 欠落対応で
+            # sanrenpuku_confidence (backfill_confidence_split.py で埋まる) を最終フォールバックに追加
             tbm = r.get("tickets_by_mode", {}) or {}
             meta = tbm.get("_meta", {}) or {}
-            confidence = meta.get("confidence", "") or r.get("overall_confidence", "") or ""
+            confidence = (
+                meta.get("confidence", "")
+                or r.get("overall_confidence", "")
+                or r.get("sanrenpuku_confidence", "")
+                or ""
+            )
+            # G-8 (2026-05-26): 現運用 (handoff_2026-05-25) では E=skip。
+            # 過去 pred.json には E race でも tickets が残っているが、現運用基準で除外する。
+            if confidence == "E":
+                continue
 
             # tickets から三連複チケットを取得
             tix = [t for t in (r.get("tickets", []) or []) if t.get("type") == "三連複"]

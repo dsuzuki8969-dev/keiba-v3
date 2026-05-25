@@ -11,17 +11,28 @@
 > 5/24 引継ぎ 28 件 + 本日発見 + 累犯 rollback + 30/42 通り検証実装。
 > 詳細は `memory/handoff_2026-05-25.md` と git log 参照。
 
-## 🚨 次セッション P0 (緊急対応)
+## ✅ 5/26 ノンストップ完走 (P0 7件 + G-8 = 8件)
 
-| ID | 内容 | 工数 | 優先理由 |
-|---|---|---|---|
-| **G-4** | dashboard 集計バグ: M' 戦略 回収率 0% / 単勝「当たった」誤表示 (5/25 朝 results 取込みバグ) | 30 分 | 再発防止 |
-| **G-5** | scheduler の results JSON 保存ロジック究明 (Table 2 欠落原因) | 1 時間 | 同上 |
-| **G-6** | results JSON 自動検証 + auto re-fetch | 1 時間 | 恒久対策 |
-| **G-7** | `/api/results/detailed` の by_conf 集計バグ (max_payout 1040 / ROI 0.9% 異常) | 半日 | 表示精度 |
-| **A-3c** | WF backtest payload に shobu_score 計算追加 → 真の WF 効果測定 | 1 日 | WF 活用 |
-| **D-1b** | 戦略 B シミュ 144.5% vs 実装 13.8% 真因 (シミュ集計ロジック再現) | 半日 | 判断材料 |
-| **C-1b** | verify vs analyze_r1 残乖離 18pt 真因 | 30 分 | 集計信頼性 |
+詳細: `memory/handoff_2026-05-26.md`
+
+| ID | 結果 |
+|---|---|
+| C-1b | ✅ 残乖離は実は 1.5pt まで縮小済 (前 18pt) - 設計差 |
+| G-7 | ✅ DB race_results.payouts_json 91.8% 空 → 73,464 件 backfill / ROI 0.9% → 139.2% |
+| G-8 | ✅ M' 戦略 2024 ROI 147.9% / 2025 ROI 160.2% に復旧 |
+| G-5 | ✅ scheduler キャッシュ判定 + Table 2 補完 修正 |
+| G-6 | ✅ `_is_payouts_incomplete` 追加 / 不完全 30% 超で auto re-fetch |
+| G-4 | ✅ tansho hit=True/ret=0 で warning ログ (再発検知) |
+| D-1b | ✅ シミュ 144.5% は正しい (現 141.9%) / 13.8% は P0.2 分散端 |
+| A-3c | ✅ WF backtest に shobu_score = ML win_prob × 8.0 近似 |
+
+## 🚨 次セッション P0 (本日派生分)
+
+| ID | 内容 | 工数 |
+|---|---|---|
+| **G-7b** | DB race_results 残り 6,878 件 空 payouts_json 個別調査 (2025-04-19 等 results.json 不在日) | 1 時間 |
+| **D-1c** | 戦略 B 採用検討 (TOP2 印付き 0-1 が 42.9% 問題への対策案) | 半日 |
+| **A-3d** | shobu_score WF 近似値の精度検証 (フル engine 値との突合 1 日サンプル) | 半日 |
 
 ## 📐 P1-P2 設計確定済 (A-3 完了後実装) — `docs/future_changes_post_a3.md` 参照
 
