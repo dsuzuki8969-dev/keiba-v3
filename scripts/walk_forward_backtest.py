@@ -454,31 +454,35 @@ def _process_month(
 
     for date_str in sorted(dates_data.keys()):
         dd = dates_data[date_str]
+        # A-3b 修正 (2026-05-25): date_str がハイフン形式 (YYYY-MM-DD) で来る
+        # 既存 pred.json/DB はハイフンなし (YYYYMMDD) 形式 → 変換必要
+        date_compact = date_str.replace("-", "")
         if not force:
-            existing = db.load_prediction(date_str)
+            existing = db.load_prediction(date_compact)
             if existing and existing.get("races"):
                 continue
-        payload = {"date": date_str, "version": 2, "races": dd["races"]}
+        payload = {"date": date_compact, "version": 2, "races": dd["races"]}
         try:
-            db.save_prediction(date_str, payload)
+            db.save_prediction(date_compact, payload)
             preds_saved += len(dd["races"])
         except Exception as e:
-            print(f"    [WARN] pred save {date_str}: {e}")
+            print(f"    [WARN] pred save {date_compact}: {e}")
 
         # A-3b 修正: pred.json export (regen/verify/r1 が WF 予想を読めるように)
+        # ファイル名は既存形式 (YYYYMMDD_pred.json) に合わせる
         try:
-            pred_json_path = _os.path.join(pred_json_dir, f"{date_str}_pred.json")
+            pred_json_path = _os.path.join(pred_json_dir, f"{date_compact}_pred.json")
             with open(pred_json_path, "w", encoding="utf-8") as _f:
                 json.dump(payload, _f, ensure_ascii=False, indent=2)
         except Exception as e:
-            print(f"    [WARN] pred.json export {date_str}: {e}")
+            print(f"    [WARN] pred.json export {date_compact}: {e}")
 
         if dd["results"]:
             try:
-                db.save_results(date_str, dd["results"])
+                db.save_results(date_compact, dd["results"])
                 results_saved += len(dd["results"])
             except Exception as e:
-                print(f"    [WARN] result save {date_str}: {e}")
+                print(f"    [WARN] result save {date_compact}: {e}")
 
     top1_rate = top1_hit / top1_total if top1_total else 0
 
