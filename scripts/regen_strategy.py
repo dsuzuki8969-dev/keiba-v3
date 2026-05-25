@@ -166,22 +166,41 @@ def _regen_tickets_for_race(race: dict) -> dict:
     honmei = _by_marks(HONMEI_MARKS)
     taikou = _by_marks(TAIKOU_MARKS)
     renka = _by_marks(RENKA_MARKS)
-    wide = _by_marks(WIDE_MARKS)
-    oana = _by_marks(OANA_MARKS)
+    wide = _by_marks(WIDE_MARKS)  # △★
+    oana = _by_marks(OANA_MARKS)  # ☆
 
-    # 三連複フォーメーション構築 (col1/col2/col3)
-    # B-2 ROLLBACK (2026-05-25 緊急): 1点買い化問題で現役運用破壊 → 5/24 形式に復元
-    col1 = [h["horse_no"] for h in honmei]
-    col2 = [h["horse_no"] for h in honmei + taikou + renka]
-    col3_base = [h["horse_no"] for h in honmei + taikou + renka + wide]
+    # マスター提案 5 パターン (2026-05-25): 自信度別フォーメーション (検証用)
+    # SS=C(4) / S=A(7) / A=B(9) / B=D(10) / C・D=E(12)
+    ho_no = [h["horse_no"] for h in honmei]
+    ta_no = [h["horse_no"] for h in taikou]
+    re_no = [h["horse_no"] for h in renka]
+    wi_no = [h["horse_no"] for h in wide]  # △ + ★
+    # ☆ 動的: オッズ条件
+    oa_no = [
+        h["horse_no"] for h in oana
+        if (h.get("odds") or h.get("predicted_tansho_odds") or 0) >= HOSHI_DYNAMIC_MIN_ODDS
+    ]
 
-    # ☆: 動的追加 (オッズ条件)
-    for h in oana:
-        odds = h.get("odds") or h.get("predicted_tansho_odds") or 0
-        if odds >= HOSHI_DYNAMIC_MIN_ODDS:
-            col3_base.append(h["horse_no"])
+    # 自信度: sanrenpuku_confidence 優先、無ければ overall_confidence (s_conf 未設定 pred.json 対応)
+    conf_for_formation = s_conf if s_conf in ("SS", "S", "A", "B", "C", "D", "E") else (overall or "B")
 
-    col3 = sorted(set(col3_base))
+    # マスター承認 (2026-05-25): 30 通り検証結果ベース 純利益最大組合せ
+    # SS=B / S=B / A=D / B=A / C=A / D=A (+7.86M 純利益期待)
+    if conf_for_formation in ("SS", "S"):
+        # B案: ◎ - 〇▲△ - 〇▲△★☆ (9 点)
+        col1 = ho_no
+        col2 = ta_no + re_no + wi_no[:1]
+        col3 = sorted(set(ta_no + re_no + wi_no + oa_no))
+    elif conf_for_formation == "A":
+        # D案: ◎〇 - ◎〇▲ - ◎〇▲△★☆ (10 点)
+        col1 = ho_no + ta_no
+        col2 = ho_no + ta_no + re_no
+        col3 = sorted(set(ho_no + ta_no + re_no + wi_no + oa_no))
+    else:  # B / C / D
+        # A案: ◎ - 〇▲ - 〇▲△★☆ (7 点)
+        col1 = ho_no
+        col2 = ta_no + re_no
+        col3 = sorted(set(ta_no + re_no + wi_no + oa_no))
 
     # D-7/G-2 ROLLBACK (2026-05-25 緊急): skip 強化全廃で現役運用復旧
     # ---- 三連複チケット生成 (sanrenpuku_confidence E のみ skip) ----
