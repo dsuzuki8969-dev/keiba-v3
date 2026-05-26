@@ -7,6 +7,10 @@ SQLite データベース ラッパー
   match_results- 照合済み集計データ
   personnel    - 騎手・調教師マスタ（JSON blob）
   course_db    - コースDBマスタ（JSON blob）
+
+データ形式統一ルール (H-2 2026-05-26 マスター承認):
+  - date 列: YYYY-MM-DD (ISO 8601) のみ。'YYYYMMDD' は内部で自動変換
+  - payouts キー: 日本語 (単勝/三連複 等) のみ。英語 (tansho/sanrenpuku 等) は自動変換
 """
 
 import json
@@ -20,6 +24,63 @@ from config.settings import DATABASE_PATH
 from src.log import get_logger
 
 logger = get_logger(__name__)
+
+
+# ============================================================
+# H-2: データ形式正規化 (2026-05-26 マスター承認)
+# 入力時に必ず通すことで再混在を防ぐ
+# ============================================================
+
+# 英語 → 日本語 payouts キーマッピング (旧スクレイパー出力等の互換用)
+_PAYOUT_KEY_EN_TO_JP = {
+    "tansho": "単勝",
+    "fukusho": "複勝",
+    "wakuren": "枠連",
+    "umaren": "馬連",
+    "umatan": "馬単",
+    "wide": "ワイド",
+    "sanrenpuku": "三連複",
+    "sanrentan": "三連単",
+    "3連複": "三連複",
+    "3連単": "三連単",
+}
+
+
+def normalize_date(d: str) -> str:
+    """date 文字列を YYYY-MM-DD (ISO 8601) に正規化。
+
+    受け入れる形式:
+      - "YYYY-MM-DD"  → そのまま
+      - "YYYYMMDD"    → ハイフン付与
+      - その他        → そのまま (training_records の '12/31' 等は touch しない)
+    """
+    if not d or not isinstance(d, str):
+        return d
+    if "-" in d:
+        return d
+    if len(d) == 8 and d.isdigit():
+        return f"{d[:4]}-{d[4:6]}-{d[6:]}"
+    return d
+
+
+def normalize_payouts(payouts: dict) -> dict:
+    """payouts dict の英語キーを日本語キーに正規化。
+
+    両方ある場合は日本語側にマージ (list 同士なら extend)。
+    """
+    if not isinstance(payouts, dict):
+        return payouts
+    new_payouts = {}
+    for k, v in payouts.items():
+        jp_key = _PAYOUT_KEY_EN_TO_JP.get(k, k)
+        if jp_key in new_payouts:
+            existing = new_payouts[jp_key]
+            if isinstance(existing, list) and isinstance(v, list):
+                new_payouts[jp_key] = existing + v
+            # それ以外は既存優先
+        else:
+            new_payouts[jp_key] = v
+    return new_payouts
 
 
 # ============================================================
@@ -315,6 +376,9 @@ def init_schema() -> None:
         # old_10digit（10桁数字）の horse_id は netkeiba_id 直値。nar/B_prefix は NULL のまま（将来スクレイパー連携）
         "ALTER TABLE horses ADD COLUMN netkeiba_id TEXT",
         "CREATE INDEX IF NOT EXISTS idx_horses_netkeiba_id ON horses(netkeiba_id)",
+        # 自信度分離: 単勝/三連複 独立 confidence (2026-05-23)
+        "ALTER TABLE predictions ADD COLUMN tansho_confidence TEXT DEFAULT 'B'",
+        "ALTER TABLE predictions ADD COLUMN sanrenpuku_confidence TEXT DEFAULT 'B'",
     ]:
         try:
             conn.execute(ddl)
@@ -427,7 +491,10 @@ def save_prediction(date: str, payload: dict) -> None:
     予想データを DB に保存する。
     payload = {"date": date, "version": 2, "races": [...]}
     races の各要素を 1 行として INSERT OR REPLACE。
+
+    H-2 (2026-05-26): date を YYYY-MM-DD に必ず正規化。
     """
+    norm_date = normalize_date(date)
     races = payload.get("races", [])
     with transaction() as conn:
         for race in races:
@@ -436,11 +503,12 @@ def save_prediction(date: str, payload: dict) -> None:
                 INSERT OR REPLACE INTO predictions
                   (date, race_id, venue, race_no, race_name, surface, distance,
                    grade, confidence, pace_pred, field_count,
-                   horses_json, tickets_json, formation_json, value_bets_json, version)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                   horses_json, tickets_json, formation_json, value_bets_json, version,
+                   tansho_confidence, sanrenpuku_confidence)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 """,
                 (
-                    date,
+                    norm_date,
                     race.get("race_id", ""),
                     race.get("venue", ""),
                     race.get("race_no", 0),
@@ -456,6 +524,8 @@ def save_prediction(date: str, payload: dict) -> None:
                     json.dumps(race.get("formation_tickets", []), ensure_ascii=False),
                     json.dumps(race.get("value_bets", []), ensure_ascii=False),
                     payload.get("version", 2),
+                    race.get("tansho_confidence", "B"),
+                    race.get("sanrenpuku_confidence", "B"),
                 ),
             )
 
@@ -464,10 +534,13 @@ def load_prediction(date: str) -> Optional[dict]:
     """
     指定日の予想データを DB から読み込み、JSON ファイルと同じ形式で返す。
     Returns: {"date": date, "version": 2, "races": [...]} or None
+
+    H-2 (2026-05-26): date を ISO 形式で検索 (legacy 呼び出し対応)。
     """
+    norm_date = normalize_date(date)
     conn = get_db()
     rows = conn.execute(
-        "SELECT * FROM predictions WHERE date=? ORDER BY race_no", (date,)
+        "SELECT * FROM predictions WHERE date=? ORDER BY race_no", (norm_date,)
     ).fetchall()
     if not rows:
         return None
@@ -485,6 +558,8 @@ def load_prediction(date: str) -> Optional[dict]:
             "distance": row["distance"],
             "grade": row["grade"],
             "confidence": row["confidence"],
+            "tansho_confidence": row["tansho_confidence"] if "tansho_confidence" in row.keys() else "B",
+            "sanrenpuku_confidence": row["sanrenpuku_confidence"] if "sanrenpuku_confidence" in row.keys() else "B",
             "pace_predicted": row["pace_pred"],
             "field_count": row["field_count"],
             "horses": json.loads(row["horses_json"]),
@@ -494,7 +569,7 @@ def load_prediction(date: str) -> Optional[dict]:
         }
         races.append(race)
 
-    return {"date": date, "version": version, "races": races}
+    return {"date": norm_date, "version": version, "races": races}
 
 
 def list_prediction_dates() -> List[str]:
@@ -508,9 +583,10 @@ def list_prediction_dates() -> List[str]:
 
 def prediction_exists(date: str) -> bool:
     """指定日の予想データが存在するか"""
+    norm_date = normalize_date(date)
     conn = get_db()
     row = conn.execute(
-        "SELECT 1 FROM predictions WHERE date=? LIMIT 1", (date,)
+        "SELECT 1 FROM predictions WHERE date=? LIMIT 1", (norm_date,)
     ).fetchone()
     return row is not None
 
@@ -543,9 +619,13 @@ def save_results(date: str, data: dict) -> None:
     """
     結果データを DB に保存する。
     data = {race_id: {"order": [...], "payouts": {...}}}
+
+    H-2 (2026-05-26): date を YYYY-MM-DD、payouts キーを日本語に必ず正規化。
     """
+    norm_date = normalize_date(date)
     with transaction() as conn:
         for race_id, result in data.items():
+            payouts = normalize_payouts(result.get("payouts", {}))
             conn.execute(
                 """
                 INSERT OR REPLACE INTO race_results
@@ -553,10 +633,10 @@ def save_results(date: str, data: dict) -> None:
                 VALUES (?,?,?,?)
                 """,
                 (
-                    date,
+                    norm_date,
                     race_id,
                     json.dumps(result.get("order", []), ensure_ascii=False),
-                    json.dumps(result.get("payouts", {}), ensure_ascii=False),
+                    json.dumps(payouts, ensure_ascii=False),
                 ),
             )
 
@@ -565,11 +645,14 @@ def load_results(date: str) -> Optional[dict]:
     """
     指定日の結果データを DB から読み込み、JSON ファイルと同じ形式で返す。
     Returns: {race_id: {"order": [...], "payouts": {...}}} or None
+
+    H-2 (2026-05-26): date を ISO 形式で検索 (legacy 呼び出し対応)。
     """
+    norm_date = normalize_date(date)
     conn = get_db()
     rows = conn.execute(
         "SELECT race_id, order_json, payouts_json FROM race_results WHERE date=?",
-        (date,),
+        (norm_date,),
     ).fetchall()
     if not rows:
         return None
@@ -585,9 +668,10 @@ def load_results(date: str) -> Optional[dict]:
 
 def results_exist(date: str) -> bool:
     """指定日の結果データが存在するか"""
+    norm_date = normalize_date(date)
     conn = get_db()
     row = conn.execute(
-        "SELECT 1 FROM race_results WHERE date=? LIMIT 1", (date,)
+        "SELECT 1 FROM race_results WHERE date=? LIMIT 1", (norm_date,)
     ).fetchone()
     return row is not None
 
@@ -598,9 +682,12 @@ def results_exist(date: str) -> bool:
 
 
 def _stats_to_row(date: str, race_id: str, stats: dict) -> tuple:
-    """save_match_result(s) 共通: stats dict → INSERT/UPDATE 用タプル"""
+    """save_match_result(s) 共通: stats dict → INSERT/UPDATE 用タプル
+
+    H-2 (2026-05-26): date を YYYY-MM-DD に正規化。
+    """
     return (
-        date,
+        normalize_date(date),
         race_id,
         stats.get("venue", ""),
         stats.get("race_no", 0),
@@ -660,7 +747,11 @@ def aggregate_results(from_date: str = "2026-01-01", to_date: str = "2099-12-31"
     """
     指定期間の集計を SQL 1 クエリで集計して返す。
     Returns: results_tracker.aggregate_all() と同形式の dict
+
+    H-2 (2026-05-26): from/to date を ISO 形式に正規化。
     """
+    from_date = normalize_date(from_date)
+    to_date = normalize_date(to_date)
     conn = get_db()
 
     # 基本集計

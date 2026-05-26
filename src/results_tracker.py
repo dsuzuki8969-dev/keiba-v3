@@ -2379,6 +2379,17 @@ def fetch_actual_results(
         )
         return results
 
+    # H-2 (2026-05-26): payouts キーを日本語に正規化してから保存
+    # 各 scraper (official_nar/keibabook/rakuten) は英語キーで返すため
+    if _DB_AVAILABLE:
+        try:
+            from src.database import normalize_payouts as _norm_payouts
+            for rid, r in results.items():
+                if isinstance(r, dict) and r.get("payouts"):
+                    r["payouts"] = _norm_payouts(r["payouts"])
+        except Exception:
+            pass
+
     with open(fpath, "w", encoding="utf-8") as f:
         json.dump(results, f, ensure_ascii=False, indent=2)
 
