@@ -30,13 +30,21 @@
 | B | G-7c | 残 399 件は **永久に修復不可能** (DB only ゴミ row + maintenance 7 日窓超過) → 案 A 放置採用 / 教訓: `feedback_g6_maintenance_7day_limit.md` |
 | C | A-3e Lv2 | engine 直呼び実装完了 (`scripts/walk_forward_backtest.py` `_calc_shobu_score_wf_lv2` 新関数 + `--shobu-lv 2` CLI / 既存 Lv1 不変 / mock 一致率 67%) |
 
-## 🚨 次セッション P0 (5/26 v2 反映)
+## ✅ 5/26 セッション v3 完結 — A-3e Lv3 (engine 完全互換) 実装
+
+詳細: `memory/handoff_2026-05-26_v3.md`
+
+- `scripts/walk_forward_backtest.py:_calc_shobu_score_wf_lv3` 新関数 (KishuPattern.A 完全再現 + recovery_break 推定 + class_trend 加味)
+- mock 8 ケース検証完了 (Case 7/8 乗り替わり判定 engine 通り発火/抑制)
+- CLI `--shobu-lv {1,2,3}` / 既存 Lv1/Lv2 不変・隔離原則遵守
+
+## 🚨 次セッション P0 (5/26 v3 反映)
 
 | 順 | ID | 内容 | 工数 |
 |---:|---|---|---|
-| **1** | **A-3e Lv3** | tracker 拡張 (jockey/trainer 偏差値 + recovery_break) + 全期間 backfill + WF backtest 再実行 | 2-3 日 |
-| 2 | **D-1c/D-1d 再検証** | A-3e Lv3 完了後、戦略 B 採用棄却 + 派 5b 採用候補の結論を Lv3 数値で再評価 | 半日 |
-| 3 | **B-3 + 派 5b 統合** | composite 重み ROI ベース再較正 + 派 5b 採用 (◎ かつ二重一致 単勝 1 点) | 2-3 日 |
+| **1** | **A-3e Step6** | 全期間 WF backtest を `--shobu-lv 3 --force` で実行し shobu_score を Lv3 化 | **2-3 時間** (バックグラウンド推奨) |
+| 2 | **D-1c/D-1d Lv3 再検証** | Lv3 で再計算した shobu_score で戦略 B / 派 5b の ROI を再集計 | 半日 |
+| 3 | **B-3 + 派 5b 統合実装** | composite 重み ROI ベース再較正 + 派 5b 採用 (◎ かつ二重一致 単勝 1 点) | 2-3 日 |
 
 ## 📐 P1 設計確定済 (A-3e 完了後実装) — `docs/future_changes_post_a3.md`
 

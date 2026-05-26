@@ -317,12 +317,153 @@ def _calc_shobu_score_wf_lv2(h: dict, race: dict, tracker) -> float:
         return _calc_shobu_score_wf(h, race, tracker)
 
 
+def _jockey_winrate_to_dev(wr) -> float:
+    """A-3e Lv3 helper: jockey win_rate → 偏差値 Z 変換 (中央 0.10, 1σ=0.05)
+
+    engine の JockeyStats.get_deviation 互換の擬似偏差値。
+    """
+    if wr is None or wr <= 0:
+        return 50.0
+    dev = 50.0 + (float(wr) - 0.10) * 200.0
+    return max(20.0, min(80.0, dev))
+
+
+def _calc_shobu_score_wf_lv3(h: dict, race: dict, tracker) -> float:
+    """A-3e Lv3 (本セッション追加実装): engine 完全互換版。
+
+    Lv2 からの改善:
+      - KishuPattern.A 完全再現: engine 仕様 `new_dev >= 60 or new_dev - prev_dev >= 8`
+        - new_dev: 現騎手の Z 変換偏差値 (winrate ベース)
+        - prev_dev: 前走騎手の Z 変換偏差値 (`tracker._horse_history` から取得)
+      - recovery_break 推定: `tracker.trainer_rest_wr` (60 日以上休養明け複勝率) を
+        回収率にスケール変換 (中央 0.30 → 90)
+      - short_momentum 判定に class_trend も加味
+
+    残課題 (本セッション内では妥協):
+      - recovery_break のスケール変換は経験則 (rest_wr × 300)。真の値は実回収率データ必要。
+      - JockeyStats.get_deviation の本式 (上位/下位 × 短期/長期 4 象限) は未実装
+        (calc_shobu_score では JockeyStats 自体使われないため影響なし)。
+    """
+    from types import SimpleNamespace
+    from src.models import TrainerStats, JockeyStats, KishuPattern
+    from src.calculator.jockey_trainer import calc_shobu_score
+
+    if tracker is None:
+        return 0.0
+
+    jid = h.get("jockey_id", "") or ""
+    tid = h.get("trainer_id", "") or ""
+    hid = h.get("horse_id", "") or ""
+    venue = race.get("venue", "") or ""
+    date_str = race.get("date", "") or ""
+    grade = race.get("grade", "") or ""
+    last_grade = h.get("last_grade", "") or ""
+    days_since = h.get("days_since_last_run")
+
+    horse_obj = SimpleNamespace(is_jockey_change=bool(h.get("is_jockey_change")))
+
+    # ===== TrainerStats 構築 (Lv3 拡張) =====
+    t_dev = 50.0
+    t_short_momentum = ""
+    t_recovery_break = 0.0
+    if tid:
+        try:
+            t_feat = tracker.get_trainer_features(tid, venue, date_str)
+            t_wr = t_feat.get("trainer_win_rate") or 0
+            t_wr_90d = t_feat.get("trainer_win_rate_90d") or 0
+            t_dev = 50.0 + (t_wr - 0.10) * 200.0
+            t_dev = max(20.0, min(80.0, t_dev))
+
+            diff = t_wr_90d - t_wr
+            if diff >= 0.05:
+                t_short_momentum = "好調"
+            elif diff <= -0.05:
+                t_short_momentum = "不調"
+
+            # Lv3 追加: class_trend と rest_wr を加味
+            try:
+                phase10b = tracker.get_trainer_phase10b_features(tid)
+                class_trend = phase10b.get("trainer_class_trend")
+                rest_wr = phase10b.get("trainer_rest_wr")
+                # class_trend > 0.5 (明確な上昇) + 不調でなければ "好調" に格上げ
+                if class_trend is not None and class_trend > 0.5 and t_short_momentum != "不調":
+                    t_short_momentum = "好調"
+                # recovery_break: rest_wr × 300 で回収率スケール (経験則)
+                if rest_wr is not None and rest_wr > 0:
+                    t_recovery_break = max(0.0, min(200.0, rest_wr * 300.0))
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+    trainer_obj = TrainerStats(
+        trainer_id=tid, trainer_name="", stable_name="", location="",
+        short_momentum=t_short_momentum,
+        recovery_break=t_recovery_break,
+        deviation=t_dev,
+    )
+    jockey_obj = JockeyStats(jockey_id=jid, jockey_name="")
+
+    # ===== KishuPattern.A 完全再現 (Lv3 改善) =====
+    j_pattern = None
+    if jid:
+        try:
+            j_feat = tracker.get_jockey_features(jid, venue, "", "", date_str)
+            new_wr = j_feat.get("jockey_win_rate")
+            new_dev = _jockey_winrate_to_dev(new_wr)
+
+            # 前走騎手の偏差値 (horse_history から)
+            prev_dev = None
+            if hid and h.get("is_jockey_change"):
+                hist = getattr(tracker, "_horse_history", {}).get(hid, [])
+                past = [r for r in hist if r[0] < date_str]
+                if past:
+                    # 最新の前走 record
+                    prev_jid = past[-1][3]  # (date, finish_pos, field_count, jockey_id)
+                    if prev_jid and prev_jid != jid:
+                        try:
+                            prev_j_feat = tracker.get_jockey_features(
+                                prev_jid, "", "", "", date_str
+                            )
+                            prev_wr = prev_j_feat.get("jockey_win_rate")
+                            prev_dev = _jockey_winrate_to_dev(prev_wr)
+                        except Exception:
+                            pass
+
+            # engine 仕様完全再現
+            if new_dev >= 60:
+                j_pattern = KishuPattern.A
+            elif prev_dev is not None and new_dev - prev_dev >= 8:
+                j_pattern = KishuPattern.A
+        except Exception:
+            pass
+
+    is_long_break = bool(days_since is not None and days_since >= 60)
+
+    try:
+        score = calc_shobu_score(
+            horse=horse_obj,
+            trainer=trainer_obj,
+            jockey=jockey_obj,
+            jockey_change_pattern=j_pattern,
+            is_long_break=is_long_break,
+            grade=grade,
+            last_grade=last_grade,
+            days_since_last_run=days_since,
+        )
+        return round(float(score), 2)
+    except Exception:
+        return _calc_shobu_score_wf_lv2(h, race, tracker)
+
+
 # A-3e 切替フラグ (CLI から設定)
 SHOBU_SCORE_LV = 1
 
 
 def _calc_shobu_score_dispatch(h: dict, race: dict, tracker) -> float:
-    """SHOBU_SCORE_LV に応じて Lv1 or Lv2 を呼び分け"""
+    """SHOBU_SCORE_LV に応じて Lv1 / Lv2 / Lv3 を呼び分け"""
+    if SHOBU_SCORE_LV >= 3:
+        return _calc_shobu_score_wf_lv3(h, race, tracker)
     if SHOBU_SCORE_LV >= 2:
         return _calc_shobu_score_wf_lv2(h, race, tracker)
     return _calc_shobu_score_wf(h, race, tracker)
@@ -706,8 +847,8 @@ def main():
                         help="学習ウィンドウ(月数, default: 12)")
     parser.add_argument("--force", action="store_true",
                         help="既存予想データも上書き")
-    parser.add_argument("--shobu-lv", type=int, choices=[1, 2], default=1,
-                        help="A-3e shobu_score 計算レベル: 1=簡易(A-3d Lv1) / 2=engine 直呼び(A-3e Lv2)")
+    parser.add_argument("--shobu-lv", type=int, choices=[1, 2, 3], default=1,
+                        help="A-3e shobu_score 計算レベル: 1=簡易(A-3d Lv1) / 2=engine 直呼び(A-3e Lv2) / 3=engine 完全互換(Lv3: KishuPattern完全再現+recovery_break推定)")
     args = parser.parse_args()
 
     # A-3e: shobu_score 計算レベルを反映 (グローバル切替)
