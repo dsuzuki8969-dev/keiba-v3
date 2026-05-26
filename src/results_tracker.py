@@ -7,6 +7,7 @@
   3. 集計時     → compare_and_aggregate() で的中率・収支・回収率を計算
 """
 
+import datetime
 import json
 import math
 import os
@@ -15,7 +16,13 @@ import shutil
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
-from config.settings import DEVIATION, PREDICTIONS_DIR, RESULTS_DIR
+from config.settings import (
+    DEVIATION,
+    LEAK_RISK_DAYS_DANGER,
+    LEAK_RISK_DAYS_WARN,
+    PREDICTIONS_DIR,
+    RESULTS_DIR,
+)
 from data.masters.venue_master import is_banei
 from src.log import get_logger
 
@@ -107,7 +114,11 @@ def save_prediction(date: str, analyses_by_venue: dict, *, lightweight: bool = F
     将来の ML 学習データとして使えるよう、全特徴量を網羅する。
     """
     os.makedirs(PREDICTIONS_DIR, exist_ok=True)
-    payload = {"date": date, "version": 2, "races": []}
+
+    # M-1: 生成タイムスタンプ記録 (学習リーク防止)
+    _generated_at = datetime.datetime.now().astimezone().isoformat()
+    payload = {"date": date, "version": 2, "races": [],
+               "generated_at": _generated_at, "race_date": date}
 
     # 血統・所属のDB補完用ルックアップ（一括構築）
     _bl_lookup = _build_bloodline_lookup()
@@ -846,6 +857,37 @@ def save_prediction(date: str, analyses_by_venue: dict, *, lightweight: bool = F
                     _bd["skip_reasons"] = list(set((_bd.get("skip_reasons") or []) + ["scratched"]))
                     _bd["message"] = "取消馬により買い目無効"
                     _race["bet_decision"] = _bd
+
+    # ── M-1: 学習リーク判定フラグを最終保存直前に付与 ──────────────
+    # race_date から何日後に pred.json を生成したかを記録し、
+    # 後追い予想 (結果学習済モデルでの再生成) を検出可能にする。
+    try:
+        _race_dt = datetime.date.fromisoformat(date)
+        _gen_dt = datetime.datetime.fromisoformat(payload.get("generated_at", _generated_at))
+        _leak_days = (_gen_dt.date() - _race_dt).days
+        if _leak_days <= 0:
+            _leak_flag = "OK"       # レース当日以前に生成 = 正常運用
+        elif _leak_days <= LEAK_RISK_DAYS_WARN:
+            _leak_flag = "WARN"     # race直後3日以内 = 補完再生成として許容
+        else:
+            _leak_flag = "DANGER"   # 4日以上後 = 学習リーク疑い濃厚
+        payload["_leak_risk_days"] = _leak_days
+        payload["_leak_risk_flag"] = _leak_flag
+        if _leak_flag == "DANGER":
+            logger.warning(
+                "学習リーク危険: race_date=%s, generated_at=%s, リーク日数=%d日 → _leak_risk_flag=DANGER",
+                date, payload.get("generated_at"), _leak_days,
+            )
+        elif _leak_flag == "WARN":
+            logger.info(
+                "学習リーク注意: race_date=%s, リーク日数=%d日 → _leak_risk_flag=WARN",
+                date, _leak_days,
+            )
+    except Exception as _le:
+        logger.warning("_leak_risk_flag 計算失敗: %s", _le)
+        payload.setdefault("_leak_risk_days", None)
+        payload.setdefault("_leak_risk_flag", "UNKNOWN")
+    # ────────────────────────────────────────────────────────────────
 
     with open(fpath, "w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)

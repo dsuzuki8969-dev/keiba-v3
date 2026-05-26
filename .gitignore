@@ -25,6 +25,8 @@ data/keiba.db-wal.bak_*
 # 2026-05-26 v5+γ 追加: 巨大 backup ディレクトリ (誤 commit で 4.2GB 混入事故あり)
 data/_backup_*/
 data/models/_backup_*/
+# 2026-05-27 追加: アーカイブ tar.gz (M-1 データ整理で 843MB 圧縮保管、git 管理外)
+data/_archive/
 data/cache/
 data/backup/
 data/csv/

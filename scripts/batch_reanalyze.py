@@ -142,7 +142,43 @@ def _process_date(date: str, workers: int, total: int, use_pred: bool = True) ->
     return date, success
 
 
+def _warn_leak_risk() -> None:
+    """
+    学習リーク危険警告を表示し、--i-understand-leak-risk フラグなしで終了する。
+    batch_reanalyze.py は過去 race を再生成するため、
+    結果学習済モデルで後追い予想 = 時系列リークが必ず発生する。
+    WF バックテスト評価など意図的な用途に限定するため、明示的フラグが必要。
+    """
+    def _p(msg: str = "") -> None:
+        """UTF-8 安全な print (Windows cp932 環境でも文字化けを回避)"""
+        try:
+            sys.stdout.buffer.write((msg + "\n").encode("utf-8", errors="replace"))
+            sys.stdout.buffer.flush()
+        except AttributeError:
+            print(msg)  # fallback: buffer がない環境
+
+    _p("=" * 70)
+    _p("[WARNING] batch_reanalyze.py は学習リーク発生源")
+    _p("=" * 70)
+    _p()
+    _p("このスクリプトは結果学習済モデルで過去 race を再生成します。")
+    _p("生成された pred.json は学習リーク有版となり、ROI 評価には使用禁止です。")
+    _p()
+    _p("詳細: memory/feedback_production_vs_wf_pred_distinction.md")
+    _p()
+    if "--i-understand-leak-risk" not in sys.argv:
+        _p("続行する場合: --i-understand-leak-risk フラグを付けて再実行してください")
+        _p("  例: python scripts/batch_reanalyze.py --start YYYY-MM-DD --end YYYY-MM-DD --i-understand-leak-risk")
+        sys.exit(1)
+    _p("[--i-understand-leak-risk 確認済] 学習リーク有版を生成します")
+    _p("=" * 70)
+    _p()
+
+
 def main():
+    # M-1: 起動時に学習リーク危険警告を必ず表示 (2026-05-27 追加)
+    _warn_leak_risk()
+
     parser = argparse.ArgumentParser(description="バッチ再分析スクリプト")
     parser.add_argument("--start", required=True, help="開始日 (YYYY-MM-DD)")
     parser.add_argument("--end", required=True, help="終了日 (YYYY-MM-DD)")
@@ -152,6 +188,10 @@ def main():
                         help="同時処理日数 (デフォルト: 6)")
     parser.add_argument("--dry-run", action="store_true",
                         help="実行せず対象日付を表示")
+    # M-1: 学習リーク危険警告の明示的承認フラグ
+    # _warn_leak_risk() で既にチェック済みだが、argparse にも登録してヘルプに表示する
+    parser.add_argument("--i-understand-leak-risk", action="store_true",
+                        help="学習リーク危険を理解した上で実行 (警告を確認済み)")
     parser.add_argument("--resume-after", default="",
                         help="指定日時(ISO)以降に更新済みのpred.jsonをスキップ (例: 2026-03-18T21:00)")
     parser.add_argument("--generate-missing", action="store_true",

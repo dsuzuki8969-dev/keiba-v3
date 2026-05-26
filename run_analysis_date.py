@@ -10,6 +10,7 @@
 中央（JRA）・地方（NAR）の当日全レースを順次分析し、
 個別HTMLと YYYYMMDD_全レース.html を生成する。
 """
+import datetime
 import gc
 import io
 import os
@@ -71,6 +72,42 @@ WORKERS = int(sys.argv[_workers_idx + 1]) if _workers_idx >= 0 and _workers_idx 
 # --venues 園田,船橋: 指定した競馬場のみ分析（カンマ区切り）
 _venues_idx = next((i for i, a in enumerate(sys.argv) if a == "--venues"), -1)
 VENUE_FILTER = sys.argv[_venues_idx + 1].split(",") if _venues_idx >= 0 and _venues_idx + 1 < len(sys.argv) else []
+
+# ─── M-1: 過去 race 再生成ロック (学習リーク防止) ─────────────────
+# race_date が今日より N_DAYS_LOCK 日以上前かつ既存 pred.json がある場合、
+# --allow-past-regen フラグなしでは処理を拒否する。
+ALLOW_PAST_REGEN = "--allow-past-regen" in sys.argv
+_race_date_obj = datetime.date.fromisoformat(DATE)
+_today = datetime.date.today()
+_days_diff = (_today - _race_date_obj).days
+
+# settings.py から閾値を読み込む (ここでは config モジュール未ロードのため直接 import)
+try:
+    from config.settings import LEAK_RISK_LOCK_DAYS as _LOCK_DAYS
+except ImportError:
+    _LOCK_DAYS = 3  # フォールバック: デフォルト値
+
+_pred_json_exists = os.path.isfile(
+    os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        "data", "predictions", f"{DATE.replace('-', '')}_pred.json",
+    )
+)
+
+if _days_diff > _LOCK_DAYS and _pred_json_exists and not ALLOW_PAST_REGEN:
+    P("[bold red]⚠ 学習リーク危険[/]: 過去 race の再生成は結果を学習済のモデルで予想する = リーク発生")
+    P(f"  race_date: {DATE} / 今日との差: {_days_diff} 日 / ロック閾値: {_LOCK_DAYS} 日")
+    P("  続行する場合は [bold yellow]--allow-past-regen[/] フラグを付けて再実行してください")
+    P("  例: python run_analysis_date.py {date} --allow-past-regen".format(date=DATE))
+    sys.exit(1)
+
+if _days_diff > _LOCK_DAYS and ALLOW_PAST_REGEN:
+    P("[bold yellow]⚠ --allow-past-regen で過去 race を再生成: 結果は学習リーク有 (本番運用評価には使用禁止)[/]")
+    logger.warning(
+        "過去 race 再生成 (学習リーク有): race_date=%s, 今日との差=%d日, allow_past_regen=True",
+        DATE, _days_diff,
+    )
+# ─────────────────────────────────────────────────────────────────
 
 DATE_KEY = DATE.replace("-", "")
 P(f"\n[bold white on #0d2b5e]  D-AI 競馬予想  日付: {DATE}（全レース）  [/]\n")
