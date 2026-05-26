@@ -26,13 +26,21 @@
 | D-1b | ✅ シミュ 144.5% は正しい (現 141.9%) / 13.8% は P0.2 分散端 |
 | A-3c | ✅ WF backtest に shobu_score = ML win_prob × 8.0 近似 |
 
-## 🚨 次セッション P0 (本日派生分)
+## 🚨 次セッション P0 (本日マスター承認順位)
 
-| ID | 内容 | 工数 |
-|---|---|---|
-| **G-7b** | DB race_results 残り 6,878 件 空 payouts_json 個別調査 (2025-04-19 等 results.json 不在日) | 1 時間 |
-| **D-1c** | 戦略 B 採用検討 (TOP2 印付き 0-1 が 42.9% 問題への対策案) | 半日 |
-| **A-3d** | shobu_score WF 近似値の精度検証 (フル engine 値との突合 1 日サンプル) | 半日 |
+| 順 | ID | 内容 | 工数 |
+|---:|---|---|---|
+| **1** | **A-3d** | shobu_score を WF backtest 内で **フル engine (calc_shobu_score) 経由**で計算 (A-3c の ML×8.0 近似を廃止)。Horse/TrainerStats/JockeyStats オブジェクト構築要 | 1 日 |
+| 2 | G-7b | DB race_results 残 6,878 件 空 payouts_json 個別調査 (2025-04-19 等 results.json 不在日) | 1 h |
+| 3 | D-1c | 戦略 B 採用検討 (TOP2 印付き 0-1 が 42.9% 対策案) | 半日 |
+
+## 📐 P1 設計確定済 (A-3d 完了後実装) — `docs/future_changes_post_a3.md`
+
+- B-3 composite 重み再較正 (2-3 日)
+- B-4 ◎ハズレ無印 20.3% 救済 (1-2 日・B-3 統合可)
+- D-4 複勝/馬連/ワイド 導入 (2-3 日)
+- D-6 期待値ベース買い目選定 (3-5 日)
+- A-4 金沢 -41.5pt 個別調査
 
 ## 📐 P1-P2 設計確定済 (A-3 完了後実装) — `docs/future_changes_post_a3.md` 参照
 

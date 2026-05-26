@@ -733,10 +733,9 @@ def _compute_m_prime_sanrenpuku(year_filter: str) -> dict:
                 or r.get("sanrenpuku_confidence", "")
                 or ""
             )
-            # G-8 (2026-05-26): 現運用 (handoff_2026-05-25) では E=skip。
-            # 過去 pred.json には E race でも tickets が残っているが、現運用基準で除外する。
-            if confidence == "E":
-                continue
+            # G-8 (2026-05-26 マスター承認): シミュ完全性のため E race も含めて集計する。
+            # 過去 pred.json には E でも tickets が残っているため「もし買っていたら」型シミュとして保持。
+            # 現運用 (E=skip) との乖離はフロント側で確認する。
 
             # tickets から三連複チケットを取得
             tix = [t for t in (r.get("tickets", []) or []) if t.get("type") == "三連複"]
