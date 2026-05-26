@@ -30,21 +30,38 @@
 | B | G-7c | 残 399 件は **永久に修復不可能** (DB only ゴミ row + maintenance 7 日窓超過) → 案 A 放置採用 / 教訓: `feedback_g6_maintenance_7day_limit.md` |
 | C | A-3e Lv2 | engine 直呼び実装完了 (`scripts/walk_forward_backtest.py` `_calc_shobu_score_wf_lv2` 新関数 + `--shobu-lv 2` CLI / 既存 Lv1 不変 / mock 一致率 67%) |
 
-## ✅ 5/26 セッション v3 完結 — A-3e Lv3 (engine 完全互換) 実装
+## 🚨 5/26 v4 緊急発見: D-1d 派 5b 採用判断 完全訂正
 
-詳細: `memory/handoff_2026-05-26_v3.md`
+詳細: `memory/handoff_2026-05-26_v4.md`
 
-- `scripts/walk_forward_backtest.py:_calc_shobu_score_wf_lv3` 新関数 (KishuPattern.A 完全再現 + recovery_break 推定 + class_trend 加味)
-- mock 8 ケース検証完了 (Case 7/8 乗り替わり判定 engine 通り発火/抑制)
-- CLI `--shobu-lv {1,2,3}` / 既存 Lv1/Lv2 不変・隔離原則遵守
+A-3e Lv3 全期間 WF backtest (29 月 / 81 分) 完走後の再集計で重大発見:
 
-## 🚨 次セッション P0 (5/26 v3 反映)
+| 案 | v2 値 (本番運用 backup) | v4 値 (WF リーク排除) | 差分 |
+|---|---:|---:|---:|
+| 案 4 ◎単勝 | 183.5% | **72.7%** | -110pt |
+| 派 5b ◎ のみ | 207.3% | **79.0%** | **-128pt** |
+
+**真因**: v2 D-1d 集計時の pred.json は本番運用版 (学習リークあり) であり、WF backtest pred.json (リーク排除) ではなかった。本来 WF で評価すべきだった。
+
+→ **派 5b 採用候補 #1 確定は完全棄却**。**現運用 ◎単勝も WF 評価で赤字 (72.7%)**。
+
+## 🚨 次セッション 緊急 P0 (v4 全面改訂)
 
 | 順 | ID | 内容 | 工数 |
 |---:|---|---|---|
-| **1** | **A-3e Step6** | 全期間 WF backtest を `--shobu-lv 3 --force` で実行し shobu_score を Lv3 化 | **2-3 時間** (バックグラウンド推奨) |
-| 2 | **D-1c/D-1d Lv3 再検証** | Lv3 で再計算した shobu_score で戦略 B / 派 5b の ROI を再集計 | 半日 |
-| 3 | **B-3 + 派 5b 統合実装** | composite 重み ROI ベース再較正 + 派 5b 採用 (◎ かつ二重一致 単勝 1 点) | 2-3 日 |
+| **1** | **L-1 学習リーク根本究明** | 本番運用 vs WF backtest で +127〜148pt の差を生む特徴量 / コードパスを特定 | **3-5 日** |
+| **2** | L-2 WF backtest bug 検証 | Layer 2 _horse_history 日付フィルタ / オッズリーク有無を再検証 | 1-2 日 |
+| **3** | L-3 ML モデル全体再設計判断 | リーク排除した上での運用妥当性評価 | 半日 |
+
+### 一時凍結 (L-1 究明完了まで)
+
+- **B-3 composite 重み再較正**
+- **B-4 ◎ハズレ救済**
+- **D-4 複勝/馬連/ワイド**
+- **D-6 期待値ベース買い目選定**
+- **派 5b 統合実装** (`docs/b3_strategy5b_integration_supplement.md`)
+
+これらは全て「本番運用 pred.json は信頼できる」前提で計画されていたが、その前提が崩れた。L-1 完了後に再評価。
 
 ## 📐 P1 設計確定済 (A-3e 完了後実装) — `docs/future_changes_post_a3.md`
 

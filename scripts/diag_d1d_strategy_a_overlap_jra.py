@@ -80,10 +80,16 @@ def _bootstrap_roi_ci(samples: list[tuple[int, int]], n_resample: int = 1000, se
 
 
 def _race_pick_bet_pay(race: dict, top1: int, tansho_pay: int, plan: str) -> tuple[int, int]:
-    """plan に応じて (bet, pay) を返す。買わなければ (0, 0)。"""
+    """plan に応じて (bet, pay) を返す。買わなければ (0, 0)。
+
+    NOTE: A-3e Lv3 修正 (2026-05-26 v3):
+      旧 active filter は `shobu_score > 0` だったが、Lv3 で engine の負値が普通に出る
+      ようになったため `shobu_score is not None` に緩和。これにより Lv1/Lv3 で集計対象
+      race 数がフェアに揃う (Lv3 で ROI 半減の主因はこの filter だった)。
+    """
     horses = race.get("horses", [])
     active = [h for h in horses
-              if not h.get("is_scratched") and (h.get("shobu_score") or 0) > 0]
+              if not h.get("is_scratched") and h.get("shobu_score") is not None]
     if len(active) < 2:
         return (0, 0)
 

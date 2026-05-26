@@ -1,6 +1,20 @@
 # A-3e 設計書: フル engine 経由 calc_shobu_score を WF backtest に接続
 
-> 作成: 2026-05-26 / 状態: 設計完了・Lv2 部分実装着手 / 次セッションで Lv3 完了予定
+> 作成: 2026-05-26 / **状態: Lv3 実装完了 (v3 セッション中)** / 残: 全期間 WF backtest 実行 + D-1c/D-1d Lv3 再検証
+
+## ✅ Lv3 実装完了 (2026-05-26 v3)
+
+| Step | 状態 | 成果物 |
+|---|---|---|
+| 1. RollingStatsTracker スキーマ把握 | ✅ | get_jockey_features / get_trainer_features / phase10b 確認 |
+| 2. jockey 偏差値 helper | ✅ | `_jockey_winrate_to_dev` (Z 変換 中央 0.10 / 1σ=0.05) |
+| 3. trainer 偏差値 + recovery_break + short_momentum 拡張 | ✅ | `_calc_shobu_score_wf_lv3` 内に統合 |
+| 4. Lv3 関数 + KishuPattern.A 完全再現 | ✅ | `_horse_history` から前走 jockey 取得 → engine 仕様判定 |
+| 5. mock テスト Lv1/Lv2/Lv3 比較 | ✅ | 8 ケース検証 (Case 7/8 で乗り替わり判定 engine 通り) |
+| **6. 全期間 WF backtest --shobu-lv 3 --force** | 🔄 **実行中** (本セッション) | `logs/wf_lv3_full.log` |
+| 7. D-1c/D-1d Lv3 再検証 | ⏳ Step 6 完了後 | `scripts/diag_d1d_strategy_a_overlap_jra.py` 再実行 |
+
+---
 
 ## 背景
 
