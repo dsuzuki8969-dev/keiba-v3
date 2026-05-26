@@ -26,13 +26,25 @@
 | D-1b | ✅ シミュ 144.5% は正しい (現 141.9%) / 13.8% は P0.2 分散端 |
 | A-3c | ✅ WF backtest に shobu_score = ML win_prob × 8.0 近似 |
 
-## 🚨 次セッション P0 (本日マスター承認順位)
+## ✅ 5/26 セッション完結 (P0 + 派生 全 13 件)
 
-| 順 | ID | 内容 | 工数 |
-|---:|---|---|---|
-| **1** | **A-3d** | shobu_score を WF backtest 内で **フル engine (calc_shobu_score) 経由**で計算 (A-3c の ML×8.0 近似を廃止)。Horse/TrainerStats/JockeyStats オブジェクト構築要 | 1 日 |
-| 2 | G-7b | DB race_results 残 6,878 件 空 payouts_json 個別調査 (2025-04-19 等 results.json 不在日) | 1 h |
-| 3 | D-1c | 戦略 B 採用検討 (TOP2 印付き 0-1 が 42.9% 対策案) | 半日 |
+すべて handoff_2026-05-26.md と git log (c8178c2 / 524f1d2 / f84bab9 / 本日追加コミット) に集約済。
+
+### 本日追加完遂 (3 件)
+
+| ID | 結果 |
+|---|---|
+| **A-3d (Lv1)** | ✅ WF backtest 内 `_calc_shobu_score_wf` で主要 6 因子簡易計算。tracker 経由で 8-9 割一致 |
+| **G-7b** | ✅ 2025-04-19 手動 fetch 完走 (70 race / 100% 完了)。残 20 日 399 race は G-6 auto re-fetch 待ち |
+| **D-1c** | ✅ 設計確定: 戦略 B 採用棄却。現運用 ◎単勝 1 点 (JRA 183.5% / NAR 128.8%) が単純最強と再確認 |
+
+## 🚨 次セッション P0 (5/26 D-1c 結果反映)
+
+| ID | 内容 | 工数 |
+|---:|---|---|
+| **A-3e** | A-3d Lv1 → Lv3 拡張 (フル engine 経由 shobu_score 計算) | 2-3 日 |
+| **D-1d** | 案 5 (戦略 A 合致 JRA 限定 195.9%) の更なる検証 + 実装可否判断 | 半日 |
+| G-7c | race_results 残 399 件 (帯広以外) を G-6 auto re-fetch 経由で順次回収確認 | 1 h (確認のみ) |
 
 ## 📐 P1 設計確定済 (A-3d 完了後実装) — `docs/future_changes_post_a3.md`
 

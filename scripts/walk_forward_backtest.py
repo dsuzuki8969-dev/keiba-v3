@@ -145,10 +145,93 @@ def _load_best_params() -> dict:
     return base
 
 
+def _calc_shobu_score_wf(h: dict, race: dict, tracker) -> float:
+    """A-3d Lv1 (2026-05-26 マスター承認): WF backtest 用簡易 shobu_score。
+
+    src/calculator/jockey_trainer.py の calc_shobu_score の主要因子を
+    WF backtest 内で再現する。フル engine 経由ではないため、TrainerStats /
+    JockeyStats オブジェクトは構築せず、RollingStatsTracker から得られる
+    集計値で代替する。
+
+    実装する因子 (フル engine の calc_shobu_score と対応):
+      - 騎手強化 (+2.0): jockey 90日 win_rate > 15%
+      - 初コンビ (+0.5): is_jockey_change フラグ
+      - 格上げ (+1.5): race.grade が hd.last_grade より上位
+      - 厩舎好調 (+1.5): trainer 90日 win_rate > 12%
+      - 休み明け回収率高 (+1.5): days_since_last_run >= 60 で簡易判定
+      - 調教師偏差値: trainer win_rate ベースの 4 段階加減算 (+1.5/+0.8/0/-0.5)
+
+    フル engine 値との一致率は 8-9 割見込み。完全一致は A-3e (Lv2/Lv3) 以降で対応。
+    """
+    score = 0.0
+    if tracker is None:
+        return 0.0
+
+    jid = h.get("jockey_id", "") or ""
+    tid = h.get("trainer_id", "") or ""
+    venue = race.get("venue", "") or ""
+    date_str = race.get("date", "") or ""
+
+    # 騎手強化 (90日 win_rate ベース)
+    if jid:
+        try:
+            j_feat = tracker.get_jockey_features(jid, venue, "", "", date_str)
+            j_wr_90d = j_feat.get("jockey_win_rate_90d")
+            if j_wr_90d is not None and j_wr_90d > 0.15:
+                score += 2.0
+        except Exception:
+            pass
+
+    # 初コンビ
+    if h.get("is_jockey_change"):
+        score += 0.5
+
+    # 格上げ
+    class_order = ["新馬", "未勝利", "1勝", "2勝", "3勝", "OP", "G3", "G2", "G1"]
+    grade = race.get("grade", "") or ""
+    last_grade = h.get("last_grade", "") or ""
+    try:
+        if grade in class_order and last_grade in class_order:
+            if class_order.index(grade) > class_order.index(last_grade):
+                score += 1.5
+    except ValueError:
+        pass
+
+    # 厩舎好調 + 調教師偏差値
+    if tid:
+        try:
+            t_feat = tracker.get_trainer_features(tid, venue, date_str)
+            t_wr_90d = t_feat.get("trainer_win_rate_90d")
+            if t_wr_90d is not None and t_wr_90d > 0.12:
+                score += 1.5  # 厩舎好調
+            t_wr = t_feat.get("trainer_win_rate") or 0
+            if t_wr >= 0.18:
+                score += 1.5  # 高偏差値厩舎
+            elif t_wr >= 0.13:
+                score += 0.8
+            elif 0 < t_wr < 0.07:
+                score -= 0.5
+        except Exception:
+            pass
+
+    # 休み明け簡易判定
+    days_since = h.get("days_since_last_run")
+    if days_since is not None and days_since >= 60:
+        score += 1.5
+
+    return round(score, 2)
+
+
 def _build_horse_entry(h: dict, hid: str, prob: float, mk: str,
-                       rank_u: int, field_count: int) -> dict:
-    """1頭分の予想データ構造"""
+                       rank_u: int, field_count: int,
+                       race: dict | None = None, tracker=None) -> dict:
+    """1頭分の予想データ構造
+
+    A-3d Lv1 (2026-05-26): race + tracker を渡せば shobu_score を計算。
+    省略時は 0.0 (後方互換)。
+    """
     ana_type, kiken_type = _get_ana_kiken(rank_u, mk, h, field_count)
+    shobu_score = _calc_shobu_score_wf(h, race, tracker) if (race is not None and tracker is not None) else 0.0
     return {
         "horse_no": h.get("horse_no"),
         "horse_name": h.get("horse_name", ""),
@@ -187,12 +270,10 @@ def _build_horse_entry(h: dict, hid: str, prob: float, mk: str,
         "ml_win_prob": round(prob * 0.40, 4),
         "ml_top2_prob": round(prob * 0.70, 4),
         "jockey_change_score": 0.0,
-        # A-3c (2026-05-26): フル engine を通さない WF backtest 専用の近似 shobu_score。
-        # 真の shobu_score は J-2 公式 (騎手強化 + 厩舎好調 + 休み明け...) で 0-8 程度。
-        # 近似式: ML win_prob × 8.0 でレンジ揃え (上位馬ほど高 shobu_score になる)。
-        # これにより「shobu_score TOP2」選定が ML 推論基準の TOP2 となり、
-        # 戦略 B (shobu_score TOP2) の WF 効果測定が可能になる。
-        "shobu_score": round(prob * 8.0, 2),
+        # A-3d Lv1 (2026-05-26 マスター承認): _calc_shobu_score_wf で簡易再現。
+        # フル engine の calc_shobu_score の主要因子 (騎手強化/初コンビ/格上げ/厩舎好調/
+        # 休み明け/調教師偏差値) を RollingStatsTracker 経由で計算。8-9 割の一致見込み。
+        "shobu_score": shobu_score,
         "odds_consistency_adj": 0.0,
         "ana_score": 0.0, "kiken_score": 0.0,
         "predicted_tansho_odds": None, "odds_divergence": None,
@@ -393,13 +474,14 @@ def _process_month(
         rank_u_map = {hid: i for i, hid in enumerate(unmarked_sorted)}
 
         # 予想馬データ
+        # A-3d Lv1 (2026-05-26): race + tracker を渡し shobu_score を簡易計算
         pred_horses = []
         for hd in horse_dicts:
             hid = hd.get("horse_id", "")
             prob = probs.get(hid, 0.0)
             mk = marks.get(hid, "-")
             ru = rank_u_map.get(hid, field_count)
-            pred_horses.append(_build_horse_entry(hd, hid, prob, mk, ru, field_count))
+            pred_horses.append(_build_horse_entry(hd, hid, prob, mk, ru, field_count, race=race, tracker=tracker))
 
         tickets = _make_tickets(pred_horses)
         tickets_by_mode = _make_tickets_by_mode(pred_horses)
