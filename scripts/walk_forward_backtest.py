@@ -222,6 +222,112 @@ def _calc_shobu_score_wf(h: dict, race: dict, tracker) -> float:
     return round(score, 2)
 
 
+def _calc_shobu_score_wf_lv2(h: dict, race: dict, tracker) -> float:
+    """A-3e Step 1 (Lv2): フル engine `calc_shobu_score` 直接呼び。
+
+    tracker の win_rate を擬似偏差値 (平均 50, 標準偏差 10) に変換し、
+    最低限の Horse / TrainerStats / JockeyStats を構築して engine の
+    calc_shobu_score をそのまま呼ぶ。
+
+    Lv1 (簡易再現) との差:
+      - 厩舎好調判定: 90d - 全期間 win_rate 差 (engine 互換) ← Lv1 は 90d 単体閾値
+      - 調教師偏差値: Z 変換 (engine 互換) ← Lv1 は win_rate 4 段階
+      - 休み明け精密: calc_break_adjustment 関数呼び (engine 互換) ← Lv1 は単一閾値
+
+    Lv1 → Lv2 で残る乖離 (Lv3 で対応):
+      - KishuPattern.A: 偏差値ベース判定が必要だが、Lv2 では win_rate > 15% で代用
+      - recovery_break: tracker 未集計、Lv2 では 0.0 固定 → calc_break_adjustment が
+        recovery_break=0 で動く挙動 (中央テーブル参照) に依存
+    """
+    from types import SimpleNamespace
+    from src.models import TrainerStats, JockeyStats, KishuPattern
+    from src.calculator.jockey_trainer import calc_shobu_score
+
+    if tracker is None:
+        return 0.0
+
+    jid = h.get("jockey_id", "") or ""
+    tid = h.get("trainer_id", "") or ""
+    venue = race.get("venue", "") or ""
+    date_str = race.get("date", "") or ""
+    grade = race.get("grade", "") or ""
+    last_grade = h.get("last_grade", "") or ""
+    days_since = h.get("days_since_last_run")
+
+    # Horse 最小オブジェクト (calc_shobu_score は is_jockey_change のみ参照)
+    horse_obj = SimpleNamespace(is_jockey_change=bool(h.get("is_jockey_change")))
+
+    # TrainerStats 構築 (win_rate → 偏差値 Z 変換)
+    t_dev = 50.0
+    t_short_momentum = ""
+    if tid:
+        try:
+            t_feat = tracker.get_trainer_features(tid, venue, date_str)
+            t_wr = t_feat.get("trainer_win_rate") or 0
+            t_wr_90d = t_feat.get("trainer_win_rate_90d") or 0
+            # win_rate 0.10 を中央 50 とする簡易 Z (1σ=0.05)
+            t_dev = 50.0 + (t_wr - 0.10) * 200.0
+            t_dev = max(20.0, min(80.0, t_dev))  # 極端値クリップ
+            # short_momentum: 90d - 全期間 >= +0.05 で好調 / <= -0.05 で不調
+            diff = t_wr_90d - t_wr
+            if diff >= 0.05:
+                t_short_momentum = "好調"
+            elif diff <= -0.05:
+                t_short_momentum = "不調"
+        except Exception:
+            pass
+
+    trainer_obj = TrainerStats(
+        trainer_id=tid, trainer_name="", stable_name="", location="",
+        short_momentum=t_short_momentum,
+        recovery_break=0.0,  # Lv3 で tracker から取得
+        deviation=t_dev,
+    )
+
+    # JockeyStats は calc_shobu_score では未使用だがシグネチャ上必要
+    jockey_obj = JockeyStats(jockey_id=jid, jockey_name="")
+
+    # KishuPattern (Lv2 では Lv1 と同様 jockey 90d win_rate > 15% で代用)
+    j_pattern = None
+    if jid:
+        try:
+            j_feat = tracker.get_jockey_features(jid, venue, "", "", date_str)
+            j_wr_90d = j_feat.get("jockey_win_rate_90d")
+            if j_wr_90d is not None and j_wr_90d > 0.15:
+                j_pattern = KishuPattern.A
+        except Exception:
+            pass
+
+    is_long_break = bool(days_since is not None and days_since >= 60)
+
+    try:
+        score = calc_shobu_score(
+            horse=horse_obj,
+            trainer=trainer_obj,
+            jockey=jockey_obj,
+            jockey_change_pattern=j_pattern,
+            is_long_break=is_long_break,
+            grade=grade,
+            last_grade=last_grade,
+            days_since_last_run=days_since,
+        )
+        return round(float(score), 2)
+    except Exception:
+        # Lv2 で engine 呼び出しに失敗した場合は Lv1 にフォールバック
+        return _calc_shobu_score_wf(h, race, tracker)
+
+
+# A-3e 切替フラグ (CLI から設定)
+SHOBU_SCORE_LV = 1
+
+
+def _calc_shobu_score_dispatch(h: dict, race: dict, tracker) -> float:
+    """SHOBU_SCORE_LV に応じて Lv1 or Lv2 を呼び分け"""
+    if SHOBU_SCORE_LV >= 2:
+        return _calc_shobu_score_wf_lv2(h, race, tracker)
+    return _calc_shobu_score_wf(h, race, tracker)
+
+
 def _build_horse_entry(h: dict, hid: str, prob: float, mk: str,
                        rank_u: int, field_count: int,
                        race: dict | None = None, tracker=None) -> dict:
@@ -231,7 +337,8 @@ def _build_horse_entry(h: dict, hid: str, prob: float, mk: str,
     省略時は 0.0 (後方互換)。
     """
     ana_type, kiken_type = _get_ana_kiken(rank_u, mk, h, field_count)
-    shobu_score = _calc_shobu_score_wf(h, race, tracker) if (race is not None and tracker is not None) else 0.0
+    # A-3e (2026-05-26): SHOBU_SCORE_LV で Lv1 (簡易) / Lv2 (engine 直呼び) を dispatch
+    shobu_score = _calc_shobu_score_dispatch(h, race, tracker) if (race is not None and tracker is not None) else 0.0
     return {
         "horse_no": h.get("horse_no"),
         "horse_name": h.get("horse_name", ""),
@@ -599,7 +706,17 @@ def main():
                         help="学習ウィンドウ(月数, default: 12)")
     parser.add_argument("--force", action="store_true",
                         help="既存予想データも上書き")
+    parser.add_argument("--shobu-lv", type=int, choices=[1, 2], default=1,
+                        help="A-3e shobu_score 計算レベル: 1=簡易(A-3d Lv1) / 2=engine 直呼び(A-3e Lv2)")
     args = parser.parse_args()
+
+    # A-3e: shobu_score 計算レベルを反映 (グローバル切替)
+    global SHOBU_SCORE_LV
+    SHOBU_SCORE_LV = args.shobu_lv
+    if SHOBU_SCORE_LV >= 2:
+        print(f"  shobu_score: Lv{SHOBU_SCORE_LV} (engine 直呼び / A-3e Step 1)")
+    else:
+        print(f"  shobu_score: Lv{SHOBU_SCORE_LV} (簡易再現 / A-3d)")
 
     t_total = time.time()
 

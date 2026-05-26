@@ -20,13 +20,23 @@
 
 ---
 
-## 🚨 次セッション P0
+## ✅ 5/26 セッション v2 完結 (A.B.C 連続完走)
+
+詳細: `memory/handoff_2026-05-26_v2.md`
+
+| 区分 | ID | 結果 |
+|---|---|---|
+| A | D-1d | **派 5b (二重一致 ∩ ◎ のみ) ROI 207.3% 最強候補確定** (CI [184.9, 232.6] / 3 年安定 / 月別負け 9/95) |
+| B | G-7c | 残 399 件は **永久に修復不可能** (DB only ゴミ row + maintenance 7 日窓超過) → 案 A 放置採用 / 教訓: `feedback_g6_maintenance_7day_limit.md` |
+| C | A-3e Lv2 | engine 直呼び実装完了 (`scripts/walk_forward_backtest.py` `_calc_shobu_score_wf_lv2` 新関数 + `--shobu-lv 2` CLI / 既存 Lv1 不変 / mock 一致率 67%) |
+
+## 🚨 次セッション P0 (5/26 v2 反映)
 
 | 順 | ID | 内容 | 工数 |
 |---:|---|---|---|
-| **1** | **A-3e** | A-3d Lv1 → Lv3 拡張: フル engine 経由 (`calc_shobu_score`) shobu_score 計算。Horse/TrainerStats/JockeyStats 構築 | 2-3 日 |
-| 2 | **D-1d** | 案 5 (戦略 A 合致 JRA 限定 ROI 195.9%) の更なる検証 + 採用判断 | 半日 |
-| 3 | G-7c | race_results 残 399 件 (帯広以外) を G-6 auto re-fetch で順次回収確認 | 1 h |
+| **1** | **A-3e Lv3** | tracker 拡張 (jockey/trainer 偏差値 + recovery_break) + 全期間 backfill + WF backtest 再実行 | 2-3 日 |
+| 2 | **D-1c/D-1d 再検証** | A-3e Lv3 完了後、戦略 B 採用棄却 + 派 5b 採用候補の結論を Lv3 数値で再評価 | 半日 |
+| 3 | **B-3 + 派 5b 統合** | composite 重み ROI ベース再較正 + 派 5b 採用 (◎ かつ二重一致 単勝 1 点) | 2-3 日 |
 
 ## 📐 P1 設計確定済 (A-3e 完了後実装) — `docs/future_changes_post_a3.md`
 
