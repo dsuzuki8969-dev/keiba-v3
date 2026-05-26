@@ -22,6 +22,9 @@ data/keiba_v3.db
 data/keiba.db.bak_*
 data/keiba.db-shm.bak_*
 data/keiba.db-wal.bak_*
+# 2026-05-26 v5+γ 追加: 巨大 backup ディレクトリ (誤 commit で 4.2GB 混入事故あり)
+data/_backup_*/
+data/models/_backup_*/
 data/cache/
 data/backup/
 data/csv/
