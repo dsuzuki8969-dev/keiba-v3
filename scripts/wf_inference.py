@@ -466,7 +466,68 @@ def load_pop_stats_for_period(wf_name: str) -> Optional[dict]:
         return None
 
 
-def update_pred_file(fpath, race_updates, dry_run=False, pop_stats=None, use_head_win=True):
+def apply_ev_based_mark(horses: list, ml_probs_win: dict, ev_threshold: float) -> bool:
+    """EV (期待値 = ml_win_prob × odds) ベースで ◎ を再割当する MVP 実装
+
+    試行 #1 (5/27 v6) で EV >= 1.0 は ROI -32.5pt で大失敗 (穴馬選定問題)。
+    残置: 別アプローチ比較用ベンチマーク。
+    """
+    active = [h for h in horses if not h.get("is_scratched") and not h.get("scrape_failed")]
+    if not active:
+        return False
+    ev_list = []
+    for h in active:
+        hid = str(h.get("horse_id", ""))
+        ml_win = ml_probs_win.get(hid) if ml_probs_win else None
+        if ml_win is None:
+            ml_win = h.get("ml_win_prob") or 0.0
+        odds = h.get("odds") or 0.0
+        if ml_win > 0 and odds > 0:
+            ev_list.append((h, ml_win * odds))
+    if not ev_list:
+        return False
+    max_h, max_ev = max(ev_list, key=lambda x: x[1])
+    if max_ev < ev_threshold:
+        return False
+    for h in horses:
+        if h.get("mark") in ("◎", "◉"):
+            h["mark"] = ""
+    max_h["mark"] = "◎"
+    return True
+
+
+def apply_head_win_top_mark(horses: list, ml_probs_win: dict) -> bool:
+    """head_win TOP1 を ◎ に再割当する (試行 #4)
+
+    composite ベースの ◎ を解除し、head_win 確率最大馬を ◎ に上書き。
+    他の印 (○▲△★☆×) は既存維持。
+
+    Returns: True if ◎ を上書きした
+    """
+    active = [h for h in horses if not h.get("is_scratched") and not h.get("scrape_failed")]
+    if not active:
+        return False
+    # head_win 確率最大馬を取得 (ml_probs_win 優先 / fallback h["ml_win_prob"])
+    win_list = []
+    for h in active:
+        hid = str(h.get("horse_id", ""))
+        ml_win = ml_probs_win.get(hid) if ml_probs_win else None
+        if ml_win is None:
+            ml_win = h.get("ml_win_prob") or 0.0
+        if ml_win > 0:
+            win_list.append((h, ml_win))
+    if not win_list:
+        return False
+    max_h, _ = max(win_list, key=lambda x: x[1])
+    # 既存 ◎/◉ クリア + max_h を ◎ に
+    for h in horses:
+        if h.get("mark") in ("◎", "◉"):
+            h["mark"] = ""
+    max_h["mark"] = "◎"
+    return True
+
+
+def update_pred_file(fpath, race_updates, dry_run=False, pop_stats=None, use_head_win=True, ev_threshold=None, use_head_win_mark=False):
     """pred.json を更新: ml_composite_adj → composite 再計算 → marks → tickets
 
     Args:
@@ -478,6 +539,7 @@ def update_pred_file(fpath, race_updates, dry_run=False, pop_stats=None, use_hea
                    popularity_blend を適用する。None の場合はスキップ。
         use_head_win: True の場合は head_win 出力を win_prob として直接採用 (default: True)
                       False の場合は既存 softmax を使用 (rollback 用)
+        ev_threshold: EV ベース ◎ 選定の閾値。None なら無効、float 値なら EV >= 閾値で ◎ 上書き
     """
     with open(fpath, "r", encoding="utf-8") as f:
         data = json.load(f)
@@ -538,6 +600,14 @@ def update_pred_file(fpath, race_updates, dry_run=False, pop_stats=None, use_hea
         # win_prob を確定した後に blend する
         if pop_stats is not None:
             _apply_popularity_blend_wf(race, pop_stats)
+
+        # 試行錯誤: EV ベース ◎ 上書き (--ev-threshold 指定時のみ)
+        if ev_threshold is not None:
+            apply_ev_based_mark(race.get("horses", []), ml_probs_win, ev_threshold)
+
+        # 試行 #4: head_win TOP1 を ◎ に直接置換 (--use-head-win-mark 指定時)
+        if use_head_win_mark:
+            apply_head_win_top_mark(race.get("horses", []), ml_probs_win)
 
         # tickets 再生成
         confidence = race.get("overall_confidence", "") or race.get("confidence", "B") or "B"
@@ -693,7 +763,7 @@ def load_ml_races_for_inference(start_date: str, end_date: str):
     return all_races
 
 
-def run_wf_period(period_name: str, config: dict, dry_run: bool = False, use_head_win: bool = True):
+def run_wf_period(period_name: str, config: dict, dry_run: bool = False, use_head_win: bool = True, ev_threshold=None, use_head_win_mark=False):
     """1つの WF 期間の推論を実行
 
     Args:
@@ -702,6 +772,7 @@ def run_wf_period(period_name: str, config: dict, dry_run: bool = False, use_hea
         dry_run: True の場合は書き込みしない
         use_head_win: True の場合は head_win 出力を win_prob として直接採用 (default: True)
                       False の場合は既存 softmax を使用 (rollback 用)
+        ev_threshold: EV ベース ◎ 選定の閾値 (float / None) — 試行錯誤用
     """
     model_dir = config["model_dir"]
     train_max = config["train_max"]
@@ -858,7 +929,8 @@ def run_wf_period(period_name: str, config: dict, dry_run: bool = False, use_hea
 
         race_updates = date_race_probs[date_key]
         n = update_pred_file(fpath, race_updates, dry_run=dry_run, pop_stats=pop_stats,
-                             use_head_win=use_head_win)
+                             use_head_win=use_head_win, ev_threshold=ev_threshold,
+                             use_head_win_mark=use_head_win_mark)
         if n > 0:
             files_updated += 1
             races_updated += n
@@ -886,19 +958,29 @@ def main():
     parser.add_argument("--dry-run", action="store_true", help="書き込みなし")
     parser.add_argument("--no-head-win", action="store_true",
                         help="head_win モデルを使わず既存 softmax で win_prob を計算 (rollback 用)")
+    parser.add_argument("--ev-threshold", type=float, default=None,
+                        help="EV (head_win × odds) ベース ◎ 選定の閾値。指定時のみ有効。例: --ev-threshold 1.0")
+    parser.add_argument("--use-head-win-mark", action="store_true",
+                        help="head_win TOP1 を ◎ に直接置換 (試行 #4)")
     args = parser.parse_args()
 
-    # use_head_win: デフォルト True。--no-head-win フラグで False に切り替え可能
     use_head_win = not args.no_head_win
+    ev_threshold = args.ev_threshold
+    use_head_win_mark = args.use_head_win_mark
 
     periods = WF_PERIODS if args.period == "all" else {args.period: WF_PERIODS[args.period]}
     total_start = time.time()
 
-    print(f"use_head_win={use_head_win} ({'head_win モデルを使用' if use_head_win else 'softmax (既存) を使用'})")
+    print(f"use_head_win={use_head_win}")
+    if ev_threshold is not None:
+        print(f"EV ベース ◎ 選定 有効: ev_threshold={ev_threshold}")
+    if use_head_win_mark:
+        print(f"head_win TOP1 = ◎ 直接置換 有効")
 
     results = {}
     for name, config in periods.items():
-        r = run_wf_period(name, config, dry_run=args.dry_run, use_head_win=use_head_win)
+        r = run_wf_period(name, config, dry_run=args.dry_run, use_head_win=use_head_win,
+                          ev_threshold=ev_threshold, use_head_win_mark=use_head_win_mark)
         results[name] = r
 
     print(f"\n{'='*60}")
