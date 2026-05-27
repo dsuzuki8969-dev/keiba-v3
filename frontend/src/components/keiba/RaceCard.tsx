@@ -61,6 +61,8 @@ interface RaceData {
   head_count?: number;
   grade?: string;
   overall_confidence?: string;
+  tansho_confidence?: string;
+  sanrenpuku_confidence?: string;
   honmei_name?: string;
   honmei_mark?: string;
   honmei_no?: number;
@@ -101,13 +103,11 @@ export const RaceCard = memo(function RaceCard({ race, onOpen, winPctRank, hitRe
 
   const markKey = race.honmei_mark || "";
 
-  // T-039 + 5/4 マスター指摘: 4 状態枠色ロジック
-  // 単勝 ◎ 的中 = tanshoHit / 三連複 (M') 的中 = sanrenpukuHit (単勝チケット含まない)
+  // T-039 + 5/23 マスター指摘: 3 状態判定
+  // true=的中(○) / false=不的中(×) / "skipped"=未購入(ー) / null=結果未取得(非表示)
   const tanshoHit = hitResult?.tansho_hit ?? hitResult?.win_hit;  // 後方互換 fallback
   const sanrenpukuHit = hitResult?.sanrenpuku_hit;
-  // 旧表示用 (バッジ): 三連複 OR 単勝チケット
-  const sanrentanHit = hitResult?.sanrentan_hit;
-  // 4 状態枠色: 両方 → 緑 / 単勝のみ → 青 / 三連複のみ → 赤 / どちらも → デフォルト
+  // 枠色: 両方的中 → 緑 / 単勝のみ → 青 / 三連複のみ → 赤 / それ以外 → デフォルト
   let hitBorderClass = "";
   if (tanshoHit === true && sanrenpukuHit === true) {
     hitBorderClass = "border-green-500/60 ring-1 ring-green-500/40";
@@ -138,18 +138,43 @@ export const RaceCard = memo(function RaceCard({ race, onOpen, winPctRank, hitRe
           <span className="text-base font-bold ml-0.5">R</span>
         </span>
         {race.grade && <GradeBadge grade={race.grade} />}
-        <ConfidenceBadge rank={conf} className="ml-1" />
-        {/* M' 戦略: 三連複 的中バッジ（M' は単勝廃止のため単勝バッジは削除）
-           結果取得済み = true/false のみ表示。null/undefined は非表示 */}
-        {sanrentanHit !== null && sanrentanHit !== undefined && (
+        {/* 単勝/三連複 独立 confidence バッジ */}
+        {race.tansho_confidence && (
+          <ConfidenceBadge rank={(race.tansho_confidence || "").replace(/⁺/g, "+")} label="単" className="ml-1" />
+        )}
+        {race.sanrenpuku_confidence && (
+          <ConfidenceBadge rank={(race.sanrenpuku_confidence || "").replace(/⁺/g, "+")} label="三" />
+        )}
+        {/* fallback: 新confidence未設定時は従来の overall を表示 */}
+        {!race.tansho_confidence && !race.sanrenpuku_confidence && (
+          <ConfidenceBadge rank={conf} className="ml-1" />
+        )}
+        {/* 単勝的中バッジ: ○=的中 / ×=不的中 / ー=未購入 / null=非表示 */}
+        {tanshoHit !== null && tanshoHit !== undefined && (
           <span
             className={cn(
               "text-xs font-bold leading-none",
-              sanrentanHit ? "text-red-500" : "text-zinc-400 dark:text-zinc-500"
+              tanshoHit === true ? "text-blue-500" :
+              tanshoHit === "skipped" ? "text-zinc-300 dark:text-zinc-600" :
+              "text-zinc-400 dark:text-zinc-500"
             )}
-            aria-label={sanrentanHit ? "三連複 的中" : "三連複 不的中"}
+            aria-label={tanshoHit === true ? "単勝 的中" : tanshoHit === "skipped" ? "単勝 未購入" : "単勝 不的中"}
           >
-            三連複{sanrentanHit ? "◯" : "×"}
+            単勝{tanshoHit === true ? "○" : tanshoHit === "skipped" ? "ー" : "×"}
+          </span>
+        )}
+        {/* 三連複的中バッジ: ○=的中 / ×=不的中 / ー=未購入 / null=非表示 */}
+        {sanrenpukuHit !== null && sanrenpukuHit !== undefined && (
+          <span
+            className={cn(
+              "text-xs font-bold leading-none",
+              sanrenpukuHit === true ? "text-red-500" :
+              sanrenpukuHit === "skipped" ? "text-zinc-300 dark:text-zinc-600" :
+              "text-zinc-400 dark:text-zinc-500"
+            )}
+            aria-label={sanrenpukuHit === true ? "三連複 的中" : sanrenpukuHit === "skipped" ? "三連複 未購入" : "三連複 不的中"}
+          >
+            三連複{sanrenpukuHit === true ? "○" : sanrenpukuHit === "skipped" ? "ー" : "×"}
           </span>
         )}
         {race.post_time && (

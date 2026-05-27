@@ -883,6 +883,8 @@ class RaceAnalysis:
     pace_comment: str = ""
     overall_confidence: ConfidenceLevel = ConfidenceLevel.B
     confidence_score: float = 0.0  # 自信度スコア (0.0-1.0)
+    tansho_confidence: ConfidenceLevel = ConfidenceLevel.B  # 単勝自信度
+    sanrenpuku_confidence: ConfidenceLevel = ConfidenceLevel.B  # 三連複自信度
 
     # 買い目
     tickets: List[Dict[str, Any]] = field(default_factory=list)

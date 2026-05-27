@@ -2242,6 +2242,8 @@ class RaceAnalysisEngine:
             rear_horses=rear_h,
             overall_confidence=confidence,
             confidence_score=_calc_confidence_score(evaluations, is_jra=self.is_jra, is_banei=_is_banei),
+            tansho_confidence=tansho_confidence,
+            sanrenpuku_confidence=sanrenpuku_confidence,
             tickets=tickets,
             total_budget=total_budget,
             pace_comment=pace_comment,

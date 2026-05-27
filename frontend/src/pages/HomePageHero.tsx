@@ -31,6 +31,8 @@ export interface HeroRaceItem {
   post_time?: string;
   grade?: string;
   overall_confidence?: string;
+  tansho_confidence?: string;
+  sanrenpuku_confidence?: string;
   honmei_mark?: string;
   honmei_name?: string;
   honmei_no?: number;

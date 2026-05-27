@@ -268,13 +268,16 @@ export function useKaisaiCalendar() {
 }
 
 // T-039: レースカード的中バッジ用フック
+// 3 状態: true=的中 / false=不的中 / "skipped"=未購入 / null=結果未取得
+export type HitState = boolean | "skipped" | null;
+
 export interface RaceCardHitResult {
   win_hit: boolean | null;        // 旧: 単勝 ◎ 的中 (後方互換)
   sanrentan_hit: boolean | null;  // 旧: 三連複 OR 単勝チケット 的中 (後方互換)
-  // 新: 4 状態枠色判定用 (5/4 マスター指摘)
-  // 単勝のみ → 青 / 三連複のみ → 赤 / 両方 → 緑 / 未的中 → デフォルト
-  tansho_hit: boolean | null;     // 単勝 ◎ 的中 (= win_hit)
-  sanrenpuku_hit: boolean | null; // 三連複のみ 的中 (単勝チケットを含まない)
+  // 新: 3 状態判定用 (5/23 マスター指摘)
+  // true=的中(○) / false=不的中(×) / "skipped"=未購入(ー) / null=結果未取得(非表示)
+  tansho_hit: HitState;
+  sanrenpuku_hit: HitState;
 }
 
 export interface RaceCardResultsData {

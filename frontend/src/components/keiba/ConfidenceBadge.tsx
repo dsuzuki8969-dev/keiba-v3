@@ -22,10 +22,12 @@ const STYLES: Record<string, string> = {
 
 interface Props {
   rank: ConfidenceRank | string;
+  /** バッジ先頭に表示する小ラベル（例: "単", "三"） */
+  label?: string;
   className?: string;
 }
 
-export const ConfidenceBadge = memo(function ConfidenceBadge({ rank, className = "" }: Props) {
+export const ConfidenceBadge = memo(function ConfidenceBadge({ rank, label, className = "" }: Props) {
   const style = STYLES[rank] ?? STYLES.C;
 
   // SS のみ金箔グラデ背景を直接スタイルで（Tailwind クラスでは表現しづらい多段グラデ）
@@ -41,6 +43,7 @@ export const ConfidenceBadge = memo(function ConfidenceBadge({ rank, className =
       className={`${style} text-[11px] font-extrabold px-2 py-0.5 tracking-wider uppercase ${className}`}
       style={ssStyle}
     >
+      {label && <span className="text-[9px] opacity-70 mr-0.5">{label}</span>}
       {rank}
     </Badge>
   );

@@ -22,7 +22,7 @@ export const VENUE_NAME_TO_CODE: Record<string, string> = Object.fromEntries(
 );
 
 // 信頼度ランク
-export const CONFIDENCE_RANKS = ["SS", "S", "A", "B", "C", "D", "F"] as const;
+export const CONFIDENCE_RANKS = ["SS", "S", "A", "B", "C", "D", "E", "F"] as const;
 export type ConfidenceRank = typeof CONFIDENCE_RANKS[number];
 
 // 印の定義
@@ -61,6 +61,7 @@ export function confColorClass(c: string): string {
   if (clean.startsWith("S")) return "text-blue-600 font-bold";
   if (clean.startsWith("A")) return "text-red-600 font-bold";
   if (clean.startsWith("B")) return "text-foreground font-bold";
+  if (clean.startsWith("D") || clean.startsWith("E")) return "text-muted-foreground";
   return "text-muted-foreground";
 }
 
