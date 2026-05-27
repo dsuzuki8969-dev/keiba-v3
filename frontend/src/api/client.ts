@@ -133,6 +133,8 @@ export interface RaceSummary {
   head_count: number;
   grade?: string;
   confidence?: string;
+  tansho_confidence?: string;
+  sanrenpuku_confidence?: string;
   honmei_name?: string;
   honmei_number?: number;
 }
@@ -395,10 +397,43 @@ export interface TanshoT4Summary {
   monthly: MPrimeMonthly[];
 }
 
+// ────────────────────────────────────────────────────────────────
+// 馬連 5 馬券 / 三連複 7 馬券 (ticket_id ベース採用成績)
+// ────────────────────────────────────────────────────────────────
+
+// 馬券種別: 自信度別成績レコード (MPrimeByConfidence を再利用)
+export interface TicketByConfidence {
+  ticket_id: string;
+  ticket_label: string;     // "◉◎-〇" 等
+  points: number;
+  total: {
+    played: number;
+    hit_rate_pct: number;
+    roi_pct: number;
+    stake: number;
+    payback: number;
+    balance: number;
+  };
+  by_confidence: Partial<Record<"SS" | "S" | "A" | "B" | "C" | "D" | "E", MPrimeByConfidence>>;
+}
+
+export interface MultiTicketSummary {
+  ticket_type: "umaren" | "sanrenpuku_extended";
+  tickets: TicketByConfidence[];
+  date_from?: string;
+  date_to?: string;
+}
+
 export interface HybridSummaryResponse {
   tansho_t4?: TanshoT4Summary | null;
   sanrenpuku_dynamic?: unknown;
   m_prime_sanrenpuku?: MPrimeSanrenpukuSummary | null;
+  // 馬連 5 馬券採用成績
+  umaren_5tickets?: MultiTicketSummary | null;
+  umaren_5tickets_by_year?: Record<string, MultiTicketSummary | null>;
+  // 三連複 7 馬券採用成績
+  sanrenpuku_7tickets?: MultiTicketSummary | null;
+  sanrenpuku_7tickets_by_year?: Record<string, MultiTicketSummary | null>;
   error?: string;
 }
 
