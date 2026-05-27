@@ -1,0 +1,4 @@
+variant,strategy,played_total,hit_pct_weighted,roi_pct_weighted,delta_vs_odds_pt
++odds (109) [基準],argmax_prob,8673,42.1884,78.5703,+0.00
++odds+pace (114) argmax,argmax_prob,8673,42.5228,79.5999,+1.03
++odds+pace (114) S3_gap010,S3_gap010,4094,53.0288,81.9077,+3.34
