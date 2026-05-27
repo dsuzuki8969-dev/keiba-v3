@@ -1,0 +1,4 @@
+variant,features,objective,AUC,TOP1_hit_pct,tansho_ROI_pct,played,hit,payout_sum
+baseline_new,108,binary_logloss,0.778304,33.9972,73.7340,1406,478,103670
++odds,109,binary_logloss,0.832762,43.3989,79.0590,1424,618,112580
++odds+posthoc_EV,109,binary_logloss + post-hoc EV,0.832762,0.6320,36.3975,1424,9,51830
