@@ -859,7 +859,7 @@ def _compute_m_prime_sanrenpuku(year_filter: str) -> dict:
 # ────────────────────────────────────────────────────────────────
 
 def get_hybrid_summary(year_filter: str = "all", force_refresh: bool = False) -> dict:
-    """新戦略ハイブリッド成績集計 (三連複動的 + 単勝 T-4 + M' 戦略) を返す。
+    """新戦略ハイブリッド成績集計 (三連複動的 + 単勝 T-4 + M' 戦略 + 馬連/三連複 post-hoc) を返す。
 
     30 分 TTL キャッシュ。force_refresh=True でキャッシュ無視。
 
@@ -868,11 +868,21 @@ def get_hybrid_summary(year_filter: str = "all", force_refresh: bool = False) ->
         旧 T-050 フォーマットの日付は tansho_t4 / sanrenpuku_dynamic に集計。
         両者は format 判定で自動振り分けされるため、混在期間でも正しく集計される。
 
+    WF post-hoc 集計:
+        umaren_5tickets          → WF pred.json アーカイブ (全期間)
+        sanrenpuku_7tickets      → WF pred.json アーカイブ (全期間)
+        umaren_5tickets_by_year  → 年度別内訳
+        sanrenpuku_7tickets_by_year → 年度別内訳
+
     Returns:
         {
-            "tansho_t4":            {...}  # 単勝 T-4 集計（旧 T-050 / 残置）
-            "sanrenpuku_dynamic":   {...}  # 三連複動的集計（旧 T-050 / 残置）
-            "m_prime_sanrenpuku":   {...}  # M' 戦略三連複集計（自信度別内訳付き）
+            "tansho_t4":                    {...}  # 単勝 T-4 集計（旧 T-050 / 残置）
+            "sanrenpuku_dynamic":           {...}  # 三連複動的集計（旧 T-050 / 残置）
+            "m_prime_sanrenpuku":           {...}  # M' 戦略三連複集計（自信度別内訳付き）
+            "umaren_5tickets":              {...}  # 馬連 5 馬券 全期間
+            "sanrenpuku_7tickets":          {...}  # 三連複 7 馬券 全期間
+            "umaren_5tickets_by_year":      {...}  # 年度別内訳
+            "sanrenpuku_7tickets_by_year":  {...}  # 年度別内訳
         }
     """
     cache_key = year_filter or "all"
@@ -885,10 +895,32 @@ def get_hybrid_summary(year_filter: str = "all", force_refresh: bool = False) ->
     sanrenpuku_result   = _compute_sanrenpuku_dynamic(cache_key)
     m_prime_result      = _compute_m_prime_sanrenpuku(cache_key)
 
+    # WF post-hoc 集計 (年度フィルターに関わらず全期間 + 年度別を返す)
+    # year_filter が指定されている場合は該当年のみ計算し、全期間はキャッシュを参照
+    umaren_all       = compute_umaren_5tickets_summary("all")
+    sanrenpuku_all   = compute_sanrenpuku_7tickets_summary("all")
+
+    umaren_by_year      = {
+        "all":  umaren_all,
+        "2024": compute_umaren_5tickets_summary("2024"),
+        "2025": compute_umaren_5tickets_summary("2025"),
+        "2026": compute_umaren_5tickets_summary("2026"),
+    }
+    sanrenpuku_by_year  = {
+        "all":  sanrenpuku_all,
+        "2024": compute_sanrenpuku_7tickets_summary("2024"),
+        "2025": compute_sanrenpuku_7tickets_summary("2025"),
+        "2026": compute_sanrenpuku_7tickets_summary("2026"),
+    }
+
     result = {
-        "tansho_t4":          tansho_result,
-        "sanrenpuku_dynamic": sanrenpuku_result,
-        "m_prime_sanrenpuku": m_prime_result,
+        "tansho_t4":                   tansho_result,
+        "sanrenpuku_dynamic":          sanrenpuku_result,
+        "m_prime_sanrenpuku":          m_prime_result,
+        "umaren_5tickets":             umaren_all,
+        "sanrenpuku_7tickets":         sanrenpuku_all,
+        "umaren_5tickets_by_year":     umaren_by_year,
+        "sanrenpuku_7tickets_by_year": sanrenpuku_by_year,
     }
     _CACHE[cache_key] = (time.time(), result)
     return result
@@ -897,3 +929,478 @@ def get_hybrid_summary(year_filter: str = "all", force_refresh: bool = False) ->
 def invalidate_cache() -> None:
     """結果取得 / pred 更新後に外部から呼んでキャッシュを破棄する。"""
     _CACHE.clear()
+
+
+# ────────────────────────────────────────────────────────────────
+# WF pred.json ロード (tar.gz アーカイブ専用)
+# ────────────────────────────────────────────────────────────────
+
+import io
+import os
+import tarfile as _tarfile
+
+# WF pred.json のプロセス内キャッシュ (tar.gz は重いので 1 回だけ読み込む)
+_WF_PREDS_CACHE: Optional[dict] = None
+
+_WF_TAR_PATH = str(Path(__file__).resolve().parents[2] / "data" / "_archive" / "predictions_pre_markint_20260527.tar.gz")
+
+
+def _load_wf_preds() -> dict:
+    """WF pred.json を tar.gz からロードしてプロセス内にキャッシュする。
+
+    戻り値: {date_key (YYYYMMDD): pred_dict}
+    """
+    global _WF_PREDS_CACHE
+    if _WF_PREDS_CACHE is not None:
+        return _WF_PREDS_CACHE
+
+    out: dict = {}
+    if not os.path.exists(_WF_TAR_PATH):
+        _WF_PREDS_CACHE = out
+        return out
+
+    with _tarfile.open(_WF_TAR_PATH, "r:gz") as tar:
+        for member in tar.getmembers():
+            name = os.path.basename(member.name)
+            if not name.endswith("_pred.json"):
+                continue
+            date_key = name[:8]
+            if not date_key.isdigit() or len(date_key) != 8:
+                continue
+            f = tar.extractfile(member)
+            if f is None:
+                continue
+            try:
+                out[date_key] = json.load(io.TextIOWrapper(f, encoding="utf-8"))
+            except Exception:
+                pass
+
+    _WF_PREDS_CACHE = out
+    return out
+
+
+# ────────────────────────────────────────────────────────────────
+# 馬連・三連複 post-hoc 集計用 ヘルパー
+# ────────────────────────────────────────────────────────────────
+
+# 各印グループの定義
+_MARK_GROUPS: dict = {
+    "honmei": {"◉", "◎"},
+    "taikou": {"○", "〇"},
+    "renka":  {"▲"},
+    "wide1":  {"△"},
+    "wide2":  {"★"},
+    "wide3":  {"☆"},
+}
+
+# 馬連 5 馬券定義: (ticket_id, ticket_label, 相手グループ名)
+_UMAREN_TICKETS = [
+    ("umaren_honmei_taikou", "◉◎-〇",  "taikou"),
+    ("umaren_honmei_renka",  "◉◎-▲",  "renka"),
+    ("umaren_honmei_wide1",  "◉◎-△",  "wide1"),
+    ("umaren_honmei_wide2",  "◉◎-★",  "wide2"),
+    ("umaren_honmei_wide3",  "◉◎-☆",  "wide3"),
+]
+
+# 三連複 7 馬券定義: (ticket_id, ticket_label, 相手グループ名リスト)
+_TRIO_TICKETS = [
+    ("trio_honmei_taikou_renka", "◉◎-〇-▲", ["taikou", "renka"]),
+    ("trio_honmei_taikou_wide1", "◉◎-〇-△", ["taikou", "wide1"]),
+    ("trio_honmei_taikou_wide2", "◉◎-〇-★", ["taikou", "wide2"]),
+    ("trio_honmei_taikou_wide3", "◉◎-〇-☆", ["taikou", "wide3"]),
+    ("trio_honmei_renka_wide1",  "◉◎-▲-△", ["renka",  "wide1"]),
+    ("trio_honmei_renka_wide2",  "◉◎-▲-★", ["renka",  "wide2"]),
+    ("trio_honmei_renka_wide3",  "◉◎-▲-☆", ["renka",  "wide3"]),
+]
+
+_CONF_LEVELS_WF = ("SS", "S", "A", "B", "C", "D", "E")
+
+
+def _empty_conf_stats() -> dict:
+    """confidence 別空集計 dict を生成する。"""
+    return {lv: {"played": 0, "hit": 0, "stake": 0, "payback": 0}
+            for lv in _CONF_LEVELS_WF}
+
+
+def _finalize_ticket_stats(total: dict, by_conf: dict) -> dict:
+    """集計 dict に roi_pct / hit_rate_pct / balance を追加して返す。"""
+    def _derive(d: dict) -> dict:
+        played = d["played"]
+        stake  = d["stake"]
+        pb     = d["payback"]
+        return {
+            "played":       played,
+            "hit":          d["hit"],
+            "hit_rate_pct": round(d["hit"] / played * 100, 1) if played else 0.0,
+            "roi_pct":      round(pb / stake * 100, 1)        if stake  else 0.0,
+            "stake":        stake,
+            "payback":      pb,
+            "balance":      pb - stake,
+        }
+
+    result_total = _derive(total)
+    result_conf  = {}
+    for lv in _CONF_LEVELS_WF:
+        result_conf[lv] = _derive(by_conf[lv]) if by_conf[lv]["played"] > 0 else None
+    return {"total": result_total, "by_confidence": result_conf}
+
+
+def _get_first_horse_no_in_group(horses: list, group: str) -> Optional[int]:
+    """印グループ内の馬番を 1 頭返す (mark priority 優先)。"""
+    marks = _MARK_GROUPS.get(group, set())
+    cands = [h for h in horses if h.get("mark", "") in marks]
+    if not cands:
+        return None
+    cands.sort(key=lambda h: MARK_PRIORITY.get(h.get("mark", ""), 9))
+    return cands[0].get("horse_no")
+
+
+def _lookup_umaren_payout(payouts: dict, nos: set) -> int:
+    """馬連払戻額を返す。nos: {horse_no1, horse_no2}"""
+    bucket = payouts.get("馬連")
+    if bucket is None:
+        return 0
+    nos_str = "-".join(str(x) for x in sorted(nos))
+
+    def _match(item: dict) -> int:
+        if not isinstance(item, dict):
+            return 0
+        # 馬連 combo は "小-大" 形式 (数字のみ)
+        combo = item.get("combo", "")
+        try:
+            combo_set = set(int(x) for x in combo.split("-")) if combo else set()
+        except (ValueError, AttributeError):
+            return 0
+        if combo_set == nos:
+            return int(item.get("payout", 0) or 0)
+        return 0
+
+    if isinstance(bucket, dict):
+        return _match(bucket)
+    if isinstance(bucket, list):
+        for it in bucket:
+            v = _match(it)
+            if v:
+                return v
+    return 0
+
+
+def _lookup_trio_payout_by_set(payouts: dict, nos: set) -> int:
+    """三連複払戻額を返す。nos: {horse_no1, horse_no2, horse_no3}"""
+    bucket = payouts.get("三連複")
+    if bucket is None:
+        return 0
+
+    def _match(item: dict) -> int:
+        if not isinstance(item, dict):
+            return 0
+        combo = item.get("combo", "")
+        try:
+            combo_set = set(int(x) for x in combo.split("-")) if combo else set()
+        except (ValueError, AttributeError):
+            return 0
+        if combo_set == nos:
+            return int(item.get("payout", 0) or 0)
+        return 0
+
+    if isinstance(bucket, dict):
+        return _match(bucket)
+    if isinstance(bucket, list):
+        for it in bucket:
+            v = _match(it)
+            if v:
+                return v
+    return 0
+
+
+def _get_wf_results(date_key: str) -> Optional[dict]:
+    """results.json を読み込む。"""
+    res_dir = Path(__file__).resolve().parents[2] / "data" / "results"
+    fp = res_dir / f"{date_key}_results.json"
+    if not fp.exists():
+        return None
+    try:
+        with fp.open(encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
+# ────────────────────────────────────────────────────────────────
+# 馬連 5 馬券集計
+# ────────────────────────────────────────────────────────────────
+
+def compute_umaren_5tickets_summary(
+    year_filter: str = "all",
+) -> dict:
+    """馬連 5 馬券 × confidence 7 段階 集計 (WF pred.json アーカイブ使用)。
+
+    データソース: data/_archive/predictions_pre_markint_20260527.tar.gz
+    集計: 全 race で ◉◎-相手の馬連購入仮定 (post-hoc シミュレーション)。
+
+    Returns:
+        multi_ticket_summary dict (スキーマ仕様通り)
+    """
+    preds = _load_wf_preds()
+
+    # ticket_id → {total: {...}, by_conf: {...}} の集計バッファ
+    agg: dict = {}
+    for tid, label, partner_group in _UMAREN_TICKETS:
+        agg[tid] = {
+            "label":   label,
+            "total":   {"played": 0, "hit": 0, "stake": 0, "payback": 0},
+            "by_conf": _empty_conf_stats(),
+        }
+
+    date_from = ""
+    date_to   = ""
+
+    for date_key in sorted(preds.keys()):
+        if not _year_match(date_key, year_filter):
+            continue
+
+        results = _get_wf_results(date_key)
+        if results is None:
+            continue
+
+        if not date_from or date_key < date_from:
+            date_from = date_key
+        if not date_to or date_key > date_to:
+            date_to = date_key
+
+        pred_data = preds[date_key]
+        for race in pred_data.get("races", []):
+            race_id = str(race.get("race_id", ""))
+            # ばんえい除外
+            if len(race_id) >= 6 and race_id[4:6] in BANEI_VENUE_CODES:
+                continue
+
+            rdata = results.get(race_id)
+            if rdata is None:
+                continue
+            payouts = rdata.get("payouts", {})
+            if not payouts:
+                continue
+            # 馬連データが存在しないレースはスキップ
+            if payouts.get("馬連") is None:
+                continue
+
+            # 着順 map (horse_no → finish) を取得 — 真の的中判定に必要
+            order = rdata.get("order", [])
+            if not order:
+                continue
+            finish_map: dict = {}
+            for r in order:
+                hn = r.get("horse_no")
+                fn = r.get("finish")
+                if hn is not None and fn is not None:
+                    finish_map[hn] = fn
+
+            horses = race.get("horses", [])
+
+            # confidence 取得 (空文字・未知は集計対象外)
+            confidence = race.get("confidence", "") or ""
+            if confidence not in _CONF_LEVELS_WF:
+                continue
+
+            # 本命馬番 (◉◎ 優先)
+            honmei_no = _get_first_horse_no_in_group(horses, "honmei")
+            if honmei_no is None:
+                continue
+
+            # 各馬券 (相手グループ別)
+            for tid, label, partner_group in _UMAREN_TICKETS:
+                partner_no = _get_first_horse_no_in_group(horses, partner_group)
+                if partner_no is None or partner_no == honmei_no:
+                    continue
+
+                # 真の的中判定: 両馬とも 1-2 着 (着順ベース / payout 欠損に依存しない)
+                hf = finish_map.get(honmei_no)
+                pf = finish_map.get(partner_no)
+                hit = (hf in (1, 2) and pf in (1, 2) and hf != pf)
+
+                nos = {honmei_no, partner_no}
+                payout_val = _lookup_umaren_payout(payouts, nos) if hit else 0
+
+                buf = agg[tid]
+                buf["total"]["played"]  += 1
+                buf["total"]["stake"]   += STAKE_PER_TICKET
+                buf["total"]["payback"] += payout_val
+                if hit:
+                    buf["total"]["hit"] += 1
+
+                bc = buf["by_conf"][confidence]
+                bc["played"]  += 1
+                bc["stake"]   += STAKE_PER_TICKET
+                bc["payback"] += payout_val
+                if hit:
+                    bc["hit"] += 1
+
+    # スキーマ形式に整形
+    tickets_out = []
+    for tid, label, partner_group in _UMAREN_TICKETS:
+        buf = agg[tid]
+        stats = _finalize_ticket_stats(buf["total"], buf["by_conf"])
+        tickets_out.append({
+            "ticket_id":      tid,
+            "ticket_label":   label,
+            "points":         1,
+            "total":          stats["total"],
+            "by_confidence":  stats["by_confidence"],
+        })
+
+    # date_from / date_to を YYYY-MM-DD 形式に変換
+    def _fmt_date(d: str) -> str:
+        return f"{d[:4]}-{d[4:6]}-{d[6:8]}" if len(d) == 8 else d
+
+    return {
+        "ticket_type": "umaren",
+        "tickets":     tickets_out,
+        "date_from":   _fmt_date(date_from),
+        "date_to":     _fmt_date(date_to),
+    }
+
+
+# ────────────────────────────────────────────────────────────────
+# 三連複 7 馬券集計 (拡張)
+# ────────────────────────────────────────────────────────────────
+
+def compute_sanrenpuku_7tickets_summary(
+    year_filter: str = "all",
+) -> dict:
+    """三連複 7 馬券 × confidence 7 段階 集計 (WF pred.json アーカイブ使用)。
+
+    データソース: data/_archive/predictions_pre_markint_20260527.tar.gz
+    集計: 全 race で ◉◎-相手2頭の三連複購入仮定 (post-hoc シミュレーション)。
+
+    Returns:
+        multi_ticket_summary dict (スキーマ仕様通り)
+    """
+    preds = _load_wf_preds()
+
+    # ticket_id → 集計バッファ
+    agg: dict = {}
+    for tid, label, partner_groups in _TRIO_TICKETS:
+        agg[tid] = {
+            "label":   label,
+            "total":   {"played": 0, "hit": 0, "stake": 0, "payback": 0},
+            "by_conf": _empty_conf_stats(),
+        }
+
+    date_from = ""
+    date_to   = ""
+
+    for date_key in sorted(preds.keys()):
+        if not _year_match(date_key, year_filter):
+            continue
+
+        results = _get_wf_results(date_key)
+        if results is None:
+            continue
+
+        if not date_from or date_key < date_from:
+            date_from = date_key
+        if not date_to or date_key > date_to:
+            date_to = date_key
+
+        pred_data = preds[date_key]
+        for race in pred_data.get("races", []):
+            race_id = str(race.get("race_id", ""))
+            # ばんえい除外
+            if len(race_id) >= 6 and race_id[4:6] in BANEI_VENUE_CODES:
+                continue
+
+            rdata = results.get(race_id)
+            if rdata is None:
+                continue
+            payouts = rdata.get("payouts", {})
+            if not payouts:
+                continue
+            # 三連複データが存在しないレースはスキップ
+            if payouts.get("三連複") is None:
+                continue
+
+            # 着順 map (horse_no → finish) を取得 — 真の的中判定に必要
+            order = rdata.get("order", [])
+            if not order:
+                continue
+            finish_map: dict = {}
+            for r in order:
+                hn = r.get("horse_no")
+                fn = r.get("finish")
+                if hn is not None and fn is not None:
+                    finish_map[hn] = fn
+
+            horses = race.get("horses", [])
+
+            # confidence 取得 (空文字・未知は集計対象外)
+            confidence = race.get("confidence", "") or ""
+            if confidence not in _CONF_LEVELS_WF:
+                continue
+
+            # 本命馬番 (◉◎ 優先)
+            honmei_no = _get_first_horse_no_in_group(horses, "honmei")
+            if honmei_no is None:
+                continue
+
+            # 各馬券 (相手2グループ別)
+            for tid, label, partner_groups in _TRIO_TICKETS:
+                partner_nos = []
+                valid = True
+                for pg in partner_groups:
+                    pno = _get_first_horse_no_in_group(horses, pg)
+                    if pno is None or pno == honmei_no:
+                        valid = False
+                        break
+                    if pno in partner_nos:
+                        # 同一馬番が別グループに存在 → スキップ
+                        valid = False
+                        break
+                    partner_nos.append(pno)
+                if not valid:
+                    continue
+
+                nos = {honmei_no} | set(partner_nos)
+                if len(nos) != 3:
+                    continue
+
+                # 真の的中判定: 3 頭全員 1-3 着 (着順ベース / payout 欠損に依存しない)
+                hit = all(finish_map.get(h) in (1, 2, 3) for h in nos)
+                payout_val = _lookup_trio_payout_by_set(payouts, nos) if hit else 0
+
+                buf = agg[tid]
+                buf["total"]["played"]  += 1
+                buf["total"]["stake"]   += STAKE_PER_TICKET
+                buf["total"]["payback"] += payout_val
+                if hit:
+                    buf["total"]["hit"] += 1
+
+                bc = buf["by_conf"][confidence]
+                bc["played"]  += 1
+                bc["stake"]   += STAKE_PER_TICKET
+                bc["payback"] += payout_val
+                if hit:
+                    bc["hit"] += 1
+
+    # スキーマ形式に整形
+    tickets_out = []
+    for tid, label, partner_groups in _TRIO_TICKETS:
+        buf = agg[tid]
+        stats = _finalize_ticket_stats(buf["total"], buf["by_conf"])
+        tickets_out.append({
+            "ticket_id":      tid,
+            "ticket_label":   label,
+            "points":         1,
+            "total":          stats["total"],
+            "by_confidence":  stats["by_confidence"],
+        })
+
+    def _fmt_date(d: str) -> str:
+        return f"{d[:4]}-{d[4:6]}-{d[6:8]}" if len(d) == 8 else d
+
+    return {
+        "ticket_type": "sanrenpuku_extended",
+        "tickets":     tickets_out,
+        "date_from":   _fmt_date(date_from),
+        "date_to":     _fmt_date(date_to),
+    }
