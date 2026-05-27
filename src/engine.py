@@ -2060,22 +2060,16 @@ class RaceAnalysisEngine:
         for ev in evaluations:
             ev.ana_score, ev.ana_type = calc_ana_score(ev, evaluations)
 
-        # ---- Step 6b: 特選穴馬スコア（composite上位5頭を除外 → ☆候補のみ）----
-        from config.settings import TOKUSEN_MAX_PER_RACE, TOKUSEN_SCORE_THRESHOLD
+        # ---- Step 6b: ☆ 常時 1 頭 (composite 順位 6 番目) ----
+        # マスター指示 (2026-05-28): 「☆ = ev > 3.0 動的追加←こんなの頼んでねーぞ。以前に☆は常時だと言ってただろうが」
+        # 累犯 #17 解消: TOKUSEN_SCORE_THRESHOLD ベース動的選定 → composite 順位 6 番目固定
+        # tokusen_score 計算自体は残す (他箇所で参照されている可能性 + 将来の閾値分析用)
         for ev in evaluations:
             ev.tokusen_score = calc_tokusen_score(ev, evaluations)
-        # composite上位5頭を除外（既に◉◎○▲△★が付くため☆不要）
-        top5_ids = {ev.horse.horse_id for ev in sorted(
-            evaluations, key=lambda e: e.composite, reverse=True
-        )[:5]}
-        tokusen_candidates = sorted(
-            [ev for ev in evaluations
-             if ev.tokusen_score >= TOKUSEN_SCORE_THRESHOLD
-             and ev.horse.horse_id not in top5_ids],
-            key=lambda e: e.tokusen_score, reverse=True,
-        )
-        for ev in tokusen_candidates[:TOKUSEN_MAX_PER_RACE]:
-            ev.is_tokusen = True
+        # ☆ 付与: composite 順位 6 番目 (= ◉◎○▲△ の次) を ☆ に固定。頭数 < 6 の race では ☆ なし
+        sorted_by_composite = sorted(evaluations, key=lambda e: e.composite, reverse=True)
+        if len(sorted_by_composite) >= 6:
+            sorted_by_composite[5].is_tokusen = True
 
         # ---- Step 6c: 特選危険馬スコア（印体系とは独立）----
         from config.settings import TOKUSEN_KIKEN_MAX_PER_RACE, TOKUSEN_KIKEN_SCORE_THRESHOLD
