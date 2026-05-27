@@ -117,6 +117,11 @@ def load_wf_predictor(model_dir: str, tracker, sire_tracker, iso_calibrators: Op
         sire_tracker: RollingSireTracker オブジェクト
         iso_calibrators: load_iso_calibrators() の戻り値。
                          None または {} の場合は Isotonic calibration をスキップ。
+
+    Returns:
+        predict_race 関数。戻り値形式:
+          use_head_win=True  の場合: {"top3": {hid: P(top3)}, "win": {hid: P(win)}}
+          use_head_win=False の場合: {hid: P(top3)} (後方互換)
     """
     import lightgbm as lgb
     from src.ml.lgbm_model import FEATURE_COLUMNS, FEATURE_COLUMNS_BANEI, _extract_features, _add_race_relative_features, _smile_key_ml, SURFACE_MAP
@@ -150,7 +155,20 @@ def load_wf_predictor(model_dir: str, tracker, sire_tracker, iso_calibrators: Op
         except Exception:
             pass
 
-    print(f"  WF model loaded: {len(models)} models from {os.path.basename(model_dir)}")
+    # head_win モデルのロード (train_head_win_wf.py が生成した lgbm_win_global.txt)
+    win_model = None
+    win_model_path = os.path.join(model_dir, "lgbm_win_global.txt")
+    if os.path.exists(win_model_path):
+        try:
+            win_model = lgb.Booster(model_file=win_model_path)
+            print(f"  head_win モデルロード: {win_model_path}")
+        except Exception as e:
+            print(f"  WARNING: head_win モデルロード失敗: {e}")
+    else:
+        print(f"  INFO: head_win モデルが見つかりません: {win_model_path}")
+        print(f"  先に python scripts/train_head_win_wf.py を実行してください。")
+
+    print(f"  WF model loaded: {len(models)} models from {os.path.basename(model_dir)}, win_model={'あり' if win_model else 'なし'}")
 
     def select_model(surface_val, is_jra, venue_code, smile_cat):
         """階層モデル選択 (LGBMPredictor._select_model と同等)"""
@@ -173,7 +191,12 @@ def load_wf_predictor(model_dir: str, tracker, sire_tracker, iso_calibrators: Op
         return models.get("global"), "global"
 
     def predict_race(race_dict, horse_dicts):
-        """predict_race の軽量版 (トレーニング特徴量なし)"""
+        """predict_race の軽量版 (トレーニング特徴量なし)
+
+        Returns:
+            {"top3": {hid: P(top3)}, "win": {hid: P(win)}} の dict
+            head_win モデルが存在しない場合は "win" は空 dict
+        """
         surface_val = SURFACE_MAP.get(race_dict.get("surface", ""), -1)
         is_jra = bool(race_dict.get("is_jra", True))
         venue_code = str(race_dict.get("venue_code", "") or "").zfill(2)
@@ -182,7 +205,7 @@ def load_wf_predictor(model_dir: str, tracker, sire_tracker, iso_calibrators: Op
 
         model, model_key = select_model(surface_val, is_jra, venue_code, smile_cat)
         if model is None:
-            return {}
+            return {"top3": {}, "win": {}}
 
         features, ids = [], []
         for h in horse_dicts:
@@ -191,7 +214,7 @@ def load_wf_predictor(model_dir: str, tracker, sire_tracker, iso_calibrators: Op
             ids.append(h.get("horse_id", ""))
 
         if not features:
-            return {}
+            return {"top3": {}, "win": {}}
 
         _add_race_relative_features(features)
 
@@ -208,21 +231,44 @@ def load_wf_predictor(model_dir: str, tracker, sire_tracker, iso_calibrators: Op
              for f in features],
             dtype=np.float32,
         )
-        probs = model.predict(X)
+
+        # --- head_top3 推論 ---
+        probs_top3 = model.predict(X)
 
         # Platt scaling (既存処理)
         cal = cal_params.get(model_key)
         if cal:
             a, b = cal["a"], cal["b"]
-            probs = [1.0 / (1.0 + math.exp(-(a * p + b))) for p in probs]
+            probs_top3 = [1.0 / (1.0 + math.exp(-(a * p + b))) for p in probs_top3]
 
         # Isotonic calibration 適用 (Platt → Isotonic の二段階)
-        # build_iso_calibrator_wf.py が生成した iso_cal_top3.pkl を使用
         iso_top3 = _iso_calibrators.get("top3")
         if iso_top3 is not None:
-            probs = iso_top3.transform(np.array(probs))
+            probs_top3 = iso_top3.transform(np.array(probs_top3))
 
-        return {hid: float(p) for hid, p in zip(ids, probs)}
+        result_top3 = {hid: float(p) for hid, p in zip(ids, probs_top3)}
+
+        # --- head_win 推論 (MVP: raw 出力をそのまま使用) ---
+        result_win = {}
+        if win_model is not None:
+            try:
+                # head_win は FEATURE_COLUMNS と同じ特徴量を使用
+                feat_cols_win = FEATURE_COLUMNS
+                if hasattr(win_model, "num_feature"):
+                    n_win = win_model.num_feature()
+                    if n_win < len(feat_cols_win):
+                        feat_cols_win = feat_cols_win[:n_win]
+                X_win = np.array(
+                    [[float(f.get(c)) if f.get(c) is not None else float("nan") for c in feat_cols_win]
+                     for f in features],
+                    dtype=np.float32,
+                )
+                probs_win = win_model.predict(X_win)
+                result_win = {hid: float(p) for hid, p in zip(ids, probs_win)}
+            except Exception as e:
+                print(f"  WARNING: head_win 推論失敗: {e}")
+
+        return {"top3": result_top3, "win": result_win}
 
     return predict_race
 
@@ -399,15 +445,18 @@ def load_pop_stats_for_period(wf_name: str) -> Optional[dict]:
         return None
 
 
-def update_pred_file(fpath, race_updates, dry_run=False, pop_stats=None):
+def update_pred_file(fpath, race_updates, dry_run=False, pop_stats=None, use_head_win=True):
     """pred.json を更新: ml_composite_adj → composite 再計算 → marks → tickets
 
     Args:
         fpath: pred.json のパス
-        race_updates: {race_id: {horse_id: ML prob}} の dict
+        race_updates: {race_id: {"top3": {hid: P(top3)}, "win": {hid: P(win)}}} の dict
+                      (後方互換のため {race_id: {hid: prob}} の旧形式も受け付ける)
         dry_run: True の場合は書き込みしない
         pop_stats: 期間別 popularity_rates dict。指定時は softmax 後に
                    popularity_blend を適用する。None の場合はスキップ。
+        use_head_win: True の場合は head_win 出力を win_prob として直接採用 (default: True)
+                      False の場合は既存 softmax を使用 (rollback 用)
     """
     with open(fpath, "r", encoding="utf-8") as f:
         data = json.load(f)
@@ -418,10 +467,19 @@ def update_pred_file(fpath, race_updates, dry_run=False, pop_stats=None):
         if race_id not in race_updates:
             continue
 
-        ml_probs = race_updates[race_id]
+        raw_update = race_updates[race_id]
 
-        # ml_composite_adj 計算
-        calc_ml_composite_adj(race.get("horses", []), ml_probs)
+        # 新形式 {"top3": ..., "win": ...} と旧形式 {hid: prob} の両対応
+        if isinstance(raw_update, dict) and "top3" in raw_update:
+            ml_probs_top3 = raw_update["top3"]
+            ml_probs_win  = raw_update.get("win", {})
+        else:
+            # 旧形式: そのまま top3 として扱い、win は空
+            ml_probs_top3 = raw_update
+            ml_probs_win  = {}
+
+        # ml_composite_adj 計算 (head_top3 ベース: 既存通り)
+        calc_ml_composite_adj(race.get("horses", []), ml_probs_top3)
 
         # composite に ml_composite_adj を加算
         for h in race.get("horses", []):
@@ -433,11 +491,29 @@ def update_pred_file(fpath, race_updates, dry_run=False, pop_stats=None):
         # marks 再割当
         reassign_marks(race.get("horses", []))
 
-        # win_prob 再計算 (softmax: composite ベース)
-        softmax_win_probs(race.get("horses", []))
+        if use_head_win and ml_probs_win:
+            # head_win 出力を win_prob として直接採用 (softmax 廃止: 案 A)
+            active = [h for h in race.get("horses", [])
+                      if not h.get("is_scratched") and not h.get("scrape_failed")]
+            for h in active:
+                hid = str(h.get("horse_id", ""))
+                p_win = ml_probs_win.get(hid, 0.0)
+                h["win_prob"] = float(p_win)
+            # win_prob を合計 1.0 に正規化
+            total_win = sum((h.get("win_prob") or 0.0) for h in active)
+            if total_win > 0:
+                for h in active:
+                    h["win_prob"] = round((h.get("win_prob") or 0.0) / total_win, 6)
+            # 除外馬は 0.0 に設定
+            for h in race.get("horses", []):
+                if h.get("is_scratched") or h.get("scrape_failed"):
+                    h["win_prob"] = 0.0
+        else:
+            # 既存処理: softmax (composite ベース) または head_win なし時のフォールバック
+            softmax_win_probs(race.get("horses", []))
 
         # 期間別 popularity_blend を適用 (L-2 リーク修正)
-        # softmax_win_probs() で win_prob を確定した後に blend する
+        # win_prob を確定した後に blend する
         if pop_stats is not None:
             _apply_popularity_blend_wf(race, pop_stats)
 
@@ -595,8 +671,16 @@ def load_ml_races_for_inference(start_date: str, end_date: str):
     return all_races
 
 
-def run_wf_period(period_name: str, config: dict, dry_run: bool = False):
-    """1つの WF 期間の推論を実行"""
+def run_wf_period(period_name: str, config: dict, dry_run: bool = False, use_head_win: bool = True):
+    """1つの WF 期間の推論を実行
+
+    Args:
+        period_name: WF 期間名
+        config: WF_PERIODS の設定 dict
+        dry_run: True の場合は書き込みしない
+        use_head_win: True の場合は head_win 出力を win_prob として直接採用 (default: True)
+                      False の場合は既存 softmax を使用 (rollback 用)
+    """
     model_dir = config["model_dir"]
     train_max = config["train_max"]
     infer_start = config["infer_start"]
@@ -607,6 +691,7 @@ def run_wf_period(period_name: str, config: dict, dry_run: bool = False):
     print(f"  model_dir: {model_dir}")
     print(f"  train_max: {train_max}")
     print(f"  inference: {infer_start} - {infer_end}")
+    print(f"  use_head_win: {use_head_win}")
     print(f"{'='*60}")
 
     if not os.path.exists(model_dir):
@@ -703,7 +788,9 @@ def run_wf_period(period_name: str, config: dict, dry_run: bool = False):
         # ML 推論
         try:
             probs = predict_fn(race_dict, horse_dicts)
-            if probs:
+            # 新形式 {"top3": ..., "win": ...} の top3 が空でなければ結果を保存
+            probs_top3 = probs.get("top3", {}) if isinstance(probs, dict) and "top3" in probs else probs
+            if probs_top3:
                 fname_date = date_str.replace("-", "")
                 if fname_date not in date_race_probs:
                     date_race_probs[fname_date] = {}
@@ -748,7 +835,8 @@ def run_wf_period(period_name: str, config: dict, dry_run: bool = False):
             continue
 
         race_updates = date_race_probs[date_key]
-        n = update_pred_file(fpath, race_updates, dry_run=dry_run, pop_stats=pop_stats)
+        n = update_pred_file(fpath, race_updates, dry_run=dry_run, pop_stats=pop_stats,
+                             use_head_win=use_head_win)
         if n > 0:
             files_updated += 1
             races_updated += n
@@ -774,14 +862,21 @@ def main():
     parser.add_argument("--period", choices=["wf_2024", "wf_2025", "wf_2026", "all"],
                         default="all", help="推論期間 (default: all)")
     parser.add_argument("--dry-run", action="store_true", help="書き込みなし")
+    parser.add_argument("--no-head-win", action="store_true",
+                        help="head_win モデルを使わず既存 softmax で win_prob を計算 (rollback 用)")
     args = parser.parse_args()
+
+    # use_head_win: デフォルト True。--no-head-win フラグで False に切り替え可能
+    use_head_win = not args.no_head_win
 
     periods = WF_PERIODS if args.period == "all" else {args.period: WF_PERIODS[args.period]}
     total_start = time.time()
 
+    print(f"use_head_win={use_head_win} ({'head_win モデルを使用' if use_head_win else 'softmax (既存) を使用'})")
+
     results = {}
     for name, config in periods.items():
-        r = run_wf_period(name, config, dry_run=args.dry_run)
+        r = run_wf_period(name, config, dry_run=args.dry_run, use_head_win=use_head_win)
         results[name] = r
 
     print(f"\n{'='*60}")
