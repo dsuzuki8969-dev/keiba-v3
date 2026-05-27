@@ -1,4 +1,10 @@
 variant,features,objective,AUC,TOP1_hit_pct,tansho_ROI_pct,played,hit,payout_sum
 baseline_new,108,binary_logloss,0.778304,33.9972,73.7340,1406,478,103670
 +odds,109,binary_logloss,0.832762,43.3989,79.0590,1424,618,112580
-+odds+posthoc_EV,109,binary_logloss + post-hoc EV,0.832762,0.6320,36.3975,1424,9,51830
++odds+posthoc_EV_naive,109,binary_logloss + post-hoc EV,0.832762,0.6320,36.3975,1424,9,51830
++odds+EV_oddsmax10,109,binary_logloss + post-hoc EV,0.832762,14.7472,85.9621,1424,210,122410
++odds+EV_oddsmax5,109,binary_logloss + post-hoc EV,0.832762,28.3603,75.5876,1421,403,107410
++odds+EV_probmin10,109,binary_logloss + post-hoc EV,0.832762,1.0534,51.3343,1424,15,73100
++odds+EV_probmin15,109,binary_logloss + post-hoc EV,0.832762,1.7556,79.9368,1424,25,113830
++odds+EV_om10_pm10,109,binary_logloss + post-hoc EV,0.832762,14.7472,85.9621,1424,210,122410
++odds+EV_om5_pm15,109,binary_logloss + post-hoc EV,0.832762,28.3603,75.5876,1421,403,107410
