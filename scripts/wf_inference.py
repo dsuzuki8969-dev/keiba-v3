@@ -273,11 +273,14 @@ def load_wf_predictor(model_dir: str, tracker, sire_tracker, iso_calibrators: Op
     return predict_race
 
 
-def calc_ml_composite_adj(horses_data: list, ml_probs: dict):
-    """engine.py Step 5.6 と同等の ml_composite_adj 計算
+def calc_ml_composite_adj(horses_data: list, ml_probs: dict, ml_probs_win: dict = None, win_weight: float = 0.5):
+    """engine.py Step 5.6 と同等の ml_composite_adj 計算 (head_top3 + head_win 統合)
 
-    horses_data: pred.json の horses リスト (composite, horse_id, odds 等を含む)
-    ml_probs: {horse_id: P(top3)}
+    Args:
+        horses_data: pred.json の horses リスト (composite, horse_id, odds 等を含む)
+        ml_probs: {horse_id: P(top3)}
+        ml_probs_win: {horse_id: P(win)}。指定時は head_win z-score を adj に加算 (方針 2 MVP)
+        win_weight: head_win z-score の composite_adj 加算重み (default 0.5)
     """
     active = [h for h in horses_data if not h.get("is_scratched") and not h.get("scrape_failed")]
     if len(active) < 3:
@@ -328,6 +331,24 @@ def calc_ml_composite_adj(horses_data: list, ml_probs: dict):
 
         h["ml_composite_adj"] = round(raw_adj, 4)
         h["ml_win_prob"] = round(p, 6)
+
+    # --- head_win z-score を composite_adj に加算 (方針 2 MVP) ---
+    # ml_probs_win が指定されている場合のみ実行
+    if ml_probs_win:
+        # 各馬の head_win 確率を取得
+        win_vals = [ml_probs_win.get(str(h.get("horse_id", "")), 0.0) for h, _ in ml_vals]
+        avg_w = sum(win_vals) / len(win_vals)
+        std_w = (sum((w - avg_w) ** 2 for w in win_vals) / len(win_vals)) ** 0.5
+
+        if std_w > 0.001:
+            for i, ((h, _), w) in enumerate(zip(ml_vals, win_vals)):
+                z_win = (w - avg_w) / std_w
+                # ±3.0 クリップ × win_weight で adj に積み増し
+                additional = max(-3.0, min(3.0, z_win * 1.5 * win_weight))
+                cur_adj = h.get("ml_composite_adj", 0.0) or 0.0
+                h["ml_composite_adj"] = round(cur_adj + additional, 4)
+                # head_win z-score をデバッグ用フィールドに記録
+                h["ml_win_z"] = round(z_win, 4)
 
 
 def softmax_win_probs(horses):
@@ -478,8 +499,9 @@ def update_pred_file(fpath, race_updates, dry_run=False, pop_stats=None, use_hea
             ml_probs_top3 = raw_update
             ml_probs_win  = {}
 
-        # ml_composite_adj 計算 (head_top3 ベース: 既存通り)
-        calc_ml_composite_adj(race.get("horses", []), ml_probs_top3)
+        # ml_composite_adj 計算 (head_top3 + head_win 統合: 方針 2 MVP)
+        # ml_probs_win が存在する場合は head_win z-score × win_weight 0.5 を adj に加算
+        calc_ml_composite_adj(race.get("horses", []), ml_probs_top3, ml_probs_win, win_weight=0.5)
 
         # composite に ml_composite_adj を加算
         for h in race.get("horses", []):
