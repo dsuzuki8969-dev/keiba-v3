@@ -83,11 +83,47 @@ def build_tracker(max_date: str):
     return tracker, sire_tracker, sire_map
 
 
-def load_wf_predictor(model_dir: str, tracker, sire_tracker):
-    """WF モデルディレクトリから LGBMPredictor 相当のオブジェクトを構築"""
+def load_iso_calibrators(model_dir: str) -> dict:
+    """期間別 Isotonic calibrators をロードする。
+
+    build_iso_calibrator_wf.py が生成した iso_cal_top3.pkl をロードして返す。
+    ファイルが存在しない場合は空 dict を返す (calibration スキップ)。
+
+    Args:
+        model_dir: WF モデルディレクトリのパス
+
+    Returns:
+        {"top3": IsotonicRegression} の dict。ファイルなし時は {}
+    """
+    out = {}
+    for target in ["top3"]:  # top3 のみ (win は方針 1 で活用予定)
+        path = os.path.join(model_dir, f"iso_cal_{target}.pkl")
+        if os.path.exists(path):
+            with open(path, "rb") as f:
+                out[target] = pickle.load(f)
+            print(f"  Isotonic calibrator ロード: {path}")
+        else:
+            print(f"  INFO: {path} が見つかりません。Isotonic calibration をスキップします。")
+            print(f"  先に `python scripts/build_iso_calibrator_wf.py` を実行してください。")
+    return out
+
+
+def load_wf_predictor(model_dir: str, tracker, sire_tracker, iso_calibrators: Optional[dict] = None):
+    """WF モデルディレクトリから LGBMPredictor 相当のオブジェクトを構築
+
+    Args:
+        model_dir: WF モデルディレクトリのパス
+        tracker: RollingStatsTracker オブジェクト
+        sire_tracker: RollingSireTracker オブジェクト
+        iso_calibrators: load_iso_calibrators() の戻り値。
+                         None または {} の場合は Isotonic calibration をスキップ。
+    """
     import lightgbm as lgb
     from src.ml.lgbm_model import FEATURE_COLUMNS, FEATURE_COLUMNS_BANEI, _extract_features, _add_race_relative_features, _smile_key_ml, SURFACE_MAP
     import numpy as np
+
+    # iso_calibrators が None の場合は空 dict として扱う
+    _iso_calibrators = iso_calibrators if iso_calibrators is not None else {}
 
     models = {}
     cal_params = {}
@@ -174,10 +210,17 @@ def load_wf_predictor(model_dir: str, tracker, sire_tracker):
         )
         probs = model.predict(X)
 
+        # Platt scaling (既存処理)
         cal = cal_params.get(model_key)
         if cal:
             a, b = cal["a"], cal["b"]
             probs = [1.0 / (1.0 + math.exp(-(a * p + b))) for p in probs]
+
+        # Isotonic calibration 適用 (Platt → Isotonic の二段階)
+        # build_iso_calibrator_wf.py が生成した iso_cal_top3.pkl を使用
+        iso_top3 = _iso_calibrators.get("top3")
+        if iso_top3 is not None:
+            probs = iso_top3.transform(np.array(probs))
 
         return {hid: float(p) for hid, p in zip(ids, probs)}
 
@@ -592,7 +635,16 @@ def run_wf_period(period_name: str, config: dict, dry_run: bool = False):
     # Step 2: WF モデルロード
     t1 = time.time()
     print(f"\n[Step 2] WF model ロード...")
-    predict_fn = load_wf_predictor(model_dir, tracker, sire_tracker)
+
+    # Step 2.5: Isotonic calibrators ロード (build_iso_calibrator_wf.py が事前に生成)
+    print(f"\n[Step 2.5] Isotonic calibrators ロード...")
+    iso_calibrators = load_iso_calibrators(model_dir)
+    if iso_calibrators:
+        print(f"  Isotonic calibration 有効: {list(iso_calibrators.keys())}")
+    else:
+        print(f"  Isotonic calibration 無効 (calibrator なし)")
+
+    predict_fn = load_wf_predictor(model_dir, tracker, sire_tracker, iso_calibrators)
     print(f"  Step 2 完了: {time.time()-t1:.1f}s")
 
     # Step 3: 推論期間の ML JSON ロード (日付順)
