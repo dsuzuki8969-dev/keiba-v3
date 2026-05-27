@@ -10,6 +10,8 @@
      - ml_composite_adj 計算 (engine.py Step 5.6 ロジック)
      - tracker 更新 (次レースの rolling stats に反映)
   4. pred.json 更新: composite 再計算 + marks + tickets 再生成
+     - popularity_blend を適用 (期間別 popularity_rates_{wf_name}.json を使用)
+     - L-2 修正: 循環参照リークなしの統計テーブルを使用
 """
 
 import argparse
@@ -21,6 +23,7 @@ import sys
 import time
 from glob import glob
 from itertools import combinations
+from typing import Optional
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, PROJECT_ROOT)
@@ -323,8 +326,46 @@ def regenerate_tickets(horses, confidence):
     return tickets
 
 
-def update_pred_file(fpath, race_updates, dry_run=False):
-    """pred.json を更新: ml_composite_adj → composite 再計算 → marks → tickets"""
+def load_pop_stats_for_period(wf_name: str) -> Optional[dict]:
+    """期間別 popularity_rates をロード
+
+    build_popularity_stats_wf.py が生成した
+    data/popularity_rates_{wf_name}.json をロードして返す。
+    ファイルが存在しない場合は None を返す。
+    """
+    data_dir = os.path.join(PROJECT_ROOT, "data")
+    path = os.path.join(data_dir, f"popularity_rates_{wf_name}.json")
+    if not os.path.exists(path):
+        print(f"  WARNING: 期間別 popularity stats が見つかりません: {path}")
+        print(f"  先に python scripts/build_popularity_stats_wf.py を実行してください。")
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            stats = json.load(f)
+        total = stats.get("total_entries", 0)
+        sample_days = stats.get("sample_days", 0)
+        if total == 0:
+            print(f"  WARNING: {path} の total_entries=0 (データなし)")
+            print(f"  popularity_blend は適用しません (train_max 以前の pred.json が存在しない)。")
+            return None
+        print(f"  期間別 popularity stats ロード: {path}")
+        print(f"    sample_days={sample_days}, total_entries={total:,}")
+        return stats
+    except Exception as e:
+        print(f"  ERROR: 期間別 popularity stats ロード失敗: {e}")
+        return None
+
+
+def update_pred_file(fpath, race_updates, dry_run=False, pop_stats=None):
+    """pred.json を更新: ml_composite_adj → composite 再計算 → marks → tickets
+
+    Args:
+        fpath: pred.json のパス
+        race_updates: {race_id: {horse_id: ML prob}} の dict
+        dry_run: True の場合は書き込みしない
+        pop_stats: 期間別 popularity_rates dict。指定時は softmax 後に
+                   popularity_blend を適用する。None の場合はスキップ。
+    """
     with open(fpath, "r", encoding="utf-8") as f:
         data = json.load(f)
 
@@ -339,7 +380,7 @@ def update_pred_file(fpath, race_updates, dry_run=False):
         # ml_composite_adj 計算
         calc_ml_composite_adj(race.get("horses", []), ml_probs)
 
-        # composite にml_composite_adj を加算
+        # composite に ml_composite_adj を加算
         for h in race.get("horses", []):
             adj = h.get("ml_composite_adj", 0.0) or 0.0
             old_comp = h.get("composite", 50.0)
@@ -349,8 +390,13 @@ def update_pred_file(fpath, race_updates, dry_run=False):
         # marks 再割当
         reassign_marks(race.get("horses", []))
 
-        # win_prob 再計算
+        # win_prob 再計算 (softmax: composite ベース)
         softmax_win_probs(race.get("horses", []))
+
+        # 期間別 popularity_blend を適用 (L-2 リーク修正)
+        # softmax_win_probs() で win_prob を確定した後に blend する
+        if pop_stats is not None:
+            _apply_popularity_blend_wf(race, pop_stats)
 
         # tickets 再生成
         confidence = race.get("overall_confidence", "") or race.get("confidence", "B") or "B"
@@ -381,6 +427,109 @@ def update_pred_file(fpath, race_updates, dry_run=False):
             json.dump(data, f, ensure_ascii=False, separators=(",", ":"))
 
     return updated
+
+
+_WF_VENUE_NAMES = {
+    "01": "札幌", "02": "函館", "03": "福島", "04": "新潟", "05": "東京",
+    "06": "中山", "07": "中京", "08": "京都", "09": "阪神", "10": "小倉",
+    "30": "門別", "31": "帯広", "35": "盛岡", "36": "水沢", "42": "浦和",
+    "43": "船橋", "44": "大井", "45": "川崎", "46": "金沢", "47": "笠松",
+    "48": "名古屋", "50": "園田", "51": "姫路", "54": "高知", "55": "佐賀",
+}
+
+
+def _apply_popularity_blend_wf(race: dict, pop_stats: dict) -> None:
+    """WF backtest 用の popularity_blend を race dict に適用 (in-place)
+
+    DISABLE_POPULARITY_BLEND フラグに関わらず WF 専用の統計テーブルで
+    win_prob / place2_prob / place3_prob を補正する。
+
+    適用手順:
+      1. softmax_win_probs() 後に呼ぶこと (win_prob 正規化済みが前提)
+      2. ml_win_prob (P(top3)) から place2/3 を補完
+      3. _lookup_rates() で統計レート取得
+      4. 動的 alpha でブレンド
+      5. 正規化
+
+    popularity フィールドが存在しない馬はスキップされる。
+    """
+    from src.calculator.popularity_blend import (
+        _lookup_rates,
+        _normalize_dict_probs,
+        ALPHA_MODEL_MIN,
+        ALPHA_MODEL_MAX,
+        CONFIDENCE_GAP,
+    )
+
+    horses = race.get("horses", [])
+    active = [h for h in horses if not h.get("is_scratched") and not h.get("scrape_failed")]
+    if not active:
+        return
+
+    # race 情報を取得
+    race_id = race.get("race_id", "")
+    venue_code = race_id[4:6] if len(race_id) >= 6 else "01"
+    vc_int = int(venue_code) if venue_code.isdigit() else 0
+    is_jra = 1 <= vc_int <= 10
+    venue_name = _WF_VENUE_NAMES.get(venue_code, venue_code)
+    org = "JRA" if is_jra else "NAR"
+    field_count = len(active)
+
+    # place2_prob / place3_prob を ml_win_prob から補完
+    # (softmax_win_probs は win_prob のみ設定するため)
+    for h in active:
+        ml_p3 = h.get("ml_win_prob", 0.0) or 0.0  # P(top3) = ML の生確率
+        wp = h.get("win_prob", 0.0) or 0.0
+        # place2/3 が未設定の場合のみ補完
+        if not h.get("place2_prob"):
+            # 3着内確率から2着内確率を近似 (比率 0.75)
+            h["place2_prob"] = min(1.0, ml_p3 * 0.75) if ml_p3 > 0 else min(1.0, wp * 2.0)
+        if not h.get("place3_prob"):
+            # 3着内確率をそのまま使用
+            h["place3_prob"] = ml_p3 if ml_p3 > 0 else min(1.0, wp * 3.0)
+
+    # 動的 alpha 計算 (blend_probabilities_dict と同等)
+    all_wp = sorted([h.get("win_prob", 0) for h in active], reverse=True)
+    gap = (all_wp[0] - all_wp[1]) if len(all_wp) >= 2 else 0
+    confidence = min(1.0, gap / CONFIDENCE_GAP)
+    alpha_model = ALPHA_MODEL_MIN + confidence * (ALPHA_MODEL_MAX - ALPHA_MODEL_MIN)
+    alpha_stats = 1.0 - alpha_model
+    alpha_org = alpha_stats * 0.4
+    alpha_venue = alpha_stats * 0.6
+
+    # 各馬にブレンドを適用 (DISABLE_POPULARITY_BLEND を無視して強制実行)
+    blended = 0
+    for h in active:
+        pop = h.get("popularity")
+        if pop is None or pop < 1:
+            continue
+
+        odds = h.get("odds")
+
+        org_win, org_top2, org_top3, ven_win, ven_top2, ven_top3 = _lookup_rates(
+            pop_stats, org, venue_name, pop, odds, field_count
+        )
+
+        h["win_prob"] = (
+            alpha_model * h.get("win_prob", 1.0 / field_count)
+            + alpha_org * org_win
+            + alpha_venue * ven_win
+        )
+        h["place2_prob"] = (
+            alpha_model * h.get("place2_prob", 2.0 / field_count)
+            + alpha_org * org_top2
+            + alpha_venue * ven_top2
+        )
+        h["place3_prob"] = (
+            alpha_model * h.get("place3_prob", 3.0 / field_count)
+            + alpha_org * org_top3
+            + alpha_venue * ven_top3
+        )
+        blended += 1
+
+    # 正規化
+    if blended > 0:
+        _normalize_dict_probs(active, field_count)
 
 
 def load_ml_races_for_inference(start_date: str, end_date: str):
@@ -524,6 +673,15 @@ def run_wf_period(period_name: str, config: dict, dry_run: bool = False):
 
     print(f"  Step 3 完了: {total_predicted} races predicted, {time.time()-t2:.1f}s")
 
+    # Step 3.5: 期間別 popularity_blend stats のロード (L-2 リーク修正)
+    print(f"\n[Step 3.5] 期間別 popularity stats ロード ({period_name})...")
+    pop_stats = load_pop_stats_for_period(period_name)
+    if pop_stats is None:
+        print(f"  popularity_blend をスキップします (stats が利用不可)。")
+        print(f"  先に `python scripts/build_popularity_stats_wf.py --period {period_name}` を実行してください。")
+    else:
+        print(f"  popularity_blend 有効: {pop_stats.get('total_entries', 0):,} entries の統計を使用")
+
     # Step 4: pred.json 更新
     t3 = time.time()
     print(f"\n[Step 4] pred.json 更新...")
@@ -538,7 +696,7 @@ def run_wf_period(period_name: str, config: dict, dry_run: bool = False):
             continue
 
         race_updates = date_race_probs[date_key]
-        n = update_pred_file(fpath, race_updates, dry_run=dry_run)
+        n = update_pred_file(fpath, race_updates, dry_run=dry_run, pop_stats=pop_stats)
         if n > 0:
             files_updated += 1
             races_updated += n
