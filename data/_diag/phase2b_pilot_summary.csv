@@ -1,0 +1,6 @@
+variant,features,objective,AUC,TOP1_hit_pct,tansho_ROI_pct,played,hit,payout_sum
+baseline_new,108,binary_logloss,0.778304,33.9972,73.7340,1406,478,103670
++odds,109,binary_logloss,0.832762,43.3989,79.0590,1424,618,112580
++odds+ROI_loss,109,ERROR,,0.0000,0.0000,0,0,0
++odds+ROI_loss_log,109,ERROR,,0.0000,0.0000,0,0,0
++odds+sample_weight,109,sample_weight,0.730388,15.2388,70.3090,1424,217,100120
