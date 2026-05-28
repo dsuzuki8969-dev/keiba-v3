@@ -78,6 +78,7 @@ logger = get_logger(__name__)
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 DIAG_DIR = os.path.join(ROOT, "data", "_diag")
 RESULTS_DIR = os.path.join(ROOT, "data", "results")
+RESULTS_FIXED_DIR = os.path.join(ROOT, "data", "results_fixed")  # ワイド払戻バグ修正版 (2026-05-30)
 
 # +odds+pace (108 + odds + 5 ペース特徴量 = 114)
 PACE_FEATURE_NAMES = [
@@ -174,7 +175,14 @@ def _load_results_payouts(
     pattern = os.path.join(RESULTS_DIR, "*_results.json")
     files = sorted(glob.glob(pattern))
 
+    # ワイド払戻バグ修正版 (2026-05-30) 優先 fallback
+    # results_fixed/ に同名ファイルがあれば優先して読み込む
+    fixed_pattern = os.path.join(RESULTS_FIXED_DIR, "*_results.json")
+    fixed_files_map = {os.path.basename(f): f for f in glob.glob(fixed_pattern)}
+    logger.info(f"    results_fixed/ ファイル数: {len(fixed_files_map)} (ワイド払戻バグ修正版)")
+
     loaded_files = 0
+    fixed_used = 0
     for fp in files:
         fn = os.path.basename(fp)
         date_str = fn[:8]
@@ -183,8 +191,13 @@ def _load_results_payouts(
         if not (start_yyyymmdd <= date_str < end_yyyymmdd):
             continue
 
+        # results_fixed/ に同名ファイルがあれば優先
+        actual_fp = fixed_files_map.get(fn, fp)
+        if actual_fp != fp:
+            fixed_used += 1
+
         try:
-            with open(fp, encoding="utf-8") as f:
+            with open(actual_fp, encoding="utf-8") as f:
                 day_data = json.load(f)
         except Exception as e:
             logger.warning(f"    results.json 読み込みエラー: {fp} — {e}")
@@ -198,6 +211,8 @@ def _load_results_payouts(
         loaded_files += 1
 
     logger.info(f"    results.json ロード: {loaded_files} ファイル / {len(result_map)} レース ({date_start}〜{date_end})")
+    if fixed_used > 0:
+        logger.info(f"    results_fixed/ 優先使用: {fixed_used} ファイル (ワイド払戻バグ修正版)")
     return result_map
 
 

@@ -68,8 +68,15 @@ def combo_match(combo_a: Any, combo_b: Any, ticket_type: str) -> bool:
 
     Args:
         combo_a: ticket 側 (list of int/str)
-        combo_b: payout 側 (str '1-2-3' or list)
+        combo_b: payout 側 (str '1-2-3' or '210' or list)
         ticket_type: romaji ticket type (sanrentan/umatan は順序保持)
+
+    Notes (2026-05-30 修正):
+        results.json は scraper バージョンで以下 2 形式が混在する:
+          - 区切り入り: "6-12" (2024-12 等で確認)
+          - 区切り無し連結: "48" / "210" / "911" (2024-09 / 2025 全月で確認)
+        前者は split("-") で正しく分解されるが、後者は 1 要素になり
+        馬連/ワイド/三連系で永久不一致になる。フォールバックで救済する。
     """
     if not combo_a or not combo_b:
         return False
@@ -88,8 +95,26 @@ def combo_match(combo_a: Any, combo_b: Any, ticket_type: str) -> bool:
         return False
 
     if ticket_type in ORDERED_TICKET_TYPES:
-        return ca == cb
-    return sorted(ca) == sorted(cb)
+        if ca == cb:
+            return True
+    else:
+        if sorted(ca) == sorted(cb):
+            return True
+
+    # フォールバック: payout 側が区切り無し連結 (例: "48" / "210") の場合
+    # ticket 側 ca を数値順で連結して再判定
+    if isinstance(combo_b, str) and len(cb) == 1 and cb[0].isdigit():
+        try:
+            ca_ints = [int(x) for x in ca]
+            if ticket_type in ORDERED_TICKET_TYPES:
+                joined_ca = "".join(str(x) for x in ca_ints)
+            else:
+                joined_ca = "".join(str(x) for x in sorted(ca_ints))
+            return joined_ca == cb[0]
+        except (ValueError, TypeError):
+            pass
+
+    return False
 
 
 def get_payout_for_combo(
