@@ -2194,6 +2194,9 @@ class RaceAnalysisEngine:
             }
         else:
             bet_decision = make_bet_decision(evaluations, _fixed_tickets, confidence.value)
+            # マスター指示 2026-05-28: skip=True なら参考買い目も出さない (low_ev 等で見送り時)
+            if bet_decision.get("skip"):
+                bet_decision["reference_tickets"] = []
 
         has_any_odds = any(ev.horse.odds is not None for ev in evaluations)
         is_pre_day = not has_any_odds
