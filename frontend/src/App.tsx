@@ -8,7 +8,8 @@ import { ErrorBoundary } from "@/components/ErrorBoundary";
 // ページ単位のコード分割
 const HomePage = lazy(() => import("@/pages/HomePage"));
 const TodayPage = lazy(() => import("@/pages/TodayPage"));
-const ResultsPage = lazy(() => import("@/pages/ResultsPage"));
+// 過去成績: 一時非表示 (2026-05-29 マスター指示 / 数値改善まで)
+// const ResultsPage = lazy(() => import("@/pages/ResultsPage"));
 // T-038: 開催カレンダーページ
 const CalendarPage = lazy(() => import("@/pages/CalendarPage"));
 const VenuePage = lazy(() => import("@/pages/VenuePage"));
@@ -44,7 +45,8 @@ export default function App() {
                 <Route path="/" element={<Navigate to="/home" replace />} />
                 <Route path="/home" element={<HomePage />} />
                 <Route path="/today" element={<TodayPage />} />
-                <Route path="/results" element={<ResultsPage />} />
+                {/* 過去成績: 一時非表示 (2026-05-29 マスター指示 / 数値改善まで) */}
+                <Route path="/results" element={<Navigate to="/home" replace />} />
                 {/* T-038: 開催カレンダーページ */}
                 <Route path="/calendar" element={<CalendarPage />} />
                 <Route path="/venue" element={<VenuePage />} />

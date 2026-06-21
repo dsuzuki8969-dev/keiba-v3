@@ -116,18 +116,30 @@ def _regen_marks_for_race(horses: list, is_jra: bool) -> list:
             max(20.0, min(100.0, getattr(mev, "_composite_snapshot", mev.composite))), 2
         )
 
+    # 特選穴馬 オッズゲート (engine Step6b と整合): 単勝 odds < TOKUSEN_ODDS_THRESHOLD(15.0)
+    # の馬は is_tokusen を落とす。オッズは発走前に変動するため、一時パッチでは追従できず
+    # regen 毎に再適用する必要がある (14.8 倍などの境界変動を確実に除外)。
+    from config.settings import TOKUSEN_ODDS_THRESHOLD
+    for h in horses:
+        if h.get("is_tokusen"):
+            _od = h.get("odds")
+            if _od is None or _od < TOKUSEN_ODDS_THRESHOLD:
+                h["is_tokusen"] = False
+
     return horses
 
 
 def _regen_tickets_for_race(race: dict) -> dict:
-    """1レース分の買い目を再生成 (M'戦略 + 単勝T-4 + 三連複動的F)
+    """1レース分の買い目を再生成 (断層三連複 or M'戦略 + 単勝T-4 + 三連複動的F)
 
     assign_marks 後の race dict を受け取り、tickets 系フィールドを更新。
+    USE_DANSO_BUY=True の場合、三連複は compute_danso_columns ベースの断層買い目を使用。
     """
     from src.analytics.hybrid_summary import (
         HONMEI_MARKS, TAIKOU_MARKS, RENKA_MARKS, WIDE_MARKS, OANA_MARKS,
         MARK_PRIORITY, STAKE_PER_TICKET, HOSHI_DYNAMIC_MIN_ODDS,
     )
+    from config.settings import USE_DANSO_BUY, DANSO_STAKE_PER_POINT
     from itertools import combinations
 
     horses = race.get("horses", [])
@@ -203,33 +215,80 @@ def _regen_tickets_for_race(race: dict) -> dict:
         col3 = sorted(set(ta_no + re_no + wi_no + oa_no))
 
     # D-7/G-2 ROLLBACK (2026-05-25 緊急): skip 強化全廃で現役運用復旧
-    # ---- 三連複チケット生成 (sanrenpuku_confidence E のみ skip) ----
+    # ---- 三連複チケット生成 ----
+    # USE_DANSO_BUY=True: compute_danso_columns ベースの断層買い目を使用
+    # USE_DANSO_BUY=False: 従来の M' 戦略フォーメーション
     sanren_tickets = []
+    _danso_formation_label = None  # formation ラベル初期化（スコープ安全のため）
     if s_conf != "E":
-        if col1 and len(col2) >= 2 and len(col3) >= 3:
-            seen = set()
-            for a in col1:
-                for b in col2:
-                    if b == a:
-                        continue
-                    for c in col3:
-                        if c == a or c == b:
+        if USE_DANSO_BUY:
+            # ── 断層三連複: compute_danso_columns を呼ぶ ──
+            from src.calculator.betting import compute_danso_columns
+            # pred.json の各馬 dict から entries を作成
+            danso_entries = [
+                {
+                    "mark":         h.get("mark", "-") or "-",
+                    "composite":    float(h.get("composite", 50.0) or 50.0),
+                    "horse_no":     int(h.get("horse_no", 0)),
+                    "odds":         float(h.get("odds") or h.get("predicted_tansho_odds") or 10.0),
+                    "is_scratched": bool(h.get("is_scratched", False)),
+                }
+                for h in horses  # 取消馬も渡す（compute_danso_columns 内で除外）
+            ]
+            danso_result = compute_danso_columns(danso_entries)
+            # formation ラベル（A-F1/A-F2/C/B-F1/B-F2）を _meta に保存
+            _danso_formation_label = danso_result["formation"] if danso_result is not None else None
+            if danso_result is not None:
+                # col1 × col2 × col3 で標準三連複 combo を生成
+                col1_d = danso_result["col1"]
+                col2_d = danso_result["col2"]
+                col3_d = danso_result["col3"]
+                seen = set()
+                for a in col1_d:
+                    for b in col2_d:
+                        if b == a:
                             continue
-                        combo = tuple(sorted([a, b, c]))
-                        if combo not in seen:
-                            seen.add(combo)
-                            sanren_tickets.append({
-                                "type": "三連複",
-                                "combo": list(combo),
-                                "stake": STAKE_PER_TICKET,
-                            })
+                        for c in col3_d:
+                            if c == a or c == b:
+                                continue
+                            combo = tuple(sorted([a, b, c]))
+                            if combo not in seen:
+                                seen.add(combo)
+                                sanren_tickets.append({
+                                    "type": "三連複",
+                                    "combo": list(combo),
+                                    "stake": DANSO_STAKE_PER_POINT,
+                                    "formation": danso_result["formation"],
+                                })
+            # 断層非発火 → 三連複は0点（見送り）
+        else:
+            # ── 従来 M' 戦略フォーメーション ──
+            if col1 and len(col2) >= 2 and len(col3) >= 3:
+                seen = set()
+                for a in col1:
+                    for b in col2:
+                        if b == a:
+                            continue
+                        for c in col3:
+                            if c == a or c == b:
+                                continue
+                            combo = tuple(sorted([a, b, c]))
+                            if combo not in seen:
+                                seen.add(combo)
+                                sanren_tickets.append({
+                                    "type": "三連複",
+                                    "combo": list(combo),
+                                    "stake": STAKE_PER_TICKET,
+                                })
 
     # ---- 単勝チケット生成 (マスター承認 6 パターン × 自信度別) ----
+    # 断層買い目モード (USE_DANSO_BUY=True) では単勝は付与しない（三連複のみ）
+    # M' 戦略モード (USE_DANSO_BUY=False) のみ単勝生成
     # マスター承認 (2026-05-25): 42 通り検証 → 純利益最大組合せ採用
     #   SS, D → E案: 能力1位 + 展開1位
     #   S, A, B, C → F案: 能力1位 + 適性1位
     tansho_tickets = []
-    if t_conf != "E":
+    if not USE_DANSO_BUY and t_conf != "E":
         def _top1_by(field):
             cand = sorted(
                 [h for h in active if not h.get("is_tokusen_kiken", False)],
@@ -261,17 +320,33 @@ def _regen_tickets_for_race(race: dict) -> dict:
                 "stake": 100,
             })
 
-    # 全チケット統合
+    # 全チケット統合（danso モードでは単勝なし、M'モードでは三連複+単勝）
     all_tickets = sanren_tickets + tansho_tickets
     race["formation_tickets"] = sanren_tickets  # 三連複のみ (互換性)
     race["tickets"] = all_tickets
     # C-1 修正 (2026-05-25): tickets_by_mode["fixed"] も同期更新して集計バグ防止
     if isinstance(race.get("tickets_by_mode"), dict):
         race["tickets_by_mode"]["fixed"] = all_tickets
+        # tickets_by_mode._meta に danso 情報を同期（danso モードのみ）
+        if USE_DANSO_BUY:
+            _tbm_meta = race["tickets_by_mode"].setdefault("_meta", {})
+            _danso_skipped_regen = len(sanren_tickets) == 0
+            _tbm_meta["danso_formation"] = _danso_formation_label   # A-F1/A-F2/C/B-F1/B-F2/None
+            _tbm_meta["ticket_count"]    = len(sanren_tickets)
+            _tbm_meta["skipped"]         = _danso_skipped_regen
+            _tbm_meta["skip_reason"]     = "断層条件不成立: 見送り" if _danso_skipped_regen else ""
+            _tbm_meta["tansho_count"]    = 0
+            _tbm_meta["sanrenpuku_count"] = len(sanren_tickets)
+            _tbm_meta["stake_total"]     = sum(t.get("stake", 0) for t in sanren_tickets)
+            _tbm_meta["format"]          = "danso:印断層三連複"  # フロント判定用 prefix
 
     # bet_decision 更新
-    total_stake = (len(sanren_tickets) * STAKE_PER_TICKET
-                   + len(tansho_tickets) * 100)
+    # danso モードでの総投資額（単勝なし）
+    if USE_DANSO_BUY:
+        total_stake = sum(t.get("stake", DANSO_STAKE_PER_POINT) for t in sanren_tickets)
+    else:
+        total_stake = (len(sanren_tickets) * STAKE_PER_TICKET
+                       + len(tansho_tickets) * 100)
     skip_reasons = []
     if s_conf == "E":
         skip_reasons.append("sanrenpuku_confidence_E")

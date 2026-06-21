@@ -111,12 +111,13 @@ def _read_cache(path: Path) -> Optional[str]:
     if HAS_LZ4 and lz4_path.exists():
         try:
             with open(lz4_path, "rb") as f:
-                return _lz4.decompress(f.read()).decode("euc-jp", errors="replace")
+                # 2026-06: netkeiba が UTF-8 に移行 (旧 euc-jp デコードは文字化け)
+                return _lz4.decompress(f.read()).decode("utf-8", errors="replace")
         except Exception:
             pass
     if path.exists():
         try:
-            with open(path, "r", encoding="euc-jp", errors="replace") as f:
+            with open(path, "r", encoding="utf-8", errors="replace") as f:
                 return f.read()
         except Exception:
             pass
@@ -209,7 +210,7 @@ def fetch_nar_calendar(year: int, month: int, refresh: bool = False) -> Dict[str
     if not refresh:
         cached = _read_cache(cache_p)
         if cached is not None:
-            html_bytes = cached.encode("euc-jp", errors="replace")
+            html_bytes = cached.encode("utf-8", errors="replace")
             # デコード済みとして扱う
             text = cached
         else:
@@ -221,7 +222,7 @@ def fetch_nar_calendar(year: int, month: int, refresh: bool = False) -> Dict[str
             print(f"  [SKIP] NAR {year}-{month:02d}: 取得失敗（推定埋め禁止）")
             return {}
         _write_cache(cache_p, raw)
-        text = raw.decode("euc-jp", errors="replace")
+        text = raw.decode("utf-8", errors="replace")
 
     soup = BeautifulSoup(text, "html.parser")
     result: Dict[str, List[str]] = {}
@@ -289,7 +290,7 @@ def fetch_jra_calendar(year: int, month: int, refresh: bool = False) -> Dict[str
             print(f"  [SKIP] JRA {year}-{month:02d}: 取得失敗（推定埋め禁止）")
             return {}
         _write_cache(cache_p, raw)
-        text = raw.decode("euc-jp", errors="replace")
+        text = raw.decode("utf-8", errors="replace")
 
     soup = BeautifulSoup(text, "html.parser")
     result: Dict[str, List[str]] = {}

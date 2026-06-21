@@ -1027,9 +1027,17 @@ def _scan_today_predictions(date_str: str) -> dict:
                 course = h.get("course_total", 0) or 0
                 p3 = h.get("place3_prob", 0) or 0
 
-                # ☆印は無条件、それ以外は10倍以上の非本命馬
-                is_star = mk == "☆"
-                is_ana = mk not in ("◉", "◎", "○", "▲", "△", "×") and odds_val >= 10.0
+                # マスター指摘(2026-06): 1-3人気は穴馬ではない → 厳選穴馬から除外
+                # (☆=composite6位が上位人気馬の時に混入していた不具合の修正)
+                pop = h.get("popularity", 0) or 0
+                is_top_pop = pop in (1, 2, 3)
+                # ☆印は穴馬候補(ただし1-3人気は除外)、それ以外は10倍以上の非本命馬(同除外)
+                is_star = (mk == "☆") and not is_top_pop
+                is_ana = (
+                    mk not in ("◉", "◎", "○", "▲", "△", "×")
+                    and odds_val >= 10.0
+                    and not is_top_pop
+                )
 
                 if not (is_star or is_ana):
                     continue

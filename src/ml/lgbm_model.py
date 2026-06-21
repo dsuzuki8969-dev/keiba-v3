@@ -185,6 +185,8 @@ FEATURE_COLUMNS = [
     "relative_dev_mean_5",      # 過去5走のrelative_dev平均 (NULL→50.0 fill)
     "relative_dev_max_5",       # 過去5走のrelative_dev最高値
     "relative_dev_recent",      # 直近1走のrelative_dev (前走相対実力)
+    # Plan C Phase 2a: 当日確定オッズ (リーク無・108→109 features)
+    "odds",                     # 当日確定単勝オッズ (horse.get("odds") or tansho_odds)
 ]
 
 # ばんえい専用: コーナー/ペース/上がり3F/SMILE/脚質/スピード指数など存在しない概念を除外
@@ -3068,6 +3070,13 @@ def _extract_features(
         feat["last3f_pace_diff"] = float(_l3f) - float(_pos)
     else:
         feat["last3f_pace_diff"] = None
+
+    # Plan C Phase 2a: 当日確定単勝オッズ (リーク無)
+    # horse dict に "odds" か "tansho_odds" が含まれている場合に取り出す
+    _odds_val = horse.get("odds")
+    if _odds_val is None:
+        _odds_val = horse.get("tansho_odds")
+    feat["odds"] = float(_odds_val) if _odds_val is not None else None
 
     # ① レース内相対特徴量: プレースホルダー (後で _add_race_relative_features で設定)
     feat.update({

@@ -318,7 +318,7 @@ class TrainingFeatureExtractor:
     def _load_all_impl(self):
         """ロード本体（ロック内で呼ばれる）"""
         logger.info("調教特徴量: DBからデータロード中...")
-        conn = sqlite3.connect(self._db_path)
+        conn = sqlite3.connect(self._db_path, timeout=60)  # WALチェックポイントロック対策
         try:
             conn.row_factory = sqlite3.Row
             cur = conn.cursor()
@@ -464,7 +464,7 @@ class TrainingFeatureExtractor:
         if not self._race_date_loaded:
             # 一括ロード
             try:
-                conn = sqlite3.connect(self._db_path)
+                conn = sqlite3.connect(self._db_path, timeout=60)  # WALロック対策
                 try:
                     cur = conn.cursor()
                     cur.execute("SELECT DISTINCT race_id, race_date FROM race_log WHERE race_date IS NOT NULL")

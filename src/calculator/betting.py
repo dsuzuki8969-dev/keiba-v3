@@ -3073,3 +3073,386 @@ def generate_m_prime_tickets(
         "recovery": [],
         "_meta":    meta_out,
     }
+
+
+# ============================================================
+# 印断層三連複買い目: compute_danso_columns / generate_danso_tickets
+# ============================================================
+# 【重要仕様】◉と◎は同一馬（composite1位）の別印。
+#   ◉(TEKIPAN)条件成立時、非成立時は◎(HONMEI)が付く。
+#   したがって「本命H」= mark∈{◎,◉} の馬は**常に1頭のみ**。
+#   旧実装の誤り（◉◎を別々の必須2頭として扱う）を修正済み。
+# ============================================================
+
+# 有効印セット（× と NONE は対象外）
+_DANSO_VALID_MARKS = {"◉", "◎", "○", "▲", "△", "★", "☆"}
+# 本命印セット（◉◎どちらか1頭が付く）
+_DANSO_HONMEI_MARKS = {"◉", "◎"}
+
+
+def compute_danso_columns(entries: List[Dict]) -> Optional[Dict]:
+    """断層判定の純粋ヘルパー関数。印とcomposite偏差値からフォーメーション列を決定する。
+
+    本関数はHorseEvaluationに依存しない純粋関数として実装し、
+    betting.py (generate_danso_tickets) と regen_strategy.py の両方から呼び出せる。
+
+    Parameters
+    ----------
+    entries : List[Dict]
+        各馬の情報。以下のキーを含むこと:
+          - "mark"        : str  印（◎/◉/○/▲/△/★/☆/×/-等）
+          - "composite"   : float  composite偏差値
+          - "horse_no"    : int    馬番
+          - "odds"        : float | None  単勝オッズ（参考用）
+          - "is_scratched": bool   取消フラグ
+
+    Returns
+    -------
+    Optional[Dict]
+        発火した場合::
+
+            {
+                "formation": "A-F1" | "A-F2" | "C" | "B-F1" | "B-F2",
+                "col1": [horse_no, ...],
+                "col2": [horse_no, ...],
+                "col3": [horse_no, ...],
+            }
+
+        見送り（6頭未満・必要印欠落・断層条件不成立）の場合: None
+
+    優先順位: A → C → B
+    ルール:
+      断層① = comp(H) - comp(○) >= GAP1 (5.0)  ← 条件A/C の入口
+      条件A: 断層① AND 断層③(comp(☆)-top_unmarked>=3.0) AND
+             (gap(○,▲)>=3.0 → A-F1 / else gap(▲,△)>=3.0 → A-F2)
+      条件C: 断層① AND ○▲△★☆が横一線(隣接差<3.0全て)
+             → C: col1=[H] col2=[○▲△★☆] col3=[○▲△★☆] (10点)
+      条件B(A/C非発火): abs(H-○)<2.0 AND gap(○,▲)>=5.0 → B-F1 (10点)
+                        OR max(H,○,▲)-min(同)<2.0 AND gap(▲,△)>=5.0 → B-F2 (10点)
+    """
+    from config.settings import (
+        DANSO_B_GAP_THRESHOLD,
+        DANSO_FLAT_THRESHOLD,
+        DANSO_GAP1_THRESHOLD,
+        DANSO_GAP2A_THRESHOLD,
+        DANSO_GAP2B_THRESHOLD,
+        DANSO_GAP3_THRESHOLD,
+        DANSO_KINSA_THRESHOLD,
+    )
+
+    # ── 取消馬を除外した有効馬のみ ──
+    active = [e for e in entries if not e.get("is_scratched", False)]
+    if len(active) < 6:
+        # 6頭未満は印が揃わないため見送り
+        return None
+
+    # ── 印 → entry マップ（本命は◉◎どちらかのみ） ──
+    mark_to_entry: Dict[str, Dict] = {}
+    for e in active:
+        m = e.get("mark", "")
+        if m in _DANSO_VALID_MARKS:
+            mark_to_entry[m] = e
+
+    # ── 本命H（◉◎どちらか1頭）を特定 ──
+    honmei_entry: Optional[Dict] = None
+    for m in ("◉", "◎"):
+        if m in mark_to_entry:
+            honmei_entry = mark_to_entry[m]
+            break
+    if honmei_entry is None:
+        return None  # 本命不在 → 見送り
+
+    # ── 必要な印の存在チェック ──
+    has_taikou = "○" in mark_to_entry
+    has_tannuke = "▲" in mark_to_entry
+    has_renda = "△" in mark_to_entry
+    has_hoshi = "★" in mark_to_entry
+    has_ana = "☆" in mark_to_entry
+
+    # A/C には ○▲△★☆ 全印必要
+    has_all_5sub = has_taikou and has_tannuke and has_renda and has_hoshi and has_ana
+    # B には ○▲△ 存在必要
+    has_b_base = has_taikou and has_tannuke and has_renda
+
+    def _comp(mark: str) -> float:
+        """指定印のcompositeを返す。不在なら -999。"""
+        e = mark_to_entry.get(mark)
+        return float(e["composite"]) if e is not None else -999.0
+
+    def _gap(hi: str, lo: str) -> float:
+        """comp(hi) - comp(lo)"""
+        return _comp(hi) - _comp(lo)
+
+    h_comp = float(honmei_entry["composite"])
+
+    # ── 無印馬の最大composite（条件A の断層③用） ──
+    unmarked_comps = [
+        float(e["composite"]) for e in active
+        if e.get("mark", "") not in _DANSO_VALID_MARKS
+    ]
+    top_unmarked_comp: Optional[float] = max(unmarked_comps) if unmarked_comps else None
+
+    # ── 本命馬番 ──
+    h_no = int(honmei_entry["horse_no"])
+
+    def _no(mark: str) -> int:
+        e = mark_to_entry.get(mark)
+        return int(e["horse_no"]) if e is not None else -1
+
+    # ============================================================
+    # 条件A 評価（最優先）
+    # 前提: ○▲△★☆ 全5印が存在
+    # ============================================================
+    if has_all_5sub:
+        # 断層①: comp(H) - comp(○) >= 5.0
+        dan1 = (h_comp - _comp("○")) >= DANSO_GAP1_THRESHOLD
+        # 断層③: comp(☆) - top_unmarked >= 3.0（無印不在はFalse）
+        dan3 = (
+            top_unmarked_comp is not None
+            and (_comp("☆") - top_unmarked_comp) >= DANSO_GAP3_THRESHOLD
+        )
+
+        if dan1 and dan3:
+            # A-F1: gap(○,▲) >= 3.0
+            if _gap("○", "▲") >= DANSO_GAP2A_THRESHOLD:
+                return {
+                    "formation": "A-F1",
+                    "col1": [h_no],
+                    "col2": [_no("○")],
+                    "col3": [_no("▲"), _no("△"), _no("★"), _no("☆")],
+                }
+            # A-F2: gap(○,▲) < 3.0 かつ gap(▲,△) >= 3.0
+            if _gap("▲", "△") >= DANSO_GAP2B_THRESHOLD:
+                return {
+                    "formation": "A-F2",
+                    "col1": [h_no],
+                    "col2": [_no("○"), _no("▲")],
+                    "col3": [_no("○"), _no("▲"), _no("△"), _no("★"), _no("☆")],
+                }
+
+    # ============================================================
+    # 条件C 評価（A非発火時。○▲△★☆ 全印が横一線）
+    # 断層①あり AND ○▲△★☆の全隣接差 < 3.0
+    # ============================================================
+    if has_all_5sub:
+        dan1 = (h_comp - _comp("○")) >= DANSO_GAP1_THRESHOLD
+        if dan1:
+            flat = (
+                (_comp("○") - _comp("▲")) < DANSO_FLAT_THRESHOLD
+                and (_comp("▲") - _comp("△")) < DANSO_FLAT_THRESHOLD
+                and (_comp("△") - _comp("★")) < DANSO_FLAT_THRESHOLD
+                and (_comp("★") - _comp("☆")) < DANSO_FLAT_THRESHOLD
+            )
+            if flat:
+                sub_nos = [_no("○"), _no("▲"), _no("△"), _no("★"), _no("☆")]
+                return {
+                    "formation": "C",
+                    "col1": [h_no],
+                    "col2": sub_nos,
+                    "col3": sub_nos,
+                }
+
+    # ============================================================
+    # 条件B 評価（A/C 非発火時。○▲△ 存在必要）
+    # ============================================================
+    if has_b_base:
+        h_c = h_comp
+        o_c = _comp("○")
+        r_c = _comp("▲")
+        d_c = _comp("△")
+
+        # B-F1: abs(H - ○) < 2.0 AND gap(○,▲) >= 5.0
+        if abs(h_c - o_c) < DANSO_KINSA_THRESHOLD and (o_c - r_c) >= DANSO_B_GAP_THRESHOLD:
+            # col3: H,○,▲,△,★,☆ の存在する馬番
+            col3_b1 = [h_no, _no("○"), _no("▲"), _no("△")]
+            if has_hoshi:
+                col3_b1.append(_no("★"))
+            if has_ana:
+                col3_b1.append(_no("☆"))
+            return {
+                "formation": "B-F1",
+                "col1": [h_no, _no("○")],
+                "col2": [h_no, _no("○"), _no("▲")],
+                "col3": sorted(set(col3_b1)),
+            }
+
+        # B-F2: max(H,○,▲)-min(H,○,▲) < 2.0 AND gap(▲,△) >= 5.0
+        if (max(h_c, o_c, r_c) - min(h_c, o_c, r_c)) < DANSO_KINSA_THRESHOLD and (r_c - d_c) >= DANSO_B_GAP_THRESHOLD:
+            col3_b2 = [h_no, _no("○"), _no("▲"), _no("△")]
+            if has_hoshi:
+                col3_b2.append(_no("★"))
+            if has_ana:
+                col3_b2.append(_no("☆"))
+            return {
+                "formation": "B-F2",
+                "col1": [h_no, _no("○"), _no("▲")],
+                "col2": [h_no, _no("○"), _no("▲")],
+                "col3": sorted(set(col3_b2)),
+            }
+
+    # ── いずれも非発火 → 見送り ──
+    return None
+
+
+def generate_danso_tickets(
+    evaluations: List[HorseEvaluation],
+    race_info: RaceInfo,
+) -> Dict[str, Any]:
+    """印断層ベース三連複買い目生成（全面書き直し版）。
+
+    compute_danso_columns で断層判定し、col1×col2×col3の三連複をフラット均等賭けで生成。
+    EVフィルタなし・MAX点数制限なし。
+
+    条件優先順位: A-F1 / A-F2 → C → B-F1 / B-F2
+    どれも非発火 → 見送り（sanrenpuku=[]）
+
+    Returns
+    -------
+    Dict[str, Any]
+        generate_formation_tickets と同一shape::
+
+            {
+                "col1": [...],  # HorseEvaluation リスト (行表示用)
+                "col2": [...],
+                "col3": [...],
+                "sanrenpuku": [ticket_dict, ...],
+                "s_norm": float,
+                "confidence": str,
+            }
+
+        見送り時は sanrenpuku=[] の空dictを返す。
+    """
+    from config.settings import DANSO_STAKE_PER_POINT
+
+    # ── 空dictテンプレ ──
+    empty: Dict[str, Any] = {
+        "col1": [], "col2": [], "col3": [],
+        "sanrenpuku": [], "s_norm": 1.0, "confidence": "danso",
+    }
+
+    # ── 取消馬を除いた有効馬 ──
+    active = [e for e in evaluations if not e.is_scratched]
+    if len(active) < 6:
+        return empty
+
+    # ── HorseEvaluation → entries dict に変換（compute_danso_columns 用） ──
+    entries = [
+        {
+            "mark":        e.mark.value if e.mark else "",
+            "composite":   float(e.composite or 50.0),
+            "horse_no":    int(e.horse.horse_no),
+            "odds":        float(e.effective_odds or 10.0),
+            "is_scratched": False,  # active 済みなので常に False
+        }
+        for e in active
+    ]
+
+    # ── 断層判定 ──
+    result = compute_danso_columns(entries)
+    if result is None:
+        return empty
+
+    col1_nos = result["col1"]
+    col2_nos = result["col2"]
+    col3_nos = result["col3"]
+    formation = result["formation"]
+
+    # ── horse_no → HorseEvaluation マップ ──
+    ev_map_no: Dict[int, HorseEvaluation] = {e.horse.horse_no: e for e in active}
+
+    # col* の HorseEvaluation リスト（行表示用）
+    col1_evs = [ev_map_no[no] for no in col1_nos if no in ev_map_no]
+    col2_evs = [ev_map_no[no] for no in col2_nos if no in ev_map_no]
+    col3_evs = [ev_map_no[no] for no in col3_nos if no in ev_map_no]
+
+    # ── 全頭ベース正規化係数 ──
+    _, s_norm = _combo_norm_factors(active, race_info.field_count)
+
+    # ── ticket生成用マップ ──
+    is_jra = getattr(race_info, "is_jra", True)
+    n = race_info.field_count
+    mark_map_no: Dict[int, str] = {e.horse.horse_no: e.mark.value for e in active}
+    all_odds = [max(e.effective_odds or 10.0, 1.1) for e in active]
+
+    # ── col1×col2×col3 ネストで3頭distinct・昇順tupleでdedup（列排他化なし） ──
+    seen_3: set = set()
+    sanrenpuku_tickets: List[Dict] = []
+
+    def _sort_by_mark_no(horse_nos: List[int]) -> List[int]:
+        return sorted(horse_nos, key=lambda no: (_MARK_ORDER.get(mark_map_no.get(no, "—"), 9), no))
+
+    for a_no in col1_nos:
+        for b_no in col2_nos:
+            for c_no in col3_nos:
+                horse_nos_set = {a_no, b_no, c_no}
+                if len(horse_nos_set) < 3:
+                    continue  # 同一馬の重複はスキップ
+                seen_key = tuple(sorted(horse_nos_set))
+                if seen_key in seen_3:
+                    continue
+                seen_3.add(seen_key)
+
+                # 印順で a/b/c を決定
+                ordered = _sort_by_mark_no(list(horse_nos_set))
+                oa_no, ob_no, oc_no = ordered[0], ordered[1], ordered[2]
+
+                # 各馬が ev_map_no に存在するか確認
+                if oa_no not in ev_map_no or ob_no not in ev_map_no or oc_no not in ev_map_no:
+                    continue
+
+                ev_a = ev_map_no[oa_no]
+                ev_b = ev_map_no[ob_no]
+                ev_c = ev_map_no[oc_no]
+
+                # オッズ推定（実オッズ不在のため常に推定）
+                oa = ev_a.effective_odds or 10.0
+                ob = ev_b.effective_odds or 10.0
+                oc = ev_c.effective_odds or 10.0
+                odds = estimate_sanrenpuku_odds(oa, ob, oc, n, is_jra, _all_odds=all_odds)
+
+                # 確率計算（Harvilleモデル + 正規化）
+                raw_prob = calc_sanrenpuku_prob(ev_a.win_prob, ev_b.win_prob, ev_c.win_prob, n)
+                prob = raw_prob / s_norm
+                ev_val = calc_expected_value(prob, odds)
+
+                sanrenpuku_tickets.append({
+                    "type":        "三連複",
+                    "a":           oa_no,
+                    "b":           ob_no,
+                    "c":           oc_no,
+                    "combo":       [oa_no, ob_no, oc_no],
+                    "mark_a":      mark_map_no.get(oa_no, "—"),
+                    "mark_b":      mark_map_no.get(ob_no, "—"),
+                    "mark_c":      mark_map_no.get(oc_no, "—"),
+                    "odds":        odds,
+                    "odds_source": "estimated",
+                    "prob":        prob,
+                    "ev":          ev_val,
+                    "appearance":  prob * 100,
+                    "stake":       DANSO_STAKE_PER_POINT,
+                    "recovery":    0.0,  # 後で再算出
+                    "signal":      classify_ev(ev_val),
+                    "formation":   formation,  # デバッグ用
+                })
+
+    if not sanrenpuku_tickets:
+        return empty
+
+    # ── recovery を全点合計stakeベースで再算出 ──
+    total_inv = sum(t["stake"] for t in sanrenpuku_tickets)
+    for t in sanrenpuku_tickets:
+        sk = t["stake"]
+        t["recovery"] = (t["odds"] * sk) / max(total_inv, 1) * 100
+
+    # ── payback_if_hit / net_profit_if_hit / torigami マーク ──
+    _finalize_mode_tickets(sanrenpuku_tickets)
+
+    return {
+        "col1":        col1_evs,
+        "col2":        col2_evs,
+        "col3":        col3_evs,
+        "sanrenpuku":  sanrenpuku_tickets,
+        "s_norm":      s_norm,
+        "confidence":  "danso",
+        "formation":   formation,  # デバッグ用
+    }

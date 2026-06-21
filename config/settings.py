@@ -573,8 +573,20 @@ KIKEN_ML_ENDORSE_MID = -0.5  # win_prob rank 上位半分の減点
 
 # 特選穴馬
 TOKUSEN_SCORE_THRESHOLD = 5.5   # v3: 3.0→5.5に引き上げ（断層ボーナス追加に伴い☆の質を維持）
-TOKUSEN_ODDS_THRESHOLD = 15.0   # 対象: オッズ15倍以上
+TOKUSEN_ODDS_THRESHOLD = 15.0   # 対象: オッズ15倍以上（オッズゲート: 15未満は is_tokusen=False）
 TOKUSEN_MAX_PER_RACE = 2        # 1レース最大2頭
+
+# 印断層三連複買い目
+USE_DANSO_BUY = True            # True: generate_danso_tickets 使用 / False: 従来 M' 戦略
+DANSO_STAKE_PER_POINT = 100     # 断層三連複: 1点あたり賭け金（円）
+# 断層判定閾値（composite偏差値差）
+DANSO_GAP1_THRESHOLD = 5.0     # 断層①: comp(本命) - comp(○) >= 5.0（条件A/C共通入口）
+DANSO_GAP2A_THRESHOLD = 3.0    # 断層②A: comp(○) - comp(▲) >= 3.0（A-F1発火）
+DANSO_GAP2B_THRESHOLD = 3.0    # 断層②B: comp(▲) - comp(△) >= 3.0（A-F2発火）
+DANSO_GAP3_THRESHOLD = 3.0     # 断層③: comp(☆) - top_unmarked >= 3.0（条件A専用）
+DANSO_B_GAP_THRESHOLD = 5.0    # 条件B: ○-▲ または ▲-△ の断層閾値
+DANSO_KINSA_THRESHOLD = 2.0    # 条件B: 僅差判定（<2.0）
+DANSO_FLAT_THRESHOLD = 3.0     # 条件C: 横一線判定（隣接差<3.0）
 
 # 特選危険馬
 TOKUSEN_KIKEN_SCORE_THRESHOLD = 3.0  # 特選判定閾値（ML×composite二重否定通過後の追加スコア）

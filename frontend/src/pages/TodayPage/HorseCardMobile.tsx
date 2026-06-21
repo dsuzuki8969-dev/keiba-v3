@@ -12,7 +12,7 @@ import type { HorseData, PastRunData, TrainingRecord } from "./RaceDetailView";
 import { TrainingSection } from "./HorseDiagnosis";
 import { HorseHistoryChart } from "./HorseHistoryChart";
 import type { RunEntry } from "./HorseHistoryChart";
-import { generateHorseSummary, rankToAxisMark } from "@/lib/horseSummary";
+import { rankToAxisMark } from "@/lib/horseSummary";
 import { parseStableComment } from "@/lib/parseStableComment";
 import { useAbilityDisplayMode } from "@/hooks/useAbilityDisplayMode";
 
@@ -440,7 +440,6 @@ export const HorseCardMobile = memo(function HorseCardMobile({ horses, isBanei, 
         // 脚質短縮
         const runStyle = STYLE_SHORT[h.running_style || ""] || h.running_style || "—";
         const corners = (h as Record<string, unknown>).predicted_corners as string || "";
-        const summary = generateHorseSummary(h);
 
         const wp = (h.win_prob || 0) * 100;
         const p2 = (h.place2_prob || 0) * 100;
@@ -625,13 +624,6 @@ export const HorseCardMobile = memo(function HorseCardMobile({ horses, isBanei, 
                     "text-muted-foreground"
                   }`}>
                     EV {h.ev.toFixed(2)}
-                  </span>
-                )}
-
-                {/* 短評 */}
-                {summary && (
-                  <span className="text-muted-foreground italic truncate flex-1 min-w-0">
-                    ★ {summary}
                   </span>
                 )}
               </div>

@@ -159,8 +159,8 @@ export function RaceDetailView({
 
   return (
     <div className="max-w-5xl mx-auto space-y-4">
-      {/* 戻る + 会場タブ + レース番号タブ（sticky） */}
-      <div ref={stickyBarRef} className="sticky top-[var(--header-h,48px)] z-20 bg-background pb-2 space-y-1.5 -mx-4 px-4 pt-2 border-b border-border/50">
+      {/* 戻る + 会場タブ + レース番号タブ（PC のみ sticky / モバイルは通常スクロール） */}
+      <div ref={stickyBarRef} className="md:sticky md:top-[var(--header-h,48px)] z-20 bg-background pb-2 space-y-1.5 -mx-4 px-4 pt-2 border-b border-border/50">
         <div className="flex items-center gap-2 flex-wrap">
           <Button variant="outline" size="sm" onClick={onClose}>
             ← レース一覧に戻る
@@ -532,6 +532,8 @@ export interface TicketsByMode {
     ticket_count?: number;
     stake_total?: number;
     confidence?: string;
+    // 印断層三連複フィールド（format が "danso:" prefix の場合に有効）
+    danso_formation?: string | null;  // "A-F1"|"A-F2"|"C"|"B-F1"|"B-F2"|null
     // 三連単フォーメーション構造
     formation_sanrentan?: {
       rank1?: Array<{ horse_no: number; mark: string }>;

@@ -2648,7 +2648,9 @@ def compute_personnel_stats_from_race_log(year_filter: str = None) -> dict:
                SUM(CASE WHEN finish_pos<=3 THEN 1 ELSE 0 END)  AS place3,
                SUM(CASE WHEN finish_pos=1 THEN COALESCE(win_odds,0) ELSE 0 END) AS win_odds_sum
         FROM race_log
-        WHERE jockey_id != '' AND jockey_id NOT IN {_DUMMY_IDS_SQL} {year_where}
+        WHERE jockey_id != '' AND jockey_id NOT IN {_DUMMY_IDS_SQL}
+              AND venue_code != '65'  -- ばんえい(帯広) 除外 (2026-05-29 マスター指示)
+              {year_where}
         GROUP BY jockey_id, venue_code, surface, distance, is_jra, running_style
         """
     ).fetchall()
@@ -2666,7 +2668,9 @@ def compute_personnel_stats_from_race_log(year_filter: str = None) -> dict:
                SUM(CASE WHEN finish_pos<=3 THEN 1 ELSE 0 END)  AS place3,
                SUM(CASE WHEN finish_pos=1 THEN COALESCE(win_odds,0) ELSE 0 END) AS win_odds_sum
         FROM race_log
-        WHERE (trainer_id != '' OR trainer_name != '') {year_where}
+        WHERE (trainer_id != '' OR trainer_name != '')
+              AND venue_code != '65'  -- ばんえい(帯広) 除外
+              {year_where}
         GROUP BY CASE WHEN trainer_id != '' THEN trainer_id ELSE trainer_name END,
                  venue_code, surface, distance, is_jra, running_style
         """
@@ -2683,7 +2687,9 @@ def compute_personnel_stats_from_race_log(year_filter: str = None) -> dict:
                SUM(CASE WHEN finish_pos<=3 THEN 1 ELSE 0 END)  AS place3,
                SUM(CASE WHEN finish_pos=1 THEN COALESCE(win_odds,0) ELSE 0 END) AS win_odds_sum
         FROM race_log
-        WHERE sire_name IS NOT NULL AND sire_name != '' {year_where}
+        WHERE sire_name IS NOT NULL AND sire_name != ''
+              AND venue_code != '65'  -- ばんえい(帯広) 除外
+              {year_where}
         GROUP BY sire_name, venue_code, surface, distance, is_jra, running_style
         """
     ).fetchall()
@@ -2699,7 +2705,9 @@ def compute_personnel_stats_from_race_log(year_filter: str = None) -> dict:
                SUM(CASE WHEN finish_pos<=3 THEN 1 ELSE 0 END)  AS place3,
                SUM(CASE WHEN finish_pos=1 THEN COALESCE(win_odds,0) ELSE 0 END) AS win_odds_sum
         FROM race_log
-        WHERE bms_name IS NOT NULL AND bms_name != '' {year_where}
+        WHERE bms_name IS NOT NULL AND bms_name != ''
+              AND venue_code != '65'  -- ばんえい(帯広) 除外
+              {year_where}
         GROUP BY bms_name, venue_code, surface, distance, is_jra, running_style
         """
     ).fetchall()
@@ -2889,7 +2897,11 @@ def compute_personnel_stats_from_race_log(year_filter: str = None) -> dict:
         return s
 
     def _best_name(name_counts: dict) -> str:
-        """マーカー・所属地名除去後に最多出現のフルネームを選ぶ"""
+        """マーカー・所属地名除去後に最多出現のフルネームを選ぶ
+        2026-05-29 bugfix: sort key を (count, len) に修正
+        (元 (len, count) は名前長優先で、1 件のみのデータ汚染が選ばれていた)
+        例: id=31119 で「木間塚龍」(1件/4文字) が「高松亮」(181件/3文字) より優先される問題
+        """
         cleaned = {}
         for n, c in name_counts.items():
             if not n or _horse_weight_pat.match(n.strip()):
@@ -2900,7 +2912,7 @@ def compute_personnel_stats_from_race_log(year_filter: str = None) -> dict:
             cleaned[cn] = cleaned.get(cn, 0) + c
         if not cleaned:
             return ""
-        return max(cleaned, key=lambda n: (len(n), cleaned[n]))
+        return max(cleaned, key=lambda n: (cleaned[n], len(n)))
 
     # ── personnel DB から名前・所属を補完 ─────────────────────────────
     try:

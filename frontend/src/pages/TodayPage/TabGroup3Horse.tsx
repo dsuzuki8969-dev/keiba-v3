@@ -194,10 +194,10 @@ export function TabGroup3Horse({
 
   return (
     <div className="space-y-0">
-      {/* 上部タブ — v6.1: sticky 化（AppShell の --header-h に追従） */}
+      {/* 上部タブ — v6.1: sticky 化（AppShell の --header-h に追従） / モバイルは通常スクロール */}
       <div
         ref={topTabsRef}
-        className="sticky z-30 glass -mx-4 px-4 pt-1 pb-1 shadow-[var(--shadow-sm)]"
+        className="md:sticky z-30 glass -mx-4 px-4 pt-1 pb-1 shadow-[var(--shadow-sm)]"
         style={{ top: "calc(var(--header-h, 56px) + var(--race-detail-bar-h, 0px))" }}
       >
         {renderTabGrid(false)}

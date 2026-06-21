@@ -707,6 +707,101 @@ function MPrimeFormation({
 }
 
 
+// ───────────── 印断層三連複: 凡例ラベル ─────────────
+
+/** formation ラベル→日本語説明の凡例マップ */
+const DANSO_FORMATION_LEGEND: Record<string, string> = {
+  "A-F1": "A型-F1: 本命突出 + ○▲断層（本命○各100円）",
+  "A-F2": "A型-F2: 本命突出 + ▲△断層（本命○▲各100円）",
+  "C":    "C型: 本命突出 + 相手横一線（本命vs5頭均等）",
+  "B-F1": "B型-F1: 本命○拮抗 + ▲以下断層（本命○軸）",
+  "B-F2": "B型-F2: 本命○▲拮抗 + △以下断層（3頭軸）",
+};
+
+/** 印断層三連複の買い目表示コンポーネント */
+function DansoFormation({
+  tickets,
+  noToMark,
+  meta,
+}: {
+  tickets: TicketData[];
+  noToMark: Record<number, string>;
+  meta?: {
+    skipped?: boolean;
+    skip_reason?: string;
+    danso_formation?: string | null;
+    ticket_count?: number;
+    stake_total?: number;
+  };
+}) {
+  // 三連複のみ抽出（単勝は存在しないはずだが安全のためフィルタ）
+  const sanrenpuku = tickets.filter((t) => t.type === "三連複");
+  const skipped = meta?.skipped ?? sanrenpuku.length === 0;
+  const formation = meta?.danso_formation ?? null;
+  const ticketCount = meta?.ticket_count ?? sanrenpuku.length;
+  const stakeTotal = meta?.stake_total ?? ticketCount * 100;
+  const legend = formation ? DANSO_FORMATION_LEGEND[formation] : null;
+
+  // 見送り表示
+  if (skipped || sanrenpuku.length === 0) {
+    return (
+      <div className="rounded-md border border-gray-300/50 bg-gray-50/50 dark:bg-gray-900/20 p-3">
+        <p className="text-sm font-semibold text-muted-foreground">
+          見送り（印断層条件 非該当）
+        </p>
+        {meta?.skip_reason && (
+          <p className="text-xs text-muted-foreground mt-1">{meta.skip_reason}</p>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-3">
+      {/* サマリー: フォーメーション種別 + 点数 + 投資額 */}
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground border-b border-border/50 pb-2">
+        {formation && (
+          <span className="inline-flex items-center gap-1.5">
+            <span className="px-2 py-0.5 bg-indigo-600 text-white text-xs font-bold rounded">
+              {formation}
+            </span>
+          </span>
+        )}
+        <span>
+          三連複 <strong className="text-foreground">{sanrenpuku.length}</strong> 点
+        </span>
+        <span>
+          投入 <strong className="text-foreground">¥{stakeTotal.toLocaleString()}</strong>
+          <span className="ml-1 opacity-70">（1点100円）</span>
+        </span>
+      </div>
+
+      {/* フォーメーション凡例 */}
+      {legend && (
+        <div className="text-[11px] text-muted-foreground bg-indigo-50/40 dark:bg-indigo-950/20 rounded px-2 py-1">
+          {legend}
+        </div>
+      )}
+
+      {/* 買い目リスト */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-0.5">
+        {sanrenpuku.map((t, i) => (
+          <div key={`D-${i}`} className="flex flex-wrap items-center gap-2 text-sm py-0.5">
+            <ComboDisplay ticket={t} noToMark={noToMark} />
+            <FmtStats
+              prob={t.prob ?? 0}
+              odds={t.odds ?? 0}
+              ev={t.ev ?? 0}
+              oddsSource={t.odds_source}
+            />
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+
 /** 「買わない」判定の表示 + 参考ヒモグレー表示 */
 function BetSkipPanel({
   decision,
@@ -766,8 +861,6 @@ export function TicketSection({ race }: Props) {
   // fixed キー = Phase 3 三連単フォーメーション / T-050 ハイブリッドの両方に対応
   const fixedTickets: TicketData[] = (tbm?.fixed || []) as TicketData[];
   const hasFixed = fixedTickets.length > 0;
-  // 後方互換: 旧 3モードキーがあっても無視。新方式は fixed のみ。
-  const hasModes = hasFixed;
   const decision = race.bet_decision;
   // _meta: TicketsByMode 型定義に全フィールド追加済み — as キャスト不要
   const tbmMeta = tbm?._meta;
@@ -776,6 +869,11 @@ export function TicketSection({ race }: Props) {
   const isT050Format = !!(tbmMeta?.format?.startsWith("T-050:"));
   // M' 戦略フォーマット判定（"M':" で始まる format 文字列）
   const isMPrimeFormat = !!(tbmMeta?.format?.startsWith("M':"));
+  // 印断層三連複フォーマット判定（"danso:" で始まる format 文字列）
+  const isDansoFormat = !!(tbmMeta?.format?.startsWith("danso:"));
+  // 後方互換: 旧 3モードキーがあっても無視。新方式は fixed のみ。
+  // danso format の場合は見送り時（fixed=[]）でもブロック表示するため isDansoFormat を含める
+  const hasModes = hasFixed || isDansoFormat;
 
   // 何も出力するものがなければ null
   if (
@@ -792,8 +890,8 @@ export function TicketSection({ race }: Props) {
 
   return (
     <>
-      {/* T-050 / Phase 3: 買い目指南単一表示 */}
-      {(hasFixed || decision?.skip) && (
+      {/* 印断層三連複 / T-050 / Phase 3: 買い目指南単一表示 */}
+      {(hasFixed || isDansoFormat || decision?.skip) && (
         <PremiumCard variant={decision?.skip ? "default" : "gold"} padding="md">
           <PremiumCardHeader>
             <div className="flex flex-col gap-0.5">
@@ -802,11 +900,13 @@ export function TicketSection({ race }: Props) {
                 Betting Guide
               </PremiumCardAccent>
               <PremiumCardTitle className="text-base flex items-center gap-3 flex-wrap">
-                {isMPrimeFormat
-                  ? "買い目指南（M' 戦略 自信度別 三連複）"
-                  : isT050Format
-                    ? "買い目指南（三連複動的 + 単勝）"
-                    : "買い目指南（三連単フォーメーション）"}
+                {isDansoFormat
+                  ? "買い目指南（印断層 三連複）"
+                  : isMPrimeFormat
+                    ? "買い目指南（M' 戦略 自信度別 三連複）"
+                    : isT050Format
+                      ? "買い目指南（三連複動的 + 単勝）"
+                      : "買い目指南（三連単フォーメーション）"}
                 <span
                   className="text-sm font-normal text-muted-foreground"
                   title="SS=鉄板級 / S=高信頼 / A=有力 / B=印通り / C=波乱含み / D=見送り"
@@ -820,19 +920,28 @@ export function TicketSection({ race }: Props) {
                 )}
               </PremiumCardTitle>
               <p className="text-[11px] text-muted-foreground mt-1 leading-snug">
-                {isMPrimeFormat
-                  ? "M' 戦略: SS=E(4点) / S/A=C(7点) / B/C/D=D(10点) / E=見送り。1点100円固定。年純利 +¥12M / ROI 217%実証。"
-                  : isT050Format
-                    ? "三連複動的フォーメーション（中7点/広10点）＋単勝（勝負気配TOP2）— 各点 100円固定。"
-                    : "フォーメーション ◉/◎⇔○/▲/(☆)⇒○/▲/△/★/(☆)/(同断層内無印1-2頭) — 各点 100円固定。SS / C / D 信頼度は過去成績マイナスのため見送り。EV は期待払戻倍率の推定値。"}
+                {isDansoFormat
+                  ? "印断層: 本命と相手の偏差値断層で条件A/B/Cを判定。該当レースのみ三連複・各100円。非該当は見送り。単勝なし。"
+                  : isMPrimeFormat
+                    ? "M' 戦略: SS=E(4点) / S/A=C(7点) / B/C/D=D(10点) / E=見送り。1点100円固定。年純利 +¥12M / ROI 217%実証。"
+                    : isT050Format
+                      ? "三連複動的フォーメーション（中7点/広10点）＋単勝（勝負気配TOP2）— 各点 100円固定。"
+                      : "フォーメーション ◉/◎⇔○/▲/(☆)⇒○/▲/△/★/(☆)/(同断層内無印1-2頭) — 各点 100円固定。SS / C / D 信頼度は過去成績マイナスのため見送り。EV は期待払戻倍率の推定値。"}
               </p>
             </div>
           </PremiumCardHeader>
           <div className="space-y-3">
             {decision?.skip ? (
               <BetSkipPanel decision={decision} noToMark={noToMark} />
-            ) : hasFixed ? (
-              isMPrimeFormat ? (
+            ) : hasFixed || isDansoFormat ? (
+              isDansoFormat ? (
+                /* 印断層三連複: danso format */
+                <DansoFormation
+                  tickets={fixedTickets}
+                  noToMark={noToMark}
+                  meta={tbmMeta}
+                />
+              ) : isMPrimeFormat ? (
                 /* M' 戦略: 自信度別 三連複 */
                 <MPrimeFormation
                   tickets={fixedTickets}

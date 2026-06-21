@@ -2067,9 +2067,19 @@ class RaceAnalysisEngine:
         for ev in evaluations:
             ev.tokusen_score = calc_tokusen_score(ev, evaluations)
         # ☆ 付与: composite 順位 6 番目 (= ◉◎○▲△ の次) を ☆ に固定。頭数 < 6 の race では ☆ なし
+        # CHANGE 2: 特選穴馬オッズゲート — effective_odds が TOKUSEN_ODDS_THRESHOLD(15.0) 未満の場合は
+        # is_tokusen=False とする（9.6倍など低オッズ馬がバッジ対象外になることを保証）
+        # 注: ☆印付与 (assign_marks) は formatter 側で composite 6 位固定のため不変（累犯 #17 非破壊）
+        from config.settings import TOKUSEN_ODDS_THRESHOLD
         sorted_by_composite = sorted(evaluations, key=lambda e: e.composite, reverse=True)
         if len(sorted_by_composite) >= 6:
-            sorted_by_composite[5].is_tokusen = True
+            _tokusen_candidate = sorted_by_composite[5]
+            _eff_odds = _tokusen_candidate.effective_odds
+            if _eff_odds is not None and _eff_odds >= TOKUSEN_ODDS_THRESHOLD:
+                _tokusen_candidate.is_tokusen = True
+            else:
+                # オッズ未取得（前日など）か 15 倍未満 → 特選穴馬バッジなし
+                _tokusen_candidate.is_tokusen = False
 
         # ---- Step 6c: 特選危険馬スコア（印体系とは独立）----
         from config.settings import TOKUSEN_KIKEN_MAX_PER_RACE, TOKUSEN_KIKEN_SCORE_THRESHOLD
@@ -2148,11 +2158,43 @@ class RaceAnalysisEngine:
         tickets = []
         total_budget = 0
 
-        # ---- M' 戦略: 自信度別 三連複フォーメーション (2026-05-03 採用) ----
-        # SS=E(4点) / S/A=C(7点) / B/C/D=D(10点) / E=skip
-        tickets_by_mode = generate_m_prime_tickets(evaluations, race, confidence.value)
+        # ---- 買い目生成: USE_DANSO_BUY フラグで断層買い目 or M' 戦略を切替 ----
+        from config.settings import USE_DANSO_BUY
+        if USE_DANSO_BUY:
+            # CHANGE 1: 印断層三連複買い目
+            from src.calculator.betting import generate_danso_tickets
+            _danso_result = generate_danso_tickets(evaluations, race)
+            _danso_tickets = _danso_result.get("sanrenpuku", [])
+            _danso_skipped = len(_danso_tickets) == 0
+            # formation ラベル（A-F1/A-F2/C/B-F1/B-F2 または None）
+            _danso_formation = _danso_result.get("formation", None)
+            # tickets_by_mode を M' 互換 shape に変換
+            # format は "danso:" prefix で始める（フロント判定用）
+            tickets_by_mode = {
+                "fixed":    list(_danso_tickets),  # 断層三連複全点（単勝は付与しない）
+                "accuracy": [],
+                "balanced": [],
+                "recovery": [],
+                "_meta": {
+                    "skipped":          _danso_skipped,
+                    "skip_reason":      "断層条件不成立: 見送り" if _danso_skipped else "",
+                    "confidence":       confidence.value,
+                    "sub_pattern":      "danso",
+                    "ticket_count":     len(_danso_tickets),
+                    "stake_total":      sum(t.get("stake", 0) for t in _danso_tickets),
+                    "format":           "danso:印断層三連複",  # フロント判定用 prefix
+                    "danso_formation":  _danso_formation,     # A-F1/A-F2/C/B-F1/B-F2/None
+                    "tansho_count":     0,                    # 断層モードは単勝なし
+                    "sanrenpuku_count": len(_danso_tickets),
+                    "formation_sanrentan": {"rank1": [], "rank2": [], "rank3": []},
+                },
+            }
+        else:
+            # 従来 M' 戦略（rollback 用）
+            # SS=E(4点) / S/A=C(7点) / B/C/D=D(10点) / E=skip
+            tickets_by_mode = generate_m_prime_tickets(evaluations, race, confidence.value)
 
-        # 三連複自信度: M' チケット生成後に正式計算（チケット数が coverage_ratio に影響）
+        # 三連複自信度: チケット生成後に正式計算（チケット数が coverage_ratio に影響）
         _all_tickets_for_sanren = []
         if isinstance(tickets_by_mode, dict):
             _all_tickets_for_sanren = tickets_by_mode.get("fixed", [])
@@ -2163,7 +2205,7 @@ class RaceAnalysisEngine:
         _meta = (tickets_by_mode or {}).get("_meta", {}) if isinstance(tickets_by_mode, dict) else {}
         _m_prime_skipped = _meta.get("skipped", False)
 
-        # 三連複: sanrenpuku_confidence E → チケット除去
+        # 三連複: sanrenpuku_confidence E → チケット除去（断層買い目モードでも同様に適用）
         if sanrenpuku_confidence.value == "E" and not _m_prime_skipped:
             if isinstance(tickets_by_mode, dict):
                 _old_fixed = tickets_by_mode.get("fixed", [])
@@ -2171,9 +2213,10 @@ class RaceAnalysisEngine:
                 if "_meta" in tickets_by_mode:
                     tickets_by_mode["_meta"]["sanren_skipped_by_confidence"] = True
 
-        # 単勝: tansho_confidence SS〜D → shobu TOP2 単勝生成
+        # 単勝: danso モードでは単勝を付与しない（三連複のみ）
+        # M' 戦略モードのみ tansho_confidence SS〜D で shobu TOP2 単勝生成
         _tansho_tickets = []
-        if tansho_confidence.value != "E" and not _m_prime_skipped:
+        if not USE_DANSO_BUY and tansho_confidence.value != "E" and not _m_prime_skipped:
             from src.calculator.betting import build_tansho_t4_tickets
             _tansho_tickets = build_tansho_t4_tickets(evaluations, race)
             if isinstance(tickets_by_mode, dict) and _tansho_tickets:

@@ -20,7 +20,7 @@ import { PastRunsTable } from "./PastRunsTable";
 import { TrainingSection } from "./HorseDiagnosis";
 import { HorseHistoryChart } from "./HorseHistoryChart";
 import type { RunEntry } from "./HorseHistoryChart";
-import { generateHorseSummary, rankToAxisMark } from "@/lib/horseSummary";
+import { rankToAxisMark } from "@/lib/horseSummary";
 import { parseStableComment } from "@/lib/parseStableComment";
 import { ResponsiveAxes } from "@/components/keiba/ResponsiveAxes";
 import { useAbilityDisplayMode } from "@/hooks/useAbilityDisplayMode";
@@ -355,7 +355,6 @@ const HorseCard = memo(function HorseCard({
   const wp = ((h.win_prob ?? 0) * 100);
   const p2 = ((h.place2_prob ?? 0) * 100);
   const p3 = ((h.place3_prob ?? 0) * 100);
-  const summary = generateHorseSummary(h);
 
   // 行アクセント（印別）
   const rowAccent = (() => {
@@ -515,12 +514,6 @@ const HorseCard = memo(function HorseCard({
             <span className={`tabular-nums font-bold shrink-0 ${evColorCls(ev ?? undefined)}`}>
               EV {ev != null ? ev.toFixed(2) : "—"}
             </span>
-            {/* 短評（余白を埋める・少し大きめ） */}
-            {summary && (
-              <span className="flex-1 truncate text-[13px] text-muted-foreground italic">
-                {summary}
-              </span>
-            )}
           </div>
         </div>
       </div>

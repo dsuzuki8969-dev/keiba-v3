@@ -6,6 +6,65 @@
 
 ---
 
+## 🚨 6/20-21 マスター ダッシュボード指摘 7 件 (原因究明済・修正承認待ち)
+
+| # | 指摘 | 根本原因 (調査結果) | 修正層 | 工数/リスク |
+|---|---|---|---|---|
+| C-1 | モバイル上部 sticky 解除 | RaceDetailView/TabGroup3Horse の多段 sticky | frontend `md:` 化 | ✅ **完了** |
+| **印断層買い目** | 買い目を印断層で判断 (条件A/B/C) | 新仕様 (マスター) | `compute_danso_columns`+engine+regen+frontend | ✅ **完了** (WF ROI 66.1%・`project_danso_buy_logic.md`) |
+| L-4 | 買い目指南と連動せず | 全レース購入だった | danso 見送りで自然解決 | ✅ **完了** (danso化) |
+| L-7 | 全レース購入になる | 同上 | danso 見送り | ✅ **完了** (6/20=12R/6/21=10R購入・残り見送り) |
+| A-5 | 穴馬に1〜3人気混入 | ホーム厳選穴馬 `dashboard.py:1031` ☆無条件 | `pop in (1,2,3)` 除外 | ✅ **完了** (実画面: 全4人気以上) |
+| 特選穴馬 | 9.6倍3人気が特選 | 累犯#17修正で odds ゲート外れた | is_tokusen odds≥15 (engine+regen) | ✅ **完了** (違反0) |
+| D-2 | 払戻が拾えていない | results.json 払戻 25/60 のみ | `repair_order_odds_from_cache.py`+キャッシュ再パース | ✅ **完了** (20260620 払戻60/60) |
+| D-3 | 単勝オッズ拾えていない | order に odds 列欠落 | キャッシュHTML→DB→results.json | ✅ **完了** (単勝60/60・東京8R odds=35.6) |
+| D-6 | 開催カレンダー空/文字化け | ①5/29陳腐化 ②**netkeiba UTF-8移行で euc-jp デコード失敗=文字化け** | `build_kaisai_calendar.py` を utf-8 デコードに修正+再取得 | ✅ **文字化け解消+6月23開催日** (本番反映済) |
+| D-6' | 7月以降カレンダー空 | **netkeiba calendar.html が未来月を未掲載** (HaveData=0・確定レースカードのみ) = データソース制約 | JRA/NAR 年間開催日程の別ソース取込が必要 | ⬜ 要別ソース (netkeiba 不可確認済) |
+| E-1 | 短評コメント不要 | `horseSummary.ts` ★短評 | Mobile/PC両カードから表示除去 (helper残置) | ✅ **完了** (全廃と判断) |
+
+> 🎯 **6/21 自走完走 (全権委任「全てやって」)**: 印断層買い目 + L-4/L-7 + A-5 + 特選 + C-1 + **D-2/D-3 + D-6 + E-1 + B-1 deploy** = **全件完了・本番(dash.d-aikeiba.com)稼働中**。
+> **B-1 deploy**: 配信=Cloudflare Tunnel(本機)。frontend/pred/results/calendar はファイル参照で反映、dashboard.py(home filter)は本番再起動で反映 (新pid 18704)。git は未commit (serving は tunnel/local file のため不要・push は要承認時に)。
+
+## ✅ 6/21 保留項目 全クローズ (マスター「これも終わらせる」全権委任で決定)
+
+| 項目 | 決定 | 根拠 |
+|---|---|---|
+| 印断層 運用採否 | **採用 (USE_DANSO_BUY=True 現状維持)** | マスター設計・本番稼働中。WF ROI 66% は「選別/見送り規律ツール」として機能。実賭けはマスター判断 |
+| B-3 c Hybrid | **棄却** | 前提ワイドROI がデータバグ偽陽性 (5/30確証)。実装=偽データ量産 |
+| M-3 P4.2 composite再較正 | **小手先改修 不採用** | `feedback_construction_ceiling` 「小手先改善試行禁止・長期改修必須」。真の道は B-7 新データ取得 / B-8 モデル切替 (XGB/CatBoost/NN) |
+| B-2a 調教師複合キー | **クローズ(不実施)** | 非MLドライバー・低ROI。基準「価値が出る形でのみ」未充足 |
+| B-2b 種牡馬母父正規化 | **クローズ(不実施)** | 同上。bloodline_db は id 主キーで実害軽微 |
+| git commit/push | **実行** (本セッション) | マスター承認 |
+
+### 真の長期改修パス (基準110%への唯一の道・別途大規模セッション)
+- **B-7** 新規データ取得 (風向き/内側使用率/含水量 detail/コース形態) — 個別指数の真の入力
+- **B-8** モデル切替検証 (XGBoost / CatBoost / PyTorch NN)
+- いずれも `feedback_construction_ceiling` の「長期改修必須」に対応。小手先(P4.2/指数いじり)は構造的天井で到達不可と既証明。
+
+### 別件・マスター回答待ち
+- **D-6' 7月以降カレンダー (JRA公式)**: JRA は PDF/.ics とも 403・月別HTMLは開催データ無し。NAR(keiba.go.jp)は取得可。JRA取得方法 (playwright描画/指定URL/手動PDF) のマスター選択待ち。
+
+> マスターは**ローカル**閲覧 (timestamp 23:52/データ一致)。修正後は B-1 deploy で本番反映。
+> カレンダー(D-6)は `kaisai_calendar.json` が **5/29 生成のまま陳腐化** (6月は6/7のみ、他空)。再生成必要。
+
+
+
+詳細: `memory/project_b2_data_contamination_findings.md`。マスター追加指示への回答 = **「全 type に voting 波及」は構造上不成立、問題は 3 種類**。
+
+| エンティティ | 症状 | 対処 | 状態 |
+|---|---|---|---|
+| 騎手 | 1ID→複数名 (真値+稀な誤付与) | `_best_name` voting 済 (優勢度 86-100%) | ✅ 対処不要 |
+| 調教師 | NAR で 1 trainer_id を複数実在調教師が共有 (venue 跨ぎ) | voting 不適 → 複合キー化が本筋 | ⏸ B-2a へ |
+| 種牡馬/母父 | 国記号 `(米)(仏)` + 空白の表記揺れ断片化 (66/111 グループ) | voting 不適 → 正規化 | ⏸ B-2b へ |
+
+**remediation の ROI 価値は低** (sire/bms/trainer は SHAP 上位ドライバーでない)。表示価値の本丸は **B-1 deploy で jockey 修正 (実装済・未 deploy) を本番反映**。
+
+### 新規 future タスク (B-2 派生 / 低優先)
+- **B-2a** 調教師 NAR ID venue 跨ぎ共有: `(venue_code, trainer_id)` 複合キー化 (深い・低 ROI) — P2
+- **B-2b** sire/bms 国記号・空白 正規化: scraper 入口 (`netkeiba.py`/`official_nar.py`) で正規化 + race_log 一括 migration (`feedback_data_format_unification` 準拠) — P2
+
+---
+
 ## ✅ 5/26 セッション完結 (P0 + 派生 全 13 件)
 
 詳細: `memory/handoff_2026-05-26.md` / commit: c8178c2 → 524f1d2 → f84bab9 → 01ca494 (+1,689 行)
