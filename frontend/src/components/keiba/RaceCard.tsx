@@ -47,8 +47,7 @@ function useIsMobile(breakpoint: number = BREAKPOINTS.MD): boolean {
  *   [Accent]    本命印 + 馬名 + 勝率（下段アクセント）
  *
  * 特徴:
- *  - 本命が勝率1位 → 金グロー variant
- *  - 2位 → navy-glow、3位以下 → default
+ *  - 購入レース → 黒枠 / 三連複的中 → 赤枠（6/21 マスター指示・金/ネイビー枠は廃止）
  *  - ホバーで 1px 浮き、影強化
  */
 
@@ -83,12 +82,8 @@ interface Props {
   hitResult?: RaceCardHitResult | null;
 }
 
-/** ランク別 PremiumCard variant */
-function cardVariantByRank(rank?: number): "gold" | "navy-glow" | "default" {
-  if (rank === 1) return "gold";
-  if (rank === 2) return "navy-glow";
-  return "default";
-}
+// 6/21 マスター指示: 勝率1位の金枠 / 2位のネイビー枠は廃止。
+// カード枠は「購入レース=黒 / 的中=赤」の2状態のみで表現する（下記 frameClass）。
 
 // computeWinPctRanks は @/lib/keibaUtils に移動済。Fast Refresh 互換のため
 // このファイルからの re-export は廃止。利用側で `@/lib/keibaUtils` から直接 import すること。
@@ -103,27 +98,29 @@ export const RaceCard = memo(function RaceCard({ race, onOpen, winPctRank, hitRe
 
   const markKey = race.honmei_mark || "";
 
-  // T-039 + 5/23 マスター指摘: 3 状態判定
+  // T-039 + 5/23 マスター指摘: 三連複の 3 状態判定
   // true=的中(○) / false=不的中(×) / "skipped"=未購入(ー) / null=結果未取得(非表示)
-  const tanshoHit = hitResult?.tansho_hit ?? hitResult?.win_hit;  // 後方互換 fallback
   const sanrenpukuHit = hitResult?.sanrenpuku_hit;
-  // 枠色: 両方的中 → 緑 / 単勝のみ → 青 / 三連複のみ → 赤 / それ以外 → デフォルト
-  let hitBorderClass = "";
-  if (tanshoHit === true && sanrenpukuHit === true) {
-    hitBorderClass = "border-green-500/60 ring-1 ring-green-500/40";
-  } else if (tanshoHit === true && sanrenpukuHit !== true) {
-    hitBorderClass = "border-blue-500/60 ring-1 ring-blue-500/40";
-  } else if (tanshoHit !== true && sanrenpukuHit === true) {
-    hitBorderClass = "border-red-500/40 ring-1 ring-red-500/30";
+  // 6/21 マスター指示: カード枠は「購入レース=黒 / 的中=赤」の2状態のみ。
+  //   的中 (三連複○ のみ・単勝は対象外)  → 太い赤枠（最優先）
+  //   購入 (purchased・結果非依存)        → 太い黒枠
+  //   未購入 (見送り)                     → 枠なし（デフォルト）
+  const isHit = sanrenpukuHit === true;
+  const isPurchased = hitResult?.purchased === true;
+  let frameClass = "";
+  if (isHit) {
+    frameClass = "border-2 border-red-600 ring-1 ring-red-600/40";
+  } else if (isPurchased) {
+    frameClass = "border-2 border-zinc-900 ring-1 ring-zinc-900/20 dark:border-zinc-100 dark:ring-zinc-100/20";
   }
 
   return (
     <PremiumCard
-      variant={cardVariantByRank(winPctRank)}
+      variant="default"
       padding="md"
       interactive
       onClick={handleClick}
-      className={cn("group space-y-2.5", hitBorderClass)}
+      className={cn("group space-y-2.5", frameClass)}
       as="button"
     >
       {/* 上段: レース番号 + グレード + 自信度バッジ + T-039 的中バッジ + 発走時刻（右寄せ） */}
@@ -149,21 +146,8 @@ export const RaceCard = memo(function RaceCard({ race, onOpen, winPctRank, hitRe
         {!race.tansho_confidence && !race.sanrenpuku_confidence && (
           <ConfidenceBadge rank={conf} className="ml-1" />
         )}
-        {/* 単勝的中バッジ: ○=的中 / ×=不的中 / ー=未購入 / null=非表示 */}
-        {tanshoHit !== null && tanshoHit !== undefined && (
-          <span
-            className={cn(
-              "text-xs font-bold leading-none",
-              tanshoHit === true ? "text-blue-500" :
-              tanshoHit === "skipped" ? "text-zinc-300 dark:text-zinc-600" :
-              "text-zinc-400 dark:text-zinc-500"
-            )}
-            aria-label={tanshoHit === true ? "単勝 的中" : tanshoHit === "skipped" ? "単勝 未購入" : "単勝 不的中"}
-          >
-            単勝{tanshoHit === true ? "○" : tanshoHit === "skipped" ? "ー" : "×"}
-          </span>
-        )}
-        {/* 三連複的中バッジ: ○=的中 / ×=不的中 / ー=未購入 / null=非表示 */}
+        {/* 三連複的中バッジ: ○=的中 / ×=不的中 / ー=未購入 / null=非表示
+            6/21 マスター指示で単勝は運用対象外 → 単勝バッジは廃止し三連複のみ表示 */}
         {sanrenpukuHit !== null && sanrenpukuHit !== undefined && (
           <span
             className={cn(

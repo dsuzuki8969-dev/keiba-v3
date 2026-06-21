@@ -169,9 +169,9 @@ export const StatsCard = memo(function StatsCard({
       </PremiumCardHeader>
 
       <div className="space-y-3">
-        {/* ◉◎単勝 — 三連複と同形式 (予想R/的中R/的中率) に統一 (2026-05-22 マスター指示) */}
+        {/* ◎本命成績 — 三連複と同形式 (予想R/的中R/的中率) に統一 (2026-05-22 マスター指示 / 2026-06-21 ラベル改称) */}
         <div>
-          <div className="text-[11px] text-muted-foreground mb-1">◉◎単勝</div>
+          <div className="text-[11px] text-muted-foreground mb-1">◎本命成績</div>
           <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1">
             <span className="tabular-nums text-sm">
               予想 <span className="text-foreground font-bold">{total}R</span>
@@ -234,9 +234,9 @@ export const StatsCard = memo(function StatsCard({
           </div>
         </div>
 
-        {/* M' 戦略: 三連複 (自信度別 SS=E/S=C/A=C/B/C/D=D/E=skip) */}
+        {/* 推奨三連複買い目 (旧 M' 戦略): 三連複 (自信度別 SS=E/S=C/A=C/B/C/D=D/E=skip) */}
         <div>
-          <div className="text-[11px] text-muted-foreground mb-1">三連複 (M' 戦略)</div>
+          <div className="text-[11px] text-muted-foreground mb-1">推奨三連複買い目</div>
           <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1">
             <span className="tabular-nums text-sm">
               予想 <span className="text-foreground font-bold">{sPlayed}R</span>

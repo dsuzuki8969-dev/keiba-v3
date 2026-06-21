@@ -534,6 +534,8 @@ export interface TicketsByMode {
     confidence?: string;
     // 印断層三連複フィールド（format が "danso:" prefix の場合に有効）
     danso_formation?: string | null;  // "A-F1"|"A-F2"|"C"|"B-F1"|"B-F2"|null
+    // N-4: 印断層フォーメーション列構造（馬番）— formation_columns
+    formation_columns?: { col1?: number[]; col2?: number[]; col3?: number[] } | null;
     // 三連単フォーメーション構造
     formation_sanrentan?: {
       rank1?: Array<{ horse_no: number; mark: string }>;

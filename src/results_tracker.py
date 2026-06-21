@@ -2262,6 +2262,7 @@ def fetch_actual_results(
                 incomplete = sum(
                     1 for v in with_order_races
                     if _is_payouts_incomplete(v.get("payouts", {}))
+                    or _is_time_incomplete(v.get("order", []))
                 )
                 total = len(with_order_races)
                 # 不完全率 30% 超なら再 fetch (一部 race は払戻なしも正常範囲)
@@ -2432,6 +2433,32 @@ def fetch_actual_results(
         except Exception:
             pass
 
+    # ---- 2026-06-21 マスター指摘: JRA結果ページには単勝オッズ列が無い ----
+    # (NAR は結果ページに odds 列が有る)。JRA の order は odds が欠落するため、
+    # pred の最終単勝オッズ(締切直前≒確定・全馬取得済)で補完する。netkeiba 非依存。
+    # 既に odds がある馬(NAR 確定オッズ等)は上書きしない。
+    try:
+        _pred_odds: dict = {}
+        for _pr in pred.get("races", []):
+            _prid = _pr.get("race_id")
+            if _prid:
+                _pred_odds[_prid] = {
+                    int(_h["horse_no"]): _h.get("odds")
+                    for _h in _pr.get("horses", [])
+                    if _h.get("horse_no") is not None and _h.get("odds")
+                }
+        for _rid, _rr in results.items():
+            if not isinstance(_rr, dict):
+                continue
+            _om = _pred_odds.get(_rid, {})
+            for _o in (_rr.get("order") or []):
+                if not _o.get("odds") and _o.get("horse_no") is not None:
+                    _od = _om.get(int(_o["horse_no"]))
+                    if _od:
+                        _o["odds"] = _od
+    except Exception:
+        logger.debug("pred odds 補完失敗 date=%s", date, exc_info=True)
+
     with open(fpath, "w", encoding="utf-8") as f:
         json.dump(results, f, ensure_ascii=False, indent=2)
 
@@ -2526,6 +2553,19 @@ def _merge_corner_passing_from_soup(order: List[dict], soup) -> int:
             entry["corners"] = new_corners
             merged += 1
     return merged
+
+
+def _is_time_incomplete(order: List[dict]) -> bool:
+    """order の半数以上で time_sec が欠落しているか。
+
+    NAR 速報取得時はタイム/上がり3F が未掲載で 0.0 保存される。確定後は掲載
+    されるため、fetch_actual_results のキャッシュ再fetch 条件に用いて後追い補完する。
+    マスター指摘 (2026-06-21): レースによって着差/後3F/走破タイムが無い。
+    """
+    if not order:
+        return False
+    n_zero = sum(1 for o in order if not o.get("time_sec"))
+    return n_zero > len(order) / 2
 
 
 def _is_details_incomplete(order: List[dict]) -> bool:
@@ -2860,6 +2900,21 @@ def _safe_tansho_payout(payouts: dict, winner_hno: int = 0) -> int:
     return payout
 
 
+def _odds_to_payout(odds: float) -> int:
+    """オッズ（倍率）を100円賭け払戻額（10円単位）に変換する。
+
+    payoutsが空（JRAスクレイプ失敗等）の場合のフォールバック用。
+    例: odds=1.3 → 130円, odds=4.5 → 450円
+    払戻は10円単位で切り捨て（JRA/NAR共通ルール近似）。
+    """
+    if not odds or odds <= 0:
+        return 0
+    payout = int(round(odds * 100))
+    # 10円単位に切り捨て
+    payout = (payout // 10) * 10
+    return payout if payout >= 100 else 0
+
+
 def compare_and_aggregate(date: str, *, _skip_disk_cache: bool = False) -> Optional[dict]:
     """
     予想JSONと結果JSONを照合し、的中・収支を集計して返す。
@@ -2938,7 +2993,8 @@ def compare_and_aggregate(date: str, *, _skip_disk_cache: bool = False) -> Optio
         conf_stats[confidence]["races"] += 1
 
         # 印別の着順集計 + 穴馬・危険馬集計
-        honmei_hno = None  # ◉◎馬の馬番（単勝券種用）
+        honmei_hno = None   # ◉◎馬の馬番（単勝券種用）
+        honmei_odds = 0.0   # ◉◎馬の発走前単勝オッズ（払戻フォールバック用）
         for h in race["horses"]:
             mk = h.get("mark", "")
             pos = finish_map.get(h["horse_no"], 99)
@@ -2963,11 +3019,15 @@ def compare_and_aggregate(date: str, *, _skip_disk_cache: bool = False) -> Optio
                 mark_stats[_mk_key]["tansho_stake"] += 100
                 if pos == 1:
                     _tpay = _safe_tansho_payout(payouts, h["horse_no"])
+                    # payouts未取得（JRA未取得等）の場合は予想時オッズで代替
+                    if _tpay == 0:
+                        _tpay = _odds_to_payout(float(h.get("odds") or 0))
                     mark_stats[_mk_key]["tansho_ret"] += _tpay
 
                 # ◉と◎はどちらも本命として通算カウント
                 if mk in ("◉", "◎"):
                     honmei_hno = h["horse_no"]
+                    honmei_odds = float(h.get("odds") or 0)  # payoutsフォールバック用
                     honmei_total += 1
                     if pos == 1:
                         honmei_win += 1
@@ -2978,6 +3038,9 @@ def compare_and_aggregate(date: str, *, _skip_disk_cache: bool = False) -> Optio
                     honmei_tansho_stake += 100
                     if pos == 1:
                         _tpay2 = _safe_tansho_payout(payouts, h["horse_no"])
+                        # payouts未取得（JRA未取得等）の場合は予想時オッズで代替
+                        if _tpay2 == 0 and honmei_odds > 0:
+                            _tpay2 = _odds_to_payout(honmei_odds)
                         honmei_tansho_ret += _tpay2
                     # ◉◎複勝シミュレーション
                     honmei_fukusho_stake += 100
@@ -3049,6 +3112,9 @@ def compare_and_aggregate(date: str, *, _skip_disk_cache: bool = False) -> Optio
             tansho_ret_val = 0
             if tansho_hit:
                 tansho_ret_val = _safe_tansho_payout(payouts, honmei_hno)
+                # payouts未取得（JRA未取得等）の場合は予想時オッズで代替
+                if tansho_ret_val == 0 and honmei_odds > 0:
+                    tansho_ret_val = _odds_to_payout(honmei_odds)
             race_by_type["単勝"] = {"stake": 100, "hit": tansho_hit, "ret": tansho_ret_val}
 
         # レース単位で集計（全券種を合算）

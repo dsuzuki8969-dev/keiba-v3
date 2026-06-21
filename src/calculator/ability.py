@@ -1542,7 +1542,10 @@ def calc_ability_deviation(
         if not _cid and run.venue and run.surface and run.distance:
             from data.masters.venue_master import VENUE_NAME_TO_CODE
             _venue = run.venue.lstrip("Ｊ").lstrip("J").strip()
-            _vc = VENUE_NAME_TO_CODE.get(_venue, "")
+            # venue が会場名なら code 変換。race_log 由来で既に数値 venue_code("36"等)の場合はそのまま使う。
+            # (VENUE_NAME_TO_CODE は名前→コード辞書で数値の逆引き不可 → course_id='' のまま
+            #  全コース混合 std が適用され NAR を大幅過小評価する #C バグの修正・2026-06-21)
+            _vc = VENUE_NAME_TO_CODE.get(_venue, "") or (_venue.zfill(2) if _venue.isdigit() else "")
             if _vc:
                 _cid = f"{_vc}_{run.surface}_{run.distance}"
         std_time, st_rel = std_calc.calc_standard_time(

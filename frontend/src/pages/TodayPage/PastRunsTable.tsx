@@ -91,11 +91,8 @@ export function PastRunsTable({ runs }: { runs: PastRunData[] }) {
                   </td>
                   <td className="text-center py-1 px-1.5 whitespace-nowrap tabular-nums">
                     {devVal != null ? (
-                      // 偏差値を数値表示（マイナス含む）。null のみ「—」
-                      <>
-                        {devVal.toFixed(1)}
-                        <span className={`ml-0.5 ${gradeCls(devGrade(devVal))}`}>({devGrade(devVal)})</span>
-                      </>
+                      // 走破偏差値はグレード文字のみ表示 (feedback_past_runs_dev 準拠・N-1)
+                      <span className={`font-bold ${gradeCls(devGrade(devVal))}`}>{devGrade(devVal)}</span>
                     ) : "—"}
                   </td>
                   <td className="py-1 px-1.5 max-w-[6.5em] truncate" title={jk || "—"}>{jk || "—"}</td>

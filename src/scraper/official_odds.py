@@ -64,6 +64,21 @@ _NAR_BABA_CODES = {
 # ── JRA venue name → venue code 逆引き ──
 _JRA_NAME_TO_CODE = {v: k for k, v in _JRA_VENUE_NAMES.items()}
 
+# ── JRA公式払戻 div.refund_area の li.class → 内部キー (2026-06-21 真因修正) ──
+# JRA公式は払戻を <table> ではなく div.refund_area > li.win/place/... でマークアップ。
+_JRA_REFUND_LI_CLASS_MAP = {
+    "win": "tansho", "place": "fukusho", "wakuren": "wakuren",
+    "wide": "wide", "umaren": "umaren", "umatan": "umatan",
+    "trio": "sanrenpuku", "tierce": "sanrentan",
+}
+# li.class が取れない場合の dt テキスト → 内部キー フォールバック
+_JRA_REFUND_DT_MAP = {
+    "単勝": "tansho", "複勝": "fukusho", "枠連": "wakuren",
+    "馬連": "umaren", "ワイド": "wide", "馬単": "umatan",
+    "3連複": "sanrenpuku", "三連複": "sanrenpuku",
+    "3連単": "sanrentan", "三連単": "sanrentan",
+}
+
 
 def _parse_payout_row_entries(cells) -> List[dict]:
     """払戻行のセルリストから組番号・払戻金・人気のエントリを抽出
@@ -2118,6 +2133,52 @@ class OfficialOddsScraper:
             soup = BeautifulSoup(html, "html.parser")
             result = {}
 
+            # ── 2026-06-21 真因修正 ──
+            # JRA公式の払戻は <table> ではなく
+            #   div.refund_area > div.refund_unit > ul > li.win/place/wakuren/...
+            #     > dl > dt(券種名) + dd > div.line(複勝/ワイドは複数) > div.num/yen/pop
+            # でマークアップされている。まず div 構造をパースする。
+            refund = soup.select_one("div.refund_area")
+            if refund:
+                for li in refund.select("li"):
+                    # 券種判定: li の class を優先、無ければ dt テキスト
+                    bet_key = None
+                    for cls in (li.get("class") or []):
+                        if cls in _JRA_REFUND_LI_CLASS_MAP:
+                            bet_key = _JRA_REFUND_LI_CLASS_MAP[cls]
+                            break
+                    if not bet_key:
+                        _dt = li.find("dt")
+                        if _dt:
+                            bet_key = _JRA_REFUND_DT_MAP.get(_dt.get_text(strip=True))
+                    if not bet_key:
+                        continue
+                    # 各 div.line から 組番(num)・払戻金(yen)・人気(pop) を抽出
+                    line_entries = []
+                    for line in li.select("div.line"):
+                        _num = line.select_one(".num")
+                        _yen = line.select_one(".yen")
+                        _pop = line.select_one(".pop")
+                        if not (_num and _yen):
+                            continue
+                        _combo = _num.get_text(strip=True)
+                        _yen_digits = re.sub(r"[^\d]", "", _yen.get_text())
+                        if not _combo or not _yen_digits:
+                            continue
+                        _pop_digits = re.sub(r"[^\d]", "", _pop.get_text()) if _pop else ""
+                        line_entries.append({
+                            "combo": _combo,
+                            "payout": int(_yen_digits),
+                            "popularity": int(_pop_digits) if _pop_digits else 0,
+                        })
+                    if line_entries:
+                        result.setdefault(bet_key, []).extend(line_entries)
+                    else:
+                        logger.debug("refund li (%s) に div.line が0件", bet_key)
+                if result:
+                    return result
+
+            # ── フォールバック: 旧 <table> 構造（構造変更/過去ページ用の保険）──
             # 払戻テーブルを特定: 券種名テキストを含むテーブルを探す
             payout_tables = []
             for tbl in soup.select("table"):

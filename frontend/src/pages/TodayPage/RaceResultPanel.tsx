@@ -86,7 +86,7 @@ export function RaceResultPanel({ date, raceId }: Props) {
   //   time_sec (秒数), win_odds (単勝オッズ), popularity (人気)
   const hasAnyTime = order.some((o) => o.time_sec != null);
   const hasAnyPopularity = order.some((o) => o.popularity != null);
-  const hasAnyOdds = order.some((o) => o.win_odds != null);
+  const hasAnyOdds = order.some((o) => (o.odds ?? o.win_odds) != null);
   const hasAnyPayouts = Object.keys(payouts).length > 0;
   // 全部欠落 → 着順のみ（試合直後で詳細未反映）
   const isFullyPartial = !hasAnyTime && !hasAnyPopularity && !hasAnyOdds && !hasAnyPayouts;

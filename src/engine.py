@@ -47,6 +47,7 @@ from src.calculator.betting import (
     generate_m_prime_tickets,
     generate_reference_tickets,
     generate_tickets_by_mode,
+    is_no_bet_race_type,
     judge_confidence,
     make_bet_decision,
 )
@@ -2158,6 +2159,9 @@ class RaceAnalysisEngine:
         tickets = []
         total_budget = 0
 
+        # ---- 2026-06-21 マスター指示: メイクデビュー・障害レースは買わない ----
+        _no_bet_type = is_no_bet_race_type(getattr(race, "race_name", "") or "")
+
         # ---- 買い目生成: USE_DANSO_BUY フラグで断層買い目 or M' 戦略を切替 ----
         from config.settings import USE_DANSO_BUY
         if USE_DANSO_BUY:
@@ -2184,6 +2188,12 @@ class RaceAnalysisEngine:
                     "stake_total":      sum(t.get("stake", 0) for t in _danso_tickets),
                     "format":           "danso:印断層三連複",  # フロント判定用 prefix
                     "danso_formation":  _danso_formation,     # A-F1/A-F2/C/B-F1/B-F2/None
+                    # N-4: 印断層フォーメーション列構造（馬番）— フロント表記用
+                    "formation_columns": {
+                        "col1": [int(ev.horse.horse_no) for ev in _danso_result.get("col1", [])],
+                        "col2": [int(ev.horse.horse_no) for ev in _danso_result.get("col2", [])],
+                        "col3": [int(ev.horse.horse_no) for ev in _danso_result.get("col3", [])],
+                    },
                     "tansho_count":     0,                    # 断層モードは単勝なし
                     "sanrenpuku_count": len(_danso_tickets),
                     "formation_sanrentan": {"rank1": [], "rank2": [], "rank3": []},
@@ -2224,14 +2234,20 @@ class RaceAnalysisEngine:
                 if "_meta" in tickets_by_mode:
                     tickets_by_mode["_meta"]["tansho_count"] = len(_tansho_tickets)
 
-        # ---- bet_decision 判定 (M' skip + 新 confidence skip を統合) ----
+        # ---- bet_decision 判定 (M' skip + 新 confidence skip + 種別除外 を統合) ----
+        # メイクデビュー/障害は買い目を空にしてから skip 判定（レース詳細でも見送り表示）
+        if _no_bet_type and isinstance(tickets_by_mode, dict):
+            tickets_by_mode["fixed"] = []
+            if "_meta" in tickets_by_mode:
+                tickets_by_mode["_meta"]["skipped"] = True
+                tickets_by_mode["_meta"]["skip_reason"] = "メイクデビュー/障害 見送り"
         _fixed_tickets = (tickets_by_mode or {}).get("fixed", []) if isinstance(tickets_by_mode, dict) else []
-        if _m_prime_skipped:
-            # M' 戦略が skip 判定 (overall_confidence E) → 全券種買わない
+        if _m_prime_skipped or _no_bet_type:
+            # M' skip (overall E) または メイクデビュー/障害 → 全券種買わない
             bet_decision = {
                 "skip": True,
-                "reasons": ["m_prime_skip"],
-                "message": _meta.get("skip_reason", "M' 戦略 見送り"),
+                "reasons": ["no_bet_race_type"] if _no_bet_type else ["m_prime_skip"],
+                "message": "メイクデビュー/障害 見送り" if _no_bet_type else _meta.get("skip_reason", "M' 戦略 見送り"),
                 "max_ev": 0.0,
                 "reference_tickets": [],
             }

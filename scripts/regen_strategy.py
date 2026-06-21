@@ -140,7 +140,6 @@ def _regen_tickets_for_race(race: dict) -> dict:
         MARK_PRIORITY, STAKE_PER_TICKET, HOSHI_DYNAMIC_MIN_ODDS,
     )
     from config.settings import USE_DANSO_BUY, DANSO_STAKE_PER_POINT
-    from itertools import combinations
 
     horses = race.get("horses", [])
     active = [h for h in horses if not h.get("is_scratched")]
@@ -153,8 +152,11 @@ def _regen_tickets_for_race(race: dict) -> dict:
     s_conf = race.get("sanrenpuku_confidence", "") or ""
     t_conf = race.get("tansho_confidence", "") or ""
     overall = race.get("overall_confidence", "") or ""
-    # overall E (M' skip) は全券種スキップ
-    if overall in ("E", "F"):
+    # 2026-06-21 マスター指示: メイクデビュー・障害は買わない（レース名で判定）
+    from src.calculator.betting import is_no_bet_race_type
+    _no_bet_type = is_no_bet_race_type(race.get("name") or race.get("race_name") or "")
+    # overall E (M' skip) または メイクデビュー/障害 は全券種スキップ
+    if overall in ("E", "F") or _no_bet_type:
         race["formation_tickets"] = []
         race["tickets"] = []
         if "tickets_by_mode" in race:
@@ -164,7 +166,7 @@ def _regen_tickets_for_race(race: dict) -> dict:
             "total_stake": 0,
             "ticket_count": 0,
             "skip": True,
-            "skip_reason": f"overall_{overall}_skip",
+            "skip_reason": "no_bet_race_type" if _no_bet_type else f"overall_{overall}_skip",
         }
         return race
 
@@ -220,6 +222,7 @@ def _regen_tickets_for_race(race: dict) -> dict:
     # USE_DANSO_BUY=False: 従来の M' 戦略フォーメーション
     sanren_tickets = []
     _danso_formation_label = None  # formation ラベル初期化（スコープ安全のため）
+    _danso_columns = None  # N-4: フォーメーション列構造(col1/col2/col3 馬番) — スコープ安全のため初期化
     if s_conf != "E":
         if USE_DANSO_BUY:
             # ── 断層三連複: compute_danso_columns を呼ぶ ──
@@ -243,6 +246,8 @@ def _regen_tickets_for_race(race: dict) -> dict:
                 col1_d = danso_result["col1"]
                 col2_d = danso_result["col2"]
                 col3_d = danso_result["col3"]
+                # N-4: フォーメーション列構造を保存（compute_danso_columns は馬番リストを返す）
+                _danso_columns = {"col1": list(col1_d), "col2": list(col2_d), "col3": list(col3_d)}
                 seen = set()
                 for a in col1_d:
                     for b in col2_d:
@@ -339,6 +344,7 @@ def _regen_tickets_for_race(race: dict) -> dict:
             _tbm_meta["sanrenpuku_count"] = len(sanren_tickets)
             _tbm_meta["stake_total"]     = sum(t.get("stake", 0) for t in sanren_tickets)
             _tbm_meta["format"]          = "danso:印断層三連複"  # フロント判定用 prefix
+            _tbm_meta["formation_columns"] = _danso_columns  # N-4: フロント表記用列構造
 
     # bet_decision 更新
     # danso モードでの総投資額（単勝なし）

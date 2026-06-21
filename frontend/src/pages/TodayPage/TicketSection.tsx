@@ -282,34 +282,6 @@ function SanrentanFormationView({
 }
 
 
-/** T-050: 単勝1行表示 */
-function TanshoRow({
-  ticket,
-  noToMark,
-}: {
-  ticket: TicketData;
-  noToMark: Record<number, string>;
-}) {
-  const horseNo = ticket.horse_no;
-  const mark = ticket.mark || (horseNo ? noToMark[horseNo] : "") || "";
-  return (
-    <div className="flex flex-wrap items-center gap-2 text-sm py-0.5">
-      <strong className="whitespace-nowrap">
-        <span className={markCls(mark)}>{mark}</span>
-        {horseNo ? circledNum(horseNo) : "?"}
-      </strong>
-      <span className="text-xs text-muted-foreground inline-flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
-        {(ticket.odds ?? 0) > 0 && (
-          <span className="whitespace-nowrap">Odds: {(ticket.odds!).toFixed(1)}倍</span>
-        )}
-        {ticket.shobu_score != null && ticket.shobu_score > 0 && (
-          <span className="whitespace-nowrap text-orange-600 dark:text-orange-400">勝負気配: {ticket.shobu_score.toFixed(1)}</span>
-        )}
-      </span>
-    </div>
-  );
-}
-
 // ───────────── 三連複フォーメーション構造表示 ─────────────
 
 /** 印別馬リスト分類 */
@@ -393,8 +365,7 @@ function Phase4HybridFormation({
 }) {
   // 券種別グループ分け
   const sanrenpuku = tickets.filter((t) => t.type === "三連複");
-  const tansho = tickets.filter((t) => t.type === "単勝");
-  const totalPoints = sanrenpuku.length + tansho.length;
+  const totalPoints = sanrenpuku.length;
   // meta に stake_total があればそれを使い、なければ全点×100円フォールバック
   const totalStake = meta?.stake_total ?? totalPoints * 100;
 
@@ -405,11 +376,6 @@ function Phase4HybridFormation({
         {sanrenpuku.length > 0 && (
           <span>
             三連複 <strong className="text-foreground">{sanrenpuku.length}</strong> 点
-          </span>
-        )}
-        {tansho.length > 0 && (
-          <span>
-            単勝 <strong className="text-foreground">{tansho.length}</strong> 点
           </span>
         )}
         <span>
@@ -442,23 +408,6 @@ function Phase4HybridFormation({
                   oddsSource={t.odds_source}
                 />
               </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* 単勝セクション */}
-      {tansho.length > 0 && (
-        <div>
-          <div className="flex items-center gap-2 mb-1">
-            <span className="px-2 py-0.5 bg-amber-500 text-white text-xs font-bold rounded">
-              単勝（勝負気配TOP2）
-            </span>
-            <span className="text-xs text-muted-foreground">{tansho.length}点</span>
-          </div>
-          <div className="flex flex-wrap gap-x-6 gap-y-0.5">
-            {tansho.map((t, i) => (
-              <TanshoRow key={`TS-${i}`} ticket={t} noToMark={noToMark} />
             ))}
           </div>
         </div>
@@ -561,19 +510,6 @@ function MPrimeFormation({
   const subPattern = meta?.sub_pattern;
   const confidence = meta?.confidence;
 
-  // 単勝 shobu_score TOP2 を抽出 (5/21 commit d6e3389 で確定した正式仕様)
-  // ◎○印ベースではなくオッズ非依存の勝負気配スコア上位 2 頭。
-  // M' 戦略は三連複のみ発行するが、印が出ている以上 UI で単勝(shobu_score TOP2) も併記する
-  // (2026-05-22 マスター指示「単勝の買い目は変わったんだろ？載せなきゃわからん」)。
-  const tanshoTop2 = _horses
-    .filter((h) => {
-      // 取消・出走停止馬は除外
-      return h.is_scratched !== true && h.is_tokusen_kiken !== true;
-    })
-    .filter((h) => (h.shobu_score ?? 0) > 0)
-    .sort((a, b) => (b.shobu_score ?? 0) - (a.shobu_score ?? 0))
-    .slice(0, 2);
-
   return (
     <div className="space-y-3">
       {/* ヘッダーサマリー */}
@@ -655,51 +591,6 @@ function MPrimeFormation({
             </p>
           )}
 
-          {/* 単勝（勝負気配 TOP2）— 5/21 commit d6e3389 で確定した正式仕様
-              shobu_score 上位 2 頭・各 100 円固定 (1点100円)。
-              ◎○印ではなくオッズ非依存の勝負気配 (騎手強化/厩舎好調/格上げ等のシグナル)
-              で選定。M' 戦略は三連複のみ発行のため、ここで併記している。
-              2026-05-22 マスター指示「単勝の買い目は変わったんだろ？載せなきゃわからん」対応 */}
-          {tanshoTop2.length > 0 && (
-            <div className="mt-3 pt-3 border-t border-border/40">
-              <div className="flex items-center gap-2 mb-2">
-                <span className="px-2 py-0.5 bg-amber-500 text-white text-xs font-bold rounded">
-                  単勝（勝負気配 TOP{tanshoTop2.length}）
-                </span>
-                <span className="text-xs text-muted-foreground">
-                  各100円・計¥{(tanshoTop2.length * 100).toLocaleString()}
-                </span>
-              </div>
-              <div className="flex flex-wrap gap-x-6 gap-y-0.5">
-                {tanshoTop2.map((h) => {
-                  const sym = MARK_SYM[h.mark || ""] || h.mark || "";
-                  const oddsVal = typeof h.odds === "number" ? h.odds : 0;
-                  const shobu = h.shobu_score ?? 0;
-                  return (
-                    <div key={h.horse_no} className="flex flex-wrap items-center gap-2 text-sm py-0.5">
-                      <strong className="whitespace-nowrap">
-                        <span className={markCls(sym)}>{sym}</span>
-                        {circledNum(h.horse_no)}
-                        {h.horse_name && (
-                          <span className="ml-1 text-foreground/80 text-xs font-normal">
-                            {h.horse_name}
-                          </span>
-                        )}
-                      </strong>
-                      <span className="text-xs text-muted-foreground inline-flex flex-wrap items-baseline gap-x-2">
-                        <span className="whitespace-nowrap text-orange-600 dark:text-orange-400 font-semibold">
-                          勝負気配 {shobu.toFixed(1)}
-                        </span>
-                        {oddsVal > 0 && (
-                          <span className="whitespace-nowrap">Odds: {oddsVal.toFixed(1)}倍</span>
-                        )}
-                      </span>
-                    </div>
-                  );
-                })}
-            </div>
-            </div>
-          )}
         </div>
       )}
     </div>
@@ -718,6 +609,59 @@ const DANSO_FORMATION_LEGEND: Record<string, string> = {
   "B-F2": "B型-F2: 本命○▲拮抗 + △以下断層（3頭軸）",
 };
 
+/** N-4: 印の強さ順（◉◎○▲△★☆） */
+const DANSO_MARK_ORDER = ["◉", "◎", "○", "▲", "△", "★", "☆"];
+
+/** N-4: 印断層 三連複フォーメーション表記（印＋囲み数字、印の強い順、列を － 区切り） */
+function DansoFormationString({
+  columns,
+  noToMark,
+}: {
+  columns: { col1?: number[]; col2?: number[]; col3?: number[] };
+  noToMark: Record<number, string>;
+}) {
+  const renderCol = (nos: number[] | undefined) => {
+    if (!nos || nos.length === 0) {
+      return <span className="text-xs text-muted-foreground italic">なし</span>;
+    }
+    // 印の強さ順にソート（不明印は末尾）
+    const sorted = [...nos].sort((a, b) => {
+      const ia = DANSO_MARK_ORDER.indexOf(noToMark[a] ?? "");
+      const ib = DANSO_MARK_ORDER.indexOf(noToMark[b] ?? "");
+      return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib);
+    });
+    return (
+      <span className="inline-flex flex-wrap items-center gap-1">
+        {sorted.map((n) => {
+          const mk = noToMark[n] ?? "";
+          return (
+            <span key={n} className="inline-flex items-center gap-0.5">
+              <span className={`${markCls(mk)} text-base leading-none`}>{mk}</span>
+              <span className="tabular-nums font-semibold">{circledNum(n)}</span>
+            </span>
+          );
+        })}
+      </span>
+    );
+  };
+  // N-4(改): 横一列(－区切り)でなく 1列目/2列目/3列目 を縦3行で表示（マスター指示 6/21）
+  return (
+    <div className="rounded-md border border-indigo-600/30 bg-indigo-50/30 dark:bg-indigo-950/10 p-3">
+      <div className="text-[11px] font-bold text-indigo-700 dark:text-indigo-400 mb-2">
+        フォーメーション
+      </div>
+      <div className="grid grid-cols-[3.5em_1fr] gap-x-3 gap-y-1.5 items-center text-sm">
+        <span className="text-xs text-muted-foreground">1列目</span>
+        {renderCol(columns.col1)}
+        <span className="text-xs text-muted-foreground">2列目</span>
+        {renderCol(columns.col2)}
+        <span className="text-xs text-muted-foreground">3列目</span>
+        {renderCol(columns.col3)}
+      </div>
+    </div>
+  );
+}
+
 /** 印断層三連複の買い目表示コンポーネント */
 function DansoFormation({
   tickets,
@@ -732,6 +676,8 @@ function DansoFormation({
     danso_formation?: string | null;
     ticket_count?: number;
     stake_total?: number;
+    // N-4: 印断層フォーメーション列構造（馬番）
+    formation_columns?: { col1?: number[]; col2?: number[]; col3?: number[] } | null;
   };
 }) {
   // 三連複のみ抽出（単勝は存在しないはずだが安全のためフィルタ）
@@ -783,20 +729,32 @@ function DansoFormation({
         </div>
       )}
 
-      {/* 買い目リスト */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-0.5">
-        {sanrenpuku.map((t, i) => (
-          <div key={`D-${i}`} className="flex flex-wrap items-center gap-2 text-sm py-0.5">
-            <ComboDisplay ticket={t} noToMark={noToMark} />
-            <FmtStats
-              prob={t.prob ?? 0}
-              odds={t.odds ?? 0}
-              ev={t.ev ?? 0}
-              oddsSource={t.odds_source}
-            />
+      {/* N-4: フォーメーション表記（formation_columns あり）/ 無ければ従来の個別列挙にフォールバック */}
+      {(() => {
+        const fc = meta?.formation_columns;
+        const hasCols =
+          !!fc &&
+          ((fc.col1?.length ?? 0) > 0 ||
+            (fc.col2?.length ?? 0) > 0 ||
+            (fc.col3?.length ?? 0) > 0);
+        return hasCols ? (
+          <DansoFormationString columns={fc!} noToMark={noToMark} />
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-0.5">
+            {sanrenpuku.map((t, i) => (
+              <div key={`D-${i}`} className="flex flex-wrap items-center gap-2 text-sm py-0.5">
+                <ComboDisplay ticket={t} noToMark={noToMark} />
+                <FmtStats
+                  prob={t.prob ?? 0}
+                  odds={t.odds ?? 0}
+                  ev={t.ev ?? 0}
+                  oddsSource={t.odds_source}
+                />
+              </div>
+            ))}
           </div>
-        ))}
-      </div>
+        );
+      })()}
     </div>
   );
 }
@@ -905,7 +863,7 @@ export function TicketSection({ race }: Props) {
                   : isMPrimeFormat
                     ? "買い目指南（M' 戦略 自信度別 三連複）"
                     : isT050Format
-                      ? "買い目指南（三連複動的 + 単勝）"
+                      ? "買い目指南（三連複動的フォーメーション）"
                       : "買い目指南（三連単フォーメーション）"}
                 <span
                   className="text-sm font-normal text-muted-foreground"
@@ -925,7 +883,7 @@ export function TicketSection({ race }: Props) {
                   : isMPrimeFormat
                     ? "M' 戦略: SS=E(4点) / S/A=C(7点) / B/C/D=D(10点) / E=見送り。1点100円固定。年純利 +¥12M / ROI 217%実証。"
                     : isT050Format
-                      ? "三連複動的フォーメーション（中7点/広10点）＋単勝（勝負気配TOP2）— 各点 100円固定。"
+                      ? "三連複動的フォーメーション（中7点/広10点）— 各点 100円固定。"
                       : "フォーメーション ◉/◎⇔○/▲/(☆)⇒○/▲/△/★/(☆)/(同断層内無印1-2頭) — 各点 100円固定。SS / C / D 信頼度は過去成績マイナスのため見送り。EV は期待払戻倍率の推定値。"}
               </p>
             </div>

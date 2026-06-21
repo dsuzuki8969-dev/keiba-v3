@@ -201,11 +201,8 @@ function PastRunsMini({ runs }: { runs: PastRunData[] }) {
               <div className="flex items-center gap-2 text-[11px] mt-0.5 text-muted-foreground">
                 <span className="tabular-nums">
                   {devVal != null ? (
-                    // 偏差値を数値表示（マイナス含む）。null のみ「—」
-                    <>
-                      {devVal.toFixed(1)}
-                      <span className={`ml-0.5 font-bold ${gradeCls(devGrd)}`}>({devGrd})</span>
-                    </>
+                    // 走破偏差値はグレード文字のみ表示 (feedback_past_runs_dev 準拠・N-1)
+                    <span className={`font-bold ${gradeCls(devGrd)}`}>{devGrd}</span>
                   ) : "—"}
                 </span>
                 <span className="text-border">|</span>

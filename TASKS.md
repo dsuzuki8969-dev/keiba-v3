@@ -6,6 +6,60 @@
 
 ---
 
+## 🎯🎯🎯 次セッション最優先: 精度ROI改善ロードマップ (6/21 全システム監査42エージェント結論)
+
+詳細: `memory/project_improvement_roadmap.md` / 全発見: `data/_diag/improvement_audit_findings.md`
+
+**根本①**: WF backtest が ML確率(prob×100)だけで印を付け本番7因子compositeを評価していない(`walk_forward_backtest.py:498`)→ 過去の全ROI数値・「天井証明」は本番系を測っていない。
+**根本②**: モデルが odds を丸暗記(gain 81.6%・全モデルrank1)= 市場複製機 → ROI~79%天井。穴馬ダンピング(`engine.py:1797-1802`)が乖離=アルファを抑制。買い目EVも市場オッズ未使用。
+**統合**: 市場をコピーし乖離を抑制し間違った物差しで測る = 創業理念「市場に騙されない本当の馬の力」と正反対に漂流。
+
+| 優先 | タスク | 工数 |
+|---|---|---|
+| **P0(前提)** | WF を本番7因子composite印で評価するよう作り直す + 較正指標(Brier/logloss)追加 | L |
+| **P1-a** | odds 残差化(市場implied probと直交する信号だけ学習・2段階) | M |
+| **P1-b** | 穴馬ダンピング撤廃(`engine.py:1797-1802`)+ 買い目EVに実市場オッズ供給 | S-M |
+| **P2** | ML信号を印に通す(±5ptクランプ緩和/ML主役の印・P0/P1後WF検証) | M |
+| **P3** | 新規データB-7(含水率/クッション値パイロット→ΔROI測定) | L-research |
+| 補助 | WF高速化 / truncate silent guard 修正 / 47分割vs単一モデル比較 | S-M |
+
+> **順序不可分 P0→P1→P2**。較正は no-op 実証済で禁止。naive odds除去は逆効果→残差化が正解。詳細・file:line・留保は `project_improvement_roadmap.md`。
+
+## 🚨 次セッション 追加課題 (6/21 二部 マスター指摘・実装は次回)
+
+> 6/21二部で rich preload を deploy したが **-35/-42 の負値を200+走で量産する回帰**が発覚 → **revert済**(薄preload復元・6/20/6/21 pred 復元)。以下は腰を据えて次セッションで。
+
+| # | 課題 | 診断 | 着手方針 |
+|---|---|---|---|
+| **N-1** | **走破偏差値 計算式/表示 堅牢化** | 計算式が sparse コース/NARで両方向に暴れる(89.3過大⇔-42過小)。race_logも同値=表示バグでなく計算の不安定。**原因究明完了(6/21三部)**: dev=50+(基準T−走破T)×(1600/距離)×_k で **std誤差を6〜8pt/秒 線形増幅**・clamp[-50,100]張付 6.3%(281,003走中17,635・勝ち馬-50/+100あり)。中心(median46.6)健全=直すべきは両端の頑健性 | **マスター決定: 表層＋深層**。✅**表層(a)完了**: 前三走テーブル/Mobile/Diagnosis をグレード文字のみ化(feedback_past_runs_dev準拠)・ライブ検証(E/E/D)。⬜**深層=設計提示済・承認待ち**(計算式再設計)。表層(b)clean-joinは今日pred乖離小→深層統合。較正/rich preload小手先は禁止(回帰実証済) |
+| **N-2** | **JRA払戻パーサ修正** | ✅ **完了(6/21三部)**。真因=JRA公式払戻が`<table>`でなく`<div class="refund_area">`(li.win/place/.. > dl>dt/dd>div.line>div.num/yen/pop)。旧parserはtableのみ走査で常に空(着順は別tableで取得できていた) | `official_odds._parse_jra_payouts`にdiv.refund_areaパーサ追加(li class+dt fallback・table保持)。`fix_empty_payouts.py --date 20260621`で**JRA36R全反映(修正36/失敗0)**・実画面で8券種払戻表示確認。⬜残: date=None幽霊race除去は別課題 |
+| ~~**N-3**~~ | ~~**単勝買い目 削除**~~ | ✅ **完了** (6/21三部) | TicketSection.tsx の MPrime/Phase4Hybrid 単勝(勝負気配TOP2)セクション＋TanshoRow＋T-050単勝文言を全除去。build+static同期+ライブ実画面で単勝無し確認 |
+| ~~**N-4**~~ | ~~**三連複フォーメーション表示**~~ | ✅ **完了** (6/21三部) | backend(engine.py/regen_strategy.py)が `_meta.formation_columns`(col1/col2/col3馬番)出力。frontend `DansoFormationString`が印+囲み数字(印強さ順)で `◎②－○④▲⑨△⑥★⑦☆⑩－…` 生成。型別(A-F1/A-F2/C/B-F1/B-F2)正対応。ライブ検証 東京2R(C型10点)/阪神7R(A-F1 4点)。formation_columns無し過去predは従来列挙にフォールバック |
+
+## ✅ 6/21 三部 完了 (UI枠 + 買い目フィルタ + JRA結果データ)
+- **カード枠**: 購入=太い黒枠 / 三連複的中=太い赤枠 / 金枠(勝率1位gold variant)廃止 / 単勝バッジ廃止。backend `purchased`(結果非依存・dashboard.py) + RaceCard.tsx。レース前から黒枠
+- **買い目フィルタ**: メイクデビュー・障害は買わない。共通 `betting.is_no_bet_race_type` → engine/regen_strategy 恒久 + 6/21即時(`apply_no_bet_20260621.py`・pred直接修正で印不変)
+- **#6 JRA払戻パーサ**: 真因=`div.refund_area`構造(table非使用) → `official_odds._parse_jra_payouts` 書換 → JRA36R全反映
+- **JRA単勝オッズ**: 真因=JRA結果ページにodds列無(NARは有) → pred最終オッズ補完。`results_tracker.fetch_actual_results` 恒久組込 + `fill_jra_order_odds.py` 6/21即時(479頭/35R)
+- **NAR結果詳細(走破タイム/着差/後3F)**: 真因=NAR速報取得時にタイム未掲載→time_sec=0.0保存・payout完整のため再fetch非トリガー。`refetch_incomplete_nar_results.py` 6/21即時(佐賀3R+高知5R=8レース) + `results_tracker._is_time_incomplete` をキャッシュ再fetch判定に追加(恒久・結果取得バッチ時のみ発動=当日dashboard負荷なし)
+- reviewer P1/P2 全反映(engine import整理 / wakutan削除 / _odds_to_payout round / combinations削除 / div.line log / hasAnyOdds odds対応)
+- 全件 実画面検証済(東京/阪神カード枠・JRA払戻8券種・JRA単勝オッズ・NAR走破タイム) / git 未commit
+
+### ⬜ 6/21 三部 残タスク (次セッション・詳細は handoff_2026-06-21_v3)
+| 優先 | 項目 | 着手方針 |
+|---|---|---|
+| **P2** | git commit/push | 298ファイル(本日変更+前回未commit+大量diag)。commit範囲をマスター確認・`data/_diag/`は.gitignore検討・pushは要承認 |
+| **P3-1** | date=None幽霊race除去 | results.jsonにdateフィールド無 → sqlite-db MCPで predictions/race_log の `date IS NULL` 確認 → 所在特定 → 除去 |
+| **P3-2** | scheduler夜間バッチ統合 | `refetch_incomplete_nar_results.py` を scheduler(scheduler_tasks/dag)に組込。`_is_time_incomplete` 再fetchは恒久組込済 → fetch_actual_results 定期実行起点の有無を確認 |
+| P3-3 | RaceResultPanel 警告文言 | odds補完後の実態乖離を見直し(低優先) |
+
+## ✅ 6/21 二部 完了 (走破偏差値深掘り → rich preload 採用 → 回帰で revert)
+詳細: `memory/handoff_2026-06-21_v2.md` / `memory/project_engine_course_db_richpreload.md`
+- LIVE STATS ラベル変更(`◉◎単勝`→`◎本命成績` / `三連複(M'戦略)`→`推奨三連複買い目`)deploy済
+- 走破偏差値89.3 = engine course_db希薄の偽陽性 → **rich preload採用**(`build_rich_preload.py`/15MB)。6/20実証 ◎ROI 24→32%(+8pt)。6/21適用済(ハルヒメ◎→▲)
+- 較正(relative統合/中層減衰)は no-op/不十分と実証→全revert
+- 残: engine の「当日馬を course_db に混ぜる自己参照バイアス」完全clean化(diminishing returns・次セッション議論可)
+
 ## 🚨 6/20-21 マスター ダッシュボード指摘 7 件 (原因究明済・修正承認待ち)
 
 | # | 指摘 | 根本原因 (調査結果) | 修正層 | 工数/リスク |

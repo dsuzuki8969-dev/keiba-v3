@@ -278,6 +278,8 @@ export interface RaceCardHitResult {
   // true=的中(○) / false=不的中(×) / "skipped"=未購入(ー) / null=結果未取得(非表示)
   tansho_hit: HitState;
   sanrenpuku_hit: HitState;
+  // 6/21 マスター指示: 購入レース=黒枠用。結果非依存(チケット有無+skip)で常時供給。
+  purchased?: boolean;
 }
 
 export interface RaceCardResultsData {

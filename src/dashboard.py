@@ -7351,16 +7351,31 @@ function dNavRefreshOdds(date){{
             if not race_id:
                 continue
 
+            # 購入予定判定（結果非依存・チケット有無 + bet_decision.skip）
+            # マスター指示(6/21): カードを購入レース=黒枠 / 的中=赤枠 で囲うため、
+            # 結果が出る前から購入予定 (purchased) を返す。
+            strategy_tix = _collect_strategy_tickets(race)
+            _bd = race.get("bet_decision", {}) or {}
+            purchased = bool(strategy_tix) and not _bd.get("skip")
+
             result = actual.get(race_id)
             if not result:
-                # 結果未取得 → win_hit/sanrentan_hit は None（フロントは非表示）
-                race_results[race_id] = {"win_hit": None, "sanrentan_hit": None}
+                # 結果未取得 → hit は None（○×ーバッジ非表示）だが purchased で黒枠判定可
+                race_results[race_id] = {
+                    "win_hit": None, "sanrentan_hit": None,
+                    "tansho_hit": None, "sanrenpuku_hit": None,
+                    "purchased": purchased,
+                }
                 continue
 
             order = result.get("order", [])
             if not order:
-                # 着順データなし（中止等）→ None
-                race_results[race_id] = {"win_hit": None, "sanrentan_hit": None}
+                # 着順データなし（中止等）→ hit None だが purchased は有効
+                race_results[race_id] = {
+                    "win_hit": None, "sanrentan_hit": None,
+                    "tansho_hit": None, "sanrenpuku_hit": None,
+                    "purchased": purchased,
+                }
                 continue
 
             # 1-2-3 着の馬番（int）を確定
@@ -7379,8 +7394,7 @@ function dNavRefreshOdds(date){{
                     break
 
             # ── T-050: 三連複+単勝 チケット 的中判定 ────────────────────────
-            # _collect_strategy_tickets で三連複+単勝チケットを取得・判定
-            strategy_tix = _collect_strategy_tickets(race)
+            # strategy_tix は購入判定でループ先頭にて取得済み（再利用）
             winner_no = top3_ordered[0] if top3_ordered else None
             top3_set = set(top3_ordered[:3]) if len(top3_ordered) >= 3 else set()
 
@@ -7424,7 +7438,7 @@ function dNavRefreshOdds(date){{
                     tansho_ticket_hit = "skipped"
 
             # bet_decision.skip 判定: M' skip のレースは全馬券未購入
-            _bd = race.get("bet_decision", {}) or {}
+            # (_bd はループ先頭で計算済みのものを再利用)
             if _bd.get("skip"):
                 sanrenpuku_hit = "skipped"
                 tansho_ticket_hit = "skipped"
@@ -7442,6 +7456,8 @@ function dNavRefreshOdds(date){{
                 # 新フィールド: True=的中 / False=不的中 / "skipped"=未購入 / None=結果未取得
                 "tansho_hit": tansho_hit_val,
                 "sanrenpuku_hit": sanrenpuku_hit,
+                # マスター指示(6/21): 購入レース黒枠用（結果非依存・チケット有無）
+                "purchased": purchased,
             }
 
         return {"date": date, "results": race_results}
