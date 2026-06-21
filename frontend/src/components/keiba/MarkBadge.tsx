@@ -19,7 +19,8 @@ interface Style {
 }
 
 const STYLES: Record<string, Style> = {
-  tekipan:   { color: "text-mark-tekipan",   gradient: true,  glow: "rgba(212,168,83,0.6)"  },
+  // ◉(鉄板): Phase 2+3 で赤系に変更。金箔グラデは廃止し赤発光で最上位強調
+  tekipan:   { color: "text-mark-tekipan",   gradient: false, glow: "rgba(220,38,38,0.7)"   },
   honmei:    { color: "text-mark-honmei",    gradient: false, glow: "rgba(22,163,74,0.45)" },
   taikou:    { color: "text-mark-taikou",    glow: "rgba(37,99,235,0.45)" },
   tannuke:   { color: "text-mark-tannuke",   glow: "rgba(220,38,38,0.45)" },

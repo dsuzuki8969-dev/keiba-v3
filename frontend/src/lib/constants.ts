@@ -35,6 +35,8 @@ export const MARKS = {
   rendashi2:{ symbol: "★", label: "連下2" },
   oana:     { symbol: "☆", label: "連下3" },
   // v5: kiken(×) は廃止
+  // ホーム穴馬カード専用印 (2026-06-22 マスター指示: 無印馬のみを「穴」で表示)
+  ana_home: { symbol: "穴", label: "穴" },
 } as const;
 
 export type MarkType = keyof typeof MARKS;
@@ -163,10 +165,11 @@ export function posCls(pos: number | null | undefined): string {
   return "";
 }
 
-/** 印 → Tailwindクラス（◉/◎=緑, ○/☆=青, ▲=赤, △=紫, ★=黒） */
+/** 印 → Tailwindクラス（◉=赤太字(鉄板), ◎=緑, ○/☆=青, ▲=赤, △=紫, ★=黒） */
 export function markCls(mark: string): string {
   switch (mark) {
-    case "◉": return "text-emerald-600 font-extrabold";
+    // ◉(鉄板): 赤系で最上位強調 — ◎(本命)の緑と明確に区別
+    case "◉": return "text-red-600 font-extrabold";
     case "◎": return "text-emerald-600 font-extrabold";
     case "○": return "text-blue-600 font-bold";
     case "▲": return "text-red-600 font-bold";
@@ -174,6 +177,8 @@ export function markCls(mark: string): string {
     case "★": return "text-foreground font-bold";
     case "☆": return "text-blue-600 font-bold";
     // v5: ×(kiken) 廃止
+    // ホーム穴馬カード専用: 無印馬を「穴」印としてアンバー色で表示 (2026-06-22)
+    case "穴": return "text-amber-500 font-bold";
     default:  return "text-muted-foreground";
   }
 }

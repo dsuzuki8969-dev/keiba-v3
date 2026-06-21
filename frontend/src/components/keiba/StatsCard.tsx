@@ -122,7 +122,7 @@ export const StatsCard = memo(function StatsCard({
               <Activity size={10} className="inline mr-1" />
               <span className="section-eyebrow">Live Stats</span>
             </PremiumCardAccent>
-            <span className="heading-section text-sm">{title}</span>
+            <span className="heading-section text-base">{title}</span>
           </div>
           <span className="text-xs text-muted-foreground">
             結果待ち（各レース発走 10 分後に自動更新）
@@ -140,7 +140,7 @@ export const StatsCard = memo(function StatsCard({
             <Activity size={10} className="inline mr-1" />
             <span className="section-eyebrow">Live Stats</span>
           </PremiumCardAccent>
-          <PremiumCardTitle className="text-sm">{title}</PremiumCardTitle>
+          <PremiumCardTitle className="text-base">{title}</PremiumCardTitle>
         </div>
         <div className="flex items-center gap-2">
           {/* showRefreshButton=true 時のみ手動更新ボタンを表示（過去日では非表示） */}
@@ -171,21 +171,21 @@ export const StatsCard = memo(function StatsCard({
       <div className="space-y-3">
         {/* ◎本命成績 — 三連複と同形式 (予想R/的中R/的中率) に統一 (2026-05-22 マスター指示 / 2026-06-21 ラベル改称) */}
         <div>
-          <div className="text-[11px] text-muted-foreground mb-1">◎本命成績</div>
+          <div className="text-xs text-muted-foreground mb-1">◎本命成績</div>
           <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1">
-            <span className="tabular-nums text-sm">
+            <span className="tabular-nums text-base">
               予想 <span className="text-foreground font-bold">{total}R</span>
               <span className="text-muted-foreground mx-1">/</span>
               的中 <span className="text-positive font-bold">{win}R</span>
             </span>
-            <span className="text-xs text-muted-foreground tabular-nums">
+            <span className="text-sm text-muted-foreground tabular-nums">
               的中率{" "}
               <span className="stat-mono text-foreground">
                 {winRate.toFixed(1)}%
               </span>
             </span>
             <span
-              className={`text-xs tabular-nums ${
+              className={`text-sm tabular-nums ${
                 tanRet - tanStake >= 0 ? "text-positive" : "text-negative"
               }`}
             >
@@ -200,7 +200,7 @@ export const StatsCard = memo(function StatsCard({
               </span>
             </span>
             <span
-              className={`text-xs tabular-nums ${
+              className={`text-sm tabular-nums ${
                 tanRoi >= 100 ? "text-positive" : "text-muted-foreground"
               }`}
             >
@@ -209,13 +209,13 @@ export const StatsCard = memo(function StatsCard({
                 {tanRoi.toFixed(1)}%
               </span>
             </span>
-            <span className="text-xs text-muted-foreground tabular-nums">
+            <span className="text-sm text-muted-foreground tabular-nums">
               {tanStake.toLocaleString()} → {tanRet.toLocaleString()}円
             </span>
           </div>
 
           {/* 着順詳細 + 連対率/複勝率 を補足情報として下段に表示 */}
-          <div className="text-[11px] text-muted-foreground tabular-nums mt-1 flex flex-wrap gap-x-3">
+          <div className="text-xs text-muted-foreground tabular-nums mt-1 flex flex-wrap gap-x-3">
             <span>
               着順 <span className="text-positive">{win}</span>
               <span className="text-muted-foreground/70">-</span>
@@ -236,22 +236,22 @@ export const StatsCard = memo(function StatsCard({
 
         {/* 推奨三連複買い目 (旧 M' 戦略): 三連複 (自信度別 SS=E/S=C/A=C/B/C/D=D/E=skip) */}
         <div>
-          <div className="text-[11px] text-muted-foreground mb-1">推奨三連複買い目</div>
+          <div className="text-xs text-muted-foreground mb-1">推奨三連複買い目</div>
           <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1">
-            <span className="tabular-nums text-sm">
+            <span className="tabular-nums text-base">
               予想 <span className="text-foreground font-bold">{sPlayed}R</span>
               <span className="text-muted-foreground mx-1">/</span>
               的中{" "}
               <span className="text-positive font-bold">{sHit}R</span>
             </span>
-            <span className="text-xs text-muted-foreground tabular-nums">
+            <span className="text-sm text-muted-foreground tabular-nums">
               的中率{" "}
               <span className="stat-mono text-foreground">
                 {sHitRate.toFixed(1)}%
               </span>
             </span>
             <span
-              className={`text-xs tabular-nums ${
+              className={`text-sm tabular-nums ${
                 sBalance >= 0 ? "text-positive" : "text-negative"
               }`}
             >
@@ -262,7 +262,7 @@ export const StatsCard = memo(function StatsCard({
               </span>
             </span>
             <span
-              className={`text-xs tabular-nums ${
+              className={`text-sm tabular-nums ${
                 sRoi >= 100 ? "text-positive" : "text-muted-foreground"
               }`}
             >
@@ -271,14 +271,14 @@ export const StatsCard = memo(function StatsCard({
                 {sRoi.toFixed(1)}%
               </span>
             </span>
-            <span className="text-xs text-muted-foreground tabular-nums">
+            <span className="text-sm text-muted-foreground tabular-nums">
               {sStake.toLocaleString()} → {sRet.toLocaleString()}円
             </span>
           </div>
 
           {/* T-001 (2026-04-25): 3 段表記 — 集計 / 終了 / 対象 を分母として明示 */}
           {(totalRaces > 0 || eligibleSanrentan > 0) && (
-            <div className="text-[11px] text-muted-foreground tabular-nums mt-1">
+            <div className="text-xs text-muted-foreground tabular-nums mt-1">
               集計 <span className="text-foreground">{sPlayed}R</span>
               <span className="mx-1">/</span>
               終了 <span className="text-foreground">{finishedRaces}R</span>
@@ -295,7 +295,7 @@ export const StatsCard = memo(function StatsCard({
           <div
             role="status"
             aria-live="polite"
-            className="text-[11px] tabular-nums text-amber-500 dark:text-amber-400"
+            className="text-xs tabular-nums text-amber-500 dark:text-amber-400"
           >
             ⚠️ 結果未反映 {pendingFetch.toLocaleString()}R（最古{" "}
             {pendingAgeMaxMin.toLocaleString()}分前発走 — 自動取得待ち）

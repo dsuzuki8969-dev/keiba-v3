@@ -3104,7 +3104,8 @@ def generate_m_prime_tickets(
 # ============================================================
 
 # 有効印セット（× と NONE は対象外）
-_DANSO_VALID_MARKS = {"◉", "◎", "○", "▲", "△", "★", "☆"}
+# "穴" を含めることで断層③の top_unmarked 計算に穴馬compositeが混入しない
+_DANSO_VALID_MARKS = {"◉", "◎", "○", "▲", "△", "★", "☆", "穴"}
 # 本命印セット（◉◎どちらか1頭が付く）
 _DANSO_HONMEI_MARKS = {"◉", "◎"}
 
@@ -3164,6 +3165,18 @@ def compute_danso_columns(entries: List[Dict]) -> Optional[Dict]:
     if len(active) < 6:
         # 6頭未満は印が揃わないため見送り
         return None
+
+    # ── 穴印馬番を事前収集（col3 への追加用） ──
+    # Phase 2+3: mark=="穴" の馬は全フォーメーション共通で col3 に追加する
+    _ana_nos: List[int] = [
+        int(e["horse_no"]) for e in active if e.get("mark", "") == "穴"
+    ]
+
+    def _add_ana(col3: List[int]) -> List[int]:
+        """col3 に穴馬番を追加して重複除去・昇順返却する共通後処理。"""
+        if not _ana_nos:
+            return col3
+        return sorted(set(col3) | set(_ana_nos))
 
     # ── 印 → entry マップ（本命は◉◎どちらかのみ） ──
     mark_to_entry: Dict[str, Dict] = {}
@@ -3238,7 +3251,7 @@ def compute_danso_columns(entries: List[Dict]) -> Optional[Dict]:
                     "formation": "A-F1",
                     "col1": [h_no],
                     "col2": [_no("○")],
-                    "col3": [_no("▲"), _no("△"), _no("★"), _no("☆")],
+                    "col3": _add_ana([_no("▲"), _no("△"), _no("★"), _no("☆")]),
                 }
             # A-F2: gap(○,▲) < 3.0 かつ gap(▲,△) >= 3.0
             if _gap("▲", "△") >= DANSO_GAP2B_THRESHOLD:
@@ -3246,7 +3259,7 @@ def compute_danso_columns(entries: List[Dict]) -> Optional[Dict]:
                     "formation": "A-F2",
                     "col1": [h_no],
                     "col2": [_no("○"), _no("▲")],
-                    "col3": [_no("○"), _no("▲"), _no("△"), _no("★"), _no("☆")],
+                    "col3": _add_ana([_no("○"), _no("▲"), _no("△"), _no("★"), _no("☆")]),
                 }
 
     # ============================================================
@@ -3268,7 +3281,7 @@ def compute_danso_columns(entries: List[Dict]) -> Optional[Dict]:
                     "formation": "C",
                     "col1": [h_no],
                     "col2": sub_nos,
-                    "col3": sub_nos,
+                    "col3": _add_ana(sub_nos),
                 }
 
     # ============================================================
@@ -3292,7 +3305,7 @@ def compute_danso_columns(entries: List[Dict]) -> Optional[Dict]:
                 "formation": "B-F1",
                 "col1": [h_no, _no("○")],
                 "col2": [h_no, _no("○"), _no("▲")],
-                "col3": sorted(set(col3_b1)),
+                "col3": _add_ana(sorted(set(col3_b1))),
             }
 
         # B-F2: max(H,○,▲)-min(H,○,▲) < 2.0 AND gap(▲,△) >= 5.0
@@ -3306,11 +3319,99 @@ def compute_danso_columns(entries: List[Dict]) -> Optional[Dict]:
                 "formation": "B-F2",
                 "col1": [h_no, _no("○"), _no("▲")],
                 "col2": [h_no, _no("○"), _no("▲")],
-                "col3": sorted(set(col3_b2)),
+                "col3": _add_ana(sorted(set(col3_b2))),
             }
 
     # ── いずれも非発火 → 見送り ──
     return None
+
+
+def build_force_buy_columns(entries: List[Dict]) -> Optional[Dict]:
+    """◉/穴レース強制購入フォーメーション生成。
+
+    compute_danso_columns が None(見送り)を返した場合に、
+    そのレースに mark=="◉" の本命 **または** mark=="穴" の馬があれば
+    fallback フォーメーションを生成して強制購入を実現する補助関数。
+
+    フォーメーション:
+        col1 = 本命(◉/◎)馬番
+        col2 = ○▲ の馬番（存在分）
+        col3 = ○▲△★☆ の馬番（存在分）+ 穴馬番（重複除去・昇順）
+
+    ◉も穴も存在しない場合は None を返す（強制購入対象外）。
+
+    Parameters
+    ----------
+    entries : List[Dict]
+        compute_danso_columns と同一形式の horse entry リスト。
+
+    Returns
+    -------
+    Optional[Dict]
+        フォーメーション dict ("formation"="force_buy", col1/col2/col3)
+        または None（◉も穴も存在しない場合）。
+    """
+    active = [e for e in entries if not e.get("is_scratched", False)]
+
+    # ── mark 別に馬番を収集 ──
+    honmei_no: Optional[int] = None
+    col2_nos: List[int] = []
+    col3_sub_nos: List[int] = []
+    ana_nos: List[int] = []
+    has_tekipan = False
+
+    for e in active:
+        no = int(e.get("horse_no") or 0)
+        # horse_no が無効な馬は除外
+        if no <= 0:
+            continue
+        mk = e.get("mark", "")
+        if mk in ("◉", "◎"):
+            honmei_no = no
+            if mk == "◉":
+                has_tekipan = True
+        elif mk == "○":
+            col2_nos.append(no)
+            col3_sub_nos.append(no)
+        elif mk == "▲":
+            col2_nos.append(no)
+            col3_sub_nos.append(no)
+        elif mk in ("△", "★", "☆"):
+            col3_sub_nos.append(no)
+        elif mk == "穴":
+            ana_nos.append(no)
+
+    # ◉ も穴も存在しない → 強制購入対象外
+    if not has_tekipan and not ana_nos:
+        return None
+
+    # 本命不在の場合も見送り（フォーメーションを組めない）
+    if honmei_no is None:
+        return None
+
+    # col2: ○▲が存在する場合はその馬番、不在の場合は△★☆穴から埋める（本命は入れない）
+    if col2_nos:
+        col2_final = sorted(set(col2_nos))
+    else:
+        # △★☆穴から本命以外を埋める
+        fallback_col2 = [n for n in (col3_sub_nos + ana_nos) if n != honmei_no]
+        col2_final = sorted(set(fallback_col2)) if fallback_col2 else []
+
+    col3_final = sorted(set(col3_sub_nos) | set(ana_nos))
+    # col3 から本命を除外
+    col3_final = [n for n in col3_final if n != honmei_no]
+
+    # col1∪col2∪col3 の distinct 馬番が 3 頭未満なら三連複不成立
+    all_nos = set([honmei_no]) | set(col2_final) | set(col3_final)
+    if len(all_nos) < 3:
+        return None
+
+    return {
+        "formation": "force_buy",
+        "col1": [honmei_no],
+        "col2": col2_final if col2_final else [],
+        "col3": col3_final if col3_final else [],
+    }
 
 
 def generate_danso_tickets(

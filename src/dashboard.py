@@ -1032,15 +1032,15 @@ def _scan_today_predictions(date_str: str) -> dict:
                 # (☆=composite6位が上位人気馬の時に混入していた不具合の修正)
                 pop = h.get("popularity", 0) or 0
                 is_top_pop = pop in (1, 2, 3)
-                # ☆印は穴馬候補(ただし1-3人気は除外)、それ以外は10倍以上の非本命馬(同除外)
-                is_star = (mk == "☆") and not is_top_pop
+                # マスター指示(2026-06-22): 厳選穴馬は無印「－」の馬のみ(★☆も除外)
+                is_star = False  # ☆は穴馬カードに含めない
                 is_ana = (
-                    mk not in ("◉", "◎", "○", "▲", "△", "×")
+                    mk not in ("◉", "◎", "○", "▲", "△", "★", "☆", "×")
                     and odds_val >= 10.0
                     and not is_top_pop
                 )
 
-                if not (is_star or is_ana):
+                if not is_ana:
                     continue
 
                 # 回帰ベース妙味スコア
@@ -1070,7 +1070,7 @@ def _scan_today_predictions(date_str: str) -> dict:
                     "post_time": r.get("post_time", ""),
                     "horse_no": h.get("horse_no", 0),
                     "horse_name": h.get("horse_name", ""),
-                    "mark": mk,
+                    "mark": "穴",  # マスター指示(2026-06-22): 穴馬カードは常に「穴」印表示
                     "odds": odds_val,
                     "popularity": h.get("popularity", 0),
                     "composite": round(comp, 1),

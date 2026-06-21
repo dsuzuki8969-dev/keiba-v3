@@ -472,14 +472,19 @@ def reassign_marks_dict(horses: List[dict], is_jra: bool = True) -> None:
     MARK_SEQUENCE = ["○", "▲", "△", "★"]
     WP_FLOORS = {"○": _MIN_WP_TAIKOU, "▲": _MIN_WP_TANNUKE, "△": _MIN_WP_RENDASHI, "★": 0}
 
-    # 既存の☆/×をメモ（×は現在のオッズ条件を再検証）
+    # 既存の☆/×/穴をメモ（×は現在のオッズ条件を再検証）
     # Bug#3 修正: × 再検証条件を緩和（オッズ≥5倍 or pop>2位 で剥がす）
     # 従来はオッズ≥10倍 or pop>3位で剥がしていたが、市場で人気薄に転落した
     # 時点で × を維持すべき（4-17: 48R で 17件 → 4-21: 60R で 1件 の激減を防ぐ）
+    # "穴" を保護: apply_elite_marks_20260621 が付与した穴印を
+    # リアルタイムオッズ更新で上書き消去しないよう special_marks に含める
     special_marks = {}
     for h in horses:
         m = h.get("mark", "")
         if m == "☆":
+            special_marks[h.get("horse_no")] = m
+        elif m == "穴":
+            # elite_marks Phase 2+3 で付与した穴印は上書きしない
             special_marks[h.get("horse_no")] = m
         elif m == "×":
             _odds = h.get("odds") or h.get("predicted_tansho_odds") or 999

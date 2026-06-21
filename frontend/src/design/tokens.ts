@@ -32,7 +32,8 @@ export const colors = {
     D: "#9ca3af",
   },
   mark: {
-    tekipan: "#16a34a",
+    // ◉(鉄板): 赤系で最上位強調 — Phase 2+3 で ◎(本命)の緑と明確に区別
+    tekipan: "#dc2626",
     honmei: "#16a34a",
     taikou: "#2563eb",
     tannuke: "#dc2626",
