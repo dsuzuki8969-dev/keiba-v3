@@ -41,8 +41,11 @@
 - **B-8** モデル切替検証 (XGBoost / CatBoost / PyTorch NN)
 - いずれも `feedback_construction_ceiling` の「長期改修必須」に対応。小手先(P4.2/指数いじり)は構造的天井で到達不可と既証明。
 
-### 別件・マスター回答待ち
-- **D-6' 7月以降カレンダー (JRA公式)**: JRA は PDF/.ics とも 403・月別HTMLは開催データ無し。NAR(keiba.go.jp)は取得可。JRA取得方法 (playwright描画/指定URL/手動PDF) のマスター選択待ち。
+### ✅ D-6' 7月以降カレンダー 公式から取得 完了 (6/21)
+- **JRA**: 公式月別ページ (jra.go.jp/keiba/calendar/{mon}.html) は JS描画。**playwright で描画後DOM抽出**(requests/PDF/.ics は403で不可)。7-12月=55開催日。年間固定のため一度取得で確実
+- **NAR**: 公式 keiba.go.jp MonthlyConveneInfo (k_year/k_month で未来月可・☆=開催のグリッド) を requests+BS4 でパース。7-12月=180開催日。帯広(ばんえい)は除外
+- **結果**: 7月以降 開催あり 0→180日。実画面(本番)で 7月=JRA[函館/福島/小倉]+NAR[門別/川崎/大井...] 確認。文字化け0・帯広0
+- **再取得手順** (翌年/更新時): JRA=playwright で {jan..dec}.html の td から日×場抽出 / NAR=keiba.go.jp k_year,k_month グリッド。`scripts/build_kaisai_calendar.py` への playwright 統合は将来課題 (現状は手動抽出で2026充足)
 
 > マスターは**ローカル**閲覧 (timestamp 23:52/データ一致)。修正後は B-1 deploy で本番反映。
 > カレンダー(D-6)は `kaisai_calendar.json` が **5/29 生成のまま陳腐化** (6月は6/7のみ、他空)。再生成必要。
