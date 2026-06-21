@@ -731,6 +731,14 @@ try:
 except Exception as e:
     logger.warning("prediction JSON save failed: %s", e, exc_info=True)
 
+# ─── 5b. 印体系 finalize (sharpen→elite→formation) ─────────────────
+try:
+    from src.calculator.finalize_predictions import finalize_predictions
+    finalize_predictions(DATE_KEY)  # DATE_KEY = DATE.replace("-", "") = YYYYMMDD
+    logger.info("印体系 finalize 完了")
+except Exception as _e:
+    logger.warning("印体系 finalize 失敗(分析結果は保全): %s", _e)
+
 # ─── 6. 全レースまとめHTML生成（ネット競馬風UI） ─────────────────
 if NO_HTML:
     ok_count = sum(1 for r in results if r[3])

@@ -1768,11 +1768,40 @@ def create_app():
                         if _scratched_changed:
                             # 確率再配分
                             _active = [h for h in _race_horses if not h.get("is_scratched")]
-                            for _pk, _ts in [("win_prob", 1.0), ("place2_prob", 2.0), ("place3_prob", 3.0)]:
+                            # メリハリ拡大で確率が集中した際、place を Σ=2/3 正規化すると
+                            # 支配馬が 1.0(100%) に飽和し連対率=複勝率になる。engine(1978-1979)と
+                            # 同じ頭数連動キャップで抑制し win<=p2<=p3 の単調性を保証（2026-06-22）
+                            _n_act = len(_active)
+                            _p2_cap = min(0.85, 2.0 / _n_act * 3.5) if _n_act else 0.85
+                            _p3_cap = min(0.92, 3.0 / _n_act * 3.5) if _n_act else 0.92
+                            for _pk, _ts, _cap in [
+                                ("win_prob", 1.0, 1.0),
+                                ("place2_prob", 2.0, _p2_cap),
+                                ("place3_prob", 3.0, _p3_cap),
+                            ]:
                                 _asum = sum(h.get(_pk, 0) for h in _active)
                                 if _asum > 0:
                                     for h in _active:
-                                        h[_pk] = round(min(1.0, h[_pk] / _asum * _ts), 4)
+                                        h[_pk] = round(min(_cap, h[_pk] / _asum * _ts), 4)
+                            # 単調性 win<=p2<=p3 を保証（キャップ後）
+                            for h in _active:
+                                _w = h.get("win_prob", 0) or 0
+                                h["place2_prob"] = max(h.get("place2_prob", 0) or 0, _w)
+                                h["place3_prob"] = max(h.get("place3_prob", 0) or 0, h.get("place2_prob", 0) or 0)
+                            # anti-saturation: 大頭数×floor馬で p2=win に飽和するケース対策
+                            # 単調性ループ直後に適用（飽和時のみ発火・中位馬は不変）
+                            _eps = 1e-6
+                            for h in _active:
+                                _w = h.get("win_prob", 0) or 0
+                                _p2 = h.get("place2_prob", 0) or 0
+                                _p3 = h.get("place3_prob", 0) or 0
+                                if _p2 <= _w + _eps and _w < 0.85:
+                                    _p2 = min(0.92, _w + (1.0 - _w) * 0.25)   # 連対率>勝率を保証
+                                if _p3 <= _p2 + _eps and _p2 < 0.92:
+                                    _p3 = min(0.97, _p2 + (1.0 - _p2) * 0.20)  # 複勝率>連対率を保証
+                                # 最終 win<=p2<=p3 を再保証
+                                h["place2_prob"] = round(max(_p2, _w), 4)
+                                h["place3_prob"] = round(max(_p3, h["place2_prob"]), 4)
 
                     # pred.jsonのcomposite・確率を正として印のみ再割り振り（composite不変）
                     if _race_horses and any(h.get("win_prob") for h in _race_horses):
@@ -1833,14 +1862,16 @@ def create_app():
                                 "col3": _col3,
                             }
 
-                    # formation_columnsを排他化（旧累積列データ互換）
+                    # formation_columns: col1(◉)のみ排他化。
+                    # 2026-06-22 印体系刷新: 4パターン(1頭流し等)は col2/col3 が
+                    # 意図的に重複する(col2==col3 等)。旧排他化は col3 から col2 を全削除し
+                    # 1頭流しの col3 を空にしていた → col1 除去のみに留め重複列を保持する。
                     _fc = race.get("formation_columns", {})
                     if _fc:
                         _c1 = _fc.get("col1", [])
                         _c1s = set(_c1)
                         _c2 = [n for n in _fc.get("col2", []) if n not in _c1s]
-                        _c2s = _c1s | set(_c2)
-                        _c3 = [n for n in _fc.get("col3", []) if n not in _c2s]
+                        _c3 = [n for n in _fc.get("col3", []) if n not in _c1s]
                         race["formation_columns"] = {"col1": _c1, "col2": _c2, "col3": _c3}
 
                     # フォーメーションチケットを排他列でフィルタ + 低EVチケット除外

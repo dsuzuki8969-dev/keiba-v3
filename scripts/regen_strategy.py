@@ -239,7 +239,7 @@ def _regen_tickets_for_race(race: dict) -> dict:
                 for h in horses  # 取消馬も渡す（compute_danso_columns 内で除外）
             ]
             danso_result = compute_danso_columns(danso_entries)
-            # formation ラベル（A-F1/A-F2/C/B-F1/B-F2）を _meta に保存
+            # formation ラベル（1_2tonagashi/2_aitekikkou/3_nitoukikkou/4_ittonagashi）を _meta に保存
             _danso_formation_label = danso_result["formation"] if danso_result is not None else None
             if danso_result is not None:
                 # col1 × col2 × col3 で標準三連複 combo を生成
@@ -336,7 +336,7 @@ def _regen_tickets_for_race(race: dict) -> dict:
         if USE_DANSO_BUY:
             _tbm_meta = race["tickets_by_mode"].setdefault("_meta", {})
             _danso_skipped_regen = len(sanren_tickets) == 0
-            _tbm_meta["danso_formation"] = _danso_formation_label   # A-F1/A-F2/C/B-F1/B-F2/None
+            _tbm_meta["danso_formation"] = _danso_formation_label   # 1_2tonagashi/2_aitekikkou/3_nitoukikkou/4_ittonagashi/None
             _tbm_meta["ticket_count"]    = len(sanren_tickets)
             _tbm_meta["skipped"]         = _danso_skipped_regen
             _tbm_meta["skip_reason"]     = "断層条件不成立: 見送り" if _danso_skipped_regen else ""

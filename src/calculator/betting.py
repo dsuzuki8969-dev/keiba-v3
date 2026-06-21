@@ -3132,7 +3132,7 @@ def compute_danso_columns(entries: List[Dict]) -> Optional[Dict]:
         発火した場合::
 
             {
-                "formation": "A-F1" | "A-F2" | "C" | "B-F1" | "B-F2",
+                "formation": "1_2tonagashi" | "2_aitekikkou" | "3_nitoukikkou" | "4_ittonagashi",
                 "col1": [horse_no, ...],
                 "col2": [horse_no, ...],
                 "col3": [horse_no, ...],
@@ -3140,25 +3140,27 @@ def compute_danso_columns(entries: List[Dict]) -> Optional[Dict]:
 
         見送り（6頭未満・必要印欠落・断層条件不成立）の場合: None
 
-    優先順位: A → C → B
-    ルール:
-      断層① = comp(H) - comp(○) >= GAP1 (5.0)  ← 条件A/C の入口
-      条件A: 断層① AND 断層③(comp(☆)-top_unmarked>=3.0) AND
-             (gap(○,▲)>=3.0 → A-F1 / else gap(▲,△)>=3.0 → A-F2)
-      条件C: 断層① AND ○▲△★☆が横一線(隣接差<3.0全て)
-             → C: col1=[H] col2=[○▲△★☆] col3=[○▲△★☆] (10点)
-      条件B(A/C非発火): abs(H-○)<2.0 AND gap(○,▲)>=5.0 → B-F1 (10点)
-                        OR max(H,○,▲)-min(同)<2.0 AND gap(▲,△)>=5.0 → B-F2 (10点)
+    マスター承認 4パターン決定木 (2026-06-22):
+      g1 = comp(軸) - comp(○), g2 = comp(○) - comp(▲), g3 = comp(▲) - comp(△)
+      軸 = ◉(あれば) else ◎
+
+      if ○存在 and g1 < KIKKO_TH:          → 3_nitoukikkou  (二頭拮抗)
+      elif g1 >= GAP_TH:                   → 4_ittonagashi  (1頭流し)
+      elif ○存在 and g2 >= GAP_TH:         → 1_2tonagashi   (2頭流し)
+      elif ▲存在 and g3 >= GAP_TH:         → 2_aitekikkou   (相手拮抗)
+      else:                                → 見送り (None)
+
+    パターン仕様:
+      1_2tonagashi  col1=[軸]      col2=[○]        col3=[▲△★☆穴]
+      2_aitekikkou  col1=[軸]      col2=[○▲]       col3=[○▲△★☆穴]
+      3_nitoukikkou col1=[軸,○]   col2=[軸,○,▲]  col3=[▲△★☆穴]
+      4_ittonagashi col1=[軸]      col2=col3=[○▲△★☆穴]
+      ※旧ラベル(A-F1/A-F2/C/B-F1/B-F2)は後方互換フォールバック用に保持不要（新preds対応）
     """
-    from config.settings import (
-        DANSO_B_GAP_THRESHOLD,
-        DANSO_FLAT_THRESHOLD,
-        DANSO_GAP1_THRESHOLD,
-        DANSO_GAP2A_THRESHOLD,
-        DANSO_GAP2B_THRESHOLD,
-        DANSO_GAP3_THRESHOLD,
-        DANSO_KINSA_THRESHOLD,
-    )
+    from config.settings import DANSO_FORMATION_GAP, DANSO_KIKKO_THRESHOLD
+
+    GAP_TH   = DANSO_FORMATION_GAP    # 断層閾値（デフォルト 5.0）
+    KIKKO_TH = DANSO_KIKKO_THRESHOLD  # 拮抗閾値（デフォルト 2.0）
 
     # ── 取消馬を除外した有効馬のみ ──
     active = [e for e in entries if not e.get("is_scratched", False)]
@@ -3167,7 +3169,6 @@ def compute_danso_columns(entries: List[Dict]) -> Optional[Dict]:
         return None
 
     # ── 穴印馬番を事前収集（col3 への追加用） ──
-    # Phase 2+3: mark=="穴" の馬は全フォーメーション共通で col3 に追加する
     _ana_nos: List[int] = [
         int(e["horse_no"]) for e in active if e.get("mark", "") == "穴"
     ]
@@ -3175,152 +3176,122 @@ def compute_danso_columns(entries: List[Dict]) -> Optional[Dict]:
     def _add_ana(col3: List[int]) -> List[int]:
         """col3 に穴馬番を追加して重複除去・昇順返却する共通後処理。"""
         if not _ana_nos:
-            return col3
+            return sorted(set(col3))
         return sorted(set(col3) | set(_ana_nos))
 
-    # ── 印 → entry マップ（本命は◉◎どちらかのみ） ──
+    # ── 印 → entry マップ（先に見つかった1頭が代表） ──
     mark_to_entry: Dict[str, Dict] = {}
     for e in active:
         m = e.get("mark", "")
-        if m in _DANSO_VALID_MARKS:
+        if m in _DANSO_VALID_MARKS and m not in mark_to_entry:
             mark_to_entry[m] = e
 
-    # ── 本命H（◉◎どちらか1頭）を特定 ──
-    honmei_entry: Optional[Dict] = None
-    for m in ("◉", "◎"):
-        if m in mark_to_entry:
-            honmei_entry = mark_to_entry[m]
-            break
-    if honmei_entry is None:
+    # ── axis 判定: ◉があれば◉, なければ◎ ──
+    if "◉" in mark_to_entry:
+        axis = "◉"
+    elif "◎" in mark_to_entry:
+        axis = "◎"
+    else:
         return None  # 本命不在 → 見送り
-
-    # ── 必要な印の存在チェック ──
-    has_taikou = "○" in mark_to_entry
-    has_tannuke = "▲" in mark_to_entry
-    has_renda = "△" in mark_to_entry
-    has_hoshi = "★" in mark_to_entry
-    has_ana = "☆" in mark_to_entry
-
-    # A/C には ○▲△★☆ 全印必要
-    has_all_5sub = has_taikou and has_tannuke and has_renda and has_hoshi and has_ana
-    # B には ○▲△ 存在必要
-    has_b_base = has_taikou and has_tannuke and has_renda
 
     def _comp(mark: str) -> float:
         """指定印のcompositeを返す。不在なら -999。"""
         e = mark_to_entry.get(mark)
         return float(e["composite"]) if e is not None else -999.0
 
-    def _gap(hi: str, lo: str) -> float:
-        """comp(hi) - comp(lo)"""
-        return _comp(hi) - _comp(lo)
-
-    h_comp = float(honmei_entry["composite"])
-
-    # ── 無印馬の最大composite（条件A の断層③用） ──
-    unmarked_comps = [
-        float(e["composite"]) for e in active
-        if e.get("mark", "") not in _DANSO_VALID_MARKS
-    ]
-    top_unmarked_comp: Optional[float] = max(unmarked_comps) if unmarked_comps else None
-
-    # ── 本命馬番 ──
-    h_no = int(honmei_entry["horse_no"])
-
-    def _no(mark: str) -> int:
+    def _no(mark: str) -> Optional[int]:
         e = mark_to_entry.get(mark)
-        return int(e["horse_no"]) if e is not None else -1
+        return int(e["horse_no"]) if e is not None else None
+
+    def _nos(marks: List[str]) -> List[int]:
+        return [_no(m) for m in marks if _no(m) is not None]
+
+    # ── composite 値取得 ──
+    comp_axis    = _comp(axis)
+    comp_taikou  = _comp("○")
+    comp_tannuke = _comp("▲")
+    comp_renda   = _comp("△")
+
+    # ── ギャップ計算 ──
+    G1 = comp_axis    - comp_taikou   # 軸 vs ○
+    G2 = comp_taikou  - comp_tannuke  # ○ vs ▲
+    G3 = comp_tannuke - comp_renda    # ▲ vs △
+
+    # ── 存在フラグ ──
+    has_taikou  = "○" in mark_to_entry
+    has_tannuke = "▲" in mark_to_entry
+    has_renda   = "△" in mark_to_entry
+    has_hoshi   = "★" in mark_to_entry
+    has_anasaki = "☆" in mark_to_entry
+
+    # 「下位グループ」= ▲△★☆ (存在する印のみ)
+    def _lower_marks() -> List[str]:
+        lower = []
+        if has_tannuke: lower.append("▲")
+        if has_renda:   lower.append("△")
+        if has_hoshi:   lower.append("★")
+        if has_anasaki: lower.append("☆")
+        return lower
+
+    def _full_marks_excl_axis() -> List[str]:
+        """○▲△★☆ の存在する印リスト (軸除く)"""
+        marks = []
+        if has_taikou: marks.append("○")
+        marks += _lower_marks()
+        return marks
 
     # ============================================================
-    # 条件A 評価（最優先）
-    # 前提: ○▲△★☆ 全5印が存在
+    # 4パターン決定木 (マスター承認 2026-06-22)
     # ============================================================
-    if has_all_5sub:
-        # 断層①: comp(H) - comp(○) >= 5.0
-        dan1 = (h_comp - _comp("○")) >= DANSO_GAP1_THRESHOLD
-        # 断層③: comp(☆) - top_unmarked >= 3.0（無印不在はFalse）
-        dan3 = (
-            top_unmarked_comp is not None
-            and (_comp("☆") - top_unmarked_comp) >= DANSO_GAP3_THRESHOLD
-        )
 
-        if dan1 and dan3:
-            # A-F1: gap(○,▲) >= 3.0
-            if _gap("○", "▲") >= DANSO_GAP2A_THRESHOLD:
-                return {
-                    "formation": "A-F1",
-                    "col1": [h_no],
-                    "col2": [_no("○")],
-                    "col3": _add_ana([_no("▲"), _no("△"), _no("★"), _no("☆")]),
-                }
-            # A-F2: gap(○,▲) < 3.0 かつ gap(▲,△) >= 3.0
-            if _gap("▲", "△") >= DANSO_GAP2B_THRESHOLD:
-                return {
-                    "formation": "A-F2",
-                    "col1": [h_no],
-                    "col2": [_no("○"), _no("▲")],
-                    "col3": _add_ana([_no("○"), _no("▲"), _no("△"), _no("★"), _no("☆")]),
-                }
+    # パターン③ 二頭拮抗: ○存在 AND g1 < KIKKO_TH (軸と○が拮抗)
+    if has_taikou and G1 < KIKKO_TH:
+        # col1=[軸,○], col2=[軸,○,▲], col3=[▲△★☆穴]
+        col1_marks = [axis, "○"]
+        col2_marks = [axis, "○"]
+        if has_tannuke:
+            col2_marks.append("▲")
+        col3_marks = _lower_marks()
+        return {
+            "formation": "3_nitoukikkou",
+            "col1": _nos(col1_marks),
+            "col2": _nos(col2_marks),
+            "col3": _add_ana(_nos(col3_marks)),
+        }
 
-    # ============================================================
-    # 条件C 評価（A非発火時。○▲△★☆ 全印が横一線）
-    # 断層①あり AND ○▲△★☆の全隣接差 < 3.0
-    # ============================================================
-    if has_all_5sub:
-        dan1 = (h_comp - _comp("○")) >= DANSO_GAP1_THRESHOLD
-        if dan1:
-            flat = (
-                (_comp("○") - _comp("▲")) < DANSO_FLAT_THRESHOLD
-                and (_comp("▲") - _comp("△")) < DANSO_FLAT_THRESHOLD
-                and (_comp("△") - _comp("★")) < DANSO_FLAT_THRESHOLD
-                and (_comp("★") - _comp("☆")) < DANSO_FLAT_THRESHOLD
-            )
-            if flat:
-                sub_nos = [_no("○"), _no("▲"), _no("△"), _no("★"), _no("☆")]
-                return {
-                    "formation": "C",
-                    "col1": [h_no],
-                    "col2": sub_nos,
-                    "col3": _add_ana(sub_nos),
-                }
+    # パターン④ 1頭流し: g1 >= GAP_TH (軸が頭一つ抜ける)
+    if G1 >= GAP_TH:
+        # col1=[軸], col2=col3=[○▲△★☆穴]
+        side_marks = _full_marks_excl_axis()
+        return {
+            "formation": "4_ittonagashi",
+            "col1": _nos([axis]),
+            "col2": _nos(side_marks),
+            "col3": _add_ana(_nos(side_marks)),
+        }
 
-    # ============================================================
-    # 条件B 評価（A/C 非発火時。○▲△ 存在必要）
-    # ============================================================
-    if has_b_base:
-        h_c = h_comp
-        o_c = _comp("○")
-        r_c = _comp("▲")
-        d_c = _comp("△")
+    # パターン① 2頭流し: ○存在 AND g2 >= GAP_TH (○と▲に断層)
+    if has_taikou and G2 >= GAP_TH:
+        # col1=[軸], col2=[○], col3=[▲△★☆穴]
+        return {
+            "formation": "1_2tonagashi",
+            "col1": _nos([axis]),
+            "col2": _nos(["○"]),
+            "col3": _add_ana(_nos(_lower_marks())),
+        }
 
-        # B-F1: abs(H - ○) < 2.0 AND gap(○,▲) >= 5.0
-        if abs(h_c - o_c) < DANSO_KINSA_THRESHOLD and (o_c - r_c) >= DANSO_B_GAP_THRESHOLD:
-            # col3: H,○,▲,△,★,☆ の存在する馬番
-            col3_b1 = [h_no, _no("○"), _no("▲"), _no("△")]
-            if has_hoshi:
-                col3_b1.append(_no("★"))
-            if has_ana:
-                col3_b1.append(_no("☆"))
-            return {
-                "formation": "B-F1",
-                "col1": [h_no, _no("○")],
-                "col2": [h_no, _no("○"), _no("▲")],
-                "col3": _add_ana(sorted(set(col3_b1))),
-            }
-
-        # B-F2: max(H,○,▲)-min(H,○,▲) < 2.0 AND gap(▲,△) >= 5.0
-        if (max(h_c, o_c, r_c) - min(h_c, o_c, r_c)) < DANSO_KINSA_THRESHOLD and (r_c - d_c) >= DANSO_B_GAP_THRESHOLD:
-            col3_b2 = [h_no, _no("○"), _no("▲"), _no("△")]
-            if has_hoshi:
-                col3_b2.append(_no("★"))
-            if has_ana:
-                col3_b2.append(_no("☆"))
-            return {
-                "formation": "B-F2",
-                "col1": [h_no, _no("○"), _no("▲")],
-                "col2": [h_no, _no("○"), _no("▲")],
-                "col3": _add_ana(sorted(set(col3_b2))),
-            }
+    # パターン② 相手拮抗: ▲存在 AND g3 >= GAP_TH (▲と△に断層)
+    if has_tannuke and G3 >= GAP_TH:
+        # col1=[軸], col2=[○▲], col3=[○▲△★☆穴]
+        col2_marks = []
+        if has_taikou:  col2_marks.append("○")
+        if has_tannuke: col2_marks.append("▲")
+        return {
+            "formation": "2_aitekikkou",
+            "col1": _nos([axis]),
+            "col2": _nos(col2_marks),
+            "col3": _add_ana(_nos(_full_marks_excl_axis())),
+        }
 
     # ── いずれも非発火 → 見送り ──
     return None

@@ -486,6 +486,10 @@ def reassign_marks_dict(horses: List[dict], is_jra: bool = True) -> None:
         elif m == "穴":
             # elite_marks Phase 2+3 で付与した穴印は上書きしない
             special_marks[h.get("horse_no")] = m
+        elif m == "◉":
+            # 2026-06-22 印体系刷新: ◉(鉄板=全レース横断 本命勝率top5)は
+            # per-race 再判定で降格させない。elite_marks 付与の◉を恒久保護。
+            special_marks[h.get("horse_no")] = m
         elif m == "×":
             _odds = h.get("odds") or h.get("predicted_tansho_odds") or 999
             _pop = h.get("popularity") or 99
@@ -506,39 +510,19 @@ def reassign_marks_dict(horses: List[dict], is_jra: bool = True) -> None:
         if hno in special_marks:
             h["mark"] = special_marks[hno]
 
-    # ---- Step 0: ◎候補 = composite 1位 (B-1 削除 2026-05-25: ML 合議は効果ゼロ実証済) ----
-    # 旧: composite1位とwp1位を比較し、wp 不足や僅差+乖離時に wp1位を ◎ 昇格
-    # 削除根拠: 5/24 R-1 分析 8,156R 乖離レースで composite1位 23.5% vs wp1位 23.3% = -0.2pt
+    # ---- Step 0: 本命(◎)確定 ----
+    # 2026-06-22 印体系刷新: ◉(鉄板)は elite_marks(全レース横断 本命勝率top5)のみが付与し、
+    # per-race TEKIPAN による ◉ 昇格は廃止。reassign では:
+    #   - 既に◉(elite)が special_marks 経由で復元済 → 本命は◉で確定。再選定しない。
+    #   - ◉不在 → composite1位を◎(本命)に確定（per-race ◉ には昇格させない）。
+    # (B-1 削除 2026-05-25: ML 合議は効果ゼロ実証済。composite1位=本命で確定)
     _active = [h for h in sorted_h if not h.get("mark")]
-    if not _active:
-        return
-    honmei_horse = _active[0]
-
-    # ◉/◎判定 — formatter.py と同じ5条件AND（gap/wp/p3/pop/EV）
-    c1 = honmei_horse.get("composite", 0)
-    c2 = sorted_h[1].get("composite", 0) if len(sorted_h) > 1 else 0
-    gap = c1 - c2
-    if gap < 0:
-        # win_prob1位に切り替えた場合のフォールバック（composite基準gap）
-        gap = sorted_h[0].get("composite", 0) - c2 if len(sorted_h) > 1 else 0
-
-    # 人気条件（v4新設: 市場との合意確認）
-    top_pop = honmei_horse.get("popularity") or 99
-    pop_ok = top_pop <= TEKIPAN_POP_MAX
-
-    # EV条件（TEKIPAN_MIN_EV > 0 のときのみ課金、v4は0.0で無効化）
-    _eff_odds = honmei_horse.get("odds") or honmei_horse.get("predicted_tansho_odds") or 0
-    _top_ev = (honmei_horse.get("win_prob", 0)) * _eff_odds if _eff_odds and _eff_odds > 0 else 1.0
-    ev_ok = _top_ev >= TEKIPAN_MIN_EV if TEKIPAN_MIN_EV > 0 else True
-
-    is_tekipan = (
-        gap >= TEKIPAN_GAP
-        and (honmei_horse.get("win_prob", 0)) >= TEKIPAN_WP
-        and (honmei_horse.get("place3_prob", 0)) >= TEKIPAN_P3
-        and pop_ok
-        and ev_ok
-    )
-    honmei_horse["mark"] = "◉" if is_tekipan else "◎"
+    _has_elite_honmei = any(h.get("mark") == "◉" for h in horses)
+    if not _has_elite_honmei:
+        if not _active:
+            return
+        honmei_horse = _active[0]
+        honmei_horse["mark"] = "◎"
 
     # ---- Step 1: ○▲△★ — composite順でwpガード付き ----
     for mark_str in MARK_SEQUENCE:
