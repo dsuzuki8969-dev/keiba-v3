@@ -194,6 +194,18 @@ export default function TodayPage() {
             </PremiumCard>
           )}
 
+          {/* 凡例: レースカード枠の意味 */}
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground px-1">
+            <span className="flex items-center gap-1.5">
+              <span className="inline-block w-4 h-4 border-2 border-zinc-900 dark:border-zinc-100 rounded-sm flex-shrink-0" />
+              ※黒太枠囲みは三連複推奨レース
+            </span>
+            <span className="flex items-center gap-1.5">
+              <span className="inline-block w-4 h-4 border-2 border-red-600 rounded-sm flex-shrink-0" />
+              赤太枠囲みは三連複的中
+            </span>
+          </div>
+
           {/* レースカード一覧 */}
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
             {races.map((r: RaceSummaryItem) => (
