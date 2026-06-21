@@ -2568,6 +2568,70 @@ def _is_time_incomplete(order: List[dict]) -> bool:
     return n_zero > len(order) / 2
 
 
+def refetch_incomplete_nar_times(date_compact: str, dry_run: bool = False) -> dict:
+    """確定後日に公式掲載された NAR 走破タイムを後追い補完する (P3-2)。
+
+    NAR (地方) はレース直後の速報取得時にタイム/上がり3F が未掲載で time_sec=0.0
+    保存される。payouts が完整なため fetch_actual_results の日次キャッシュ再fetch
+    (30% 閾値) はトリガーされず、少数欠落の日 (例 12R 中 2-3R) は補完されない。
+    本関数は order の半数以上が time 欠落の NAR レースのみを個別に
+    OfficialNARScraper.get_result で再取得し、time/last_3f/margin を含む order に
+    上書きする。JRA は結果ページにタイム列があり欠落しないため対象外。
+
+    Args:
+        date_compact: 対象日 (ハイフン無し "20260621")。
+        dry_run:      True なら対象抽出のみで再取得・保存しない。
+
+    Returns:
+        {"fixed": 補完できたレース数, "targets": 欠落対象レース数}
+    """
+    from data.masters.venue_master import JRA_CODES
+
+    date_compact = date_compact.replace("-", "")  # ハイフン付き入力を正規化 (CLI 手動呼び出し対策)
+    res_fp = os.path.join(RESULTS_DIR, f"{date_compact}_results.json")
+    if not os.path.isfile(res_fp):
+        logger.info("[nar-refetch] results.json なし: %s", res_fp)
+        return {"fixed": 0, "targets": 0}
+    with open(res_fp, "r", encoding="utf-8") as f:
+        res = json.load(f)
+
+    date_hyphen = f"{date_compact[:4]}-{date_compact[4:6]}-{date_compact[6:8]}"
+    targets = [
+        rid for rid, r in res.items()
+        if isinstance(r, dict) and len(rid) >= 6 and rid[4:6] not in JRA_CODES
+        and _is_time_incomplete(r.get("order", []))
+    ]
+    if dry_run or not targets:
+        return {"fixed": 0, "targets": len(targets)}
+
+    from src.scraper.official_nar import OfficialNARScraper
+    nar = OfficialNARScraper()
+    fixed = 0
+    for rid in targets:
+        try:
+            result = nar.get_result(rid, date_hyphen)
+        except Exception as e:
+            logger.warning("[nar-refetch] %s 再取得エラー: %s", rid, e)
+            time.sleep(2.0)  # 例外時も NAR レート制限を維持
+            continue
+        new_order = (result or {}).get("order", [])
+        if new_order and any(o.get("time_sec") for o in new_order):
+            res[rid]["order"] = new_order
+            if result.get("payouts"):
+                res[rid]["payouts"] = result["payouts"]
+            fixed += 1
+            logger.info("[nar-refetch] %s 補完 (time有 %d頭)", rid,
+                        sum(1 for o in new_order if o.get("time_sec")))
+        time.sleep(2.0)  # NAR レート制限 (★並列禁止・逐次)
+
+    if fixed:
+        shutil.copy(res_fp, res_fp + ".bak_refetch")
+        with open(res_fp, "w", encoding="utf-8") as f:
+            json.dump(res, f, ensure_ascii=False, indent=2)
+        logger.info("[nar-refetch] %s 保存完了 (補完 %d レース)", date_compact, fixed)
+    return {"fixed": fixed, "targets": len(targets)}
+
+
 def _is_details_incomplete(order: List[dict]) -> bool:
     """order のどこかで time / popularity / odds のいずれかが欠けているかを判定。
 

@@ -48,9 +48,9 @@
 ### ⬜ 6/21 三部 残タスク (次セッション・詳細は handoff_2026-06-21_v3)
 | 優先 | 項目 | 着手方針 |
 |---|---|---|
-| **P2** | git commit/push | 298ファイル(本日変更+前回未commit+大量diag)。commit範囲をマスター確認・`data/_diag/`は.gitignore検討・pushは要承認 |
-| **P3-1** | date=None幽霊race除去 | results.jsonにdateフィールド無 → sqlite-db MCPで predictions/race_log の `date IS NULL` 確認 → 所在特定 → 除去 |
-| **P3-2** | scheduler夜間バッチ統合 | `refetch_incomplete_nar_results.py` を scheduler(scheduler_tasks/dag)に組込。`_is_time_incomplete` 再fetchは恒久組込済 → fetch_actual_results 定期実行起点の有無を確認 |
+| ~~**P2**~~ | ~~git commit/push~~ | ✅ **完了** (6/22)。298→2コミットに整理し push 済 (`627e76a` 本番ソース成果20件 / `320f07f` build整理+`.gitignore`)。マスター決定=ソースのみclean。`data/_diag`新規・実験コード・**4.46GB実験prediction**・junk は `.gitignore` で除外 (誤commit事故回避)。`static/assets` 472→30件にクリーン再構築・ダッシュボード200検証済。origin/master 同期 |
+| ~~**P3-1**~~ | ~~date=None幽霊race除去~~ | ✅ **調査完了=除去不要 (6/22)**。keiba.db 全数調査: `predictions`(46,177行) date NULL/空/None=**0**・`race_log` はdateカラム無し(race_id join)・該当race `202605030611` は predictions/race_results/match_results **全て date=2026-06-21 の有効レース**。results.json は `{date}_results.json` を日付→ファイル名で構築(glob非使用)= date=None化経路なし。**幽霊race は実在せず=6/21結果再取得で解消済**。除去すれば有効レース削除の誤操作だった(原因究明先行で回避) |
+| ~~**P3-2**~~ | ~~scheduler夜間バッチ統合~~ | ✅ **完了 (6/22)**。真因=`_results_scheduler_loop`(毎日23:00)も live auto-fetch も**当日のみ処理**・「過去日はnightly batch」のコメントに反し其れが不在 → 過去日NAR time欠落が永久放置。さらに `fetch_actual_results` の再fetchは**日次30%閾値**で少数欠落日(12R中2-3R)を取りこぼす。対処=中核ロジックを `results_tracker.refetch_incomplete_nar_times`(レース個別狙い撃ち)へ集約し、`dashboard._backfill_recent_nar_times` で**直近3日**を当日処理後に補完(★並列禁止遵守=逐次2.0s・NAR欠落レースのみ)。script は薄wrapper化(DRY)。**実データ検証**: 6/21 backupでNAR欠落8R(佐賀3+高知5)を正確検出・現状0R。要dashboard再起動で発効 |
 | P3-3 | RaceResultPanel 警告文言 | odds補完後の実態乖離を見直し(低優先) |
 
 ## ✅ 6/21 二部 完了 (走破偏差値深掘り → rich preload 採用 → 回帰で revert)

@@ -71,6 +71,7 @@ _predict_scheduler_running = False
 _predict_last_auto_run = None  # datetime of last auto-run
 # ── 結果照合+DB更新 自動スケジューラー ──
 _RESULTS_SCHEDULE_HOUR = 23   # 当日23:00に結果照合+DB更新
+_RESULTS_RECENT_BACKFILL_DAYS = 3  # P3-2: 直近N日のNAR走破タイム欠落を後追い補完 (確定後日掲載対策)
 _results_scheduler_running = False
 _results_last_auto_run = None  # datetime of last auto-run
 _results_state = {"running": False, "done": False, "cancel": False, "progress": "", "error": None}
@@ -3092,6 +3093,34 @@ def create_app():
             _db_update_state["done"] = True
             _db_update_state["end_time"] = time.time()
 
+    def _backfill_recent_nar_times(n_days: int) -> None:
+        """直近 n_days 日の NAR 走破タイム欠落を後追い補完する (P3-2)。
+
+        NAR タイムは確定後日に公式掲載されるため、当日23:00の自動照合では
+        time_sec=0.0 のまま残る。results_tracker.refetch_incomplete_nar_times が
+        「order 半数以上 time 欠落」の NAR レースのみ個別に再取得するため、日次
+        30% ゲートを通らない少数欠落日も確実に補完でき、追加スクレイピングは欠落
+        レースに限定される (JRA は対象外・逐次2.0s で★並列禁止を遵守)。
+        """
+        from src.results_tracker import (
+            load_prediction, compare_and_aggregate, refetch_incomplete_nar_times,
+        )
+        for back in range(1, n_days + 1):
+            d = (datetime.now() - timedelta(days=back)).strftime("%Y-%m-%d")
+            if not load_prediction(d):
+                continue  # 予想が無い日はスキップ
+            try:
+                stats = refetch_incomplete_nar_times(d.replace("-", ""))
+                if stats.get("fixed"):
+                    logger.info("[results-scheduler] %s NAR time補完 %d レース → 再集計",
+                                d, stats["fixed"])
+                    compare_and_aggregate(d, _skip_disk_cache=True)
+                else:
+                    logger.info("[results-scheduler] %s NAR time欠落なし (対象 %d)",
+                                d, stats.get("targets", 0))
+            except Exception as e:
+                logger.warning("[results-scheduler] %s NAR time補完 失敗: %s", d, e)
+
     def _start_results_scheduler():
         global _results_scheduler_running
         if _results_scheduler_running:
@@ -3146,6 +3175,13 @@ def create_app():
                     logger.info("[results-scheduler] 自動結果照合+DB更新開始: %s", today)
                     _run_auto_results(today)
                     _results_last_auto_run = datetime.now()
+                    try:
+                        _backfill_recent_nar_times(_RESULTS_RECENT_BACKFILL_DAYS)
+                    except Exception as e:
+                        logger.warning(
+                            "[results-scheduler] NAR time欠落 後追い補完で例外: %s",
+                            e, exc_info=True,
+                        )
                 except Exception as e:
                     logger.error("[results-scheduler] 例外発生: %s", e, exc_info=True)
                     _st.sleep(60)

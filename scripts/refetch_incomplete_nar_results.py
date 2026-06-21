@@ -14,73 +14,18 @@
   python scripts/refetch_incomplete_nar_results.py --date 20260621 --dry-run
 """
 import argparse
-import json
 import os
-import shutil
 import sys
-import time
 
 sys.stdout.reconfigure(encoding="utf-8")
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from data.masters.venue_master import JRA_CODES
-from src.scraper.official_nar import OfficialNARScraper
-
-
-def _is_incomplete(order: list) -> bool:
-    """order の半数以上で time_sec が欠落していれば不完全とみなす。"""
-    if not order:
-        return False
-    n_zero = sum(1 for o in order if not o.get("time_sec"))
-    return n_zero > len(order) / 2
-
 
 def refetch(date: str, dry_run: bool = False) -> dict:
-    res_fp = os.path.join("data", "results", f"{date}_results.json")
-    if not os.path.isfile(res_fp):
-        print(f"results.json なし: {res_fp}")
-        return {"fixed": 0}
-    with open(res_fp, "r", encoding="utf-8") as f:
-        res = json.load(f)
-
-    date_hyphen = f"{date[:4]}-{date[4:6]}-{date[6:8]}"
-    targets = [
-        rid for rid, r in res.items()
-        if isinstance(r, dict) and rid[4:6] not in JRA_CODES
-        and _is_incomplete(r.get("order", []))
-    ]
-    print(f"再取得対象(NAR・time欠落): {len(targets)}レース {targets}")
-    if dry_run or not targets:
-        return {"fixed": 0, "targets": len(targets)}
-
-    nar = OfficialNARScraper()
-    fixed = 0
-    for i, rid in enumerate(targets, 1):
-        print(f"  [{i}/{len(targets)}] {rid} 再取得中...", end=" ")
-        try:
-            result = nar.get_result(rid, date_hyphen)
-        except Exception as e:
-            print(f"ERROR {e}")
-            continue
-        new_order = (result or {}).get("order", [])
-        if new_order and any(o.get("time_sec") for o in new_order):
-            res[rid]["order"] = new_order
-            if result.get("payouts"):
-                res[rid]["payouts"] = result["payouts"]
-            fixed += 1
-            print(f"OK (time有 {sum(1 for o in new_order if o.get('time_sec'))}頭)")
-        else:
-            print("まだタイム未掲載")
-        time.sleep(2.0)  # NAR レート制限
-
-    if fixed:
-        bak = res_fp + ".bak_refetch"
-        shutil.copy(res_fp, bak)
-        print(f"backup -> {bak}")
-        with open(res_fp, "w", encoding="utf-8") as f:
-            json.dump(res, f, ensure_ascii=False, indent=2)
-        print(f"保存完了: {res_fp}")
-    return {"fixed": fixed, "targets": len(targets)}
+    from src.results_tracker import refetch_incomplete_nar_times
+    stats = refetch_incomplete_nar_times(date, dry_run=dry_run)
+    print(f"再取得対象(NAR・time欠落): {stats.get('targets', 0)}レース / 補完: {stats.get('fixed', 0)}")
+    return stats
 
 
 def main():
