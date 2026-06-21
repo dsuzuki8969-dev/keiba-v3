@@ -159,3 +159,24 @@ data/*.pid
 data/masters/__pycache__/
 *.pyc
 tmp/
+
+# 2026-06-21 追加: 巨大実験 prediction ディレクトリ (各642M-788M・合計約4.46GB・誤commit防止)
+data/predictions_v2_*/
+data/predictions_v3/
+data/predictions_v3_*/
+# 空DB・一時スナップショット・アドホックテスト (ルート/データ直下の試行錯誤痕跡)
+data/races.db
+data/test_load.py
+*_snap.yml
+
+# 2026-06-21 追加: 個別指数 v2/v3 実験モジュール (構造的天井で不採用・src 本番ツリー隔離)
+src/calculator/indices_v2*.py
+src/ml/lgbm_roi_objective_v2.py
+# 診断/実験スクリプト (試行錯誤・分析用。汎用本番ツール fill_/refetch_/inject_ は対象外)
+scripts/diag_*.py
+scripts/apply_indices_v2*.py
+scripts/recalc_composite_v2.py
+scripts/retrain_phase2b.py
+scripts/build_rich_preload.py
+# 診断成果物 (data/_diag 既存追跡分は維持・今後の新規 csv/md/py は管理外)
+data/_diag/
