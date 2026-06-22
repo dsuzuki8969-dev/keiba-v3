@@ -59,6 +59,10 @@
 
 > **順序不可分 P0→P1→P2**。較正は no-op 実証済で禁止。naive odds除去は逆効果→残差化が正解。詳細・file:line・留保は `project_improvement_roadmap.md`。
 
+### 🔧 P0 進捗 (6/23 自走)
+- **P0-a 較正指標 完了(実装)**: `walk_forward_backtest.py _process_month` に Brier/logloss(ML複勝確率 vs 実複勝 fp≤3)を追加・全月 calib_n 加重平均で summary 出力。印ロジック不変・測定のみ=リスクゼロ。検証=計算式 合成OK + 単一月WF実行で end-to-end 確認。
+- **P0-b 設計完了(実装は master 決定待ち)**: `docs/p0_wf_composite_design.md`。本番 composite(`models.py:777-795`)再現は **ability/pace/course が WF未計算 → full engine 統合(案A)要**。jockey/trainer/bloodline/ml_adj は WF で再現可能(P0-b1=低リスク足場)。**方針 A(faithful遅)/ C(段階)/ 保留 は master 決定事項**(設計書 §9 に質問3点)。盲目実装せず設計提示で停止。
+
 ## 🚨 次セッション 追加課題 (6/21 二部 マスター指摘・実装は次回)
 
 > 6/21二部で rich preload を deploy したが **-35/-42 の負値を200+走で量産する回帰**が発覚 → **revert済**(薄preload復元・6/20/6/21 pred 復元)。以下は腰を据えて次セッションで。

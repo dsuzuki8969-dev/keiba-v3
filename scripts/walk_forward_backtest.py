@@ -691,6 +691,10 @@ def _process_month(
 
     # 統計
     top1_hit = top1_total = 0
+    # P0 (2026-06-23): 確率較正指標 — ML複勝確率 vs 実複勝(fp<=3)。印ロジック不変・測定のみ
+    import math
+    brier_sum = logloss_sum = 0.0
+    calib_n = 0
 
     for (race, r_feats, r_labels, horse_dicts) in valid_races_data:
         race_id = race.get("race_id", "")
@@ -710,6 +714,18 @@ def _process_month(
 
         if not probs:
             continue
+
+        # P0: 較正指標 accumulate（ML複勝確率の Brier/logloss・複勝 label=fp<=3）
+        for _hd in horse_dicts:
+            _hid = _hd.get("horse_id", "")
+            _fp = _hd.get("finish_pos")
+            if not _hid or _hid not in probs or _fp is None:
+                continue
+            _p = min(1.0 - 1e-9, max(1e-9, probs[_hid]))
+            _y = 1.0 if _fp <= 3 else 0.0
+            brier_sum += (_p - _y) ** 2
+            logloss_sum += -(_y * math.log(_p) + (1.0 - _y) * math.log(1.0 - _p))
+            calib_n += 1
 
         marks = _assign_marks(probs)
         confidence = _judge_confidence(probs)
@@ -830,6 +846,9 @@ def _process_month(
         "preds_saved": preds_saved,
         "results_saved": results_saved,
         "top1_rate": top1_rate,
+        "brier": brier_sum / calib_n if calib_n else None,
+        "logloss": logloss_sum / calib_n if calib_n else None,
+        "calib_n": calib_n,
     }
 
 
@@ -964,6 +983,16 @@ def main():
         sum(s.get("top1_rate", 0) for s in ok_months) / len(ok_months) * 100
         if ok_months else 0
     )
+    # P0 (2026-06-23): 較正指標の加重平均(calib_n 重み)
+    _cn = sum(s.get("calib_n", 0) for s in ok_months)
+    avg_brier = (
+        sum((s.get("brier") or 0) * s.get("calib_n", 0) for s in ok_months) / _cn
+        if _cn else 0
+    )
+    avg_logloss = (
+        sum((s.get("logloss") or 0) * s.get("calib_n", 0) for s in ok_months) / _cn
+        if _cn else 0
+    )
 
     print(f"\n{'=' * 62}")
     print(f"  Walk-Forward バックテスト完了!")
@@ -971,6 +1000,8 @@ def main():
     print(f"  予想レース: {total_preds:,}")
     print(f"  結果レース: {total_results:,}")
     print(f"  平均Top1率: {avg_top1:.1f}%")
+    print(f"  較正Brier:  {avg_brier:.4f} (低=良・複勝確率の二乗誤差)")
+    print(f"  較正LogLoss:{avg_logloss:.4f} (低=良)")
     print(f"  合計時間:   {elapsed_total/60:.1f}分")
     print(f"{'=' * 62}\n")
     print("ダッシュボード「結果分析」タブで確認してください。")
