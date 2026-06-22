@@ -108,4 +108,29 @@ engine は `course_db` を必須引数に要求(`engine.py:352`)+ 派生 5-6 DB(
 **案A・段階実装。Step1(engine builder 追加=本番非改変・低リスク)から。leak 検証を各ステップ gate に。** 盲目的な印切替はしない。
 
 ### 本セッションの到達点
-経路確定(案A)+ leak-safety 検証済 + 正確スコープまで **de-risk 完了**。実装(パイプライン複製=多段 leak-sensitive)は次の集中作業で Step1→2→… を1つずつ検証実行する。断片的に急がない(master 指示「バグ・欠陥なく慎重に」遵守)。
+経路確定(案A)+ leak-safety 検証済 + 正確スコープ + **隔離 probe で案A end-to-end 実証完了**(§11)。
+
+---
+
+## 11. ✅ probe 実証結果(2026-06-23・案A PROVEN)
+
+`scripts/diag_p0_engine_composite.py`(batch_repredict.py 流用・read-only・gitignore ローカル diag)を **2026-06-21** で実行(本番非影響):
+
+- **本番7因子 composite が leak-free に計算された**。例 函館3R:
+  | 馬 | 印 | composite | ability | pace | course | ml_adj |
+  |---|---|---|---|---|---|---|
+  | グレイトソン | ◎ | **62.41** | 61.56 | 64.32 | 59.19 | 4.39 |
+  | マーマレードスカイ | ○ | 56.32 | 59.40 | 57.19 | 47.50 | 0.72 |
+  → **ability 主導の本番式そのもの**(WF の `prob×100`・7因子0.0 とは別物)。印も composite 順で本番同等。
+- **leak-free**: window=2025-06-21〜2026-06-20 + target_date 伝播。
+- **read-only 確認**: DB・ファイル書込なし。
+- ⚠️ **perf = 12.7秒/レース**(engine を毎レース生成込)。setup ~3分/月。
+  - 全期間WF=数時間/月 → **WF高速化が P0-b 実用化に必須**(roadmap補助)。
+  - **最適化余地**: engine を月1回生成(course_db/派生DBは月共通・jockey/trainer_dbのみ全件渡し)+ analyze のみループ → 毎レース init オーバーヘッド除去で短縮可。
+  - 検証は当面 **1月サンプル or レース数限定**で回す。
+
+### → 案A は PROVEN。残りの実装
+- **Step3(WF統合)**: `_process_month` に「月1回 engine build + 各レース analyze → composite で `_assign_marks` 再ランク」を移植(probe パターン流用)。perf のため engine は月1回生成。
+- **Step4**: 1月サンプルWF で「本番 pred 印 vs WF 印 一致率」+ Brier/logloss 測定。
+- **高速化**: 上記 engine 月1回生成 + 必要なら analyze の重い部分を間引き。
+- 各段階 commit。印切替は composite が揃った Step3 で(probe で揃うこと実証済=安全に切替可)。
