@@ -90,8 +90,15 @@ engine は `course_db` を必須引数に要求(`engine.py:352`)+ 派生 5-6 DB(
 ### fidelity 注意
 - WF の win_prob は `prob×0.4` の**代用**(`walk_forward_backtest.py:500`)。本番 ml_composite_adj は実 win_prob の z-score(`engine.py:1784`)。忠実には WF にも実 win モデル要(or place-prob 代替+差分明示)。
 
+### 🎯 重要発見: 再利用テンプレートが既存(from-scratch 不要)
+`scripts/batch_repredict.py` が **既に「historical 日付で leak-safe に engine build → analyze」を実装済**:
+- windowed course_db `_window_end=DATE-1`(`batch_repredict.py:138-139,143-144`)= leak-safe
+- 派生DB build(`:151-154`)/ engine 生成(`:220`)/ `engine.analyze(race_info, horses)`(`:231`)
+- → **P0-b は from-scratch でなく、この実証済パターンの流用**。統合が大幅に簡素化+低リスク化。
+- ✅ **past_runs leak も解消確認**: `target_date=DATE` が `scraper.fetch_race(target_date=DATE,prefer_cache=True)`(`:172-174`)/ `build_course_db_from_past_runs(target_date=DATE)`(`:192`)/ `RaceAnalysisEngine(target_date=DATE)`(`:229`)に**横断伝播**=履歴を対象日前にフィルタ。`prefer_cache=True` で net 回避(既分析日はキャッシュヒット)。**leak-safety は target_date 伝播で完全担保**。
+
 ### 慎重な段階手順(各ステップで検証・leak を gate に)
-1. **`scripts/wf_engine_builder.py` 新規**(追加・本番非改変): `build_leakfree_engine(target_date)` = run_analysis_date.py の windowed setup を複製し engine を返す。
+1. **隔離 probe(追加・本番非改変)**: `batch_repredict.py:73,133-231` の engine-build-analyze を read-only に流用し、1 historical 日付×数レースで composite を取得 → (a)値が妥当か (b)perf 秒/レース (c)horse past_runs が leak-free か を実証。
 2. **隔離 probe**: 1 historical 日付 × 数レースで `analyze()` → composite が出るか + perf(秒/レース)+ window 境界(=date−1)で leak-free を実証。**本番/WF を一切触らない**。
 3. probe OK → WF `_process_month` に組込み(月初 engine build・各レース `analyze()` で composite 取得)→ `_assign_marks` を composite 順に切替。
 4. **1月WF**で「本番 pred 印 vs WF 印 一致率」+ Brier/logloss(P0-a)測定。
