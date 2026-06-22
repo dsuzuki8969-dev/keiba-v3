@@ -12,8 +12,11 @@ import type {
 const MARK_SYM: Record<string, string> = {
   tekipan: "◉", honmei: "◎", taikou: "○", tannuke: "▲",
   rendashi: "△", rendashi2: "★", oana: "☆",
+  // 抑え印 (2026-06-22)
+  oshi: "抑",
   "◉": "◉", "◎": "◎", "○": "○", "▲": "▲",
   "△": "△", "★": "★", "☆": "☆",
+  "抑": "抑",
 };
 
 interface Props {
@@ -615,8 +618,8 @@ const DANSO_FORMATION_LEGEND: Record<string, string> = {
   "B-F2": "B型-F2: 本命○▲拮抗 + △以下断層（3頭軸）",
 };
 
-/** N-4: 印の強さ順（◉◎○▲△★☆） */
-const DANSO_MARK_ORDER = ["◉", "◎", "○", "▲", "△", "★", "☆"];
+/** N-4: 印の強さ順（◉◎○▲△★☆抑）。抑は補助印として末尾 */
+const DANSO_MARK_ORDER = ["◉", "◎", "○", "▲", "△", "★", "☆", "抑"];
 
 /** N-4: 印断層 三連複フォーメーション表記（印＋囲み数字、印の強い順、列を － 区切り） */
 function DansoFormationString({

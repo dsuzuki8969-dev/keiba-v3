@@ -496,6 +496,18 @@ def run_date_analysis(
         pred_path = save_prediction(date, analyses_by_venue)
         print(f"       予想データ保存: {os.path.basename(pred_path)}")
 
+        # 印体系 finalize (sharpen→elite◉/穴→4パターンformation)。
+        # /api/analyze(dashboard再予想)はこの run_date_analysis を通るため、ここで
+        # finalize しないと formatter が付けた◎本命のままで◉/穴が付与されない。
+        # (run_analysis_date.py の standalone 経路とは別 = 両方に hook が必要。
+        #  2026-06-22 ◉増殖バグ=per-race TEKIPAN漏れ の恒久対応)
+        try:
+            from src.calculator.finalize_predictions import finalize_predictions
+            finalize_predictions(date.replace("-", ""))
+            print("       印体系 finalize 完了 (◉/穴/勝率シャープ化)")
+        except Exception as _fe:
+            logger.warning("印体系 finalize 失敗(分析結果は保全): %s", _fe)
+
         # 配布用HTML（--no_html 時はスキップ）
         if formatter:
             try:

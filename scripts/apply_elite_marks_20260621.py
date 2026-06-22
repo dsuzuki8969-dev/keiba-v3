@@ -206,6 +206,12 @@ def _update_race(
     tbm["_meta"] = meta
     race["tickets_by_mode"] = tbm
 
+    # 偽的中バグ防止(2026-06-22): legacy tickets/formation_tickets も tbm と同期。
+    # 未同期だと旧ワイド組合せが stale 残存し、的中判定(_collect_strategy_tickets)の
+    # 偽陽性(買っていない組合せが実結果に一致=不的中なのに赤枠)を招く。
+    race["tickets"] = list(new_tickets)
+    race["formation_tickets"] = list(new_tickets)
+
     # bet_decision 更新（skip=False に）
     bet = race.get("bet_decision", {})
     bet["skip"] = False
@@ -264,12 +270,13 @@ def apply_elite_and_formation(
     races: List[Dict] = data.get("races", [])
     print(f"[elite] 開始: {date_key}  レース数={len(races)}")
 
-    # ── 既存の◉/穴印をリセット (冪等性確保) ──
-    # 2回目実行時に前回付与済みの◉/穴が残っていると select_dark_horses の
+    # ── 既存の◉/穴/抑印をリセット (冪等性確保) ──
+    # 2回目実行時に前回付与済みの◉/穴/抑が残っていると select_dark_horses の
     # 除外条件で候補集合が変わり、印数が変化してしまう。
-    # ◉ → ◎ (本命に戻す), 穴 → "" (無印に戻す) でクリーンな状態から再選定する。
+    # ◉ → ◎ (本命に戻す), 穴 → "" (無印に戻す), 抑 → "" (無印に戻す) でクリーンな状態から再選定する。
     reset_tekipan = 0
     reset_ana = 0
+    reset_osae = 0
     for r in races:
         for h in r.get("horses", []):
             mk = h.get("mark", "")
@@ -279,8 +286,11 @@ def apply_elite_and_formation(
             elif mk == "穴":
                 h["mark"] = ""
                 reset_ana += 1
-    if reset_tekipan or reset_ana:
-        print(f"[elite] 既存印リセット: ◉→◎ {reset_tekipan}頭 / 穴→無印 {reset_ana}頭")
+            elif mk == "抑":
+                h["mark"] = ""
+                reset_osae += 1
+    if reset_tekipan or reset_ana or reset_osae:
+        print(f"[elite] 既存印リセット: ◉→◎ {reset_tekipan}頭 / 穴→無印 {reset_ana}頭 / 抑→無印 {reset_osae}頭")
 
     # ── races_flat に変換 ──
     races_flat = _build_races_flat(races)
@@ -315,15 +325,53 @@ def apply_elite_and_formation(
     print("=" * 60)
     print()
 
+    # ── 抑印付与（◉/穴付与の直後・formation ループ前） ──
+    # 対象: 各レースで mark が無印（◎◉○▲△★☆穴 以外）かつ
+    #       popularity が 1 or 2 かつ kiken_type が「該当なし」「」「None」の馬。
+    # 冪等性: 上部リセットで抑→無印済なので二重付与は発生しない。
+    # 抑も含めることで冪等性を担保（上部リセットが将来変更された場合の防衛）
+    _ELITE_MARKS_SET = {"◎", "◉", "○", "▲", "△", "★", "☆", "穴", "×", "抑"}
+    _KIKEN_SAFE_SET = {"該当なし", "", "None"}
+    osae_list: List[Tuple[str, int]] = []
+    for r in races:
+        race_id_r = r.get("race_id", "")
+        for h in r.get("horses", []):
+            mk = h.get("mark", "") or ""
+            if mk in _ELITE_MARKS_SET:
+                continue  # 既に印あり → スキップ
+            pop = h.get("popularity") or 99
+            if pop not in (1, 2):
+                continue
+            kiken = str(h.get("kiken_type", "") or "")
+            if kiken not in _KIKEN_SAFE_SET:
+                continue  # 危険馬 → 抑なし
+            h["mark"] = "抑"
+            no = h.get("horse_no")
+            osae_list.append((race_id_r, no))
+
+    print(f"抑 付与: {len(osae_list)} 頭")
+    for rid, no in osae_list:
+        for r in races:
+            if r.get("race_id") == rid:
+                for h in r.get("horses", []):
+                    if h.get("horse_no") == no:
+                        print(f"  {r['venue']} {r['race_no']}R  #{no} {h.get('horse_name','')}  pop={h.get('popularity',0)}人気  kiken={h.get('kiken_type','')}")
+                break
+    print()
+
     # ── 影響レースの買い目再生成 ──
     pivot_race_ids: Set[str] = {rid for rid, _ in pivot_list}
     ana_race_ids:   Set[str] = {rid for rid, _ in ana_list}
-    affected_race_ids: Set[str] = pivot_race_ids | ana_race_ids
+    osae_race_ids:  Set[str] = {rid for rid, _ in osae_list}
+    affected_race_ids: Set[str] = pivot_race_ids | ana_race_ids | osae_race_ids
+
+    from config.settings import DANSO_BUY_CONFIDENCE
 
     force_buy_races: List[str] = []
     updated_count = 0
-    cleared_count = 0   # 見送りクリア件数
-    excluded_count = 0  # 除外レース件数
+    cleared_count = 0    # 見送りクリア件数（danso非発火 + force-buy不発）
+    excluded_count = 0   # 除外レース件数
+    confidence_skip = 0  # 自信度ゲートで見送り件数
 
     print(f"[買い目再生成] 全レース処理 (affected={len(affected_race_ids)} / total={len(races)})")
     for r in races:
@@ -335,6 +383,17 @@ def apply_elite_and_formation(
             if not dry_run:
                 _clear_race_formation(r)
             excluded_count += 1
+            continue
+
+        # ── 自信度ゲート: confidence が SS/S/A/B 以外(C/D等)は見送り ──
+        confidence = r.get("confidence", "")
+        if confidence not in DANSO_BUY_CONFIDENCE:
+            print(f"  CONF_SKIP  {r.get('venue','')} {r.get('race_no','')}R  confidence={confidence!r} → 見送り")
+            if not dry_run:
+                _clear_race_formation(r)
+                # _clear_race_formation は danso_no_fire で上書きするので、呼び出し後に正しい理由を設定
+                r["tickets_by_mode"]["_meta"]["skip_reason"] = "confidence_gate"
+            confidence_skip += 1
             continue
 
         horses = r.get("horses", [])
@@ -395,9 +454,9 @@ def apply_elite_and_formation(
         updated_count += 1
 
     print()
-    print(f"[サマリ] ◉付与={len(pivot_list)}頭 / 穴付与={len(ana_list)}頭 / "
+    print(f"[サマリ] ◉付与={len(pivot_list)}頭 / 穴付与={len(ana_list)}頭 / 抑付与={len(osae_list)}頭 / "
           f"強制購入={len(force_buy_races)}レース / 更新レース={updated_count} / "
-          f"見送りクリア={cleared_count} / 除外={excluded_count}")
+          f"見送りクリア={cleared_count} / 自信度ゲート={confidence_skip} / 除外={excluded_count}")
     print()
 
     if dry_run:
@@ -405,12 +464,15 @@ def apply_elite_and_formation(
         return {
             "pivot_count": len(pivot_list),
             "ana_count": len(ana_list),
+            "ana_list": ana_list,
+            "osae_count": len(osae_list),
+            "osae_list": osae_list,
             "force_buy_count": len(force_buy_races),
             "updated_count": updated_count,
             "cleared_count": cleared_count,
+            "confidence_skip_count": confidence_skip,
             "excluded_count": excluded_count,
             "pivot_list": pivot_list,
-            "ana_list": ana_list,
             "dry_run": True,
         }
 
@@ -426,9 +488,12 @@ def apply_elite_and_formation(
     return {
         "pivot_count": len(pivot_list),
         "ana_count": len(ana_list),
+        "osae_count": len(osae_list),
+        "osae_list": osae_list,
         "force_buy_count": len(force_buy_races),
         "updated_count": updated_count,
         "cleared_count": cleared_count,
+        "confidence_skip_count": confidence_skip,
         "excluded_count": excluded_count,
         "pivot_list": pivot_list,
         "ana_list": ana_list,

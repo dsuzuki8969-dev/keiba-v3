@@ -6,18 +6,39 @@
 
 ---
 
-## 🎴🎴🎴 次セッション最優先: 印体系刷新 残実装 (6/22 マスター指示・詳細 handoff_2026-06-22)
+## ✅ 買い目フォーメーション再設計 完了 (6/23 master主導で確定→実装→検証→commit/push)
 
-> 6/22 セッションで **印体系刷新を設計+6/21・6/22適用済(未push)**。残実装を次セッションで。マスター推奨順 a→b→c→d。
+> 6/22深夜の越権(設計議論中の独断実装)を反省し、6/23 は **論点を1つずつ master に確定いただいてから実装**。教訓: `memory/feedback_design_no_unilateral_impl.md`。
 
-| 優先 | 糸 | 内容 | 着手方針 |
-|---|---|---|---|
-| **a** | **勝率メリハリ表層シャープ化** | 🚨真因=`estimate_three_win_rates`(jockey_trainer.py:971)ランクテーブル平坦→composite1位一律~20%・**1.0倍ヴェニーレ→勝率20.7%**・ml_win=0。マスター「メリハリ無し・苦笑」 | win_probに temperature/べき乗のシャープ化変換(合計1維持)→1.0倍を50-65%帯へ。pred直接修正で即反映可。**マスターが一番見たい所** |
-| **b** | **◉/穴 恒久統合** | 🚨◉/穴は apply scriptで1回適用のみ→**pred再生成で◎に戻る**(6/22で実際に発生)。formatter/reassignは全レース横断top5を知らない | `apply_daily_elite_marks`(elite_marks.py)をpred生成パイプライン組込 + per-race TEKIPAN廃止(formatter)+ reassignで◉保護 |
-| **c** | **4パターン formation 本実装** | マスター決定: 2頭流し/相手拮抗/二頭拮抗/1頭流し(**F上位拮抗・BOX除外**)。決定木提示済(g1<2→二頭拮抗/g1≥断層→1頭流し/g2≥断層→2頭流し/g3≥断層→相手拮抗/else→見送り) | **閾値5 vs 10 マスター確認要**(5=見送り12.5%緩い/10=60%選別的)。`compute_danso_columns`を4パターンに作り直し(現5置換)。bと同時が効率的。dry-run=`scripts/diag_formation_4pattern.py` |
-| **d** | **git push** | ローカル**2commit未push**(01f636f印体系 / e014e5e凡例)。origin=2a58aea | 要承認。push承認貰う |
+**🔒 確定スペック(master決定・AskUserQuestion で1論点ずつ承認)**:
+- col1 = ◎(◉) 単独固定
+- col2 = ○ / `comp(○)-comp(▲) < 5.0pt` なら ○▲(最大二頭軸・△は常にcol3)
+- col3 = 起点以降の印を常に全部(断層切り廃止)+ 穴 + 抑
+- 見送り = `comp(◎)-comp(○) < 4.0`(≒半分購入)+ A自信度ゲート(SS〜B買い/C・D見送り)+ B抑印(無印1-2人気・非危険)
+- 実装2ファイル: `config/settings.py`(DANSO_COL2_KINKO=5.0 / DANSO_AXIS_KINKO=4.0 / DANSO_COL_GAP廃止)+ `src/calculator/betting.py compute_danso_columns`
 
-**断層実証の重要知見(23,544R・次セッション設計の土台)**: 🚨**断層≒odds(市場複製)・本命安泰はオッズが支配的・断層は"紐幅"決めに有効**(g2断層→○安泰62.5%)。パターンROIは C/G良・F/BOX最悪(全<100%=天井)。詳細 handoff_2026-06-22。
+**✅ 検証**: 合成6/6 OK / 6/21(33R)・6/22(28R)再生成・tickets整合性 **不一致0(偽的中なし)** / ROI(34日 t=4.0)=購入777R・**hit23.8%**・ROI43.2%(旧draft hit17.8%から改善・ただし~43%は三連複構造的-EV)/ 実サーバ:5051 新spec返却 ライブ確認
+
+**📊 黒字化は買い目では不可**(三連複-EV天井)= モデル側 roadmap が本筋 → `memory/project_improvement_roadmap.md`
+
+**Git**: 6/23 commit & push 済(master承認)。バグ修正(◉増殖/偽的中)・A自信度・B抑印 も同梱。
+
+---
+
+## ✅ 印体系刷新 残実装 a/b/c/d 全完了 (6/22夜 自走・push済 2797cbc・詳細 handoff_2026-06-22_v2)
+
+> マスター「寝るから完走しておいて」→ a→b→c→d 承認なし自走で**全完了+origin/master push済**。
+
+- **a 勝率メリハリ**: 表示勝率シャープ化(γ=2.2)+本命安泰下限。最高勝率 median 0.22→0.44・1.0倍ヴェニーレ 0.21→0.62(1位逆転)。`sharpen_win_prob_display.py`
+- **b ◉/穴 恒久統合**: reassign に ◉/穴保護+per-race TEKIPAN廃止 / `finalize_predictions.py`(sharpen→elite→formation)を生成パイプライン組込。**翌日◎戻り根絶を live確証**(reassign+persist経由でも◉5/穴5生存)
+- **c 4パターン formation**: `compute_danso_columns` 4パターン化。**閾値 DANSO_FORMATION_GAP=5.0 採用**(私の判断・10.0へ1行切替可)
+- **d push**: commit 2797cbc 同期済
+- 副次 dashboard バグ3件も修正(place 100%飽和 / 排他化 col3空 / format stale → MPrime誤表示)
+
+### ⚠️ 起床後レビュー推奨
+- **DANSO_FORMATION_GAP=5.0** を私が採用(dry-run 5.0=見送り16.7%/10.0=64.6%)。選別を強めたいなら settings.py で 10.0 に。形状判断は g1≥5 で十分との判断
+- legacy `race["formation_tickets"]` は stale(未使用・実買いは tickets_by_mode)。低優先で除去可
+- dashboard PID 7024 稼働中。**Ctrl+Shift+R** で 6/22 card 確認(◉赤/穴amber/勝率メリハリ/4パターン買い目)
 
 ## 🎯🎯🎯 精度ROI改善ロードマップ (6/21 全システム監査42エージェント結論)
 

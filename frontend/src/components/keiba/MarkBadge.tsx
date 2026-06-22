@@ -27,6 +27,8 @@ const STYLES: Record<string, Style> = {
   rendashi:  { color: "text-mark-rendashi",  glow: "rgba(124,58,237,0.45)" },
   rendashi2: { color: "text-foreground",     glow: "rgba(148,163,184,0.45)" },
   oana:      { color: "text-mark-oana",      glow: "rgba(37,99,235,0.45)" },
+  // 抑え印: slate系（抑え・保険の中間色）2026-06-22
+  oshi:      { color: "text-mark-oshi",      glow: "rgba(100,116,139,0.45)" },
 };
 
 interface Props {

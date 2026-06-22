@@ -76,6 +76,8 @@
     --color-mark-rendashi: var(--mark-rendashi);
     --color-mark-rendashi2: var(--mark-rendashi2);
     --color-mark-oana: var(--mark-oana);
+    /* 抑え印 (2026-06-22) */
+    --color-mark-oshi: var(--mark-oshi);
 
     --color-turf: var(--turf);
     --color-dirt: var(--dirt);

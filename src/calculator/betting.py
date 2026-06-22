@@ -3104,14 +3104,14 @@ def generate_m_prime_tickets(
 # ============================================================
 
 # 有効印セット（× と NONE は対象外）
-# "穴" を含めることで断層③の top_unmarked 計算に穴馬compositeが混入しない
-_DANSO_VALID_MARKS = {"◉", "◎", "○", "▲", "△", "★", "☆", "穴"}
+# "穴"/"抑" を含めることでcol3計算・無印判定の整合を保つ
+_DANSO_VALID_MARKS = {"◉", "◎", "○", "▲", "△", "★", "☆", "穴", "抑"}
 # 本命印セット（◉◎どちらか1頭が付く）
 _DANSO_HONMEI_MARKS = {"◉", "◎"}
 
 
 def compute_danso_columns(entries: List[Dict]) -> Optional[Dict]:
-    """断層判定の純粋ヘルパー関数。印とcomposite偏差値からフォーメーション列を決定する。
+    """断層gap体系 フォーメーション決定関数（2026-06-22 マスター承認・全面置換）。
 
     本関数はHorseEvaluationに依存しない純粋関数として実装し、
     betting.py (generate_danso_tickets) と regen_strategy.py の両方から呼び出せる。
@@ -3120,7 +3120,7 @@ def compute_danso_columns(entries: List[Dict]) -> Optional[Dict]:
     ----------
     entries : List[Dict]
         各馬の情報。以下のキーを含むこと:
-          - "mark"        : str  印（◎/◉/○/▲/△/★/☆/×/-等）
+          - "mark"        : str  印（◎/◉/○/▲/△/★/☆/×/穴/抑/-等）
           - "composite"   : float  composite偏差値
           - "horse_no"    : int    馬番
           - "odds"        : float | None  単勝オッズ（参考用）
@@ -3132,35 +3132,42 @@ def compute_danso_columns(entries: List[Dict]) -> Optional[Dict]:
         発火した場合::
 
             {
-                "formation": "1_2tonagashi" | "2_aitekikkou" | "3_nitoukikkou" | "4_ittonagashi",
-                "col1": [horse_no, ...],
-                "col2": [horse_no, ...],
-                "col3": [horse_no, ...],
+                "formation": "danso_gap",
+                "col1": [horse_no],          # ◎単独固定
+                "col2": [horse_no, ...],     # ○のみ or ○▲（comp差<5.0で二頭軸）
+                "col3": [horse_no, ...],     # 起点以降を常に全部+穴+抑（昇順）
+                "skip_reason": None,
             }
 
-        見送り（6頭未満・必要印欠落・断層条件不成立）の場合: None
+        見送りの場合: None
 
-    マスター承認 4パターン決定木 (2026-06-22):
-      g1 = comp(軸) - comp(○), g2 = comp(○) - comp(▲), g3 = comp(▲) - comp(△)
-      軸 = ◉(あれば) else ◎
+    断層gap決定木 (マスター確定 2026-06-22):
+      KINKO2 = DANSO_COL2_KINKO (5.0)  … col2 拮抗閾値（○▲ 二頭軸統合）
+      t      = DANSO_AXIS_KINKO (4.0)  … 軸拮抗見送り閾値（≒半分購入）
 
-      if ○存在 and g1 < KIKKO_TH:          → 3_nitoukikkou  (二頭拮抗)
-      elif g1 >= GAP_TH:                   → 4_ittonagashi  (1頭流し)
-      elif ○存在 and g2 >= GAP_TH:         → 1_2tonagashi   (2頭流し)
-      elif ▲存在 and g3 >= GAP_TH:         → 2_aitekikkou   (相手拮抗)
-      else:                                → 見送り (None)
+      active = 取消除外済み馬
+      mark→entry マップ（先頭1頭）
+      axis = ◉ あれば ◉, なければ ◎
+      ○ がなければ → 見送り
 
-    パターン仕様:
-      1_2tonagashi  col1=[軸]      col2=[○]        col3=[▲△★☆穴]
-      2_aitekikkou  col1=[軸]      col2=[○▲]       col3=[○▲△★☆穴]
-      3_nitoukikkou col1=[軸,○]   col2=[軸,○,▲]  col3=[▲△★☆穴]
-      4_ittonagashi col1=[軸]      col2=col3=[○▲△★☆穴]
-      ※旧ラベル(A-F1/A-F2/C/B-F1/B-F2)は後方互換フォールバック用に保持不要（新preds対応）
+      g1 = comp(axis) - comp(○)
+      g2 = comp(○) - comp(▲)  （▲不在なら99）
+
+      if g1 < t  → 軸拮抗見送り (skip_reason="danso_axis_kinko")
+
+      if ▲存在 and g2 < KINKO2:
+          col2_marks = [○, ▲]; col3_start = △   （最大二頭軸）
+      else:
+          col2_marks = [○];   col3_start = ▲   （▲ も col3 側へ）
+
+      col3: ORDER[col3_start:] の印を常に全部 col3_marks に追加（断層切り廃止）
+
+      col3最終 = sorted(set([col3馬番] + [穴馬番] + [抑馬番]))
+      col3空 → 紐なし見送り
+
+      return {"formation":"danso_gap", "col1":[axis_no], "col2":[col2馬番], "col3":col3最終}
     """
-    from config.settings import DANSO_FORMATION_GAP, DANSO_KIKKO_THRESHOLD
-
-    GAP_TH   = DANSO_FORMATION_GAP    # 断層閾値（デフォルト 5.0）
-    KIKKO_TH = DANSO_KIKKO_THRESHOLD  # 拮抗閾値（デフォルト 2.0）
+    from config.settings import DANSO_COL2_KINKO as KINKO2, DANSO_AXIS_KINKO as t
 
     # ── 取消馬を除外した有効馬のみ ──
     active = [e for e in entries if not e.get("is_scratched", False)]
@@ -3168,29 +3175,31 @@ def compute_danso_columns(entries: List[Dict]) -> Optional[Dict]:
         # 6頭未満は印が揃わないため見送り
         return None
 
-    # ── 穴印馬番を事前収集（col3 への追加用） ──
+    # ── 穴印・抑印の馬番を事前収集（col3 への追加用） ──
     _ana_nos: List[int] = [
         int(e["horse_no"]) for e in active if e.get("mark", "") == "穴"
     ]
-
-    def _add_ana(col3: List[int]) -> List[int]:
-        """col3 に穴馬番を追加して重複除去・昇順返却する共通後処理。"""
-        if not _ana_nos:
-            return sorted(set(col3))
-        return sorted(set(col3) | set(_ana_nos))
+    _osae_nos: List[int] = [
+        int(e["horse_no"]) for e in active if e.get("mark", "") == "抑"
+    ]
 
     # ── 印 → entry マップ（先に見つかった1頭が代表） ──
+    # ORDER は印の強さ順。穴・抑は別扱い（col3 追加専用）
+    ORDER = ["◎", "○", "▲", "△", "★", "☆"]
     mark_to_entry: Dict[str, Dict] = {}
     for e in active:
         m = e.get("mark", "")
         if m in _DANSO_VALID_MARKS and m not in mark_to_entry:
             mark_to_entry[m] = e
 
-    # ── axis 判定: ◉があれば◉, なければ◎ ──
+    # ── axis 判定: ◉があれば◉を◎キーとして扱う ──
+    # ◉馬は ORDER では "◎" 相当として処理（同一馬）
+    axis_mark: str
     if "◉" in mark_to_entry:
-        axis = "◉"
+        axis_mark = "◉"
+        # ORDER の ◎ 位置に ◉ を代入（comp取得用）
     elif "◎" in mark_to_entry:
-        axis = "◎"
+        axis_mark = "◎"
     else:
         return None  # 本命不在 → 見送り
 
@@ -3203,98 +3212,71 @@ def compute_danso_columns(entries: List[Dict]) -> Optional[Dict]:
         e = mark_to_entry.get(mark)
         return int(e["horse_no"]) if e is not None else None
 
-    def _nos(marks: List[str]) -> List[int]:
-        return [_no(m) for m in marks if _no(m) is not None]
+    # ── ○の存在チェック ──
+    if "○" not in mark_to_entry:
+        return None  # ○不在 → 見送り
 
-    # ── composite 値取得 ──
-    comp_axis    = _comp(axis)
-    comp_taikou  = _comp("○")
-    comp_tannuke = _comp("▲")
-    comp_renda   = _comp("△")
+    # ── gap 計算 ──
+    comp_axis   = _comp(axis_mark)
+    comp_taikou = _comp("○")
+    g1 = comp_axis - comp_taikou   # 軸 vs ○
 
-    # ── ギャップ計算 ──
-    G1 = comp_axis    - comp_taikou   # 軸 vs ○
-    G2 = comp_taikou  - comp_tannuke  # ○ vs ▲
-    G3 = comp_tannuke - comp_renda    # ▲ vs △
+    # 軸拮抗判定: g1 < t → 見送り
+    if g1 < t:
+        return None
 
-    # ── 存在フラグ ──
-    has_taikou  = "○" in mark_to_entry
+    # ── col2 決定: g2(○-▲) が KINKO2(5.0) 未満なら ○▲ 二頭軸、否なら ○のみ ──
     has_tannuke = "▲" in mark_to_entry
-    has_renda   = "△" in mark_to_entry
-    has_hoshi   = "★" in mark_to_entry
-    has_anasaki = "☆" in mark_to_entry
+    if has_tannuke:
+        comp_tannuke = _comp("▲")
+        g2 = comp_taikou - comp_tannuke
+    else:
+        g2 = 99.0  # ▲不在 → ○のみ確定
 
-    # 「下位グループ」= ▲△★☆ (存在する印のみ)
-    def _lower_marks() -> List[str]:
-        lower = []
-        if has_tannuke: lower.append("▲")
-        if has_renda:   lower.append("△")
-        if has_hoshi:   lower.append("★")
-        if has_anasaki: lower.append("☆")
-        return lower
+    if has_tannuke and g2 < KINKO2:
+        # ○▲ を二頭軸に統合（○-▲ 拮抗・最大二頭軸）
+        col2_marks = ["○", "▲"]
+        col3_start_idx = ORDER.index("△")
+    else:
+        # ○のみ col2
+        col2_marks = ["○"]
+        col3_start_idx = ORDER.index("▲")
 
-    def _full_marks_excl_axis() -> List[str]:
-        """○▲△★☆ の存在する印リスト (軸除く)"""
-        marks = []
-        if has_taikou: marks.append("○")
-        marks += _lower_marks()
-        return marks
+    # ── col3 生成: col3_start_idx 以降の印を常に全部入れる（断層切り廃止・マスター確定 6/22） ──
+    col3_marks: List[str] = []
 
-    # ============================================================
-    # 4パターン決定木 (マスター承認 2026-06-22)
-    # ============================================================
+    for k in ORDER[col3_start_idx:]:
+        if k not in mark_to_entry:
+            continue
+        col3_marks.append(k)
 
-    # パターン③ 二頭拮抗: ○存在 AND g1 < KIKKO_TH (軸と○が拮抗)
-    if has_taikou and G1 < KIKKO_TH:
-        # col1=[軸,○], col2=[軸,○,▲], col3=[▲△★☆穴]
-        col1_marks = [axis, "○"]
-        col2_marks = [axis, "○"]
-        if has_tannuke:
-            col2_marks.append("▲")
-        col3_marks = _lower_marks()
-        return {
-            "formation": "3_nitoukikkou",
-            "col1": _nos(col1_marks),
-            "col2": _nos(col2_marks),
-            "col3": _add_ana(_nos(col3_marks)),
-        }
+    # ── col3 に穴・抑を追加 ──
+    col3_base_nos: List[int] = [
+        _no(mk) for mk in col3_marks if _no(mk) is not None
+    ]
+    col3_nos = sorted(set(col3_base_nos) | set(_ana_nos) | set(_osae_nos))
 
-    # パターン④ 1頭流し: g1 >= GAP_TH (軸が頭一つ抜ける)
-    if G1 >= GAP_TH:
-        # col1=[軸], col2=col3=[○▲△★☆穴]
-        side_marks = _full_marks_excl_axis()
-        return {
-            "formation": "4_ittonagashi",
-            "col1": _nos([axis]),
-            "col2": _nos(side_marks),
-            "col3": _add_ana(_nos(side_marks)),
-        }
+    # 紐なし見送り
+    if not col3_nos:
+        return None
 
-    # パターン① 2頭流し: ○存在 AND g2 >= GAP_TH (○と▲に断層)
-    if has_taikou and G2 >= GAP_TH:
-        # col1=[軸], col2=[○], col3=[▲△★☆穴]
-        return {
-            "formation": "1_2tonagashi",
-            "col1": _nos([axis]),
-            "col2": _nos(["○"]),
-            "col3": _add_ana(_nos(_lower_marks())),
-        }
+    # ── col2 馬番 ──
+    col2_nos: List[int] = [_no(mk) for mk in col2_marks if _no(mk) is not None]
+    if not col2_nos:
+        return None
 
-    # パターン② 相手拮抗: ▲存在 AND g3 >= GAP_TH (▲と△に断層)
-    if has_tannuke and G3 >= GAP_TH:
-        # col1=[軸], col2=[○▲], col3=[○▲△★☆穴]
-        col2_marks = []
-        if has_taikou:  col2_marks.append("○")
-        if has_tannuke: col2_marks.append("▲")
-        return {
-            "formation": "2_aitekikkou",
-            "col1": _nos([axis]),
-            "col2": _nos(col2_marks),
-            "col3": _add_ana(_nos(_full_marks_excl_axis())),
-        }
+    # ── col1 = axis のみ ──
+    axis_no = _no(axis_mark)
+    if axis_no is None:
+        return None
 
-    # ── いずれも非発火 → 見送り ──
-    return None
+    return {
+        "formation": "danso_gap",
+        "col1": [axis_no],
+        "col2": col2_nos,
+        "col3": col3_nos,
+        "skip_reason": None,
+    }
 
 
 def build_force_buy_columns(entries: List[Dict]) -> Optional[Dict]:
@@ -3329,6 +3311,7 @@ def build_force_buy_columns(entries: List[Dict]) -> Optional[Dict]:
     col2_nos: List[int] = []
     col3_sub_nos: List[int] = []
     ana_nos: List[int] = []
+    osae_nos: List[int] = []
     has_tekipan = False
 
     for e in active:
@@ -3351,6 +3334,9 @@ def build_force_buy_columns(entries: List[Dict]) -> Optional[Dict]:
             col3_sub_nos.append(no)
         elif mk == "穴":
             ana_nos.append(no)
+        elif mk == "抑":
+            # 抑印: col3 専用（force-buy 経路でも追加）
+            osae_nos.append(no)
 
     # ◉ も穴も存在しない → 強制購入対象外
     if not has_tekipan and not ana_nos:
@@ -3368,7 +3354,7 @@ def build_force_buy_columns(entries: List[Dict]) -> Optional[Dict]:
         fallback_col2 = [n for n in (col3_sub_nos + ana_nos) if n != honmei_no]
         col2_final = sorted(set(fallback_col2)) if fallback_col2 else []
 
-    col3_final = sorted(set(col3_sub_nos) | set(ana_nos))
+    col3_final = sorted(set(col3_sub_nos) | set(ana_nos) | set(osae_nos))
     # col3 から本命を除外
     col3_final = [n for n in col3_final if n != honmei_no]
 

@@ -18,6 +18,8 @@ export const MARK_SYMBOL: Record<string, string> = {
   rendashi:  "△",
   rendashi2: "★",
   oana:      "☆",
+  // 抑え印: 無印1-2人気の救済印 (2026-06-22)
+  oshi:      "抑",
 };
 
 /**

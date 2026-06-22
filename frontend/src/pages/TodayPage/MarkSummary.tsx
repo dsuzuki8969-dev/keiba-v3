@@ -44,7 +44,7 @@ interface MarkDef {
   border: string;
 }
 
-// 色体系: ◉/◎=緑, ○/☆=青, ▲=赤, △=紫, ★=黒
+// 色体系: ◉/◎=緑, ○/☆=青, ▲=赤, △=紫, ★=黒, 抑=slate
 const MARK_ORDER: MarkDef[] = [
   { key: "◉", sym: "◉", label: "鉄板", aliases: ["tekipan"], color: "text-emerald-700", bg: "bg-emerald-50 dark:bg-emerald-950/30", border: "border-l-emerald-200" },
   { key: "◎", sym: "◎", label: "本命", aliases: ["honmei"], color: "text-emerald-700", bg: "bg-emerald-50 dark:bg-emerald-950/30", border: "border-l-emerald-200" },
@@ -53,6 +53,8 @@ const MARK_ORDER: MarkDef[] = [
   { key: "△", sym: "△", label: "連下", aliases: ["rendashi"], color: "text-purple-700", bg: "bg-purple-50 dark:bg-purple-950/30", border: "border-l-purple-200" },
   { key: "★", sym: "★", label: "連下2", aliases: ["rendashi2"], color: "text-foreground", bg: "bg-gray-50 dark:bg-gray-950/30", border: "border-l-gray-200" },
   { key: "☆", sym: "☆", label: "連下3", aliases: ["oana"], color: "text-blue-700", bg: "bg-blue-50 dark:bg-blue-950/30", border: "border-l-blue-200" },
+  // 抑え印: 無印1-2人気の救済印（補助印扱い・穴の近く）(2026-06-22)
+  { key: "抑", sym: "抑", label: "抑え", aliases: ["oshi"], color: "text-slate-600", bg: "bg-slate-50 dark:bg-slate-950/30", border: "border-l-slate-200" },
 ];
 
 /** 全馬の値から順位・色を計算 */

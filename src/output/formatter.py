@@ -167,7 +167,12 @@ def assign_marks(evaluations: List[HorseEvaluation], is_jra: bool = True) -> Lis
             top.horse.horse_name, top_pop, tekipan_pop_max,
             gap, (top.win_prob or 0) * 100,
         )
-    top.mark = Mark.TEKIPAN if is_tekipan else Mark.HONMEI
+    # 2026-06-22 印体系刷新: per-race TEKIPAN(◉)付与を廃止。本命は常に◎。
+    # ◉(鉄板)は elite_marks(全レース横断 本命勝率top5)= finalize のみが付与する。
+    # これによりレース生成/再解析/オッズ更新のどの経路でも spurious な per-race ◉ が
+    # 発生せず、◉ は elite 選定の5頭に固定される(◉増殖バグの根絶)。
+    # is_tekipan は上の人気超過ログ判定にのみ使用(印には反映しない)。
+    top.mark = Mark.HONMEI
 
     # ---- Step 2: ○▲△★ — composite順で次の未印馬に1頭ずつ ----
     # ルール: ◎○▲△★の5印は必ず全て付与する（欠落禁止）

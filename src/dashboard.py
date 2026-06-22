@@ -1413,11 +1413,19 @@ def _collect_strategy_tickets(race: dict) -> list[dict]:
     Returns:
         type == "三連複" | "単勝" のチケット dict の list（重複除去済）
     """
-    all_tix = list(race.get("tickets", []) or [])
-    all_tix += list(race.get("formation_tickets", []) or [])
+    # 2026-06-22 偽的中バグ修正: tickets_by_mode(finalize が更新する権威ソース)を最優先。
+    # legacy race["tickets"]/["formation_tickets"] は finalize で更新されず stale な
+    # 旧ワイド組合せが残存し、的中判定で「買っていない組合せ」が実結果に一致して
+    # 偽陽性(不的中なのに赤枠=的中表示)を招いていた。買い目指南(tbm.fixed)と源を一致させる。
     tbm = race.get("tickets_by_mode", {}) or {}
+    tbm_tix = []
     for mk in ("fixed", "accuracy", "balanced", "recovery"):
-        all_tix += list(tbm.get(mk, []) or [])
+        tbm_tix += list(tbm.get(mk, []) or [])
+    if any(t.get("type") in ("三連複", "単勝") for t in tbm_tix):
+        all_tix = tbm_tix  # 権威ソース確定 → legacy は無視(stale 汚染を遮断)
+    else:
+        # 旧 pred(tbm 未生成)のみ legacy にフォールバック
+        all_tix = list(race.get("tickets", []) or []) + list(race.get("formation_tickets", []) or [])
     seen = set()
     result = []
     for t in all_tix:

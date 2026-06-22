@@ -40,6 +40,8 @@ export const colors = {
     rendashi: "#7c3aed",
     rendashi2: "#0f172a",
     oana: "#2563eb",
+    // 抑え印: slate-500（抑え・保険の中間色）2026-06-22
+    oshi: "#64748b",
   },
   surface: {
     turf: "#16a34a",

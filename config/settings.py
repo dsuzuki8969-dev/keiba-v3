@@ -598,6 +598,13 @@ DANSO_FLAT_THRESHOLD = 3.0     # 条件C: 横一線判定（隣接差<3.0）
 DANSO_FORMATION_GAP = 5.0      # 4パターン断層閾値（g1/g2/g3 共通）
 DANSO_KIKKO_THRESHOLD = 2.0    # 4パターン拮抗閾値（g1<2.0 → 二頭拮抗）
 
+# 断層gap買い目体系（2026-06-22 マスター確定・旧4パターン置換）
+# col1=◎単独固定 / col2=○or○▲(comp差<5.0) / col3=常に全部+穴+抑 / 見送り◎-○<4.0 / 自信度ゲート
+DANSO_COL2_KINKO = 5.0     # col2拮抗: comp(○)-comp(▲)<これ で ○▲ を二頭軸統合（最大二頭軸・マスター確定 6/22）
+DANSO_AXIS_KINKO = 4.0     # 軸拮抗見送り: comp(◎)-comp(○)<これ で見送り（≒半分購入・マスター確定 6/22）
+# DANSO_COL_GAP は廃止: col3 は断層切りせず △★☆＋穴＋抑 を常に全部入れる仕様（マスター確定 6/22）
+DANSO_BUY_CONFIDENCE = ("SS", "S", "A", "B")  # これ以外(C/D)は見送り
+
 # 特選危険馬
 TOKUSEN_KIKEN_SCORE_THRESHOLD = 3.0  # 特選判定閾値（ML×composite二重否定通過後の追加スコア）
 TOKUSEN_KIKEN_MAX_PER_RACE = 2      # 1レース最大2頭

@@ -37,6 +37,8 @@ export const MARKS = {
   // v5: kiken(×) は廃止
   // ホーム穴馬カード専用印 (2026-06-22 マスター指示: 無印馬のみを「穴」で表示)
   ana_home: { symbol: "穴", label: "穴" },
+  // 抑え印: 無印の1-2人気で危険でない馬の救済印 (2026-06-22)
+  oshi:     { symbol: "抑", label: "抑え" },
 } as const;
 
 export type MarkType = keyof typeof MARKS;
@@ -179,6 +181,8 @@ export function markCls(mark: string): string {
     // v5: ×(kiken) 廃止
     // ホーム穴馬カード専用: 無印馬を「穴」印としてアンバー色で表示 (2026-06-22)
     case "穴": return "text-amber-500 font-bold";
+    // 抑え印: slate系（抑え・保険の中間色）(2026-06-22)
+    case "抑": return "text-slate-500 font-bold";
     default:  return "text-muted-foreground";
   }
 }

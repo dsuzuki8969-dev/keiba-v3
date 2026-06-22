@@ -57,6 +57,8 @@ const MARKS_V5 = [
   { symbol: "△", label: "連下",  color: "text-purple-600",  bg: "bg-purple-50 dark:bg-purple-950/30", border: "border-purple-300 dark:border-purple-700", desc: "連対圏に絡む可能性。紐として有力" },
   { symbol: "★", label: "連下2", color: "text-foreground",  bg: "bg-muted/50",                        border: "border-border",                           desc: "連対圏にぎりぎり。展開次第で浮上" },
   { symbol: "☆", label: "連下3", color: "text-blue-600",    bg: "bg-blue-50 dark:bg-blue-950/30",    border: "border-blue-300 dark:border-blue-700",    desc: "大穴候補。高配当を狙う時の選択肢" },
+  // 抑え印: 無印1-2人気の救済印 (2026-06-22)
+  { symbol: "抑", label: "抑え",  color: "text-slate-600",   bg: "bg-slate-50 dark:bg-slate-950/30",  border: "border-slate-300 dark:border-slate-700",  desc: "無印の1-2人気で危険でない馬の救済印。軽く抑えておく候補" },
 ] as const;
 
 // ================================================================

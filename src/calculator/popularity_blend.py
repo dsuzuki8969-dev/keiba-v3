@@ -486,6 +486,9 @@ def reassign_marks_dict(horses: List[dict], is_jra: bool = True) -> None:
         elif m == "穴":
             # elite_marks Phase 2+3 で付与した穴印は上書きしない
             special_marks[h.get("horse_no")] = m
+        elif m == "抑":
+            # 2026-06-22 断層gap体系: 抑印はリアルタイムオッズ更新で消去しない
+            special_marks[h.get("horse_no")] = m
         elif m == "◉":
             # 2026-06-22 印体系刷新: ◉(鉄板=全レース横断 本命勝率top5)は
             # per-race 再判定で降格させない。elite_marks 付与の◉を恒久保護。
