@@ -152,6 +152,14 @@ def _clear_race_formation(race: Dict) -> None:
     bet["ticket_count"] = 0
     bet["sanren_count"] = 0
     bet["tansho_count"] = 0
+    # 統一(2026-06-23 マスター指示): danso 見送りに旧M'戦略の残骸を残さない。
+    # 印変化時 再生成(engine make_bet_decision)が reason=low_ev / 参考ヒモ / 期待値文言を
+    # 付与するが、danso モードでは使わない概念。見送り表示を一本化するため明示クリアする。
+    bet["reason"] = None
+    bet["reasons"] = ["danso_no_fire"]
+    bet["message"] = "印断層条件 非該当（見送り）"
+    bet["max_ev"] = 0.0
+    bet["reference_tickets"] = []
     race["bet_decision"] = bet
 
     # 旧キー tickets も空にする
@@ -219,6 +227,9 @@ def _update_race(
     bet["ticket_count"] = n_tickets
     bet["sanren_count"] = n_tickets
     bet["tansho_count"] = 0
+    # 統一(2026-06-23 マスター指示): 購入レースにも旧M'戦略の残骸(reason=low_ev/参考ヒモ)を残さない
+    bet["reference_tickets"] = []
+    bet["reason"] = None
     race["bet_decision"] = bet
 
     affected_race_ids.add(race_id)

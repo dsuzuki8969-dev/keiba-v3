@@ -773,9 +773,11 @@ function DansoFormation({
 function BetSkipPanel({
   decision,
   noToMark,
+  isDanso = false,
 }: {
   decision: BetDecision;
   noToMark: Record<number, string>;
+  isDanso?: boolean;
 }) {
   return (
     <div className="flex flex-col gap-3 border-2 border-red-500/50 dark:border-red-400/40 rounded-lg p-5 bg-red-50/60 dark:bg-red-950/30">
@@ -786,12 +788,13 @@ function BetSkipPanel({
             買わない（見送り）
           </span>
           <span className="text-sm md:text-base font-semibold text-red-800 dark:text-red-300 mt-1">
-            {decision.reason && <>理由: {decision.reason}　</>}
+            {!isDanso && decision.reason && <>理由: {decision.reason}　</>}
             {decision.message || "このレースは対象外です"}
           </span>
         </div>
       </div>
-      {decision.reference_tickets &&
+      {!isDanso &&
+        decision.reference_tickets &&
         decision.reference_tickets.length > 0 && (
           <div className="text-sm space-y-0.5 border-t border-red-300/50 dark:border-red-700/40 pt-2 mt-1">
             <div className="text-xs text-muted-foreground">
@@ -899,7 +902,7 @@ export function TicketSection({ race }: Props) {
           </PremiumCardHeader>
           <div className="space-y-3">
             {decision?.skip ? (
-              <BetSkipPanel decision={decision} noToMark={noToMark} />
+              <BetSkipPanel decision={decision} noToMark={noToMark} isDanso={isDansoFormat} />
             ) : hasFixed || isDansoFormat ? (
               isDansoFormat ? (
                 /* 印断層三連複: danso format */

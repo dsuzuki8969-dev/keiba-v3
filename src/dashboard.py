@@ -1028,19 +1028,13 @@ def _scan_today_predictions(date_str: str) -> dict:
                 course = h.get("course_total", 0) or 0
                 p3 = h.get("place3_prob", 0) or 0
 
-                # マスター指摘(2026-06): 1-3人気は穴馬ではない → 厳選穴馬から除外
-                # (☆=composite6位が上位人気馬の時に混入していた不具合の修正)
                 pop = h.get("popularity", 0) or 0
-                is_top_pop = pop in (1, 2, 3)
-                # マスター指示(2026-06-22): 厳選穴馬は無印「－」の馬のみ(★☆も除外)
                 is_star = False  # ☆は穴馬カードに含めない
-                is_ana = (
-                    mk not in ("◉", "◎", "○", "▲", "△", "★", "☆", "×")
-                    and odds_val >= 10.0
-                    and not is_top_pop
-                )
-
-                if not is_ana:
+                # 統一(2026-06-23 マスター指示): ホーム厳選穴馬は pred の「穴」印を単一ソースとする。
+                # 旧来は穴選定(select_dark_horses 相当)を再計算していたが、buy-target 用の
+                # apply_daily_elite_marks と drift し「ホームでは穴/印断層では無印/買い目にも非該当」
+                # という不整合を招いた(2026-06-23 マスター指摘)。pred の印を唯一の正とする。
+                if mk != "穴":
                     continue
 
                 # 回帰ベース妙味スコア
@@ -1058,10 +1052,8 @@ def _scan_today_predictions(date_str: str) -> dict:
                     star_rating = 3  # ★★★
                 elif miryoku >= _s.MIRYOKU_GRADE_A:
                     star_rating = 2  # ★★
-                elif miryoku >= _s.MIRYOKU_GRADE_C:
-                    star_rating = 1  # ★
                 else:
-                    continue  # D/E は表示対象外
+                    star_rating = 1  # ★（穴印馬は grade 下限割れでも必ず表示=印と一致保証）
 
                 ana_horses.append({
                     "venue": venue_name,
