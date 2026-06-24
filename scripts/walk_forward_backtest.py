@@ -8,6 +8,7 @@ Usage:
   python scripts/walk_forward_backtest.py
   python scripts/walk_forward_backtest.py --start 2024-06 --end 2026-03
   python scripts/walk_forward_backtest.py --train-months 12 --force
+  python scripts/walk_forward_backtest.py --start 2026-01 --end 2026-01 --composite-probe
 """
 import argparse
 import json
@@ -16,7 +17,7 @@ import os
 import sys
 import time
 from collections import defaultdict
-from datetime import date, timedelta
+from datetime import date, timedelta, datetime as _dt
 from itertools import combinations
 from typing import Dict, List, Optional, Tuple
 
@@ -459,6 +460,13 @@ def _calc_shobu_score_wf_lv3(h: dict, race: dict, tracker) -> float:
 # A-3e 切替フラグ (CLI から設定)
 SHOBU_SCORE_LV = 1
 
+# P0-b Step3-1 (2026-06-24): 本番engine composite 並行測定フラグ (CLI から設定)
+# OFF 時: 従来と完全同一動作 / ON 時: 印は変更せず composite を parallel 測定
+COMPOSITE_PROBE = False
+
+# P0-b Step3-1: 1ヶ月の測定レース上限 (0=無制限)。smoke run 時はここを調整
+_COMPOSITE_PROBE_MAX_RACES = 0  # 0=無制限。smoke run 時は一時的に 3〜10 に変更
+
 
 def _calc_shobu_score_dispatch(h: dict, race: dict, tracker) -> float:
     """SHOBU_SCORE_LV に応じて Lv1 / Lv2 / Lv3 を呼び分け"""
@@ -590,6 +598,294 @@ def _make_tickets_by_mode(pred_horses: list) -> dict:
 
 
 # ============================================================
+# P0-b Step3-1: composite probe 用月次 engine ビルド関数
+# ============================================================
+
+def _build_composite_probe_state(
+    target_ym: str,
+    scraper_state: dict,
+    valid_race_ids: list,
+) -> dict | None:
+    """P0-b: 月1回、leak-safe な engine ビルド状態を返す。
+
+    - target_ym: 'YYYY-MM'
+    - scraper_state: {'scraper', 'all_courses'} — main() で1回初期化済み
+    - valid_race_ids: その月の検証レースID一覧 (fetch キャッシュに使用)
+    - 返値: {
+        'course_db_base',       # 月初前日時点の共有ベース (read-only: レース処理で mutate 禁止)
+        'l3f_db',               # ベースから構築した l3f_db
+        'course_style_db',
+        'gate_bias_db',
+        'position_sec_db',
+        'trainer_baseline_db',
+        'all_courses',
+        'target_ym_first_day',
+        'jockey_db',            # 月全レース全馬から一括構築 (probe 187-212行 相当)
+        'trainer_db',
+        'prefetched',           # race_id -> (race_info, horses) のキャッシュ
+      }
+      または None (例外時)
+    - window_end = 月初日 - 1日 (安全側: 月内後半レースの直近データ欠損は許容)
+      注記: course_db は月初前日時点固定のため月内後半レースは最大30日分履歴が少ない
+
+    probe は diag_p0_engine_composite.py のパターン流用 (read-only・DB保存なし)。
+    変更点: 全レース全馬を一括 build (probe 187-212行の月単位版) することで
+    _run_composite_probe_race 内の重い build を排除し perf を probe 並みに改善する。
+    """
+    try:
+        from src.scraper.race_results import (
+            StandardTimeDBBuilder, Last3FDBBuilder,
+            build_course_db_from_past_runs,
+            build_course_style_stats_db, build_gate_bias_db,
+            build_position_sec_per_rank_db,
+            build_trainer_baseline_db, load_trainer_baseline_db,
+            merge_trainer_baseline,
+        )
+        from src.scraper.course_db_collector import load_preload_course_db
+        from src.database import get_course_db as _get_sqlite_course_db
+        from src.scraper.course_db_collector import _dict_to_past_run
+        from src.engine import reset_engine_caches
+        from src.scraper.personnel import PersonnelDBManager, enrich_personnel_with_condition_records
+        from src.scraper.improvement_dbs import build_bloodline_db
+        from config.settings import COURSE_DB_PRELOAD_PATH, TRAINER_BASELINE_DB_PATH, BLOODLINE_DB_PATH
+
+        reset_engine_caches()
+
+        # window_end = 月初日 - 1日 (leak-safe)
+        _first_day = f"{target_ym}-01"
+        window_end = (_dt.strptime(_first_day, "%Y-%m-%d") - timedelta(days=1)).strftime("%Y-%m-%d")
+        window_start = (_dt.strptime(_first_day, "%Y-%m-%d") - timedelta(days=365)).strftime("%Y-%m-%d")
+
+        print(f"  [composite-probe] course_db window: {window_start} 〜 {window_end}", flush=True)
+
+        # ── Phase A: 基準タイムDB + SQLite 過去走 merge (window 限定) ──
+        std_db = StandardTimeDBBuilder()
+        course_db_base = std_db.get_course_db()
+
+        _sqlite_db = _get_sqlite_course_db()
+        for _cid, _recs in _sqlite_db.items():
+            for _r in _recs:
+                _rd = _r.get("race_date", "")
+                if _rd and window_start <= _rd <= window_end:
+                    course_db_base.setdefault(_cid, []).append(_dict_to_past_run(_r))
+
+        preload = load_preload_course_db(COURSE_DB_PRELOAD_PATH, target_date=_first_day)
+        for cid, runs in preload.items():
+            course_db_base.setdefault(cid, []).extend(runs)
+
+        # 派生DB (course_style / gate_bias / position_sec / l3f)
+        # ここで派生DBを構築した後は course_db_base を mutate しない
+        course_style_db = build_course_style_stats_db(course_db_base, target_date=_first_day)
+        gate_bias_db    = build_gate_bias_db(course_db_base, target_date=_first_day)
+        position_sec_db = build_position_sec_per_rank_db(course_db_base, target_date=_first_day)
+        l3f_db_base     = Last3FDBBuilder().build(course_db_base)
+        trainer_baseline_db = load_trainer_baseline_db(TRAINER_BASELINE_DB_PATH)
+        print(f"  [composite-probe] DB 構築完了 ({target_ym})", flush=True)
+
+        # ── Phase B: 月内全レースを prefer_cache=True で一括 prefetch ──
+        # probe 170-186行 相当。ネットアクセス禁止・キャッシュのみ。
+        scraper = scraper_state["scraper"]
+        all_courses = scraper_state["all_courses"]
+
+        prefetched: dict = {}  # race_id -> (race_info, horses)
+        fetch_ok = 0
+        fetch_skip = 0
+        for race_id in valid_race_ids:
+            # race_id から race_date を推定 (YYYYMMDDXX 形式: 先頭8桁)
+            _race_date_compact = race_id[:8] if len(race_id) >= 8 else ""
+            _race_date = (
+                f"{_race_date_compact[:4]}-{_race_date_compact[4:6]}-{_race_date_compact[6:8]}"
+                if len(_race_date_compact) == 8 else _first_day
+            )
+            try:
+                ri, hs = scraper.fetch_race(
+                    race_id,
+                    fetch_history=True,
+                    fetch_odds=True,
+                    fetch_training=True,
+                    target_date=_race_date,
+                    prefer_cache=True,
+                )
+                prefetched[race_id] = (ri, hs)
+                fetch_ok += 1
+            except Exception as _fe:
+                prefetched[race_id] = (None, [])
+                fetch_skip += 1
+        print(
+            f"  [composite-probe] prefetch 完了: ok={fetch_ok} skip={fetch_skip} / {len(valid_race_ids)}R",
+            flush=True,
+        )
+
+        # ── Phase C: 全レース全馬まとめて PersonnelDB / bloodline を一括構築 ──
+        # probe 188-212行 相当 (月単位版)。
+        all_horses = []
+        for _ri, _hs in prefetched.values():
+            if _hs:
+                all_horses.extend(_hs)
+
+        jockey_db: dict = {}
+        trainer_db: dict = {}
+
+        if all_horses:
+            # trainer_baseline は prefetch 馬から補完
+            _bl = build_trainer_baseline_db(all_horses)
+            trainer_baseline_db = merge_trainer_baseline(_bl, trainer_baseline_db)
+
+            # course_db_from_past_runs: course_db_base を deepcopy してから渡す
+            # (build_course_db_from_past_runs は inplace .append するため)
+            _course_db_for_shared = {k: list(v) for k, v in course_db_base.items()}
+            shared_course_db = build_course_db_from_past_runs(
+                all_horses, _course_db_for_shared, target_date=_first_day)
+
+            # bloodline: netkeiba_client=None でネットアクセス完全遮断
+            # キャッシュ済みデータのみ使用 (BLOODLINE_DB_PATH から読込)
+            _bloodline_db = build_bloodline_db(
+                all_horses, netkeiba_client=None, cache_path=BLOODLINE_DB_PATH)
+
+            # personnel: cache_days=999999 でキャッシュ強制使用 (ネットアクセス禁止)
+            # 過去レースデータはキャッシュが7日以上経過 = stale 扱いで fetch されるため
+            # 極大 cache_days でキャッシュ強制使用に変更する
+            pmgr = PersonnelDBManager(cache_days=999999)
+            all_jockey_db, all_trainer_db = pmgr.build_from_horses(
+                all_horses, scraper.client, course_db=shared_course_db, save=False)
+            jockey_db = all_jockey_db
+            trainer_db = all_trainer_db
+            print(
+                f"  [composite-probe] personnel 構築: 騎手={len(jockey_db)} 調教師={len(trainer_db)}",
+                flush=True,
+            )
+
+        return {
+            "course_db_base": course_db_base,   # read-only ベース (各レースで deepcopy して使う)
+            "l3f_db": l3f_db_base,
+            "course_style_db": course_style_db,
+            "gate_bias_db": gate_bias_db,
+            "position_sec_db": position_sec_db,
+            "trainer_baseline_db": trainer_baseline_db,
+            "all_courses": all_courses,
+            "target_ym_first_day": _first_day,
+            "jockey_db": jockey_db,
+            "trainer_db": trainer_db,
+            "prefetched": prefetched,
+        }
+    except Exception as e:
+        print(f"  [composite-probe][WARN] monthly engine build 失敗 ({target_ym}): {e}", flush=True)
+        return None
+
+
+def _run_composite_probe_race(
+    race: dict,
+    prob_marks: dict,       # horse_id → prob 印 (str)
+    probe_state: dict,      # _build_composite_probe_state の返値
+) -> dict | None:
+    """P0-b: 1レース分の composite/mark を engine で取得し一致率計算に使う情報を返す。
+
+    - probe_state 内の prefetched / jockey_db / trainer_db を利用 (月1回 build 済み)
+    - 各レースでは course_db を course_db_base から deepcopy して point-in-time 構築のみ
+    - P0-3: course_db_base のリスト値まで独立コピー ({k: list(v)}) で汚染防止
+    - 印崩壊防止: prob 印は変更しない。composite + engine 印を新フィールドとして返すのみ
+    - キャッシュミス / analyze 失敗時は None を返す (fetch_miss / analyze_error を分離)
+    """
+    try:
+        from src.scraper.race_results import (
+            Last3FDBBuilder,
+            build_course_db_from_past_runs,
+        )
+        from src.scraper.personnel import enrich_personnel_with_condition_records
+        from src.engine import RaceAnalysisEngine, enrich_course_aptitude_with_style_bias
+        import gc
+
+        race_id = race.get("race_id", "")
+        race_date = race.get("date", "")
+        if not race_id or not race_date:
+            return None
+
+        all_courses = probe_state["all_courses"]
+
+        # prefetched から (race_info, horses) を取得 (月1回 build 済み)
+        _fetched = probe_state.get("prefetched", {}).get(race_id, (None, []))
+        race_info, horses = _fetched
+        if not race_info or not horses:
+            # fetch キャッシュなし (キャッシュミス)
+            return {"fetch_miss": 1}
+
+        # P0-3: course_db_base からリスト値まで独立コピーして course_db を point-in-time 構築
+        # build_course_db_from_past_runs は course_db を inplace .append するため、
+        # シャローコピー dict(course_db_base) ではリスト値が共有され月内レース順に汚染される
+        _course_db_for_race = {k: list(v) for k, v in probe_state["course_db_base"].items()}
+        shared_course_db = build_course_db_from_past_runs(
+            horses, _course_db_for_race, target_date=race_date)
+        shared_l3f_db = Last3FDBBuilder().build(shared_course_db)
+
+        # jockey_db / trainer_db は月1回 build 済みのものをレース馬で絞る (probe 231-235行 相当)
+        _race_jids = {h.jockey_id for h in horses if h.jockey_id}
+        _race_tids = {h.trainer_id for h in horses if h.trainer_id}
+        jockey_db  = {k: v for k, v in probe_state["jockey_db"].items() if k in _race_jids}
+        trainer_db = {k: v for k, v in probe_state["trainer_db"].items() if k in _race_tids}
+        enrich_personnel_with_condition_records(jockey_db, trainer_db, shared_course_db)
+
+        # engine 生成 + analyze (probe 237-258行 相当)
+        try:
+            engine = RaceAnalysisEngine(
+                course_db=shared_course_db,
+                all_courses=all_courses,
+                jockey_db=jockey_db,
+                trainer_db=trainer_db,
+                trainer_baseline_db=probe_state["trainer_baseline_db"],
+                pace_last3f_db=shared_l3f_db,
+                course_style_stats_db=probe_state["course_style_db"],
+                gate_bias_db=probe_state["gate_bias_db"],
+                position_sec_per_rank_db=probe_state["position_sec_db"],
+                is_jra=race_info.is_jra,
+                target_date=race_date,
+            )
+
+            analysis = engine.analyze(race_info, horses, custom_stake=None, netkeiba_client=None)
+            analysis = enrich_course_aptitude_with_style_bias(engine, analysis)
+
+            del engine
+            gc.collect()
+        except Exception as ae:
+            print(f"  [composite-probe][WARN] analyze 失敗 ({race_id}): {ae}", flush=True)
+            return {"analyze_error": 1}
+
+        # composite / engine 印 を horse_id で収集
+        engine_composites: dict = {}   # horse_id → composite
+        engine_marks: dict = {}        # horse_id → engine 印 (str)
+        for ev in analysis.evaluations:
+            h_obj = ev.horse
+            h_id = getattr(h_obj, "horse_id", None)
+            if h_id:
+                engine_composites[h_id] = ev.composite
+                engine_marks[h_id] = ev.mark.value if ev.mark else "-"
+
+        # prob 印 vs engine 印 一致率計算
+        # ◎ (1位) 一致: prob_marks で ◎/◎ の馬が engine でも ◎/◉ か
+        prob_top1 = next((hid for hid, mk in prob_marks.items() if mk in ("◎", "◉")), None)
+        engine_top1 = next((hid for hid, mk in engine_marks.items() if mk in ("◎", "◉")), None)
+        top1_match = int(prob_top1 is not None and prob_top1 == engine_top1)
+
+        # 上位3頭 ({◎,○,▲}) 集合一致率
+        prob_top3 = {hid for hid, mk in prob_marks.items() if mk in ("◉", "◎", "○", "▲")}
+        engine_top3 = {hid for hid, mk in engine_marks.items() if mk in ("◉", "◎", "○", "▲")}
+        top3_intersect = len(prob_top3 & engine_top3)
+        top3_union = len(prob_top3 | engine_top3)
+        top3_iou = top3_intersect / top3_union if top3_union else 0.0
+
+        return {
+            "engine_composites": engine_composites,
+            "engine_marks": engine_marks,
+            "top1_match": top1_match,       # 0 or 1
+            "top3_iou": top3_iou,           # 0.0〜1.0 (Jaccard)
+            "measured": 1,
+        }
+
+    except Exception as e:
+        print(f"  [composite-probe][WARN] 予期しない失敗 ({race.get('race_id','?')}): {e}", flush=True)
+        return {"analyze_error": 1}
+
+
+# ============================================================
 # 1ヶ月分の処理
 # ============================================================
 
@@ -601,10 +897,15 @@ def _process_month(
     tracker: RollingStatsTracker,
     sire_tracker: RollingSireTracker,
     force: bool,
+    composite_probe_state: dict | None = None,
 ) -> dict:
     """
     target_ym: 'YYYY-MM' (予想対象月)
     ローリング1年ウィンドウで学習 → 予想 → DB保存
+
+    composite_probe_state: P0-b --composite-probe ON 時のみ非 None。
+      _build_composite_probe_state() の返値。
+      既存の印・買い目・ROI は不変のまま、composite を parallel 測定。
 
     Returns: 統計dict
     """
@@ -692,9 +993,16 @@ def _process_month(
     # 統計
     top1_hit = top1_total = 0
     # P0 (2026-06-23): 確率較正指標 — ML複勝確率 vs 実複勝(fp<=3)。印ロジック不変・測定のみ
-    import math
+    # (import math はモジュール先頭に既存 — F811 回避のためここでは import しない)
     brier_sum = logloss_sum = 0.0
     calib_n = 0
+    # P0-b Step3-1 (2026-06-24): composite probe 統計 — 印崩壊防止・parallel 測定のみ
+    probe_top1_match = probe_top3_iou_sum = 0.0
+    probe_measured = 0      # engine.analyze が完走したレース数
+    probe_fetch_miss = 0    # fetch キャッシュなし (prefetch 時点でスキップ)
+    probe_analyze_error = 0 # analyze 失敗 (engine 例外等)
+    probe_analyze_sec = 0.0  # analyze 秒計
+    _probe_race_count = 0  # 上限チェック用 (_COMPOSITE_PROBE_MAX_RACES)
 
     for (race, r_feats, r_labels, horse_dicts) in valid_races_data:
         race_id = race.get("race_id", "")
@@ -728,6 +1036,29 @@ def _process_month(
             calib_n += 1
 
         marks = _assign_marks(probs)
+
+        # P0-b Step3-1: composite probe — 印は変更しない・parallel 測定のみ
+        if composite_probe_state is not None and COMPOSITE_PROBE:
+            _do_probe = (_COMPOSITE_PROBE_MAX_RACES <= 0 or _probe_race_count < _COMPOSITE_PROBE_MAX_RACES)
+            if _do_probe:
+                _probe_race_count += 1
+                _t_probe = time.time()
+                _probe_result = _run_composite_probe_race(
+                    race, marks,
+                    composite_probe_state,
+                )
+                probe_analyze_sec += time.time() - _t_probe
+                if _probe_result is None:
+                    probe_analyze_error += 1
+                elif _probe_result.get("fetch_miss"):
+                    probe_fetch_miss += 1
+                elif _probe_result.get("analyze_error"):
+                    probe_analyze_error += 1
+                else:
+                    probe_top1_match += _probe_result["top1_match"]
+                    probe_top3_iou_sum += _probe_result["top3_iou"]
+                    probe_measured += 1
+
         confidence = _judge_confidence(probs)
 
         sorted_ids = [hid for hid, _ in sorted(probs.items(), key=lambda x: -x[1])]
@@ -838,6 +1169,32 @@ def _process_month(
 
     top1_rate = top1_hit / top1_total if top1_total else 0
 
+    # P0-b Step3-1: composite probe 集計
+    probe_top1_rate = probe_top1_match / probe_measured if probe_measured else None
+    probe_top3_iou  = probe_top3_iou_sum / probe_measured if probe_measured else None
+    avg_probe_sec   = probe_analyze_sec / probe_measured if probe_measured else None
+
+    if composite_probe_state is not None and COMPOSITE_PROBE:
+        if probe_measured > 0:
+            print(
+                f"  [composite-probe] {target_ym}: "
+                f"◎一致率={probe_top1_rate*100:.1f}%  "
+                f"上位3 IoU={probe_top3_iou:.3f}  "
+                f"測定={probe_measured}R  "
+                f"fetch_miss={probe_fetch_miss}R  analyze_err={probe_analyze_error}R  "
+                f"avg={avg_probe_sec:.1f}秒/R",
+                flush=True,
+            )
+            # 注記: WF印=ML複勝確率ランク印(◉=norm_gap≥0.5/TEKIPAN無) vs engine印=本番印
+            # (TEKIPAN/穴/危険/reassign 含む) — 一致率は概念の違いを含む
+            # 注記: course_db=月初前日時点固定のため月内後半レースは最大30日分履歴が少ない
+        else:
+            print(
+                f"  [composite-probe] {target_ym}: 測定レースなし "
+                f"(fetch_miss={probe_fetch_miss} analyze_err={probe_analyze_error})",
+                flush=True,
+            )
+
     return {
         "month": target_ym,
         "status": "ok",
@@ -849,6 +1206,13 @@ def _process_month(
         "brier": brier_sum / calib_n if calib_n else None,
         "logloss": logloss_sum / calib_n if calib_n else None,
         "calib_n": calib_n,
+        # P0-b Step3-1: composite probe 指標 (COMPOSITE_PROBE=False 時は None)
+        "probe_top1_rate": probe_top1_rate,
+        "probe_top3_iou": probe_top3_iou,
+        "probe_measured": probe_measured,
+        "probe_fetch_miss": probe_fetch_miss,
+        "probe_analyze_error": probe_analyze_error,
+        "probe_avg_sec": avg_probe_sec,
     }
 
 
@@ -868,15 +1232,27 @@ def main():
                         help="既存予想データも上書き")
     parser.add_argument("--shobu-lv", type=int, choices=[1, 2, 3], default=1,
                         help="A-3e shobu_score 計算レベル: 1=簡易(A-3d Lv1) / 2=engine 直呼び(A-3e Lv2) / 3=engine 完全互換(Lv3: KishuPattern完全再現+recovery_break推定)")
+    parser.add_argument("--composite-probe", action="store_true", default=False,
+                        help="P0-b: 本番engine composite を並行計算し prob印との一致率を測定（測定のみ・印は不変）")
+    parser.add_argument("--composite-probe-max-races", type=int, default=0,
+                        help="P0-b: composite-probe で測定するレース数上限/月 (0=無制限・1月サンプル測定で使用)")
     args = parser.parse_args()
 
     # A-3e: shobu_score 計算レベルを反映 (グローバル切替)
-    global SHOBU_SCORE_LV
+    global SHOBU_SCORE_LV, COMPOSITE_PROBE, _COMPOSITE_PROBE_MAX_RACES
     SHOBU_SCORE_LV = args.shobu_lv
     if SHOBU_SCORE_LV >= 2:
         print(f"  shobu_score: Lv{SHOBU_SCORE_LV} (engine 直呼び / A-3e Step 1)")
     else:
         print(f"  shobu_score: Lv{SHOBU_SCORE_LV} (簡易再現 / A-3d)")
+
+    COMPOSITE_PROBE = args.composite_probe
+    _COMPOSITE_PROBE_MAX_RACES = args.composite_probe_max_races
+    if COMPOSITE_PROBE:
+        _lim = f"上限{_COMPOSITE_PROBE_MAX_RACES}R/月" if _COMPOSITE_PROBE_MAX_RACES > 0 else "全レース"
+        print(f"  composite-probe: ON (P0-b 本番engine 並行測定・印不変・{_lim})")
+    else:
+        print("  composite-probe: OFF")
 
     t_total = time.time()
 
@@ -886,6 +1262,55 @@ def main():
     print(f"  学習ウィンドウ: {args.train_months}ヶ月 (ローリング)")
     print(f"  force: {args.force}")
     print(f"{'=' * 62}\n")
+
+    # P0-b Step3-1: composite probe 用スクレイパー/MLモデル初期化 (全期間1回・フラグON時のみ)
+    _scraper_state: dict | None = None
+    if COMPOSITE_PROBE:
+        print("\n[P0-b composite-probe] スクレイパー・MLモデル初期化中...", flush=True)
+        _t_init = time.time()
+        try:
+            from data.masters.course_master import get_all_courses
+            from src.scraper.auth import PremiumNetkeibaScraper
+            from src.engine import reset_engine_caches, RaceAnalysisEngine
+            import src.engine as _eng
+            from src.ml.lgbm_ranker import LGBMRanker as _LR
+
+            _all_courses = get_all_courses()
+            _scraper = PremiumNetkeibaScraper(_all_courses, ignore_ttl=True)
+            _scraper.login()
+            _scraper.training.login()
+            reset_engine_caches()
+
+            # MLモデルウォームアップ (engine 初回 analyze の遅延を減らす)
+            _warmup = RaceAnalysisEngine(
+                course_db={}, all_courses=_all_courses,
+                jockey_db={}, trainer_db={},
+                trainer_baseline_db={},
+                pace_last3f_db={},
+                course_style_stats_db={},
+                gate_bias_db={},
+                position_sec_per_rank_db={},
+                is_jra=True, target_date=args.start + "-01",
+            )
+            del _warmup
+
+            # ランカーモデル強制リロード
+            _eng._CACHE_RANKER_LOADED = False
+            _eng._CACHE_LGBM_RANKER = None
+            _lr = _LR()
+            if _lr.load():
+                _eng._CACHE_LGBM_RANKER = _lr
+                _eng._CACHE_RANKER_LOADED = True
+                print(f"  ランカーモデル強制リロード完了 (features={_lr._model.num_feature()})", flush=True)
+            else:
+                print("  [WARN] ランカーモデルロード失敗 — composite probe は動作するが精度低下の可能性", flush=True)
+
+            _scraper_state = {"scraper": _scraper, "all_courses": _all_courses}
+            print(f"  [P0-b] 初期化完了: {time.time()-_t_init:.1f}秒", flush=True)
+
+        except Exception as _e:
+            print(f"  [P0-b][WARN] スクレイパー初期化失敗: {_e} → composite-probe を無効化", flush=True)
+            COMPOSITE_PROBE = False
 
     # DB初期化
     db.init_schema()
@@ -952,9 +1377,39 @@ def main():
                 tracker.update_race(race)
                 sire_tracker.update_race(race, sire_map)
 
+        # P0-b Step3-1: 月次 engine build (composite-probe ON 時のみ)
+        _month_probe_state: dict | None = None
+        if COMPOSITE_PROBE and _scraper_state is not None:
+            _t_build = time.time()
+            # 月の検証レースID を事前収集 (月1回 build の prefetch に使用)
+            _valid_start = f"{target_ym}-01"
+            _valid_end   = _months_add(target_ym, 1)
+            _valid_race_ids = [
+                r.get("race_id", "")
+                for r in races
+                if _valid_start <= r.get("date", "") < _valid_end
+                   and r.get("race_id", "")
+            ]
+            if _COMPOSITE_PROBE_MAX_RACES > 0:
+                _valid_race_ids = _valid_race_ids[:_COMPOSITE_PROBE_MAX_RACES]
+                print(
+                    f"  [composite-probe] {target_ym} 上限適用: {_COMPOSITE_PROBE_MAX_RACES}R",
+                    flush=True,
+                )
+            elif _valid_race_ids:
+                print(
+                    f"  [composite-probe] {target_ym} 全レース分析: {len(_valid_race_ids)}R "
+                    f"(長時間になる可能性あり — _COMPOSITE_PROBE_MAX_RACES=0)",
+                    flush=True,
+                )
+            _month_probe_state = _build_composite_probe_state(
+                target_ym, _scraper_state, _valid_race_ids)
+            print(f"  [composite-probe] {target_ym} engine build: {time.time()-_t_build:.1f}秒", flush=True)
+
         result = _process_month(
             target_ym, races, sire_map, params,
             tracker, sire_tracker, args.force,
+            composite_probe_state=_month_probe_state,
         )
         elapsed = time.time() - t_month
 
@@ -994,6 +1449,23 @@ def main():
         if _cn else 0
     )
 
+    # P0-b Step3-1: composite probe 全期間加重平均 (probe_measured 重み)
+    _pm_total = sum(s.get("probe_measured", 0) for s in ok_months)
+    avg_probe_top1 = (
+        sum((s.get("probe_top1_rate") or 0) * s.get("probe_measured", 0) for s in ok_months) / _pm_total
+        if _pm_total else None
+    )
+    avg_probe_top3_iou = (
+        sum((s.get("probe_top3_iou") or 0) * s.get("probe_measured", 0) for s in ok_months) / _pm_total
+        if _pm_total else None
+    )
+    _pm_fetch_miss  = sum(s.get("probe_fetch_miss", 0) for s in ok_months)
+    _pm_analyze_err = sum(s.get("probe_analyze_error", 0) for s in ok_months)
+    avg_probe_sec = (
+        sum((s.get("probe_avg_sec") or 0) * s.get("probe_measured", 0) for s in ok_months) / _pm_total
+        if _pm_total else None
+    )
+
     print(f"\n{'=' * 62}")
     print(f"  Walk-Forward バックテスト完了!")
     print(f"  処理月数:   {len(ok_months)}/{len(months)}")
@@ -1002,6 +1474,15 @@ def main():
     print(f"  平均Top1率: {avg_top1:.1f}%")
     print(f"  較正Brier:  {avg_brier:.4f} (低=良・複勝確率の二乗誤差)")
     print(f"  較正LogLoss:{avg_logloss:.4f} (低=良)")
+    # P0-b Step3-1: composite probe サマリー
+    if COMPOSITE_PROBE and _pm_total:
+        print(f"  composite-probe:")
+        print(f"    ◎一致率:     {avg_probe_top1*100:.1f}%  (WF印 vs engine印・1位一致)")
+        print(f"    上位3 IoU:   {avg_probe_top3_iou:.3f}  (Jaccard係数・◎○▲3頭集合)")
+        print(f"    測定レース:  {_pm_total}R  fetch_miss={_pm_fetch_miss}R  analyze_err={_pm_analyze_err}R")
+        print(f"    avg分析速度: {avg_probe_sec:.1f}秒/R")
+        print(f"    注記: WF印=ML複勝確率ランク印 / engine印=本番印(TEKIPAN/穴/reassign含む)")
+        print(f"    注記: course_db=月初前日時点固定(月内後半レースは最大30日分履歴少)")
     print(f"  合計時間:   {elapsed_total/60:.1f}分")
     print(f"{'=' * 62}\n")
     print("ダッシュボード「結果分析」タブで確認してください。")

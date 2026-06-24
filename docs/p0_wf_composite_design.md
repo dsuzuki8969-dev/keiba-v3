@@ -134,3 +134,35 @@ engine は `course_db` を必須引数に要求(`engine.py:352`)+ 派生 5-6 DB(
 - **Step4**: 1月サンプルWF で「本番 pred 印 vs WF 印 一致率」+ Brier/logloss 測定。
 - **高速化**: 上記 engine 月1回生成 + 必要なら analyze の重い部分を間引き。
 - 各段階 commit。印切替は composite が揃った Step3 で(probe で揃うこと実証済=安全に切替可)。
+
+---
+
+## 12. ✅ Step3 実装完了 + 一致率測定 (2026-06-24)
+
+### 実装 (`scripts/walk_forward_backtest.py` `--composite-probe`)
+- `_build_composite_probe_state`: 月1回 leak-safe engine build (probe 流用・Phase A course_db / B prefetch / C personnel)。
+- `_run_composite_probe_race`: 各レース `engine.analyze()` → `composite`/`mark` 取得 → prob印と一致率算出。
+- prob印(`_assign_marks`) と engine印(`analyze`) を **並行比較**(印は prob 維持=既存WF数値・買い目・ROI は不変=parallel測定)。
+- CLI `--composite-probe` / `--composite-probe-max-races N`。
+- **netkeiba完全遮断**: bloodline `netkeiba_client=None` / `PersonnelDBManager(cache_days=999999)` / `analyze(netkeiba_client=None)` → 実測 fetch 0件。
+- course_db deep copy(レース順汚染防止) / Brier-LogLoss(P0-a)加重平均に一致率追記。
+- reviewer(keiba+python) 指摘(netkeiba誘発/perf/course_db汚染/統計ラベル) 全対処。
+
+### 測定結果 (2026-01・35R・leak-free・netkeibaアクセス0)
+| 指標 | 値 | 意味 |
+|---|---|---|
+| **◎一致率** | **54.3%** | WF prob印◎ と 本番composite印◎ が **46%別馬** |
+| **上位3 IoU** | **0.557** | ◎○▲ 集合の **約半分が別馬** |
+| Brier / LogLoss | 0.1587 / 0.4792 | ML複勝確率の較正(P0-a) |
+| engine build | 178秒(35R) | 100Rは1814秒→**OOM(スケール問題)** |
+| 完走 | 20.4分 / fetch_miss=0 / analyze_err=0 | OOM・無音死亡なし |
+
+### 結論: roadmap 根本① の **定量確証**
+WF の `prob×100` 印は本番7因子 composite 印と **半分近く別物** → 過去の全 WF ROI 数値・天井証明は「本番で実際に走る系」を測っていなかった。
+
+### 留保 / 次段階
+- 1月35Rサンプル。**複数月の安定性は未確認**(全期間WFは 100R OOM=WF高速化が前提)。
+- engine印=本番印(TEKIPAN/穴/reassign 込) vs WF印=ML複勝ランク印。一致率は **composite差 + 印ルール差の合算**(純composite効果の分離は将来課題)。
+- **印切替(prob→composite)は Step3-3(別承認)**。現状 parallel 測定で印不変=既存WF数値 無傷。
+- perf: **prefetch(past_runs構築 16秒/R)が build主因**。中層=prefetched 都度解放/バッチ(メモリ)、深層=prefetch高速化(全期間WF実用化の本丸)。
+- 100R OOM の真因: 35R(build 178秒)完走 → 100R(build 1814秒)は prefetched 100R Horse + course_db 1年 + 学習202K行DataFrame + ML 同時保持のピーク枯渇。
