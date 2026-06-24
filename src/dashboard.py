@@ -2834,6 +2834,25 @@ def create_app():
                     logger.info("[odds-scheduler] 自動取得開始: %s", date_key)
                     _run_odds_update(date_key, source="auto")
                     _odds_last_auto_fetch = datetime.now()
+                    # 🔧 穴馬再発防止 (2026-06-24 マスター指示): オッズ確定後に elite(穴/◉)を再選定。
+                    # 翌日予想は前日18:00生成=オッズ前で穴選定(odds>=10)が0頭→穴0のまま固定される。
+                    # _run_odds_update は reassign_marks_dict で◉/穴を保護するのみで新規穴選定しないため、
+                    # ここで finalize(elite)を再実行し odds確定値で穴/◉を選び直す(sharpenは冪等skip)。
+                    # P0(reviewer): オッズ取得失敗時は odds=None→穴0で上書きの危険があるため error時はskip(既存印保持)。
+                    if _odds_state.get("error"):
+                        logger.warning("[odds-scheduler] オッズ取得失敗→elite再選定スキップ(既存印保持): %s",
+                                       _odds_state.get("error"))
+                    else:
+                        try:
+                            from src.calculator.finalize_predictions import finalize_predictions
+                            _fin = finalize_predictions(date_key)
+                            _el = _fin.get("elite", {}) if isinstance(_fin, dict) else {}
+                            logger.info("[odds-scheduler] オッズ確定後 elite再選定: %s ◉=%s 穴=%s",
+                                        date_key, _el.get("pivot_count"), _el.get("ana_count"))
+                            # P1(reviewer): finalize が pred.json を書換えるためキャッシュクリアで最新印を反映。
+                            _predictions_cache.pop(date_key[:4] + "-" + date_key[4:6] + "-" + date_key[6:8], None)
+                        except Exception as _fe:
+                            logger.error("[odds-scheduler] elite再選定失敗: %s", _fe, exc_info=True)
                 except Exception as e:
                     logger.error("[odds-scheduler] 例外発生: %s", e, exc_info=True)
                     _st.sleep(60)
