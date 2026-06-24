@@ -6,6 +6,63 @@
 
 ---
 
+## 🎯 P1本丸 odds残差化 着手 → P0物差し先行 (6/24 master「OK任せる」全権委任・進行中)
+
+> master「OK任せる」→ P1本丸へ。調査で roadmap前提の**重大訂正**: **P0(正しい物差し)が未完**だった。WFは今も ML確率印(`walk_forward_backtest.py:465 COMPOSITE_PROBE=False` / `:49-69 _assign_marks` prob降順 / `:506 composite=prob×100` / `:513-519` 7因子0.0)で**本番7因子compositeを測っていない**。roadmap「P0→P1 順序不可分・P0無しにP1効果測定不能」厳守 → **master決定: P0物差し完成を先行**。
+
+**🎯 調査の朗報**: full engine統合は 6/24 probe実装(`_run_composite_probe_race` L776-894)で**既に完了済**だった。`engine.analyze()` 完全実行で7因子計算 + 全頭の `engine_marks`/`engine_composites` を返す(L884-890)。**P0補完 = 「測定(probe)→採用」昇格のみ = S〜M**。方針C段階統合は不要(probe直採用が faithful)。
+
+**設計(引き写し禁止で修正)**:
+- engine の `ev.mark` を直採用(subagent案の `_assign_marks(composite)`再計算は本番印[◉鉄板/穴/☆6位固定/×危険]を再現できず却下)
+- **新フラグ `--composite-marks` で隔離**(既存 prob印WF 非破壊・`feedback_sample_vs_implementation`)
+- 2026-01 **35R**サンプル先行(100R=OOM・設計書§12実証・WF高速化が全期間の前提)
+
+**Step**: P0-α(印採用)✅確証 → **P0-β=revert採用**(高速化はML律速で-7%・本番engineクリーン維持)→ ⬜P0-γ(複数月100R=物差し本評価)→ P1-a(odds残差化)/P1-b(ダンピング撤廃)着手。
+
+**✅ P0-α 確証 (engine印/composite が pred.json に正しく反映)**:
+- 決定的検証: 2026-01 race202645010101 で genko composite=**70.0**(engine 7因子偏差値) vs prob_bk(旧)=**87.49**(prob×100)= 別物 → engine採用が実反映と私が pred直読で直接確認
+- ◎一致率 **54.3%**(prob印◎ と engine印◎ が45.7%別馬)= roadmap根本①の定量確証(再現)
+- **deepcopy で汚染除去**: engine.analyze が past_runs を in-place変更 → 前レース汚染 → ◎一致率 48.6%(汚染)→54.3%(修正)
+- `walk_forward_backtest.py` に `--composite-marks` + deepcopy のみ保持
+
+**P0-β(SQL高速化)= revert採用**:
+- 速度 -7%(25.6→23.8秒/R)= **ML推論が律速・SQL最適化は無価値**と実証(唯一の収穫)
+- 本番 engine.py に WF専用493行混入=設計汚染 → `git checkout src/engine.py` で revert・本番クリーン維持
+- ★Sonnet「正しさgate 15R一致・ROI 197.3%同一」は **backup取り違え**(engine印版同士を比較)で誤り → 私が pred直読で訂正
+
+**⬜ P0-γ (次・background進行)**: OOM解消(prefetched バッチ化)+ 複数月100R で engine印 vs prob印 の本ROI評価(35Rは統計無意味)。speed 24.5秒/R=100R≈40分/月→background。
+- 未コミット: P0-α(`--composite-marks`+deepcopy)は git commit 未(物差し本評価後に判断)
+
+**留意**: 印切替で既存WF数値(過去Phase群)は非互換になる=新フラグで隔離。詳細設計 `docs/p0_wf_composite_design.md` §12。
+
+---
+
+## ✅ 買い目フォーメーション新仕様 + P0〜P3 完了 (6/24夜 全権委任自走・5commit push)
+
+> 詳細: `memory/handoff_2026-06-24_v2.md`。master「P0〜3まで終わらせちゃって」全権委任。
+
+**🔒 新フォーメーション確定スペック(master対話確定)**:
+- 共通ゲート ◎-○≧8.0 / **C先行**→A→B→見送り
+- C(団子): ○~☆総幅<5.0 総流し / A(○抜け): ○-▲≧5.0 / B(○▲拮抗): ○-▲<3.0 & ▲-△≧5.0
+- **A・B統合は却下**(二頭軸7割でROI 54%→24%劣化を実例で確認) / **force_buy維持**(◉/穴は見送りでも常に購入)
+- 実装: `betting.py compute_danso_columns` 全面置換 + `settings.py` 新定数5つ。正典271R完全一致検証・keiba-reviewer P0/P1ゼロ・tests 14 passed
+
+**完了タスク(P0〜P3)**:
+- **P0** git commit/push: 5commit(`b0734e6`新仕様 / `bc67f9b`cp932根治 / `0078d50`ログローテ / `41f8585`truncate guard)
+- **P1 cp932根治**: Windows scheduler stdout cp932 → `print(◉)`即死 → 17時穴馬再選定毎回クラッシュ。finalize/dashboard冒頭UTF-8 reconfigure。`PYTHONIOENCODING=cp932`で実証。穴馬全6日◉5/穴5復活。教訓=`feedback_windows_cp932_print_crash.md`
+- **P1 2025-12特異(17%)**: 真因=composite≠ML place-prob の設計差(roadmap根本①)。品質劣化でない。`diag_p0b_dec_anomaly.py`(netkeiba非アクセス)
+- **P2 ログ208MB**: `log.py` RotatingFileHandler(50MB×3世代)化。旧208MB→3MB gzアーカイブ
+- **P2 コード整備**: 旧DANSO定数廃止コメント / 旧仕様docstring更新 / dead codeコメント
+- **P3補助 truncate guard**: `lgbm_model.py` 特徴量切り詰めを silent→loud(一度だけ警告・挙動不変)
+
+**⬜ 残課題**:
+- **P1本丸**: roadmap P1 odds残差化(市場複製打破・研究的・複数セッション規模)。P0-b乖離確証は完了済
+- P2: WF高速化(prefetch 16秒/R) / dashboard nohup stdout脱却(208MB再発の根の半分)
+- P3: danso厳選度調整(force_buy込み日11Rがmaster的に多いなら) / 2025-12 probe公平比較実装
+- ✅ 20時 odds-scheduler 実発火確認完了: 20:06:38 `elite再選定 ◉=5 穴=5` クラッシュなし(17時の UnicodeEncodeError と対照)=cp932根治を実運用ログで完全クローズ
+
+---
+
 ## ✅ 買い目フォーメーション再設計 完了 (6/23 master主導で確定→実装→検証→commit/push)
 
 > 6/22深夜の越権(設計議論中の独断実装)を反省し、6/23 は **論点を1つずつ master に確定いただいてから実装**。教訓: `memory/feedback_design_no_unilateral_impl.md`。
