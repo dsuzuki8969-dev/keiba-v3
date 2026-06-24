@@ -809,6 +809,15 @@ def _run_composite_probe_race(
             # fetch キャッシュなし (キャッシュミス)
             return {"fetch_miss": 1}
 
+        # 🛡️ P0-b (2026-06-24): offline_mode で過去走 netkeiba 取得を遮断したため、past_runs
+        # キャッシュ欠落レースは ability/composite が崩れる (2025-12 ◎一致率14.3%異常の真因)。
+        # 過去走カバー率 < 50% (新馬戦 or キャッシュ不完全) は測定除外し、信頼レースのみ集計する。
+        _active = [h for h in horses if not getattr(h, "is_scratched", False)]
+        _with_runs = sum(1 for h in _active if getattr(h, "past_runs", None))
+        if _active and _with_runs / len(_active) < 0.5:
+            print(f"  [composite-probe][SKIP] past_runs欠落 {_with_runs}/{len(_active)}頭: {race_id}", flush=True)
+            return {"fetch_miss": 1}
+
         # P0-3: course_db_base からリスト値まで独立コピーして course_db を point-in-time 構築
         # build_course_db_from_past_runs は course_db を inplace .append するため、
         # シャローコピー dict(course_db_base) ではリスト値が共有され月内レース順に汚染される
@@ -1279,6 +1288,11 @@ def main():
             _scraper = PremiumNetkeibaScraper(_all_courses, ignore_ttl=True)
             _scraper.login()
             _scraper.training.login()
+            # 🛡️ P0-b netkeiba遮断 (2026-06-24 事故対応): past_runs キャッシュ欠落時に
+            # fetch_race が ThreadPoolExecutor(max_workers=3) で netkeiba を並列取得する経路
+            # (auth.py:860) を _offline_mode=True で完全遮断 (auth.py:857 で未キャッシュ馬の
+            # 過去走取得をスキップ)。WF は「キャッシュにある分だけ」で leak-free かつ完全オフライン測定。
+            _scraper._offline_mode = True
             reset_engine_caches()
 
             # MLモデルウォームアップ (engine 初回 analyze の遅延を減らす)
