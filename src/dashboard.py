@@ -6423,7 +6423,7 @@ function dNavRefreshOdds(date){{
 
             # T-001 (2026-04-25): UI 3 段表記用のメタ情報を計算
             # total_races (pred.json 全数) / finished_races (results.json 取り込み済み)
-            # / eligible_for_sanrentan (S/A/B のレース数) / pending_fetch / pending_age_max_min
+            # / eligible_for_sanrentan (danso 購入レース数=bet_decision.skip false) / pending_fetch / pending_age_max_min
             meta = {
                 "total_races": 0,
                 "finished_races": 0,
@@ -6436,9 +6436,13 @@ function dNavRefreshOdds(date){{
                 if pred2:
                     races2 = pred2.get("races", [])
                     meta["total_races"] = len(races2)
+                    # マスター指摘 2026-06-24: 「対象」は実カードの danso 買い目（購入レース）を数える。
+                    # 旧実装は _collect_strategy_tickets 非空（三連複+単勝を拾い、見送りレースの単勝残骸や
+                    # S/A/B 全部=38R を対象化）で danso 見送り(bet_decision.skip)を無視し、実カード26Rとズレていた。
+                    # → bet_decision.skip==false（=印断層が発火し購入と判定したレース）のみを対象にする。
                     meta["eligible_for_sanrentan"] = sum(
                         1 for r in races2
-                        if _collect_strategy_tickets(r)
+                        if not (r.get("bet_decision") or {}).get("skip", True)
                     )
                     # results.json 取り込み済み件数・未取り込み統計（M-1 共通ヘルパー）
                     finished_rids, _pf, _pa = _get_pending_fetch_stats(date, races2)
