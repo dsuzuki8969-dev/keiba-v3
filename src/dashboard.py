@@ -12,6 +12,17 @@ import threading
 import time
 from datetime import datetime, timedelta
 
+# 🛡️ cp932 (Shift-JIS) クラッシュ対策 (2026-06-24)
+# Windows で dashboard を起動すると stdout が cp932 になり、scheduler スレッドが
+# 呼ぶ finalize/elite 内の print("...◉...") が UnicodeEncodeError で落ちる。
+# finalize_predictions.py 側でも対策済だが、dashboard プロセス全体の print/log を
+# 確実に UTF-8 化するため起動時に reconfigure する (二重防御・冪等)。
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):
+        pass
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from flask import Flask, Response, jsonify, redirect, render_template, request, send_from_directory

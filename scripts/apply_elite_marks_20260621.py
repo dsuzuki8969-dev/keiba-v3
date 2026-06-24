@@ -132,9 +132,17 @@ def _clear_race_formation(race: Dict) -> None:
     race["formation_columns"] = {}
 
     tbm = race.get("tickets_by_mode", {})
+    # データ形式混在防御 (2026-06-24): 一部の旧 pred では tickets_by_mode が list の
+    # ことがある (例: 6/20)。dict でなければ空 dict で作り直す (見送りクリアが目的なので
+    # 壊れた構造は捨ててよい)。これを怠ると tbm[mode]=[] や _meta アクセスで TypeError。
+    if not isinstance(tbm, dict):
+        tbm = {}
     for mode in ("fixed", "accuracy", "balanced", "recovery"):
         tbm[mode] = []
     meta = tbm.get("_meta", {})
+    # _meta も list 等の異常値があり得る → dict に正規化
+    if not isinstance(meta, dict):
+        meta = {}
     meta["skipped"] = True
     meta["skip_reason"] = "danso_no_fire"
     meta["ticket_count"] = 0
@@ -448,6 +456,10 @@ def apply_elite_and_formation(
              if h.get("mark") == "◉" and not h.get("is_scratched", False)),
             None,
         )
+        # 注: 新仕様では compute_danso_columns / build_force_buy_columns の col1 は
+        #     ◉が存在すれば必ず [◉の馬番] 単独になる（axis=◉優先・betting.py L3204/L3333）。
+        #     よって tekipan_no!=None のとき col1 は既に [tekipan_no] と一致し、
+        #     下の displaced は常に空・col1 も不変＝この分岐は実質到達しない (2026-06-24)。
         if tekipan_no is not None:
             displaced = [n for n in col1 if n != tekipan_no]
             col1 = [tekipan_no]

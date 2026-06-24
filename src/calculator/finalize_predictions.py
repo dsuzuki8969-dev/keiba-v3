@@ -20,6 +20,18 @@ import sys
 from pathlib import Path
 from typing import Dict
 
+# 🛡️ cp932 (Shift-JIS) クラッシュ対策 (2026-06-24)
+# dashboard scheduler スレッドや Windows CLI では stdout が cp932 になり、
+# elite ステップ内の print("...◉...") が UnicodeEncodeError で落ちる。
+# これにより オッズ確定後の ◉/穴 自動再選定 (b42d285) が毎回クラッシュしていた。
+# finalize は dashboard 経由・CLI 直接の両経路の合流点なので、ここで UTF-8 を強制する。
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):
+        # reconfigure 非対応 (古い Python / 既にラップ済) は無視 (errors=replace相当の安全側)
+        pass
+
 # プロジェクトルートをパスに追加 (直接実行・import 双方対応)
 _ROOT = Path(__file__).resolve().parent.parent.parent
 if str(_ROOT) not in sys.path:
