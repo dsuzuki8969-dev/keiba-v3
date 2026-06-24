@@ -57,8 +57,15 @@ def setup(level: int = logging.INFO, log_file: str = None) -> None:
             "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
             datefmt="%H:%M:%S",
         )
-        fh = logging.FileHandler(
-            os.path.join(_LOG_DIR, log_file), encoding="utf-8"
+        # ログローテーション (2026-06-24): 旧 FileHandler は無制限肥大化し
+        # dashboard.log が 208MB まで膨張、tail/grep がタイムアウトする事故が発生。
+        # RotatingFileHandler で 50MB×3世代に制限し再発防止 (合計上限 ~200MB)。
+        from logging.handlers import RotatingFileHandler
+        fh = RotatingFileHandler(
+            os.path.join(_LOG_DIR, log_file),
+            maxBytes=50 * 1024 * 1024,  # 50MB
+            backupCount=3,              # .1 .2 .3 の3世代保持
+            encoding="utf-8",
         )
         fh.setFormatter(file_fmt)
         root.addHandler(fh)
