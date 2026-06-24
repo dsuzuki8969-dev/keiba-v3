@@ -3111,10 +3111,14 @@ _DANSO_HONMEI_MARKS = {"◉", "◎"}
 
 
 def compute_danso_columns(entries: List[Dict]) -> Optional[Dict]:
-    """断層gap体系 フォーメーション決定関数（2026-06-22 マスター承認・全面置換）。
+    """断層gap体系 A/B/C フォーメーション決定関数（2026-06-24 マスター確定・全面置換）。
 
     本関数はHorseEvaluationに依存しない純粋関数として実装し、
     betting.py (generate_danso_tickets) と regen_strategy.py の両方から呼び出せる。
+
+    検証済み参照実装: scripts/sim_new_formation_roi_20260624.py の build_formation。
+    （参照実装は三連複組合せ set を返すが、本関数は col1/col2/col3 の馬番リストを返す。
+      組合せ展開は呼び出し元 generate_danso_tickets が行う。）
 
     Parameters
     ----------
@@ -3133,41 +3137,44 @@ def compute_danso_columns(entries: List[Dict]) -> Optional[Dict]:
 
             {
                 "formation": "danso_gap",
-                "col1": [horse_no],          # ◎単独固定
-                "col2": [horse_no, ...],     # ○のみ or ○▲（comp差<5.0で二頭軸）
-                "col3": [horse_no, ...],     # 起点以降を常に全部+穴+抑（昇順）
+                "col1": [horse_no],          # 軸（◉/◎）単独固定
+                "col2": [horse_no, ...],     # A:[○] / B:[○▲] / C:[○▲△★☆存在分]
+                "col3": [horse_no, ...],     # 各型のcol3印 + 穴 + 抑（昇順）
                 "skip_reason": None,
             }
 
         見送りの場合: None
 
-    断層gap決定木 (マスター確定 2026-06-22):
-      KINKO2 = DANSO_COL2_KINKO (5.0)  … col2 拮抗閾値（○▲ 二頭軸統合）
-      t      = DANSO_AXIS_KINKO (4.0)  … 軸拮抗見送り閾値（≒半分購入）
+    A/B/C 決定木 (マスター確定 2026-06-24):
+      共通ゲート: g1 = comp(軸) - comp(○) ≧ DANSO_AXIS_GATE (8.0) で購入
+        - 軸 = ◉あれば◉、なければ◎（同一馬の別印）
+        - ○不在 → 見送り / 有効馬6頭未満 → 見送り
+        - g1 < DANSO_AXIS_GATE → 見送り
 
-      active = 取消除外済み馬
-      mark→entry マップ（先頭1頭）
-      axis = ◉ あれば ◉, なければ ◎
-      ○ がなければ → 見送り
+      判定順は C先行 → A → B → 見送り:
+        present = [○,▲,△,★,☆] のうち存在する印（強さ順）
+        span = comp(present先頭=○) - comp(present末尾)   （present 2件以上のとき）
+        g2   = comp(○) - comp(▲)                          （▲不在なら None）
 
-      g1 = comp(axis) - comp(○)
-      g2 = comp(○) - comp(▲)  （▲不在なら99）
+        1. C (団子・総流し): span < DANSO_C_SPAN (5.0)
+             col2 = [○,▲,△,★,☆]存在分 / col3 = col2と同じ + 穴 + 抑
+        2. A (○抜け): g2 ≧ DANSO_A_MARU_SAN (5.0)   （▲不在 g2=None なら非該当）
+             col2 = [○] / col3 = [▲,△,★,☆]存在分 + 穴 + 抑
+        3. B (○▲拮抗): g2 < DANSO_B_MARU_SAN (3.0) かつ
+                       comp(▲)-comp(△) ≧ DANSO_B_SAN_SANKAKU (5.0)
+                       （▲または△不在なら非該当）
+             col2 = [○,▲] / col3 = [○,▲,△,★,☆]存在分 + 穴 + 抑
+        4. いずれも非該当（g2が3.0〜5.0の谷間等） → 見送り
 
-      if g1 < t  → 軸拮抗見送り (skip_reason="danso_axis_kinko")
-
-      if ▲存在 and g2 < KINKO2:
-          col2_marks = [○, ▲]; col3_start = △   （最大二頭軸）
-      else:
-          col2_marks = [○];   col3_start = ▲   （▲ も col3 側へ）
-
-      col3: ORDER[col3_start:] の印を常に全部 col3_marks に追加（断層切り廃止）
-
-      col3最終 = sorted(set([col3馬番] + [穴馬番] + [抑馬番]))
-      col3空 → 紐なし見送り
-
-      return {"formation":"danso_gap", "col1":[axis_no], "col2":[col2馬番], "col3":col3最終}
+      col3空 → 紐なし見送り / col2空 → 見送り
     """
-    from config.settings import DANSO_COL2_KINKO as KINKO2, DANSO_AXIS_KINKO as t
+    from config.settings import (
+        DANSO_AXIS_GATE,
+        DANSO_C_SPAN,
+        DANSO_A_MARU_SAN,
+        DANSO_B_MARU_SAN,
+        DANSO_B_SAN_SANKAKU,
+    )
 
     # ── 取消馬を除外した有効馬のみ ──
     active = [e for e in entries if not e.get("is_scratched", False)]
@@ -3184,83 +3191,86 @@ def compute_danso_columns(entries: List[Dict]) -> Optional[Dict]:
     ]
 
     # ── 印 → entry マップ（先に見つかった1頭が代表） ──
-    # ORDER は印の強さ順。穴・抑は別扱い（col3 追加専用）
-    ORDER = ["◎", "○", "▲", "△", "★", "☆"]
+    # ORDER は present/col判定に用いる印の強さ順。穴・抑は別扱い（col3 追加専用）。
+    ORDER = ["○", "▲", "△", "★", "☆"]
     mark_to_entry: Dict[str, Dict] = {}
     for e in active:
         m = e.get("mark", "")
         if m in _DANSO_VALID_MARKS and m not in mark_to_entry:
             mark_to_entry[m] = e
 
-    # ── axis 判定: ◉があれば◉を◎キーとして扱う ──
-    # ◉馬は ORDER では "◎" 相当として処理（同一馬）
+    # ── axis 判定: ◉があれば◉、なければ◎（同一馬の別印） ──
     axis_mark: str
     if "◉" in mark_to_entry:
         axis_mark = "◉"
-        # ORDER の ◎ 位置に ◉ を代入（comp取得用）
     elif "◎" in mark_to_entry:
         axis_mark = "◎"
     else:
         return None  # 本命不在 → 見送り
 
-    def _comp(mark: str) -> float:
-        """指定印のcompositeを返す。不在なら -999。"""
+    # ── ○の存在チェック ──
+    if "○" not in mark_to_entry:
+        return None  # ○不在 → 見送り
+
+    def _comp(mark: str) -> Optional[float]:
+        """指定印のcompositeを返す。不在なら None（span/g2計算で None を識別するため）。"""
         e = mark_to_entry.get(mark)
-        return float(e["composite"]) if e is not None else -999.0
+        return float(e["composite"]) if e is not None else None
 
     def _no(mark: str) -> Optional[int]:
         e = mark_to_entry.get(mark)
         return int(e["horse_no"]) if e is not None else None
 
-    # ── ○の存在チェック ──
-    if "○" not in mark_to_entry:
-        return None  # ○不在 → 見送り
+    # ── 共通ゲート: g1 = comp(軸) - comp(○) ≧ DANSO_AXIS_GATE ──
+    comp_axis = _comp(axis_mark)
+    comp_maru = _comp("○")
+    g1 = comp_axis - comp_maru   # 軸 vs ○（両者とも存在保証済み）
+    if g1 < DANSO_AXIS_GATE:
+        return None  # 軸ゲート未達 → 見送り
 
-    # ── gap 計算 ──
-    comp_axis   = _comp(axis_mark)
-    comp_taikou = _comp("○")
-    g1 = comp_axis - comp_taikou   # 軸 vs ○
+    # ── g2 = comp(○) - comp(▲)（▲不在なら None） ──
+    comp_san = _comp("▲")  # ▲
+    g2 = (comp_maru - comp_san) if comp_san is not None else None
 
-    # 軸拮抗判定: g1 < t → 見送り
-    if g1 < t:
-        return None
+    # ── present / span 計算（存在する印のみ・強さ順） ──
+    present = [mk for mk in ORDER if mk in mark_to_entry]
+    span: Optional[float] = None
+    if len(present) >= 2:
+        comps = [_comp(mk) for mk in present]
+        span = comps[0] - comps[-1]   # comp(○) - comp(末尾)
 
-    # ── col2 決定: g2(○-▲) が KINKO2(5.0) 未満なら ○▲ 二頭軸、否なら ○のみ ──
-    has_tannuke = "▲" in mark_to_entry
-    if has_tannuke:
-        comp_tannuke = _comp("▲")
-        g2 = comp_taikou - comp_tannuke
-    else:
-        g2 = 99.0  # ▲不在 → ○のみ確定
-
-    if has_tannuke and g2 < KINKO2:
-        # ○▲ を二頭軸に統合（○-▲ 拮抗・最大二頭軸）
-        col2_marks = ["○", "▲"]
-        col3_start_idx = ORDER.index("△")
-    else:
-        # ○のみ col2
-        col2_marks = ["○"]
-        col3_start_idx = ORDER.index("▲")
-
-    # ── col3 生成: col3_start_idx 以降の印を常に全部入れる（断層切り廃止・マスター確定 6/22） ──
+    # ── 判定順: C先行 → A → B → 見送り ──
+    col2_marks: List[str] = []
     col3_marks: List[str] = []
 
-    for k in ORDER[col3_start_idx:]:
-        if k not in mark_to_entry:
-            continue
-        col3_marks.append(k)
+    if span is not None and span < DANSO_C_SPAN:
+        # C: ○~☆総幅 < DANSO_C_SPAN（団子・総流し）← C先行
+        col2_marks = ["○", "▲", "△", "★", "☆"]
+        col3_marks = ["○", "▲", "△", "★", "☆"]
+    elif g2 is not None and g2 >= DANSO_A_MARU_SAN:
+        # A: ○-▲ ≧ DANSO_A_MARU_SAN（○抜け・単独軸）
+        col2_marks = ["○"]
+        col3_marks = ["▲", "△", "★", "☆"]
+    elif g2 is not None and g2 < DANSO_B_MARU_SAN:
+        # B: ○-▲ < DANSO_B_MARU_SAN かつ ▲-△ ≧ DANSO_B_SAN_SANKAKU（○▲二頭軸）
+        comp_sankaku = _comp("△")  # △
+        if comp_sankaku is not None and (comp_san - comp_sankaku) >= DANSO_B_SAN_SANKAKU:
+            col2_marks = ["○", "▲"]
+            col3_marks = ["○", "▲", "△", "★", "☆"]
 
-    # ── col3 に穴・抑を追加 ──
+    # いずれも非該当（谷間: g2が3.0〜5.0 など） → 見送り
+    if not col2_marks:
+        return None
+
+    # ── col3 に穴・抑を追加（昇順・重複除去） ──
     col3_base_nos: List[int] = [
         _no(mk) for mk in col3_marks if _no(mk) is not None
     ]
     col3_nos = sorted(set(col3_base_nos) | set(_ana_nos) | set(_osae_nos))
-
-    # 紐なし見送り
     if not col3_nos:
-        return None
+        return None  # 紐なし見送り
 
-    # ── col2 馬番 ──
+    # ── col2 馬番（存在分のみ） ──
     col2_nos: List[int] = [_no(mk) for mk in col2_marks if _no(mk) is not None]
     if not col2_nos:
         return None
@@ -3380,8 +3390,10 @@ def generate_danso_tickets(
     compute_danso_columns で断層判定し、col1×col2×col3の三連複をフラット均等賭けで生成。
     EVフィルタなし・MAX点数制限なし。
 
-    条件優先順位: A-F1 / A-F2 → C → B-F1 / B-F2
-    どれも非発火 → 見送り（sanrenpuku=[]）
+    判定順（compute_danso_columns に委譲・2026-06-24 新仕様）:
+        共通ゲート comp(軸)-comp(○) ≧ DANSO_AXIS_GATE を満たした上で
+        C(団子・総流し) → A(○抜け) → B(○▲拮抗) → 見送り の順で評価する。
+    ゲート不成立・どれも非発火 → 見送り（sanrenpuku=[]）
 
     Returns
     -------

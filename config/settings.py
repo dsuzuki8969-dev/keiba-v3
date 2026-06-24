@@ -580,6 +580,7 @@ TOKUSEN_MAX_PER_RACE = 2        # 1レース最大2頭
 USE_DANSO_BUY = True            # True: generate_danso_tickets 使用 / False: 従来 M' 戦略
 DANSO_STAKE_PER_POINT = 100     # 断層三連複: 1点あたり賭け金（円）
 # 断層判定閾値（composite偏差値差）
+# ⚠️ 廃止 (2026-06-24 新フォーメーション移行): 参照なし。DANSO_AXIS_GATE/DANSO_C_SPAN/DANSO_A_MARU_SAN/DANSO_B_MARU_SAN/DANSO_B_SAN_SANKAKU を使用
 DANSO_GAP1_THRESHOLD = 5.0     # 断層①: comp(本命) - comp(○) >= 5.0（条件A/C共通入口）
 DANSO_GAP2A_THRESHOLD = 3.0    # 断層②A: comp(○) - comp(▲) >= 3.0（A-F1発火）
 DANSO_GAP2B_THRESHOLD = 3.0    # 断層②B: comp(▲) - comp(△) >= 3.0（A-F2発火）
@@ -595,15 +596,31 @@ DANSO_FLAT_THRESHOLD = 3.0     # 条件C: 横一線判定（隣接差<3.0）
 # 閾値感度(6/22 dry-run): 5.0=見送り16.7% / 10.0=見送り64.6%
 # 5.0採用根拠: 形状(紐幅)判断は「軸が3着内」前提でg1≥5で十分。10.0はG1=7-9の軸優勢まで
 #   見送りし過剰。g1≥10「真の安泰」は勝率の話で形状判断とは別軸。10.0へは本値1行で切替可。
+# ⚠️ 廃止 (2026-06-24 新フォーメーション移行): 参照なし。DANSO_AXIS_GATE/DANSO_C_SPAN/DANSO_A_MARU_SAN/DANSO_B_MARU_SAN/DANSO_B_SAN_SANKAKU を使用
 DANSO_FORMATION_GAP = 5.0      # 4パターン断層閾値（g1/g2/g3 共通）
 DANSO_KIKKO_THRESHOLD = 2.0    # 4パターン拮抗閾値（g1<2.0 → 二頭拮抗）
 
 # 断層gap買い目体系（2026-06-22 マスター確定・旧4パターン置換）
 # col1=◎単独固定 / col2=○or○▲(comp差<5.0) / col3=常に全部+穴+抑 / 見送り◎-○<4.0 / 自信度ゲート
+# ⚠️ 廃止 (2026-06-24 新フォーメーション移行): 参照なし。DANSO_AXIS_GATE/DANSO_C_SPAN/DANSO_A_MARU_SAN/DANSO_B_MARU_SAN/DANSO_B_SAN_SANKAKU を使用
 DANSO_COL2_KINKO = 5.0     # col2拮抗: comp(○)-comp(▲)<これ で ○▲ を二頭軸統合（最大二頭軸・マスター確定 6/22）
 DANSO_AXIS_KINKO = 4.0     # 軸拮抗見送り: comp(◎)-comp(○)<これ で見送り（≒半分購入・マスター確定 6/22）
 # DANSO_COL_GAP は廃止: col3 は断層切りせず △★☆＋穴＋抑 を常に全部入れる仕様（マスター確定 6/22）
 DANSO_BUY_CONFIDENCE = ("SS", "S", "A", "B")  # これ以外(C/D)は見送り
+
+# 断層gap買い目体系 A/B/C 仕様（2026-06-24 マスター確定・C先行判定）
+# 共通ゲート: comp(軸) - comp(○) ≧ DANSO_AXIS_GATE で購入（満たさねば見送り）
+# 判定順: C(団子・総流し) → A(○抜け) → B(○▲拮抗) → 見送り
+#   C: present=[○▲△★☆]存在分の総幅 span = comp(○) - comp(末尾) < DANSO_C_SPAN → 総流し
+#   A: g2 = comp(○) - comp(▲) ≧ DANSO_A_MARU_SAN → col2=[○] col3=[▲△★☆穴抑]
+#   B: g2 < DANSO_B_MARU_SAN かつ comp(▲)-comp(△) ≧ DANSO_B_SAN_SANKAKU → col2=[○▲] col3=[○▲△★☆穴抑]
+#   いずれも非該当(g2が3.0〜5.0の谷間等) → 見送り
+# 検証済み参照実装: scripts/sim_new_formation_roi_20260624.py build_formation
+DANSO_AXIS_GATE = 8.0      # 軸ゲート: comp(軸)-comp(○) ≧ これ で購入（マスター確定 6/24）
+DANSO_C_SPAN = 5.0         # C団子: ○~☆総幅 < これ で総流し
+DANSO_A_MARU_SAN = 5.0     # A: ○-▲ ≧ これ で○抜け（単独軸）
+DANSO_B_MARU_SAN = 3.0     # B: ○-▲ < これ かつ
+DANSO_B_SAN_SANKAKU = 5.0  # B: ▲-△ ≧ これ で○▲二頭軸
 
 # 特選危険馬
 TOKUSEN_KIKEN_SCORE_THRESHOLD = 3.0  # 特選判定閾値（ML×composite二重否定通過後の追加スコア）
