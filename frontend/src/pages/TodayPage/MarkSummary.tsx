@@ -132,7 +132,7 @@ function MarkRow({ mo, h, rankColors, indexRanks, isNarrow }: { mo: MarkDef; h: 
         </div>
         {/* 2行目: 騎手 + オッズ + 人気 + 勝率 */}
         <div className="flex items-center gap-2 mt-0.5 text-xs pl-7 flex-wrap">
-          {h.jockey && <span className="text-muted-foreground whitespace-nowrap ml-1">{h.jockey}</span>}
+          {h.jockey && <span className="text-muted-foreground whitespace-nowrap ml-3">{h.jockey}</span>}
           <span className={`tabular-nums font-bold whitespace-nowrap ${h.popularity != null ? (rankCls(h.popularity) || "text-foreground") : "text-muted-foreground"}`}>{oddsStr}</span>
           <span className={`whitespace-nowrap ${h.popularity != null ? (rankCls(h.popularity) || "text-muted-foreground") : "text-muted-foreground"}`}>{popStr}</span>
           {winP != null && (
@@ -160,9 +160,10 @@ function MarkRow({ mo, h, rankColors, indexRanks, isNarrow }: { mo: MarkDef; h: 
       </div>
       {/* 馬番+馬名 */}
       <span className={`inline-flex w-5 h-5 items-center justify-center rounded-sm text-[10px] font-bold shrink-0 ${WAKU_BG[h.gate_no as number] || "bg-gray-200"}`}>{h.horse_no}</span>
-      <span className="font-bold min-w-[72px] whitespace-nowrap">{h.horse_name}</span>
-      {/* 騎手 */}
-      {h.jockey && <span className="text-muted-foreground whitespace-nowrap ml-1">{h.jockey}</span>}
+      <div className="flex flex-col leading-tight min-w-0 shrink-0">
+        <span className="font-bold whitespace-nowrap">{h.horse_name}</span>
+        {h.jockey && <span className="text-muted-foreground text-[11px] whitespace-nowrap">{h.jockey}</span>}
+      </div>
       {/* オッズ+人気 — v6.1.21: Japanese char-by-char 改行防止 */}
       <span className={`tabular-nums font-bold whitespace-nowrap ${h.popularity != null ? (rankCls(h.popularity) || "text-foreground") : "text-muted-foreground"}`}>{oddsStr}</span>
       <span className={`font-semibold whitespace-nowrap ${h.popularity != null ? (rankCls(h.popularity) || "text-muted-foreground") : "text-muted-foreground"}`}>{popStr}</span>
