@@ -31,6 +31,26 @@ from src.log import get_logger
 
 logger = get_logger(__name__)
 
+# 特徴量切り詰め警告の重複抑制 (2026-06-24): model.num_feature() < len(FEATURE_COLUMNS)
+# の時に feat_cols を黙って切り詰めると、新規追加した特徴量が無視され silent に
+# 特徴量不整合(=モデル劣化)が起きる。毎レース警告は煩いので (モデル署名, n) 単位で
+# 一度だけ警告する。要・該当モデルの再学習 (retrain_all.py)。
+_FEAT_TRUNCATE_WARNED: set = set()
+
+
+def _warn_feature_truncate(model_n: int, full_n: int, context: str) -> None:
+    """特徴量切り詰めを一度だけ警告する (モデル特徴量数×文脈 単位で重複抑制)。"""
+    key = (model_n, full_n, context)
+    if key in _FEAT_TRUNCATE_WARNED:
+        return
+    _FEAT_TRUNCATE_WARNED.add(key)
+    logger.warning(
+        "⚠️ 特徴量切り詰め [%s]: モデルは %d 特徴量で学習されているが "
+        "FEATURE_COLUMNS は %d 個。末尾 %d 個が無視されます。"
+        "特徴量を追加したらモデル再学習 (retrain_all.py) が必要です。",
+        context, model_n, full_n, full_n - model_n,
+    )
+
 _BASE = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 ML_DATA_DIR = os.path.join(_BASE, "data", "ml")
 MODEL_DIR = os.path.join(_BASE, "data", "models")
@@ -4033,6 +4053,7 @@ class LGBMPredictor:
         if hasattr(model, "num_feature"):
             n = model.num_feature()
             if n < len(feat_cols):
+                _warn_feature_truncate(n, len(feat_cols), "build_X")
                 feat_cols = feat_cols[:n]
         X = np.array(
             [[float(f[c]) if f[c] is not None else float("nan") for c in feat_cols]
@@ -4113,6 +4134,7 @@ class LGBMPredictor:
         if hasattr(model, "num_feature"):
             n = model.num_feature()
             if n < len(feat_cols):
+                _warn_feature_truncate(n, len(feat_cols), "predict")
                 feat_cols = feat_cols[:n]
 
         X = np.array(
@@ -4307,6 +4329,7 @@ class LGBMPredictor:
         if hasattr(model, "num_feature"):
             n = model.num_feature()
             if n < len(feat_cols):
+                _warn_feature_truncate(n, len(feat_cols), "shap")
                 feat_cols = feat_cols[:n]
 
         features = []
