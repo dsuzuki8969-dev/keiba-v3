@@ -160,15 +160,15 @@ function MarkRow({ mo, h, rankColors, indexRanks, isNarrow }: { mo: MarkDef; h: 
       </div>
       {/* 馬番+馬名 */}
       <span className={`inline-flex w-5 h-5 items-center justify-center rounded-sm text-[10px] font-bold shrink-0 ${WAKU_BG[h.gate_no as number] || "bg-gray-200"}`}>{h.horse_no}</span>
-      <div className="flex flex-col leading-tight min-w-0 shrink-0">
-        <span className="font-bold whitespace-nowrap">{h.horse_name}</span>
-        {h.jockey && <span className="text-muted-foreground text-[11px] whitespace-nowrap">{h.jockey}</span>}
+      <div className="flex flex-col leading-tight w-36 shrink-0">
+        <span className="font-bold truncate">{h.horse_name}</span>
+        {h.jockey && <span className="text-muted-foreground text-[11px] truncate">{h.jockey}</span>}
       </div>
       {/* オッズ+人気 — v6.1.21: Japanese char-by-char 改行防止 */}
-      <span className={`tabular-nums font-bold whitespace-nowrap ${h.popularity != null ? (rankCls(h.popularity) || "text-foreground") : "text-muted-foreground"}`}>{oddsStr}</span>
-      <span className={`font-semibold whitespace-nowrap ${h.popularity != null ? (rankCls(h.popularity) || "text-muted-foreground") : "text-muted-foreground"}`}>{popStr}</span>
+      <span className={`tabular-nums font-bold whitespace-nowrap w-16 text-right shrink-0 ${h.popularity != null ? (rankCls(h.popularity) || "text-foreground") : "text-muted-foreground"}`}>{oddsStr}</span>
+      <span className={`font-semibold whitespace-nowrap w-12 text-center shrink-0 ${h.popularity != null ? (rankCls(h.popularity) || "text-muted-foreground") : "text-muted-foreground"}`}>{popStr}</span>
       {/* グレード・総合 */}
-      <span className={`whitespace-nowrap ${gradeCls(cg)}`}>
+      <span className={`whitespace-nowrap w-20 shrink-0 ${gradeCls(cg)}`}>
         {cg}・{h.composite?.toFixed(1) || "—"}
       </span>
       {/* 能力・展開・適性 */}
