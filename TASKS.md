@@ -6,6 +6,16 @@
 
 ---
 
+## ✅ P1-a odds残差化 = 無効確定 + ワイド払戻バグ仕上げ完了 (6/25夜〜6/26)
+
+> 詳細: `memory/handoff_2026-06-25_v2.md` / `memory/project_p1a_residual_dead_end.md`
+
+**P1-a (odds残差化・init_score方式)**: フル8ヶ月(127,813サンプル)で**無効確定**。`residual_blend ≈ baseline`(券種横断で相殺・一貫優位なし)・`residual_pure`全面大幅劣後・全ROI<100%(控除率の壁)。P1-b(ダンピング撤廃)も無効 → **roadmap P1「市場複製打破の残差化アプローチ」死亡**。市場(オッズ)は効率的でMLが引き出せる残差は控除率を破れない。**唯一の出口 = roadmap P3「市場が価格に織り込んでいない新規データ」**(含水率/クッション値/風)。commit `203aea5`(P0物差し)+`b550c81`(P1-b) push済。技術的学び: `best_iter=1`罠(dvalid init_score除去で解決)。
+
+**ワイド払戻 同額複製バグ (旧task_73613273) = クローズ**: 本番反映完了を実測確証(2025年 92.4%→0.1% / 2026年 7.0%→0.0%)。真因=旧backfillの`<br>`無視パース → DB焼込 → rebuild_results_from_db で全件伝播(現scraperは正常)。中層ガード(`payout_normalizer.detect_wide_duplicate_payout` 警告のみ・挙動不変)+ 適用スクリプト(`apply_wide_fix_to_results.py` ワイドのみ差替・他キー非破壊) commit `006b5d2` push済。残存14件は fixed側も同額複製で自動修正不可(実害軽微0.1%)。**6/26 作業ツリー整理完了**: results_fixed(中間生成物336件)を gitignore化+追跡解除+物理削除(backup 904件は保険で物理保持)、使い捨て検証scripts 4本(P0-β revert済/AB統合却下前提)削除、`compare_engine_prob_roi.py`(P0-γ恒久ツール)のみ残置commit。
+
+---
+
 ## 🎯 P1本丸 odds残差化 着手 → P0物差し先行 (6/24 master「OK任せる」全権委任・進行中)
 
 > master「OK任せる」→ P1本丸へ。調査で roadmap前提の**重大訂正**: **P0(正しい物差し)が未完**だった。WFは今も ML確率印(`walk_forward_backtest.py:465 COMPOSITE_PROBE=False` / `:49-69 _assign_marks` prob降順 / `:506 composite=prob×100` / `:513-519` 7因子0.0)で**本番7因子compositeを測っていない**。roadmap「P0→P1 順序不可分・P0無しにP1効果測定不能」厳守 → **master決定: P0物差し完成を先行**。

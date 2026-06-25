@@ -43,6 +43,10 @@ data/models/*.onnx
 data/models/.bak_*/
 data/predictions/
 data/results/
+# 2026-06-26 追加: ワイド払戻バグ修正の中間生成物 (results_fixed) と本番適用前バックアップ (results_backup_*) は
+# 再生成可能なデータ・ロールバック用ローカル資産のため git 管理外 (4.2GB 誤 commit 事故の文化に整合)
+data/results_fixed/
+data/results_backup_*/
 data/analysis/
 data/e2e_seed/
 data/bloodline/
