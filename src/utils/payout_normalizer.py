@@ -17,7 +17,10 @@ combo は文字列形式 ('1-2-3' for sanrenpuku, '1' for tansho)、payout は i
 - scripts/analyze_r1_ticket_roi.py
 - (将来) 他の集計スクリプト
 """
+import logging
 from typing import Any, Dict, List
+
+logger = logging.getLogger(__name__)
 
 # 日本語キー / romaji キーを romaji に統一
 TICKET_TYPE_KEY_MAP: Dict[str, str] = {
@@ -34,6 +37,31 @@ TICKET_TYPE_KEY_MAP: Dict[str, str] = {
 ORDERED_TICKET_TYPES = frozenset(["sanrentan", "umatan"])
 
 
+def detect_wide_duplicate_payout(wide_entries: List[Dict[str, Any]]) -> bool:
+    """ワイド払戻の同額複製バグを検知する
+
+    3 通り以上のワイドエントリが存在し、かつ全エントリの payout が同一値の場合に
+    同額複製バグと判定して True を返す。
+    除外や自動修正は行わない。呼び出し元でロギング等の対応を行うこと。
+
+    Args:
+        wide_entries: ワイドの払戻リスト
+            [{'combo': '1-2', 'payout': 640}, {'combo': '1-3', 'payout': 4370}, ...]
+    Returns:
+        True: 同額複製バグと判定  /  False: 正常
+    """
+    if not isinstance(wide_entries, list) or len(wide_entries) < 2:
+        return False
+    payouts = [
+        e.get("payout")
+        for e in wide_entries
+        if isinstance(e, dict) and e.get("payout") is not None
+    ]
+    if len(payouts) < 2:
+        return False
+    return len(set(payouts)) == 1
+
+
 def normalize_payouts(raw_payouts: Any) -> Dict[str, List[Dict[str, Any]]]:
     """JRA dict / NAR list 混在の payouts を統一 list 形式に正規化
 
@@ -41,6 +69,10 @@ def normalize_payouts(raw_payouts: Any) -> Dict[str, List[Dict[str, Any]]]:
         raw_payouts: scraper や DB 由来の生 payouts (dict or なんでも)
     Returns:
         {ticket_type_romaji: [{'combo': str, 'payout': int, 'popularity': int}, ...]}
+
+    Notes:
+        ワイドが複数エントリで全部同額の場合は同額複製バグとして WARNING ログを出力する。
+        挙動 (除外・修正) は行わない = 警告ログのみ。
     """
     if not isinstance(raw_payouts, dict):
         return {}
@@ -59,6 +91,17 @@ def normalize_payouts(raw_payouts: Any) -> Dict[str, List[Dict[str, Any]]]:
             continue
 
         result.setdefault(normalized_key, []).extend(entries)
+
+    # ワイド同額複製バグの検知 (警告ログのみ・挙動不変)
+    wide_entries = result.get("wide", [])
+    if detect_wide_duplicate_payout(wide_entries):
+        dup_val = wide_entries[0].get("payout") if wide_entries else None
+        logger.warning(
+            "ワイド同額複製バグを検知: %d 通りが全て %s 円 "
+            "(data/results/ の未修正ファイルの可能性があります)",
+            len(wide_entries),
+            dup_val,
+        )
 
     return result
 
