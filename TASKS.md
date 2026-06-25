@@ -40,8 +40,7 @@
 - 本番 engine.py に WF専用493行混入=設計汚染 → `git checkout src/engine.py` で revert・本番クリーン維持
 - ★Sonnet「正しさgate 15R一致・ROI 197.3%同一」は **backup取り違え**(engine印版同士を比較)で誤り → 私が pred直読で訂正
 
-**⬜ P0-γ (次・background進行)**: OOM解消(prefetched バッチ化)+ 複数月100R で engine印 vs prob印 の本ROI評価(35Rは統計無意味)。speed 24.5秒/R=100R≈40分/月→background。
-- 未コミット: P0-α(`--composite-marks`+deepcopy)は git commit 未(物差し本評価後に判断)
+**✅ P0-γ 完了 (6/26)**: engine印 vs prob印 三連複ROI比較(2026-01フル1189R)を `compare_engine_prob_roi.py`(同一買い目ルール`compute_danso_columns`+共通発火レース母数統一)で実施。**結論: 同一レースでは engine印 +1.2pt(印質ほぼ互角・hit%39.0%同一) / 実運用ベース +7.2pt(レース選択込) / 両者赤字88.5%/87.3%**。+7.2pt分解 = 交絡4.8pt + 発火レース選択6.0pt + 純粋印質1.2pt。「正しい物差しでも同一レースでは劇的改善せず」= roadmap P0期待を下方修正。詳細 `memory/handoff_2026-06-26.md`。
 
 **留意**: 印切替で既存WF数値(過去Phase群)は非互換になる=新フラグで隔離。詳細設計 `docs/p0_wf_composite_design.md` §12。
 
