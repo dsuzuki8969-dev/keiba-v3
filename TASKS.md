@@ -42,6 +42,8 @@
 
 **✅ P0-γ 完了 (6/26)**: engine印 vs prob印 三連複ROI比較(2026-01フル1189R)を `compare_engine_prob_roi.py`(同一買い目ルール`compute_danso_columns`+共通発火レース母数統一)で実施。**結論: 同一レースでは engine印 +1.2pt(印質ほぼ互角・hit%39.0%同一) / 実運用ベース +7.2pt(レース選択込) / 両者赤字88.5%/87.3%**。+7.2pt分解 = 交絡4.8pt + 発火レース選択6.0pt + 純粋印質1.2pt。「正しい物差しでも同一レースでは劇的改善せず」= roadmap P0期待を下方修正。詳細 `memory/handoff_2026-06-26.md`。
 
+**✅ レース選択効果の解明 + 複数月実証 完了 (6/26夜・承認なし自走・本番非改変)**: engine印ゲート(`DANSO_AXIS_GATE=8.0`)の正体 = **実力拮抗レースを見送り荒れレースを回避する装置**。`scripts/analyze_race_selection_effect.py`(新規): prob独自89R(engine見送り)の見送り理由は engine側 **100%実力評価系**(skip:軸ゲート53 + skip:谷間36・構造的見送りゼロ)。probは確率スケール(×100)で◎-○差を過大評価(p_gap中央13.1 vs engine7.7)し「1強A型」と誤認発火 → 荒れレース(三連複2,650円/◎飛び25.8%)を掴む。engineは拮抗と見て回避(個票: 川崎e_gap0.6/p_gap23.0→30,970円・園田e_gap2.1→46,560円)。創業理念「市場に騙されない本当の馬の力」と完全整合。`scripts/verify_engine_gate_multimonth.py`(新規): 2026-01/02/03で荒れ回避は **方向一貫**(見送配当>danso発火配当: +1,010/+405/+270円)だが**効果量は月変動**(1月突出・穴%は2月で消失)。prob比較は p0a_backup生成手順喪失で2026-01のみ。keiba-reviewer **P0なし**(force_buy本番関数直呼びで根治)。**新規2script未commit**(master朝確認後にcommit/push)。**ML印転写(P2②)は本番engine.py改変で朝承認待ち**。詳細 `memory/handoff_2026-06-26_v2.md`。
+
 **留意**: 印切替で既存WF数値(過去Phase群)は非互換になる=新フラグで隔離。詳細設計 `docs/p0_wf_composite_design.md` §12。
 
 ---
