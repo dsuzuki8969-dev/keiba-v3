@@ -540,6 +540,31 @@ def main() -> None:
     print_comparison_table(common_engine, common_prob, title="共通発火レース比較表（母数統一・最も厳密な印比較）")
 
     # ────────────────────────────────────────
+    # [レース選択効果] engine独自 vs prob独自レースのROI
+    # ※ engine印の価値の大半「どのレースを買うか(発火判定)」の正体を分解
+    # ────────────────────────────────────────
+    engine_only = engine_fired - prob_fired
+    prob_only = prob_fired - engine_fired
+    print(f"\n\n{'#'*60}")
+    print(f"# [レース選択効果] 各印が独自に発火(買い目生成)したレースのROI")
+    print(f"# engine印の優位の大半が「レース選択」にある仮説を検証")
+    print(f"{'#'*60}")
+    print(f"  engine独自 (engine買い・prob見送り): {len(engine_only)}R")
+    print(f"  prob独自   (prob買い・engine見送り): {len(prob_only)}R")
+    print(f"  共通                              : {len(common)}R")
+    eo_stats, _ = calc_roi_unified_formation(
+        engine_races, results, label="engine独自レース [engine印買い目]", race_filter=engine_only
+    )
+    po_stats, _ = calc_roi_unified_formation(
+        prob_races_filtered, results, label="prob独自レース [prob印買い目]", race_filter=prob_only
+    )
+    print_stats(eo_stats)
+    print_stats(po_stats)
+    print(f"\n  [解釈] prob独自(engineが見送ったレース)のROIが共通531R(~88%)より")
+    print(f"         著しく低ければ → engine印の見送り判断が低ROIレースを正しく回避")
+    print(f"         = engine印の価値は『どの馬を選ぶか』でなく『どのレースを買うか』")
+
+    # ────────────────────────────────────────
     # 交絡量の定量化（旧 vs 新の差）
     # ────────────────────────────────────────
     print(f"\n\n{'#'*60}")
