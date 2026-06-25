@@ -791,6 +791,11 @@ BET_DECISION_THRESHOLDS = {
 # 市場確率アンカリング: モデル推定と市場確率のブレンド比率（0=モデルのみ, 1=市場のみ）
 MARKET_BLEND_RATIO = 0.10  # キャリブレーション修正: 旧0.20→0.10（市場ブレンド1回限りで十分）
 
+# 穴馬ダンピング (roadmap P1-b): 高オッズ馬の ML/odds 正補正・market_anchor を抑制する3層。
+# True=現状維持(本番デフォルト) / False=撤廃(穴馬の市場乖離=アルファを尊重)。
+# 環境変数 DAMPEN_LONGSHOT=0 で OFF (WF 効果測定用・本番は未設定=True で挙動不変)。
+DAMPEN_LONGSHOT = os.environ.get("DAMPEN_LONGSHOT", "1") != "0"
+
 # 最終確率のメリハリ拡大: べき乗変換（1.0=変更なし, >1.0で差を拡大）
 # 正規化後に適用するため、合計値は保たれつつ上位がより突出する
 PROB_SHARPNESS = 1.45  # キャリブレーション修正: 旧1.30→1.45（上流圧縮削減に伴い強化）

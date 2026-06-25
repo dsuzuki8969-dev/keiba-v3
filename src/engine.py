@@ -1761,6 +1761,7 @@ class RaceAnalysisEngine:
         #
         # 改善: ±2.5pt → ±5.0pt に拡大 + 順位乖離ペナルティ
         # composite順位とwin_prob順位が大きく離れている場合、追加ペナルティで矯正
+        from config.settings import DAMPEN_LONGSHOT
         try:
             _win_probs = [ev.win_prob for ev in evaluations]
             _n_wp = len(_win_probs)
@@ -1797,9 +1798,9 @@ class RaceAnalysisEngine:
 
                         # 高オッズ馬のML補正をダンピング（穴馬のcomposite逆転を抑制）
                         _odds = getattr(ev.horse, "odds", None) or getattr(ev.horse, "tansho_odds", None)
-                        if _odds is not None and _odds >= 30.0 and _raw_adj > 0:
+                        if DAMPEN_LONGSHOT and _odds is not None and _odds >= 30.0 and _raw_adj > 0:
                             _raw_adj *= 0.3  # 30倍超は70%減
-                        elif _odds is not None and _odds >= 15.0 and _raw_adj > 0:
+                        elif DAMPEN_LONGSHOT and _odds is not None and _odds >= 15.0 and _raw_adj > 0:
                             _raw_adj *= 0.5  # 15倍超は50%減
                         ev.ml_composite_adj = _raw_adj
         except Exception:
@@ -1852,9 +1853,9 @@ class RaceAnalysisEngine:
             new_adj = calc_odds_consistency_score(bp, all_base_post, ev.horse.odds)
             # 高オッズ馬のodds_consistency正補正を抑制（穴馬のcomposite逆転防止）
             _ev_odds = ev.horse.odds
-            if _ev_odds is not None and _ev_odds >= 30.0 and new_adj > 0:
+            if DAMPEN_LONGSHOT and _ev_odds is not None and _ev_odds >= 30.0 and new_adj > 0:
                 new_adj *= 0.3
-            elif _ev_odds is not None and _ev_odds >= 15.0 and new_adj > 0:
+            elif DAMPEN_LONGSHOT and _ev_odds is not None and _ev_odds >= 15.0 and new_adj > 0:
                 new_adj *= 0.5
             ev.odds_consistency_adj = 0.3 * new_adj + 0.7 * ev.odds_consistency_adj
 
@@ -1863,14 +1864,19 @@ class RaceAnalysisEngine:
         import math as _math_anchor
         _fc = race.field_count or len(evaluations) or 1
         _fair_prob = 1.0 / _fc  # 均等確率
-        for ev in evaluations:
-            _o = ev.horse.odds
-            if _o is not None and _o > 1.0:
-                _mp = 1.0 / _o  # 市場確率
-                # 市場確率 vs 均等確率のlog比を偏差値スケールに変換
-                _log_ratio = _math_anchor.log(max(_mp, 0.005) / _fair_prob)
-                # ±3pt にクランプ（人気馬: +, 穴馬: -）
-                ev.market_anchor_adj = max(-3.0, min(3.0, _log_ratio * 1.5))
+        if DAMPEN_LONGSHOT:
+            for ev in evaluations:
+                _o = ev.horse.odds
+                if _o is not None and _o > 1.0:
+                    _mp = 1.0 / _o  # 市場確率
+                    # 市場確率 vs 均等確率のlog比を偏差値スケールに変換
+                    _log_ratio = _math_anchor.log(max(_mp, 0.005) / _fair_prob)
+                    # ±3pt にクランプ（人気馬: +, 穴馬: -）
+                    ev.market_anchor_adj = max(-3.0, min(3.0, _log_ratio * 1.5))
+        else:
+            # P1-b: ダンピング撤廃時は市場アンカーをかけない(穴馬の市場乖離を尊重)
+            for ev in evaluations:
+                ev.market_anchor_adj = 0.0
 
         # ---- 正規化後の三連率再推定 [A2] ----
         # MLブレンド済み確率を退避し、再推定結果との加重平均で最終値を決定
