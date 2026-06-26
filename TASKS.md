@@ -46,7 +46,7 @@
 
 **✅ ML印転写(P2②) = master GO(B)で検証完走 (6/26)**: フラグ化(`config/settings.py ML_ADJ_CLAMP` + `engine.py:1789`・**本番デフォルト5.0で挙動不変**・未commit=master判断)+ WF検証(2026-01・ML_ADJ_CLAMP=5/10/20)。**◎一致率 5.0=51.4%/10.0=48.6%/20.0=51.4% = ノイズレベル = クランプ緩和は◎印をほぼ変えない → ROI改善期待薄 → baseline5.0維持推奨**(P0-γ印質互角と整合)。三連複ROI厳密実測はprobe35R限定/OOM/pred上書きの技術障壁で次課題。🚨**WF副作用で data/predictions 2026-01 汚染**(`--composite-marks`がpred上書き→probe35R混在版・実証20260102=prob×100印)= **過去月で本番運用に実害なし**だがanalyze再現性/dashboard過去表示が崩れ・要本番再生成(`run_analysis_date.py --venues`)・**master判断**(独断の重い再生成回避)。
 
-**✅ P3予備調査 完了 (6/26)**: `docs/p3_new_data_feasibility.md`。クッション値/含水率は**前日(金)昼+当日9:30発表=予測時点確定(リーク無)**・JRA公式archive(2020〜)で過去データ取得可。現状は馬場「良/重」4段階のみ(`CONDITION_MAP`)。🔑**JRA限定が最大の制約**(クッション値はJRAのみ・NAR主力の本システムでは効果がJRAサブセット限定)。次=JRA archive構造実取得確認+NAR含水率可用性+パイロット(master承認後)。詳細 `memory/handoff_2026-06-26_v2.md`。
+**✅ P3予備調査 完了 (6/26)**: `docs/p3_new_data_feasibility.md`。クッション値/含水率は**前日(金)昼+当日9:30発表=予測時点確定(リーク無)**・JRA公式archive(2020〜)で過去データ取得可。現状は馬場「良/重」4段階のみ(`CONDITION_MAP`)。🔑**JRA限定が最大の制約**(クッション値はJRAのみ・NAR主力の本システムでは効果がJRAサブセット限定)。✅**PDFパース実証完了**(master「任せる・JRA限定OK」→着手): `scripts/parse_jra_baba_pdf.py`(pdfplumber・中山2026-1回 **13測定日構造化成功**・芝クッション値/含水率(芝ダ・G/4角)取得・金曜測定でリーク無実証・commit `1e38089`)。**次セッション(L-research)**=全PDF取得スクレイパー(全競馬場×回×2020-2026)→date×venue race紐付け→`features.py`+`lgbm_model.py`特徴量追加→JRA限定WFでΔROI/SHAP。pdfplumber requirements追加要。詳細 `memory/handoff_2026-06-26_v2.md` §6。
 
 **留意**: 印切替で既存WF数値(過去Phase群)は非互換になる=新フラグで隔離。詳細設計 `docs/p0_wf_composite_design.md` §12。
 
