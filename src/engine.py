@@ -1761,7 +1761,7 @@ class RaceAnalysisEngine:
         #
         # 改善: ±2.5pt → ±5.0pt に拡大 + 順位乖離ペナルティ
         # composite順位とwin_prob順位が大きく離れている場合、追加ペナルティで矯正
-        from config.settings import DAMPEN_LONGSHOT
+        from config.settings import DAMPEN_LONGSHOT, ML_ADJ_CLAMP
         try:
             _win_probs = [ev.win_prob for ev in evaluations]
             _n_wp = len(_win_probs)
@@ -1785,8 +1785,8 @@ class RaceAnalysisEngine:
                     for i, ev in enumerate(evaluations):
                         # Z変換: (win_prob - 平均) / 標準偏差 → 偏差値スケール
                         _z = (ev.win_prob - _avg_wp) / _std_wp
-                        # ±5.0pt にクランプ（旧±2.5pt → 拡大でMLの影響力を強化）
-                        _raw_adj = max(-5.0, min(5.0, _z * 1.5))
+                        # ±ML_ADJ_CLAMP pt にクランプ（roadmap P2: 緩和で印へのML影響を検証・本番5.0で挙動不変）
+                        _raw_adj = max(-ML_ADJ_CLAMP, min(ML_ADJ_CLAMP, _z * 1.5))
 
                         # 順位乖離ペナルティ: composite順位よりwin_prob順位が3位以上低い場合
                         # （ML低評価をcompositeが過大評価しているケースのみ）
