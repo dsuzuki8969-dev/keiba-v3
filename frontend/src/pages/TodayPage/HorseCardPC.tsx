@@ -462,6 +462,33 @@ const HorseCard = memo(function HorseCard({
                 <span className={`text-[12px] ${h.popularity != null ? rankCls(h.popularity) || "text-muted-foreground" : "text-muted-foreground"}`}>({popStr})</span>
               </span>
             </div>
+            {/* 行E: 道悪複勝率（baba_record がある場合のみ） */}
+            {h.baba_record && (
+              <div className="flex items-center gap-1.5 text-[11px] mt-0.5">
+                {h.baba_record.bad_p3 != null ? (
+                  <>
+                    <span className="text-muted-foreground">道悪</span>
+                    <span className={`tabular-nums font-semibold ${
+                      h.baba_record.bad_p3 - (h.baba_record.good_p3 ?? h.baba_record.bad_p3) >= 10
+                        ? "text-emerald-600 dark:text-emerald-400"
+                        : h.baba_record.good_p3 != null && h.baba_record.bad_p3 - h.baba_record.good_p3 <= -10
+                          ? "text-muted-foreground"
+                          : "text-foreground"
+                    }`}>
+                      {h.baba_record.bad_p3.toFixed(0)}%
+                    </span>
+                    <span className="text-muted-foreground">({h.baba_record.bad_n}走)</span>
+                    {h.baba_record.good_p3 != null && h.baba_record.bad_p3 - h.baba_record.good_p3 >= 10 && (
+                      <span className="inline-flex items-center px-1 py-0 rounded bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-400 text-[10px] font-bold border border-emerald-300 dark:border-emerald-700">
+                        道悪◎
+                      </span>
+                    )}
+                  </>
+                ) : (
+                  <span className="text-muted-foreground">道悪 —</span>
+                )}
+              </div>
+            )}
           </div>
         </div>
 

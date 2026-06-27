@@ -623,6 +623,34 @@ export const HorseCardMobile = memo(function HorseCardMobile({ horses, isBanei, 
                     EV {h.ev.toFixed(2)}
                   </span>
                 )}
+
+                {/* 道悪複勝率（baba_record がある場合のみ） */}
+                {h.baba_record && (
+                  <span className="flex items-center gap-0.5 shrink-0">
+                    {h.baba_record.bad_p3 != null ? (
+                      <>
+                        <span className="text-muted-foreground">道悪</span>
+                        <span className={`tabular-nums font-semibold ${
+                          h.baba_record.bad_p3 - (h.baba_record.good_p3 ?? h.baba_record.bad_p3) >= 10
+                            ? "text-emerald-600 dark:text-emerald-400"
+                            : h.baba_record.good_p3 != null && h.baba_record.bad_p3 - h.baba_record.good_p3 <= -10
+                              ? "text-muted-foreground"
+                              : "text-foreground"
+                        }`}>
+                          {h.baba_record.bad_p3.toFixed(0)}%
+                        </span>
+                        <span className="text-muted-foreground">({h.baba_record.bad_n}走)</span>
+                        {h.baba_record.good_p3 != null && h.baba_record.bad_p3 - h.baba_record.good_p3 >= 10 && (
+                          <span className="px-0.5 rounded bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-400 text-[10px] font-bold">
+                            道悪◎
+                          </span>
+                        )}
+                      </>
+                    ) : (
+                      <span className="text-muted-foreground">道悪 —</span>
+                    )}
+                  </span>
+                )}
               </div>
             </div>
 

@@ -105,6 +105,14 @@ export function RaceDetailView({
   if (race?.condition) metaParts.push(`馬場:${race.condition}`);
   if (race?.field_count) metaParts.push(`${race.field_count}頭`);
 
+  // 当日馬場状態（芝/ダート別）
+  const isDirt = (race?.surface || "").includes("ダート") || (race?.surface || "") === "ダ";
+  const trackCondition = isDirt
+    ? (race?.track_condition_dirt || "")
+    : (race?.track_condition_turf || "");
+  // ダート道悪（重/不良）のみ展開ヒントを表示（芝は出さない）
+  const showBadaHint = isDirt && (trackCondition === "重" || trackCondition === "不良");
+
   // ばんえい判定
   const isBanei = race?.is_banei || race?.venue === "帯広";
 
@@ -281,6 +289,27 @@ export function RaceDetailView({
                   </span>
                 )}
               </div>
+              {/* 当日馬場状態 + ダート道悪時の展開ヒント */}
+              <div className="flex items-center gap-2 flex-wrap text-xs">
+                {trackCondition ? (
+                  <span className={`font-semibold ${
+                    trackCondition === "重" || trackCondition === "不良"
+                      ? "text-blue-600 dark:text-blue-400"
+                      : "text-muted-foreground"
+                  }`}>
+                    {isDirt ? "ダ馬場" : "芝馬場"}:{trackCondition}
+                  </span>
+                ) : (
+                  <span className="text-muted-foreground/60 text-[11px]">
+                    {isDirt ? "ダ馬場" : "芝馬場"}:未発表
+                  </span>
+                )}
+                {showBadaHint && (
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-400 border border-amber-300 dark:border-amber-700 font-semibold text-[11px]">
+                    道悪→逃げ・前残り有利
+                  </span>
+                )}
+              </div>
             </div>
           </PremiumCard>
 
@@ -366,6 +395,10 @@ export interface RaceDetail {
   water_content?: number;
   result_cname?: string;
   shutuba_cname?: string;
+  /** 馬場状態（芝）: 良/稍重/重/不良。当日未発表時は空文字 */
+  track_condition_turf?: string;
+  /** 馬場状態（ダート）: 良/稍重/重/不良。当日未発表時は空文字 */
+  track_condition_dirt?: string;
   top10_odds?: {
     umaren?: Array<{ combo: number[]; odds: number }>;
     umatan?: Array<{ combo: number[]; odds: number }>;
@@ -444,6 +477,13 @@ export interface HorseData {
   // 取消・出走停止フラグ
   is_scratched?: boolean;
   is_tokusen_kiken?: boolean;
+  /** 道悪・良馬場複勝率レコード。bad_n < 3 の場合 bad_p3 は null */
+  baba_record?: {
+    bad_p3: number | null;   // 道悪複勝率 0-100、経験不足時は null
+    bad_n: number;           // 道悪走数
+    good_p3: number | null;  // 良馬場複勝率 0-100
+    good_n: number;          // 良馬場走数
+  };
   [key: string]: unknown;
 }
 

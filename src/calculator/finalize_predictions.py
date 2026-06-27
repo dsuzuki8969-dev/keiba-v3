@@ -39,7 +39,7 @@ if str(_ROOT) not in sys.path:
 
 
 def finalize_predictions(date_key: str) -> Dict:
-    """pred.json 後処理一本化: 表示勝率シャープ化 → elite(◉/穴) → 4パターンformation。
+    """pred.json 後処理一本化: 表示勝率シャープ化 → elite(◉/穴) → 4パターンformation → baba_record。
 
     生成パイプライン末尾 + 手動再適用 兼用。冪等。
 
@@ -52,14 +52,16 @@ def finalize_predictions(date_key: str) -> Dict:
     -------
     dict
         {
-            "sharpen": <sharpen_pred_file の戻り値 dict>,
-            "elite":   <apply_elite_and_formation の戻り値 dict>,
+            "sharpen":      <sharpen_pred_file の戻り値 dict>,
+            "elite":        <apply_elite_and_formation の戻り値 dict>,
+            "baba_record":  <add_baba_record の戻り値 dict>,
         }
 
     Notes
     -----
     - sharpen は冪等ガード付き (display_sharpened フラグ)。二重適用しない。
     - elite は毎回再実行 (◉/穴選定は sharpen 後の win_prob に依存するため冪等ではない)。
+    - baba_record は毎回再実行 (冪等・上書き安全)。
     - 例外は呼び元に伝播させる (run_analysis_date.py 側で try/except して非致命扱い)。
     """
     # scripts/ ディレクトリをパスに追加 (sharpen/elite モジュール import 用)
@@ -77,11 +79,25 @@ def finalize_predictions(date_key: str) -> Dict:
     print(f"[finalize] Step2: elite+formation ({date_key})")
     elite_stats = apply_elite_and_formation(date_key, backup=True)
 
+    # ── Step 3: 道悪成績 (baba_record) + track_condition フィールド追加 ──
+    # 馬場状態(track_condition_turf/dirt)と各馬の道悪/良 複勝率を pred に付与。
+    # race_date < date_key の race_log のみ参照(リーク厳禁)。
+    from add_baba_record_to_pred import add_baba_record
+    print(f"[finalize] Step3: baba_record ({date_key})")
+    try:
+        baba_stats = add_baba_record(date_key, dry_run=False)
+    except Exception as e:
+        # baba_record は見える化機能の追加フィールドなので、失敗しても他処理を止めない
+        print(f"[finalize] Step3 baba_record スキップ (エラー): {e}")
+        baba_stats = {"error": str(e)}
+
     print(f"[finalize] 完了: {date_key}  "
           f"sharpen_skipped={sharpen_stats.get('skipped')}  "
-          f"◉={elite_stats.get('pivot_count')}  穴={elite_stats.get('ana_count')}")
+          f"◉={elite_stats.get('pivot_count')}  穴={elite_stats.get('ana_count')}  "
+          f"baba={baba_stats.get('updated_horses', '?')}/{baba_stats.get('horses', '?')}")
 
     return {
-        "sharpen": sharpen_stats,
-        "elite":   elite_stats,
+        "sharpen":     sharpen_stats,
+        "elite":       elite_stats,
+        "baba_record": baba_stats,
     }
