@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { PremiumCard } from "@/components/ui/premium/PremiumCard";
-import { Trophy, ListChecks, CheckCircle2 } from "lucide-react";
+import { Trophy, ListChecks, CheckCircle2, Target } from "lucide-react";
 import type { HybridSummaryResponse, MPrimeSanrenpukuSummary, MPrimeByConfidence, MPrimeTopPayout } from "@/api/client";
 import { UmarenCards } from "./UmarenCards";
 import { SanrenpukuExtendedCards } from "./SanrenpukuExtendedCards";
@@ -31,6 +31,11 @@ export function SummaryCards({ data, hybrid, mpByYear }: Props) {
   const third = p3 - p2;
   const out = total - p3;
 
+  // 的中率指標
+  const winRate = total > 0 ? (win / total) * 100 : 0;
+  const rentaiRate = total > 0 ? (p2 / total) * 100 : 0;
+  const fukushoRate = total > 0 ? (p3 / total) * 100 : 0;
+
   // 期間情報
   const periodParts: string[] = [];
   if (data.fetched_oldest && data.fetched_newest) {
@@ -48,73 +53,94 @@ export function SummaryCards({ data, hybrid, mpByYear }: Props) {
         </div>
       )}
 
-      {/* 上段ヒーロー (1-1: 結果 / 1-2: 予想R数 / 1-3: 的中R数)
-          結果カードに広めのスペースを割り当て (1.6fr) で大きいフォント維持 */}
-      <div
-        className="grid grid-cols-1 gap-3 sm:gap-3"
-        style={{ gridTemplateColumns: "minmax(0, 1.6fr) minmax(0, 1fr) minmax(0, 1fr)" }}
-      >
-        {/* 1-1: ◉◎結果 X-X-X-X 1 行・大きく表示 */}
-        <PremiumCard variant="default" padding="md" className="text-center stylish-card-hover border border-border/60">
-          <div className="inline-flex items-center gap-1.5 text-[11px] font-semibold tracking-wider uppercase text-muted-foreground mb-1">
-            <Trophy size={12} className="text-brand-gold" />
-            ◉◎結果
-          </div>
-          <div
-            className="stat-mono tnum leading-tight whitespace-nowrap overflow-hidden"
-            style={{
-              // 結果カード幅 (約 ~480px / sm 以上) なら 18 桁でも 1.6rem 維持可能
-              fontSize: (() => {
-                const totalDigits = String(win).length + String(second).length + String(third).length + String(out).length;
-                if (totalDigits >= 18) return "1.5rem";  // 例: 13126-7632-5182-13461
-                if (totalDigits >= 14) return "1.7rem";
-                if (totalDigits >= 10) return "1.9rem";
-                return "2.1rem";
-              })(),
-              letterSpacing: "-0.01em",
-            }}
+      {/* ── 的中実績ヒーロー (主役・上段) ── */}
+      <div className="space-y-2">
+        {/* セクションラベル */}
+        <div className="flex items-center gap-1.5">
+          <Target size={13} className="text-brand-gold" />
+          <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+            ◎本命 的中実績
+          </span>
+        </div>
+
+        {/* 3指標カード: 複勝率(主役)・連対率・勝率 */}
+        <div className="grid grid-cols-3 gap-3">
+          {/* 複勝率 — 最重要指標 */}
+          <PremiumCard
+            variant={fukushoRate >= 70 ? "gold" : "default"}
+            padding="md"
+            className="text-center stylish-card-hover border border-border/60"
           >
-            <span className="text-positive">{fmtNum(win)}</span>
-            <span className="text-muted-foreground/50 mx-0.5">-</span>
-            {fmtNum(second)}
-            <span className="text-muted-foreground/50 mx-0.5">-</span>
-            {fmtNum(third)}
-            <span className="text-muted-foreground/50 mx-0.5">-</span>
-            <span className="text-muted-foreground">{fmtNum(out)}</span>
-          </div>
-          <div className="mt-1 text-[11px] text-muted-foreground tnum">
-            複勝 {total > 0 ? ((p3 / total) * 100).toFixed(1) : "—"}%
-          </div>
-        </PremiumCard>
+            <div className="inline-flex items-center gap-1 text-[11px] font-semibold tracking-wider uppercase text-muted-foreground mb-1">
+              <CheckCircle2 size={11} className="text-emerald-500" />
+              複勝率
+            </div>
+            <div className={`stat-mono text-[1.9rem] sm:text-[2.3rem] tnum font-bold ${
+              fukushoRate >= 70 ? "text-emerald-500" : fukushoRate >= 50 ? "text-foreground" : "text-foreground/70"
+            }`}>
+              {fukushoRate.toFixed(1)}
+              <span className="text-base ml-0.5 font-semibold text-muted-foreground">%</span>
+            </div>
+            <div className="mt-1 text-[11px] text-muted-foreground tnum">
+              {fmtNum(p3)} / {fmtNum(total)} R
+            </div>
+          </PremiumCard>
 
-        {/* 1-2: 予想R数 */}
-        <PremiumCard variant="default" padding="md" className="text-center stylish-card-hover border border-border/60">
-          <div className="inline-flex items-center gap-1.5 text-[11px] font-semibold tracking-wider uppercase text-muted-foreground mb-1">
-            <ListChecks size={12} className="text-brand-gold" />
-            予想R数
-          </div>
-          <div className="stat-mono text-[1.9rem] sm:text-[2.3rem] tnum">
-            {fmtNum(total)}
-            <span className="text-base ml-0.5 font-semibold text-muted-foreground">R</span>
-          </div>
-        </PremiumCard>
+          {/* 連対率 */}
+          <PremiumCard variant="default" padding="md" className="text-center stylish-card-hover border border-border/60">
+            <div className="inline-flex items-center gap-1 text-[11px] font-semibold tracking-wider uppercase text-muted-foreground mb-1">
+              <ListChecks size={11} className="text-brand-gold" />
+              連対率
+            </div>
+            <div className={`stat-mono text-[1.9rem] sm:text-[2.3rem] tnum font-bold ${
+              rentaiRate >= 50 ? "text-emerald-500" : "text-foreground/70"
+            }`}>
+              {rentaiRate.toFixed(1)}
+              <span className="text-base ml-0.5 font-semibold text-muted-foreground">%</span>
+            </div>
+            <div className="mt-1 text-[11px] text-muted-foreground tnum">
+              {fmtNum(p2)} / {fmtNum(total)} R
+            </div>
+          </PremiumCard>
 
-        {/* 1-3: 的中R数 */}
-        <PremiumCard
-          variant={win > 0 ? "gold" : "default"}
-          padding="md"
-          className="text-center stylish-card-hover border border-border/60"
-        >
-          <div className="inline-flex items-center gap-1.5 text-[11px] font-semibold tracking-wider uppercase text-muted-foreground mb-1">
-            <CheckCircle2 size={12} className="text-brand-gold-dark" />
-            的中R数
-          </div>
-          <div className={`text-[1.9rem] sm:text-[2.3rem] tnum ${win > 0 ? "stat-mono-gold" : "stat-mono"}`}>
-            {fmtNum(win)}
-            <span className="text-base ml-0.5 font-semibold text-muted-foreground">R</span>
-          </div>
-          <div className="mt-1 text-[11px] text-muted-foreground tnum">
-            的中率 {total > 0 ? ((win / total) * 100).toFixed(1) : "—"}%
+          {/* 勝率 */}
+          <PremiumCard
+            variant={win > 0 ? "gold" : "default"}
+            padding="md"
+            className="text-center stylish-card-hover border border-border/60"
+          >
+            <div className="inline-flex items-center gap-1.5 text-[11px] font-semibold tracking-wider uppercase text-muted-foreground mb-1">
+              <Trophy size={11} className="text-brand-gold-dark" />
+              勝率
+            </div>
+            <div className={`stat-mono text-[1.9rem] sm:text-[2.3rem] tnum font-bold ${
+              winRate >= 30 ? "stat-mono-gold" : "text-foreground/70"
+            }`}>
+              {winRate.toFixed(1)}
+              <span className="text-base ml-0.5 font-semibold text-muted-foreground">%</span>
+            </div>
+            <div className="mt-1 text-[11px] text-muted-foreground tnum">
+              {fmtNum(win)} / {fmtNum(total)} R
+            </div>
+          </PremiumCard>
+        </div>
+
+        {/* 着順詳細 + 予想R数 (副次情報・小さく) */}
+        <PremiumCard variant="default" padding="sm" className="border border-border/60">
+          <div className="flex flex-wrap items-center gap-x-5 gap-y-1 text-xs text-muted-foreground">
+            <span className="flex items-center gap-1">
+              <ListChecks size={11} />
+              予想 <span className="text-foreground font-semibold tnum">{fmtNum(total)}R</span>
+            </span>
+            <span className="tnum">
+              着順 <span className="text-positive font-semibold">{fmtNum(win)}</span>
+              <span className="mx-0.5 text-muted-foreground/50">-</span>
+              {fmtNum(second)}
+              <span className="mx-0.5 text-muted-foreground/50">-</span>
+              {fmtNum(third)}
+              <span className="mx-0.5 text-muted-foreground/50">-</span>
+              <span className="text-muted-foreground/50">{fmtNum(out)}</span>
+            </span>
           </div>
         </PremiumCard>
       </div>
@@ -124,15 +150,21 @@ export function SummaryCards({ data, hybrid, mpByYear }: Props) {
         <MPrimeSummarySection mp={hybrid.m_prime_sanrenpuku} mpByYear={mpByYear} />
       )}
 
-      {/* ─── 馬連 5 馬券 採用成績 ─── */}
+      {/* ─── 買い目系成績 (副次・降格) ─── */}
+      {/* 馬連・三連複の買い目回収率は参考情報として下部に残置 */}
       {hybrid?.umaren_5tickets && (
-        <UmarenCards
-          umaren={hybrid.umaren_5tickets}
-          umarenByYear={hybrid.umaren_5tickets_by_year}
-        />
+        <div>
+          <div className="relative h-px bg-gradient-to-r from-transparent via-border to-transparent mb-4" aria-hidden />
+          <div className="text-[10px] text-muted-foreground/60 uppercase tracking-widest mb-2 font-semibold">
+            参考 — 買い目回収実績
+          </div>
+          <UmarenCards
+            umaren={hybrid.umaren_5tickets}
+            umarenByYear={hybrid.umaren_5tickets_by_year}
+          />
+        </div>
       )}
 
-      {/* ─── 三連複 7 馬券 採用成績 ─── */}
       {hybrid?.sanrenpuku_7tickets && (
         <SanrenpukuExtendedCards
           sanrenpuku={hybrid.sanrenpuku_7tickets}

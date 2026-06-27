@@ -10,7 +10,7 @@ import { JRA_CODES } from "@/lib/constants";
 import { OperationsPanel } from "./TodayPage/OperationsPanel";
 import { HomePageHero } from "./HomePageHero";
 import { DataQualityBanner } from "@/components/keiba/DataQualityBanner";
-import { MapPin, Crosshair, Sparkles } from "lucide-react";
+import { MapPin, Crosshair, Sparkles, AlertTriangle } from "lucide-react";
 
 // ── TodayStatsPanel は T-031 (2026-04-28) で StatsCard に統合済み ──
 // ── 旧 TodayStatsPanel 定義はここから削除 ──
@@ -89,8 +89,30 @@ export default function HomePage() {
     return [...tier1, ...tier2].slice(0, 5);
   }, [pred]);
 
-  // 厳選穴馬 — ☆印 + 高乖離馬（バックエンドで計算済み）
+  // 厳選穴馬 — ☆印 + 高乖離馬（バックエンドで計算済み）: 乖離ショーケース「妙味」枠
   const anaHorses = (pred?.ana_horses || []).slice(0, 5) as AnaHorse[];
+
+  // 乖離ショーケース「拮抗・波乱注意」枠 — 人気1〜3位で composite_gap が小さい本命馬
+  // 上位2頭の実力が伯仲(gap<2.0)かつ1〜3人気 = 堅く見えて本命が紛れやすい波乱含みレース
+  // TODO: バックエンド API で per-horse divergence データが提供されれば全頭評価に拡張可能
+  const kikenRaces = useMemo(() => {
+    const _order = (pred?.order || []) as string[];
+    const _races = (pred?.races || {}) as Record<string, RaceSummary[]>;
+    const candidates: (RaceSummary & { venue: string })[] = [];
+    for (const v of _order) {
+      for (const r of _races[v] || []) {
+        const pop = r.honmei_popularity ?? 99;
+        const gap = r.composite_gap ?? 0;
+        // 1〜3人気なのに composite_gap が 0 未満 or 2.0 以下 = 実力差が小さく「危険な本命」候補
+        if (pop <= 3 && gap < 2.0) {
+          candidates.push({ ...r, venue: v });
+        }
+      }
+    }
+    // composite_gap 昇順（最も差が小さい/マイナス順）で上位5件
+    candidates.sort((a, b) => (a.composite_gap ?? 0) - (b.composite_gap ?? 0));
+    return candidates.slice(0, 5);
+  }, [pred]);
 
   const goToRace = useCallback((venue: string, raceNo: number) => {
     navigate("/today", { state: { venue, raceNo } });
@@ -316,81 +338,154 @@ export default function HomePage() {
           </PremiumCard>
         )}
 
-        {/* 厳選穴馬 — ☆印 + 高乖離馬 */}
-        {anaHorses.length > 0 && (
+        {/* 乖離ショーケース — 妙味馬(実力上位・人気薄) + 拮抗注意(人気上位・実力差小) */}
+        {(anaHorses.length > 0 || kikenRaces.length > 0) && (
           <PremiumCard variant="default" padding="md">
             <PremiumCardHeader>
               <div className="flex flex-col gap-0.5">
                 <PremiumCardAccent>
                   <Sparkles size={10} className="inline mr-1" />
-                  <span className="section-eyebrow">Dark Horses</span>
+                  <span className="section-eyebrow">Divergence Showcase</span>
                 </PremiumCardAccent>
                 <PremiumCardTitle className="text-sm flex items-center gap-2">
-                  本日の厳選穴馬
-                  <span className="text-xs font-normal text-muted-foreground tnum">TOP {anaHorses.length}</span>
+                  乖離ショーケース
+                  <span className="text-xs font-normal text-muted-foreground">実力 vs 市場</span>
                 </PremiumCardTitle>
               </div>
             </PremiumCardHeader>
-            <div className="space-y-2">
-              {anaHorses.map((h) => {
-                const stars = h.star_rating || 1;
-                const starStr = "★".repeat(stars);
-                const starCls = stars === 3 ? "text-foreground text-base"
-                  : stars === 2 ? "text-foreground/80 text-sm"
-                  : "text-foreground/60 text-sm";
-                return (
-                  <div
-                    key={`${h.venue}-${h.race_no}-${h.horse_no}`}
-                    className="flex gap-2 p-3 rounded-lg bg-muted/50 hover:bg-muted cursor-pointer transition-colors stylish-card-hover border border-border/40"
-                    role="button"
-                    tabIndex={0}
-                    onClick={() => goToRace(h.venue, h.race_no)}
-                    onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); goToRace(h.venue, h.race_no); } }}
-                  >
-                    {/* 左カラム: 星（★3つ分の固定幅） */}
-                    <div className={`w-[3em] flex-shrink-0 text-center font-bold pt-0.5 ${starCls}`}>{starStr}</div>
-                    {/* 右カラム: 情報3行 */}
-                    <div className="flex-1 min-w-0">
-                      {/* 1行目: 競馬場+R 印 馬名 */}
-                      <div className="flex items-center gap-2 mb-2 flex-wrap">
-                        <span className="font-bold text-sm">{h.venue}{h.race_no}R</span>
-                        {h.mark && <span className="font-bold text-foreground">{h.mark}</span>}
-                        <span className="text-sm font-semibold">{h.horse_name}</span>
-                      </div>
-                      {/* 2行目: オッズ(人気) 総合指数 */}
-                      <div className="flex items-center gap-x-4 gap-y-1 text-xs mb-2 text-muted-foreground flex-wrap">
-                        {h.odds > 0 && (
-                          <span className="tabular-nums whitespace-nowrap">
-                            <span className="stat-mono text-sm text-foreground">{Number(h.odds).toFixed(1)}</span>
-                            <span>倍</span>
-                            {h.popularity > 0 && (
-                              <span className="ml-0.5">({h.popularity}人気)</span>
+
+            {/* ── 妙味馬 (実力上位・人気薄) ── */}
+            {anaHorses.length > 0 && (
+              <div className="mb-4">
+                <div className="flex items-center gap-1.5 mb-2">
+                  <Sparkles size={12} className="text-emerald-500" />
+                  <span className="text-xs font-semibold text-emerald-600 dark:text-emerald-400">
+                    妙味 — 実力上位・過小評価
+                  </span>
+                  <span className="text-xs text-muted-foreground tnum">TOP {anaHorses.length}</span>
+                </div>
+                <div className="space-y-2">
+                  {anaHorses.map((h) => {
+                    const stars = h.star_rating || 1;
+                    const starStr = "★".repeat(stars);
+                    const starCls = stars === 3 ? "text-emerald-500 text-base"
+                      : stars === 2 ? "text-emerald-500/70 text-sm"
+                      : "text-emerald-500/40 text-sm";
+                    return (
+                      <div
+                        key={`${h.venue}-${h.race_no}-${h.horse_no}`}
+                        className="flex gap-2 p-3 rounded-lg bg-emerald-50/40 dark:bg-emerald-950/20 hover:bg-emerald-50/70 dark:hover:bg-emerald-950/40 cursor-pointer transition-colors border border-emerald-200/40 dark:border-emerald-800/30"
+                        role="button"
+                        tabIndex={0}
+                        onClick={() => goToRace(h.venue, h.race_no)}
+                        onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); goToRace(h.venue, h.race_no); } }}
+                      >
+                        {/* 左カラム: 星 */}
+                        <div className={`w-[3em] flex-shrink-0 text-center font-bold pt-0.5 ${starCls}`}>{starStr}</div>
+                        {/* 右カラム */}
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2 mb-1.5 flex-wrap">
+                            <span className="font-bold text-sm">{h.venue}{h.race_no}R</span>
+                            {h.mark && <span className="font-bold text-foreground">{h.mark}</span>}
+                            <span className="text-sm font-semibold">{h.horse_name}</span>
+                          </div>
+                          <div className="flex items-center gap-x-4 gap-y-1 text-xs mb-1.5 text-muted-foreground flex-wrap">
+                            {h.odds > 0 && (
+                              <span className="tabular-nums whitespace-nowrap">
+                                <span className="stat-mono text-sm text-foreground">{Number(h.odds).toFixed(1)}</span>倍
+                                {h.popularity > 0 && <span className="ml-0.5">({h.popularity}人気)</span>}
+                              </span>
                             )}
-                          </span>
-                        )}
-                        {h.composite > 0 && (
-                          <span className="tabular-nums whitespace-nowrap">
-                            <span>総合</span>
-                            <span className="stat-mono text-sm ml-0.5 text-foreground">{h.composite.toFixed(1)}</span>
-                          </span>
-                        )}
+                            {h.composite > 0 && (
+                              <span className="tabular-nums whitespace-nowrap">
+                                総合<span className="stat-mono text-sm ml-0.5 text-foreground">{h.composite.toFixed(1)}</span>
+                              </span>
+                            )}
+                          </div>
+                          <div className="flex items-center gap-x-4 gap-y-1 text-xs text-muted-foreground flex-wrap">
+                            <span className="tabular-nums whitespace-nowrap">
+                              複勝<span className="stat-mono text-sm ml-0.5 text-emerald-600 dark:text-emerald-400">{h.place3_prob.toFixed(1)}%</span>
+                            </span>
+                            <span className="tabular-nums whitespace-nowrap">
+                              妙味<span className="stat-mono text-sm ml-0.5 text-emerald-600 dark:text-emerald-400">{h.miryoku.toFixed(2)}</span>
+                            </span>
+                          </div>
+                        </div>
                       </div>
-                      {/* 3行目: 複勝率 妙味 */}
-                      <div className="flex items-center gap-x-4 gap-y-1 text-xs text-muted-foreground flex-wrap">
-                        <span className="tabular-nums whitespace-nowrap">
-                          <span>複勝</span>
-                          <span className="stat-mono text-sm ml-0.5 text-foreground">{h.place3_prob.toFixed(1)}%</span>
-                        </span>
-                        <span className="tabular-nums whitespace-nowrap">
-                          <span>妙味</span>
-                          <span className="stat-mono text-sm ml-0.5 text-foreground">{h.miryoku.toFixed(2)}</span>
-                        </span>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            {/* ── 拮抗・波乱注意 (上位2頭が伯仲・本命が紛れやすい) ── */}
+            {kikenRaces.length > 0 && (
+              <div>
+                <div className="flex items-center gap-1.5 mb-2">
+                  <AlertTriangle size={12} className="text-amber-500" />
+                  <span className="text-xs font-semibold text-amber-600 dark:text-amber-400">
+                    拮抗・波乱注意 — 上位2頭が伯仲
+                  </span>
+                  <span className="text-xs text-muted-foreground tnum">TOP {kikenRaces.length}</span>
+                  <span className="text-[10px] text-muted-foreground/60 ml-1">※本命馬が1〜3人気かつ実力差2未満</span>
+                </div>
+                <div className="space-y-2">
+                  {kikenRaces.map((r) => {
+                    const gap = r.composite_gap ?? 0;
+                    return (
+                      <div
+                        key={`${r.venue}-${r.race_no}`}
+                        className="flex gap-2 p-3 rounded-lg bg-amber-50/40 dark:bg-amber-950/20 hover:bg-amber-50/70 dark:hover:bg-amber-950/40 cursor-pointer transition-colors border border-amber-200/40 dark:border-amber-800/30"
+                        role="button"
+                        tabIndex={0}
+                        onClick={() => goToRace(r.venue, r.race_no)}
+                        onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); goToRace(r.venue, r.race_no); } }}
+                      >
+                        {/* 左カラム: 警告アイコン */}
+                        <div className="w-[3em] flex-shrink-0 text-center pt-0.5">
+                          <AlertTriangle size={16} className="text-amber-500 inline-block" />
+                        </div>
+                        {/* 右カラム */}
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2 mb-1.5 flex-wrap">
+                            <span className="font-bold text-sm">{r.venue}{r.race_no}R</span>
+                            {r.honmei_mark && <span className="font-bold text-foreground">{r.honmei_mark}</span>}
+                            <span className="text-sm font-semibold">{r.honmei_name || ""}</span>
+                          </div>
+                          <div className="flex items-center gap-x-4 gap-y-1 text-xs mb-1.5 text-muted-foreground flex-wrap">
+                            {(r.honmei_odds ?? 0) > 0 && (
+                              <span className="tabular-nums whitespace-nowrap">
+                                <span className="stat-mono text-sm text-foreground">{Number(r.honmei_odds).toFixed(1)}</span>倍
+                                {(r.honmei_popularity ?? 0) > 0 && <span className="ml-0.5">({r.honmei_popularity}人気)</span>}
+                              </span>
+                            )}
+                            {(r.honmei_composite ?? 0) > 0 && (
+                              <span className="tabular-nums whitespace-nowrap">
+                                総合<span className="stat-mono text-sm ml-0.5 text-foreground">{Number(r.honmei_composite).toFixed(1)}</span>
+                              </span>
+                            )}
+                          </div>
+                          <div className="flex items-center gap-x-3 text-xs text-muted-foreground flex-wrap">
+                            <span className="tabular-nums whitespace-nowrap">
+                              実力差<span className={`stat-mono text-sm ml-0.5 font-bold ${gap < 0 ? "text-amber-600 dark:text-amber-400" : "text-amber-500"}`}>
+                                {gap >= 0 ? "+" : ""}{gap.toFixed(1)}
+                              </span>
+                            </span>
+                            {(r.honmei_fukusho_pct ?? 0) > 0 && (
+                              <span className="tabular-nums whitespace-nowrap">
+                                複勝<span className="stat-mono text-sm ml-0.5 text-foreground">{Number(r.honmei_fukusho_pct).toFixed(1)}%</span>
+                              </span>
+                            )}
+                          </div>
+                        </div>
                       </div>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
+                    );
+                  })}
+                </div>
+                {/* TODO: バックエンドAPI拡張後は全頭の divergence_signal を活用して
+                    真の「危険馬一覧」(per-horse 実力順位 - 人気順位 ≤ -2)を表示予定 */}
+              </div>
+            )}
           </PremiumCard>
         )}
       </div>

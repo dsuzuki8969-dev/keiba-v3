@@ -1,5 +1,4 @@
 import { useState } from "react";
-import { useNavigate } from "react-router-dom";
 import { PremiumCard, PremiumCardHeader, PremiumCardTitle, PremiumCardAccent } from "@/components/ui/premium/PremiumCard";
 import { BarChart3 } from "lucide-react";
 
@@ -16,20 +15,8 @@ const CAT_TABS = [
 function fmtPct(v: number): string {
   return (v ?? 0).toFixed(1) + "%";
 }
-function fmtNum(v: number): string {
-  return (v ?? 0).toLocaleString();
-}
-// レース名を短縮（括弧内の条件や長い修飾語を除去）
-function shortRaceName(name: string): string {
-  return name
-    .replace(/\(.*?\)/g, "")   // (3歳)(A2) 等を除去
-    .replace(/（.*?）/g, "")   // 全角括弧も除去
-    .trim()
-    .slice(0, 8);              // 最大8文字
-}
 
 export function DetailedAnalysis({ data }: Props) {
-  const navigate = useNavigate();
   const [cat, setCat] = useState("all");
   const [selectedVenue, setSelectedVenue] = useState<string | null>(null);
 
@@ -40,14 +27,6 @@ export function DetailedAnalysis({ data }: Props) {
   const byVenue = (catData.by_venue || {}) as Record<string, Record<string, unknown>>;
   const byMark = (selectedVenue ? (byVenue[selectedVenue]?.by_mark || {}) : (stats.by_mark || {})) as Record<string, Record<string, number>>;
   const byConf = (selectedVenue ? (byVenue[selectedVenue]?.by_conf || {}) : (stats.by_conf || {})) as Record<string, Record<string, number>>;
-  const top10 = (selectedVenue
-    ? ((byVenue[selectedVenue]?.top10_tansho || []) as Record<string, unknown>[])
-    : ((data.top10_tansho || []) as Record<string, unknown>[])
-  ).filter((x) => {
-    if (cat === "jra") return x.is_jra;
-    if (cat === "nar") return !x.is_jra;
-    return true;
-  }).slice(0, 10);
 
   // 競馬場リスト（レース数降順）
   const venueKeys = Object.keys(byVenue).sort(
@@ -92,13 +71,6 @@ export function DetailedAnalysis({ data }: Props) {
           <div className="flex flex-wrap gap-1.5">
             {venueKeys.map((v) => {
               const vs = byVenue[v];
-              const roi = Number(vs.roi || 0);
-              const roiColor =
-                roi >= 100
-                  ? "text-positive"
-                  : roi >= 80
-                    ? "text-warning"
-                    : "text-negative";
               return (
                 <button
                   key={v}
@@ -112,8 +84,8 @@ export function DetailedAnalysis({ data }: Props) {
                   }`}
                 >
                   {v}{" "}
-                  <span className={`${roiColor}`}>
-                    {vs.total_races as number}R / {roi.toFixed(0)}%
+                  <span className="text-muted-foreground">
+                    {vs.total_races as number}R
                   </span>
                 </button>
               );
@@ -128,62 +100,13 @@ export function DetailedAnalysis({ data }: Props) {
             <MarkTable data={byMark} />
           </div>
 
-          {/* 自信度別成績（単勝ベース） */}
+          {/* 自信度別 的中率 */}
           <div>
-            <div className="text-sm font-semibold mb-2">自信度別成績（単勝）</div>
+            <div className="text-sm font-semibold mb-2">自信度別 的中率</div>
             <ConfTable data={byConf} />
           </div>
         </div>
 
-        {/* 単勝高配当 TOP10 */}
-        {top10.length > 0 && (
-          <div>
-            <div className="text-sm font-semibold mb-2">単勝高配当 TOP10</div>
-            <div className="overflow-x-auto">
-              <table className="min-w-[580px] w-full text-xs">
-                <thead>
-                  <tr className="border-b border-border">
-                    <th className="text-left py-1 px-1">#</th>
-                    <th className="text-right py-1 px-1">配当</th>
-                    <th className="text-left py-1 px-1">日付</th>
-                    <th className="text-left py-1 px-1">場</th>
-                    <th className="text-left py-1 px-1">R</th>
-                    <th className="text-left py-1 px-1">レース</th>
-                    <th className="text-left py-1 px-1">印</th>
-                    <th className="text-left py-1 px-1">馬名</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {top10.map((x, i) => (
-                    <tr
-                      key={`${x.date}-${x.venue}-${x.race_no}-${i}`}
-                      className="border-b border-border/50 cursor-pointer hover:bg-brand-gold/5 transition-colors"
-                      onClick={() => {
-                        const d = String(x.date || "");
-                        const v = String(x.venue || "");
-                        const r = Number(x.race_no || 0);
-                        if (d && v && r) {
-                          navigate("/today", { state: { date: d, venue: v, raceNo: r } });
-                        }
-                      }}
-                    >
-                      <td className="py-1 px-1 text-muted-foreground">{i + 1}</td>
-                      <td className="text-right py-1 px-1 font-bold text-warning tabular-nums whitespace-nowrap">
-                        {fmtNum(Number(x.payout || 0))}円
-                      </td>
-                      <td className="py-1 px-1 tabular-nums whitespace-nowrap">{String(x.date || "").slice(5)}</td>
-                      <td className="py-1 px-1 whitespace-nowrap">{String(x.venue || "")}</td>
-                      <td className="py-1 px-1 tabular-nums">{String(x.race_no || "")}</td>
-                      <td className="py-1 px-1 text-muted-foreground max-w-[80px] truncate">{shortRaceName(String(x.race_name || ""))}</td>
-                      <td className="py-1 px-1 text-emerald-600 font-semibold">{String(x.marks || x.combo || "")}</td>
-                      <td className="py-1 px-1 whitespace-nowrap">{String(x.horse_name || "")}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        )}
       </div>
     </PremiumCard>
   );
@@ -234,7 +157,7 @@ function MarkTable({ data }: { data: Record<string, Record<string, number>> }) {
   );
 }
 
-// 自信度別テーブル
+// 自信度別テーブル（的中率のみ）
 function ConfTable({ data }: { data: Record<string, Record<string, number>> }) {
   const confs = ["SS", "S", "A", "B", "C"].filter((c) => data[c]);
   if (!confs.length)
@@ -249,14 +172,11 @@ function ConfTable({ data }: { data: Record<string, Record<string, number>> }) {
             <th className="text-right py-1 px-1">購入R</th>
             <th className="text-right py-1 px-1">的中</th>
             <th className="text-right py-1 px-1">的中率</th>
-            <th className="text-right py-1 px-1">回収率</th>
           </tr>
         </thead>
         <tbody>
           {confs.map((c) => {
             const s = data[c];
-            const roi = s.roi ?? 0;
-            const roiColor = roi >= 100 ? "text-positive" : "text-negative";
             return (
               <tr key={c} className="border-b border-border/50 hover:bg-brand-gold/5 transition-colors">
                 <td className="py-1 px-1 font-bold">{c}</td>
@@ -268,11 +188,6 @@ function ConfTable({ data }: { data: Record<string, Record<string, number>> }) {
                 </td>
                 <td className="text-right py-1 px-1 tabular-nums">
                   {fmtPct(s.hit_rate)}
-                </td>
-                <td
-                  className={`text-right py-1 px-1 tabular-nums font-bold ${roiColor}`}
-                >
-                  {fmtPct(roi)}
                 </td>
               </tr>
             );

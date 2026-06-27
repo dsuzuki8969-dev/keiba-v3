@@ -88,16 +88,9 @@ export const StatsCard = memo(function StatsCard({
   const winRate = honmei.win_rate ?? 0;
   const rentai = honmei.place2_rate ?? 0;
   const fukusho = honmei.place_rate ?? 0;
-  const tanRoi = honmei.tansho_roi ?? 0;
-  const tanStake = honmei.tansho_stake ?? 0;
-  const tanRet = honmei.tansho_ret ?? 0;
   const sPlayed = sanrentan.played ?? 0;
   const sHit = sanrentan.hit ?? 0;
-  const sStake = sanrentan.stake ?? 0;
-  const sRet = sanrentan.payback ?? 0;
-  const sRoi = sanrentan.roi_pct ?? 0;
   const sHitRate = sanrentan.hit_rate_pct ?? 0;
-  const sBalance = sanrentan.balance ?? (sRet - sStake);
   const lastUpdated = (d as { last_updated?: string }).last_updated ?? "";
   const resultsPending = (d as { results_pending?: boolean }).results_pending;
 
@@ -169,126 +162,79 @@ export const StatsCard = memo(function StatsCard({
       </PremiumCardHeader>
 
       <div className="space-y-3">
-        {/* ◎本命成績 — 三連複と同形式 (予想R/的中R/的中率) に統一 (2026-05-22 マスター指示 / 2026-06-21 ラベル改称) */}
+        {/* ── ◎本命 的中実績 (主役: 複勝率/連対率/勝率を前面化) ── */}
         <div>
-          <div className="text-xs text-muted-foreground mb-1">◎本命成績</div>
-          <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1">
-            <span className="tabular-nums text-base">
-              予想 <span className="text-foreground font-bold">{total}R</span>
-              <span className="text-muted-foreground mx-1">/</span>
-              的中 <span className="text-positive font-bold">{win}R</span>
-            </span>
-            <span className="text-sm text-muted-foreground tabular-nums">
-              的中率{" "}
-              <span className="stat-mono text-foreground">
-                {winRate.toFixed(1)}%
-              </span>
-            </span>
-            <span
-              className={`text-sm tabular-nums ${
-                tanRet - tanStake >= 0 ? "text-positive" : "text-negative"
-              }`}
-            >
-              収支{" "}
-              <span
-                className={
-                  tanRet - tanStake >= 0 ? "stat-mono-gold" : "stat-mono"
-                }
-              >
-                {tanRet - tanStake >= 0 ? "+" : ""}
-                {(tanRet - tanStake).toLocaleString()}円
-              </span>
-            </span>
-            <span
-              className={`text-sm tabular-nums ${
-                tanRoi >= 100 ? "text-positive" : "text-muted-foreground"
-              }`}
-            >
-              回収率{" "}
-              <span className={tanRoi >= 100 ? "stat-mono-gold" : "stat-mono"}>
-                {tanRoi.toFixed(1)}%
-              </span>
-            </span>
-            <span className="text-sm text-muted-foreground tabular-nums">
-              {tanStake.toLocaleString()} → {tanRet.toLocaleString()}円
-            </span>
+          <div className="text-xs font-semibold text-muted-foreground mb-1.5">◎本命 的中実績</div>
+
+          {/* 主役: 複勝率・連対率・勝率 の3指標を大きく */}
+          <div className="grid grid-cols-3 gap-2 mb-2">
+            <div className="bg-muted/40 rounded-lg p-2 text-center">
+              <div className="text-[10px] text-muted-foreground font-medium mb-0.5">複勝率</div>
+              <div className={`stat-mono text-xl font-bold ${fukusho >= 70 ? "text-emerald-500" : fukusho >= 50 ? "text-foreground" : "text-foreground/70"}`}>
+                {fukusho.toFixed(1)}<span className="text-sm">%</span>
+              </div>
+              <div className="text-[9px] text-muted-foreground mt-0.5 tnum">{win + second + third}/{total}R</div>
+            </div>
+            <div className="bg-muted/40 rounded-lg p-2 text-center">
+              <div className="text-[10px] text-muted-foreground font-medium mb-0.5">連対率</div>
+              <div className={`stat-mono text-xl font-bold ${rentai >= 50 ? "text-emerald-500" : "text-foreground/70"}`}>
+                {rentai.toFixed(1)}<span className="text-sm">%</span>
+              </div>
+              <div className="text-[9px] text-muted-foreground mt-0.5 tnum">{win + second}/{total}R</div>
+            </div>
+            <div className="bg-muted/40 rounded-lg p-2 text-center">
+              <div className="text-[10px] text-muted-foreground font-medium mb-0.5">勝率</div>
+              <div className={`stat-mono text-xl font-bold ${winRate >= 30 ? "text-brand-gold" : "text-foreground/70"}`}>
+                {winRate.toFixed(1)}<span className="text-sm">%</span>
+              </div>
+              <div className="text-[9px] text-muted-foreground mt-0.5 tnum">{win}/{total}R</div>
+            </div>
           </div>
 
-          {/* 着順詳細 + 連対率/複勝率 を補足情報として下段に表示 */}
-          <div className="text-xs text-muted-foreground tabular-nums mt-1 flex flex-wrap gap-x-3">
+          {/* 副次: 着順のみ (見える化転換: 回収率は非表示・的中率に徹する 2026-06-27) */}
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-muted-foreground tabular-nums">
             <span>
               着順 <span className="text-positive">{win}</span>
-              <span className="text-muted-foreground/70">-</span>
+              <span className="mx-0.5 text-muted-foreground/50">-</span>
               {second}
-              <span className="text-muted-foreground/70">-</span>
+              <span className="mx-0.5 text-muted-foreground/50">-</span>
               {third}
-              <span className="text-muted-foreground/70">-</span>
-              <span className="text-muted-foreground/70">{out}</span>
-            </span>
-            <span>
-              連対 <span className="text-foreground">{rentai.toFixed(1)}%</span>
-            </span>
-            <span>
-              複勝 <span className="text-foreground">{fukusho.toFixed(1)}%</span>
+              <span className="mx-0.5 text-muted-foreground/50">-</span>
+              <span className="text-muted-foreground/50">{out}</span>
             </span>
           </div>
         </div>
 
-        {/* 推奨三連複買い目 (旧 M' 戦略): 三連複 (自信度別 SS=E/S=C/A=C/B/C/D=D/E=skip) */}
+        {/* ── 三連複 的中実績 (主役: 的中率を前面化) ── */}
+        {sPlayed > 0 && (
         <div>
-          <div className="text-xs text-muted-foreground mb-1">推奨三連複買い目</div>
-          <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1">
+          <div className="text-xs font-semibold text-muted-foreground mb-1.5">三連複 的中実績</div>
+
+          {/* 主役: 的中率 大きく表示 */}
+          <div className="flex items-baseline gap-3 mb-1.5">
+            <span className="tabular-nums">
+              <span className={`stat-mono text-2xl font-bold ${sHitRate >= 30 ? "text-emerald-500" : "text-foreground"}`}>
+                {sHitRate.toFixed(1)}
+              </span>
+              <span className="text-sm text-muted-foreground ml-0.5">%的中</span>
+            </span>
             <span className="tabular-nums text-base">
-              予想 <span className="text-foreground font-bold">{sPlayed}R</span>
-              <span className="text-muted-foreground mx-1">/</span>
-              的中{" "}
               <span className="text-positive font-bold">{sHit}R</span>
-            </span>
-            <span className="text-sm text-muted-foreground tabular-nums">
-              的中率{" "}
-              <span className="stat-mono text-foreground">
-                {sHitRate.toFixed(1)}%
-              </span>
-            </span>
-            <span
-              className={`text-sm tabular-nums ${
-                sBalance >= 0 ? "text-positive" : "text-negative"
-              }`}
-            >
-              収支{" "}
-              <span className={sBalance >= 0 ? "stat-mono-gold" : "stat-mono"}>
-                {sBalance >= 0 ? "+" : ""}
-                {sBalance.toLocaleString()}円
-              </span>
-            </span>
-            <span
-              className={`text-sm tabular-nums ${
-                sRoi >= 100 ? "text-positive" : "text-muted-foreground"
-              }`}
-            >
-              回収率{" "}
-              <span className={sRoi >= 100 ? "stat-mono-gold" : "stat-mono"}>
-                {sRoi.toFixed(1)}%
-              </span>
-            </span>
-            <span className="text-sm text-muted-foreground tabular-nums">
-              {sStake.toLocaleString()} → {sRet.toLocaleString()}円
+              <span className="text-muted-foreground"> / {sPlayed}R</span>
             </span>
           </div>
 
-          {/* T-001 (2026-04-25): 3 段表記 — 集計 / 終了 / 対象 を分母として明示 */}
+          {/* 副次: 集計分母のみ (見える化転換: 回収率は非表示・的中率に徹する 2026-06-27) */}
           {(totalRaces > 0 || eligibleSanrentan > 0) && (
-            <div className="text-xs text-muted-foreground tabular-nums mt-1">
-              集計 <span className="text-foreground">{sPlayed}R</span>
-              <span className="mx-1">/</span>
-              終了 <span className="text-foreground">{finishedRaces}R</span>
-              <span className="mx-1">/</span>
-              対象 <span className="text-foreground">{eligibleSanrentan}R</span>
-              <span className="mx-1">/</span>
-              総予想 <span className="text-foreground">{totalRaces}R</span>
-            </div>
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-muted-foreground tabular-nums">
+            {/* T-001: 3 段表記 — 集計 / 終了 / 対象 を分母として明示 */}
+            <span>
+              対象{eligibleSanrentan}R / 終了{finishedRaces}R / 総予想{totalRaces}R
+            </span>
+          </div>
           )}
         </div>
+        )}
 
         {/* T-001: 取り込み遅延警告（発走済みなのに results.json 未取り込みのレースがある） */}
         {pendingFetch > 0 && (

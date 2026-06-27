@@ -1,18 +1,12 @@
-import { useState, lazy, Suspense } from "react";
+import { useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import { useResultsSummary, useResultsTrend, useResultsDetailed, useHybridSummary } from "@/api/hooks";
+import { useResultsSummary, useResultsDetailed } from "@/api/hooks";
 import { SummaryCards } from "./ResultsPage/SummaryCards";
 import { DetailedAnalysis } from "./ResultsPage/DetailedAnalysis";
 import { PastPredictions } from "./ResultsPage/PastPredictions";
-import { SummaryCardsSkeleton, ChartSkeleton } from "@/components/ui/premium/Skeleton";
+import { SummaryCardsSkeleton } from "@/components/ui/premium/Skeleton";
 import { PremiumCard, PremiumCardAccent } from "@/components/ui/premium/PremiumCard";
 import { TrendingUp } from "lucide-react";
-
-// v6.1.22: TrendCharts は recharts を含み重いので遅延ロード。
-// Results ページの Summary カードは即時表示され、チャートは裏で読み込まれる。
-const TrendCharts = lazy(() =>
-  import("./ResultsPage/TrendCharts").then((m) => ({ default: m.TrendCharts })),
-);
 
 const YEARS = (() => {
   const cur = new Date().getFullYear();
@@ -29,29 +23,10 @@ export default function ResultsPage() {
   const initialDate = searchParams.get("date") ?? undefined;
 
   const { data: summary, isLoading: loadingSummary } = useResultsSummary(year);
-  const { data: trend } = useResultsTrend(year);
   const { data: detailed } = useResultsDetailed(year);
-  // M' 戦略 (F-015) 採用成績: hybrid_summary API から m_prime_sanrenpuku を取得
-  // 年度タブ用に全年度分を並列取得（React Query がキャッシュ + 重複排除）
-  const { data: hybrid } = useHybridSummary(year);
-  // NOTE: React hooks ルール上ループ内で呼べないため年度別に個別定義。年度追加時はここに hook を追加
-  const { data: hybridAll } = useHybridSummary("all");
-  const { data: hybrid2024 } = useHybridSummary("2024");
-  const { data: hybrid2025 } = useHybridSummary("2025");
-  const { data: hybrid2026 } = useHybridSummary("2026");
 
   const summaryData = summary as Record<string, unknown> | undefined;
-  const trendData = trend as Record<string, unknown> | undefined;
   const detailedData = detailed as Record<string, unknown> | undefined;
-  const hybridData = hybrid ?? null;
-
-  // M' セクション用: 全年度マップ
-  const mpByYear: Record<string, import("@/api/client").MPrimeSanrenpukuSummary | null | undefined> = {
-    all: hybridAll?.m_prime_sanrenpuku,
-    "2024": hybrid2024?.m_prime_sanrenpuku,
-    "2025": hybrid2025?.m_prime_sanrenpuku,
-    "2026": hybrid2026?.m_prime_sanrenpuku,
-  };
 
   return (
     <div className="space-y-8 max-w-5xl mx-auto">
@@ -106,23 +81,14 @@ export default function ResultsPage() {
       {/* v6.1.6: 読み込み中は skeleton を表示（234 秒級の API が返るまで視覚的フィードバック） */}
       {loadingSummary && <SummaryCardsSkeleton />}
 
-      {/* サマリーカード（上段: 単勝ベース / 下段: M' 戦略 三連複） */}
-      {summaryData && <SummaryCards data={summaryData} hybrid={hybridData} mpByYear={mpByYear} />}
+      {/* サマリーカード（的中率ヒーロー: 複勝率・連対率・勝率） */}
+      {summaryData && <SummaryCards data={summaryData} hybrid={null} />}
 
       {/* データなし */}
       {summaryData && !summaryData.total_races && (
         <p className="text-sm text-muted-foreground py-4 text-center">
           {year === "all" ? "成績データ" : year + "年の成績データ"}はありません
         </p>
-      )}
-
-      {/* チャート（単勝 + M' 戦略推移） */}
-      {trendData ? (
-        <Suspense fallback={<ChartSkeleton count={4} />}>
-          <TrendCharts data={trendData} hybrid={hybridData} />
-        </Suspense>
-      ) : (
-        loadingSummary && <ChartSkeleton count={4} />
       )}
 
       {/* 詳細分析 (単勝ベース) */}

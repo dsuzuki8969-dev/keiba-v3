@@ -47,8 +47,8 @@ export type MarkType = keyof typeof MARKS;
 export const TABS = [
   { key: "home", label: "ホーム", shortLabel: "ホーム", path: "/home" },
   { key: "today", label: "本日予想", shortLabel: "予想", path: "/today" },
-  // 過去成績: 一時非表示 (2026-05-29 マスター指示 / 数値改善まで)
-  // { key: "results", label: "過去成績", shortLabel: "成績", path: "/results" },
+  // 過去成績: 的中率のみで再有効化 (2026-06-27 見える化転換)
+  { key: "results", label: "過去成績", shortLabel: "成績", path: "/results" },
   // T-038: 開催カレンダーページ
   { key: "calendar", label: "開催カレンダー", shortLabel: "カレンダー", path: "/calendar" },
   { key: "venue", label: "競馬場研究", shortLabel: "競馬場", path: "/venue" },
