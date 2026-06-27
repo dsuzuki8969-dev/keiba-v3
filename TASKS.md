@@ -6,6 +6,54 @@
 
 ---
 
+## ✅ 見える化転換 実装 完了 (6/27夜 全権委任自走・commit 9f6b8d9 push済)
+
+> 詳細: `memory/handoff_2026-06-27_v3.md`。master「撤退しない・両方並行」→「思いつく最善を完走」。本番フロント改変(可逆)・backend非改変。
+
+**(a) 見える化フロント = 完了・push済**:
+- ✅ Step1a 実力vs市場タブ(`AbilityVsMarketTab.tsx`新規 + `TabGroup3Horse.tsx` `HIDE_BAIME_TAB=true`で買い目タブ非表示)。**◎緑(emerald-600)実画面確証**(積み残し解消)。
+- ✅ Step1b: `StatsCard.tsx`的中率主役+回収率(参考)撤去 / `HomePage.tsx`乖離ショーケース(妙味=緑・危険枠を「**拮抗・波乱注意**」amber化=master A承認・複勝92%本命を赤=危険と断じる違和感を解消・上位拮抗検知ロジックは維持)。
+- ✅ **成績ページ(ResultsPage)再有効化**(2026-05-29非表示を解除・master A承認): 回収率/ROI/純利/買い目/高配当を**全排除**し的中率特化(複勝/連対/勝率・印別成績・自信度別的中率・過去予想は残置)。`App.tsx`+`constants.ts`(ナビ復活)+`ResultsPage.tsx`(TrendCharts撤去・回収率hooks整理)+`DetailedAnalysis.tsx`(回収率列/競馬場ROIバッジ/単勝高配当TOP10削除・印別成績は残置)。
+- ✅ 全体通し検証: PC+モバイル(375px横崩れ無し)・console0・build型0。
+- ⬜ **Step2(買い目backend撤去・不要component物理削除)= master確認後・P2**。現状 hybrid=null / HIDE_BAIME_TAB で非表示化(可逆)。物理削除対象=UmarenCards/SanrenpukuExtendedCards/MPrimeSummarySection/TrendCharts.tsx + backend買い目算出。dead import残置中。
+
+**(b) 別構造探索 = 黒字無し確定**:
+- ◎軸以外(○-▲/○-△/▲-△ 馬連ワイド)・複勝単体・◎単勝条件層化・◎軸少点数三連複・馬単 を2025実データ検証 → **全クラス赤字**。三連複「黒字」6件は `_roi_val`(L780)の bet約分バグによる偽陽性(真値77-82%赤字)。市場効率の壁を再確認。`data/_diag/alt_bet_structures.csv`。
+
+**commit `9f6b8d9` push済**(frontend一式 + src/static[assets 30→38クリーン化])。分析scripts4本・馬場データ(`track_condition_daily.json` 479日)・`baba_pdf_cache` は **未commit**(P3資産・commit/gitignore判断は次セッション)。
+
+---
+
+## ✅ 買い目徹底分析 → 黒字化の道なし確定 + 見える化転換プレゼン (6/27)
+
+> 詳細: `memory/handoff_2026-06-27.md`。master「あらゆる角度から徹底解析・徹底分析」+「見える化にせざるを得ない際のUI/構図を詳細プレゼン」。「会社行くからゆっくりでいい」で自走中。
+
+**結論: 黒字化の道は無い(あらゆる角度で確定)**。◎○▲△の馬連・ワイドを2025実データ(印=ML複勝確率上位4頭・2023-24学習→2025検証リーク無)で徹底分析 → **全クラス赤字**(馬連 全場79.3%/JRA83.1%/NAR78.3%、ワイド79-82%)。指数/印四方向天井 + P3新データNO-GO + 買い目戦術全滅 + 留保詰めても不変。◎印精度は高い(複勝74.5%/勝率42.5%)が控除率の壁。
+
+- **🚨馬連母数バグ発見・修正**: 集計1,099 vs 実在17,036レース。原因=NARの馬連comboがハイフンなし`'1012'`形式(92%)で `_parse_combo` の `split('-')` 失敗→母数スキップ。修正で16,749(99.8%)。v1の「NAR大頭数馬連109%」は12件/109件の偽陽性→**真値87.7%(赤字)**。`scripts/analyze_bet_combinations_v2.py` / `data/_diag/bet_combinations_v2.csv`。
+- **留保2点詰めても不変(盤石)**: ①曖昧パース(`'112'`=1-12か11-2)誤差上限3.1pt << 黒字化ギャップ18pt ②composite印は ML確率印より**+3.5pt**(馬連77.40% vs 73.89%)だが77%止まり(黒字化まで23pt不足)。2025本番predはcomposite=ml_place_prob×100(7因子0.0未計算)=ML確率印そのもの。
+- **見える化転換プレゼン**(master指示): 収益ツール→実力可視化ツール。実力序列 vs 市場人気の対比、`divergence_signal`で妙味(過小評価)/危険(過大評価)を名指し、買い目廃止、的中実績(74.5%)で信頼担保、購入判断はユーザーへ。UI/構図+実力vs市場モック提示済。実装は既存データ・部品の再配置中心=軽い。ホーム・成績モックは自走で追加予定。
+
+**🚨 master判断待ち**: (a)見える化に振り切る / (b)◎軸以外の構造をなお探す / (c)撤退。新規script(analyze_bet_combinations*.py)未commit。本番(src/pred/engine)非改変。
+
+---
+
+## ✅ P3 馬場データ(クッション値/含水率) ML特徴量化パイロット = NO-GO (6/26深夜・承認なし自走完走)
+
+> 詳細: `memory/handoff_2026-06-26_v3.md`。master「寝るから完走しといて」→ 自走。本番非改変(diag script・pred非書込・engine不変)。
+
+**結論: JRAクッション値/含水率を生のML特徴量に直接投入してもROIは改善しない = NO-GO**。
+- **Phase A**: JRA公式archive PDF取得器 `scripts/fetch_jra_baba_archive.py`(新規)。479測定日(2023:160/2024:158/2025:161)・JRA10場。**生PDF↔JSON突合でリーク無確証**(金曜=前日測定含む)。PDFフォーマット年次変動(2024以前=旧形式)に旧パーサ内蔵。出力 `data/masters/track_condition_daily.json`。
+- **Phase B/C**: `scripts/diag_p3_pilot_baba_features.py`(diag_phase2複製・**lgbm_model.py/src不変**)。単一split(学習2023-24/検証2025通年)で baseline_new(109) vs +baba(112)。
+- **結果**: JRA芝 **ΔROI -0.88pt** / 全レース -0.08pt / 馬場悪化 -2.08pt(AUC +0.04pt微増だがROI転換せず)。SHAP=**odds圧倒1位(babaの約130倍)**・baba中位(moist_corner23/cushion34/moist_goal53位)・cushion非単調=弱いノイズ的信号。
+- **意義**: roadmap留保「市場が既に織り込み済」を実証。指数/印四方向天井+**新規データ(馬場生値)も控除率を破れず=市場効率の壁**。
+
+**🚨朝承認待ち**: ①git commit可否(新規2script+`track_condition_daily.json`[479日資産]+`baba_pdf_cache`[生PDF・gitignore推奨]・**全未commit**) ②P3撤退の最終確認 or odds抜き/派生特徴量/風データ等の追加検証 ③次の戦略方向。**Phase E(本実装/retrain/本番注入)は未着手**(NO-GO)。
+
+**🚨反省(ツール記法累犯)**: `antml:`プレフィックス欠落で生テキスト化→マスター激怒。原因=**テキスト直後のツールブロックが壊れる**→対策=ツール応答はテキストを書かずブロック直書き。
+
+---
+
 ## ✅ P1-a odds残差化 = 無効確定 + ワイド払戻バグ仕上げ完了 (6/25夜〜6/26)
 
 > 詳細: `memory/handoff_2026-06-25_v2.md` / `memory/project_p1a_residual_dead_end.md`
