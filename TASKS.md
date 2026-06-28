@@ -6,6 +6,30 @@
 
 ---
 
+## ✅ 馬場見える化 ①A+②B+③含水率ライブ 完了 (6/28・3commit・①②push済/③未push)
+
+> 詳細: `memory/handoff_2026-06-28.md`。master「①②③の順で」。①A見える化commit / ②B WF検証→off commit / ③含水率ライブ取得を新規構築。本番(dashboard PID 22216)デプロイ済。
+
+**① A見える化 = commit `4854224` + push済**: 各馬の道悪複勝率(baba_record・リーク無)を pred付与 + 馬カード表示。frontend3カード + finalize Step3 + `add_baba_record_to_pred.py` + src/static。印/確率不変(追加フィールドのみ)。
+
+**② B展開指数 = commit `1924ae8` + push済(フラグoff・本番不変)**: WF検証は**reach測定で代替判断**。897ダート道悪レース実測で **Bは◎を<0.5%しか動かさない**(◎-○ composite gap中央値11.5pt >> nudge≤0.9pt)= ROI影響ノイズ確定 → 忠実WF(数時間+netkeiba/汚染リスク)は結論確定につき省略。因果は実証済だがcomposite希釈で効かない=効かせるには買い目/印直接の再設計要(将来課題)。
+
+**③ 含水率/クッション値 ライブ取得+見える化 = commit `97ceb07`(未push)・本番デプロイ済**:
+- アーカイブは~1週ラグで当日不可と判明 → **JRA公式ライブ(`_data_cushion.html`/`_data_moist.html`・Shift_JIS・playwright不要・requests+cp932)** から取得する `scripts/fetch_jra_baba_live.py` 新規。
+- `add_baba_record_to_pred.py` で `race.baba_detail` 紐付け(venue_code突合・JRA限定・NAR null) + RaceDetailView にバッジ(クッション値/含水率/使用コース)。
+- dashboard odds-scheduler に非致命ライブ取得hook(8時=測定後・finalize前)。keiba-reviewer 規約違反なし・実画面検証済(小倉R1スクショ)。
+- **dashboard 再起動済(PID 22216)で本番反映**・odds-scheduler稼働(次回11:00で③hook初発火)。
+
+**残課題**:
+| 優先 | 項目 |
+|---|---|
+| P0 | **③ push判断** (`97ceb07` 未push・①②は push済) |
+| P1 | 当日track_condition(良/重)の馬場発表後 再finalize運用 (展開ヒント補完) |
+| P2 | results cache払戻集計バグ(`results_tracker.py:3403` list/dict・③無関係・別task `task_d2d72d29`) |
+| 将来 | B展開指数を買い目/印に直接効かせる再設計(composite希釈回避・ROIへ効かせる場合) |
+
+---
+
 ## ✅ 見える化転換 実装 完了 (6/27夜 全権委任自走・commit 9f6b8d9 push済)
 
 > 詳細: `memory/handoff_2026-06-27_v3.md`。master「撤退しない・両方並行」→「思いつく最善を完走」。本番フロント改変(可逆)・backend非改変。
