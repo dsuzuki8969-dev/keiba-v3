@@ -69,10 +69,46 @@ def finalize_predictions(date_key: str) -> Dict:
     if _scripts_dir not in sys.path:
         sys.path.insert(0, _scripts_dir)
 
-    # ── Step 1: 表示勝率シャープ化 (冪等) ──
-    from sharpen_win_prob_display import sharpen_pred_file
-    print(f"[finalize] Step1: sharpen ({date_key})")
-    sharpen_stats = sharpen_pred_file(date_key, backup=True)
+    # ── Step 1: 表示勝率シャープ化 or composite較正 (冪等) ──
+    # COMPOSITE_CALIBRATION_ENABLED=False (デフォルト) → 従来の sharpen_pred_file を使う。
+    # True → composite偏差値アンカー較正 (apply_composite_calibration) を使う。
+    # 本番デフォルトは False。True にする前に WF 評価済み calibration_composite.json に差替必須。
+    from config.settings import (
+        COMPOSITE_CALIBRATION_ENABLED,
+        COMPOSITE_CALIBRATION_GAMMA,
+    )
+
+    if COMPOSITE_CALIBRATION_ENABLED:
+        # composite較正パス (フラグON時のみ)
+        import json as _json
+        from src.calculator.composite_calibration import apply_composite_calibration
+
+        pred_path = _ROOT / "data" / "predictions" / f"{date_key}_pred.json"
+        print(f"[finalize] Step1: composite較正 ON ({date_key})")
+        with open(pred_path, encoding="utf-8") as _f:
+            _pred_data = _json.load(_f)
+
+        # 二重適用ガード: display_sharpened フラグ or composite_calibrated フラグで判定
+        _meta = _pred_data.get("_meta", {})
+        if _meta.get("composite_calibrated"):
+            print(f"[finalize] Step1: composite_calibrated フラグあり → スキップ")
+            sharpen_stats = {"skipped": True, "method": "composite_calibration"}
+        else:
+            _pred_data = apply_composite_calibration(
+                _pred_data, gamma=COMPOSITE_CALIBRATION_GAMMA
+            )
+            with open(pred_path, "w", encoding="utf-8") as _f:
+                _json.dump(_pred_data, _f, ensure_ascii=False, indent=2)
+            sharpen_stats = {
+                "skipped": False,
+                "method": "composite_calibration",
+                "gamma": COMPOSITE_CALIBRATION_GAMMA,
+            }
+    else:
+        # 従来パス (デフォルト): sharpen_win_prob_display
+        from sharpen_win_prob_display import sharpen_pred_file
+        print(f"[finalize] Step1: sharpen ({date_key})")
+        sharpen_stats = sharpen_pred_file(date_key, backup=True)
 
     # ── Step 2: elite(◉/穴) → formation ──
     from apply_elite_marks_20260621 import apply_elite_and_formation

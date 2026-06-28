@@ -177,6 +177,13 @@ def run_odds_update(date_key: str, cancel_event: threading.Event | None = None,
                     if hno in live_odds[race_id]:
                         h["odds"] = live_odds[race_id][hno][0]
                         h["popularity"] = live_odds[race_id][hno][1]
+                        # ── 前日想定オッズ初回固定 ──
+                        # 既に assumed_odds がある場合は絶対に上書きしない（初回のみ固定）
+                        # ML・composite・較正・印判定には使わない（表示専用フィールド）
+                        if h.get("assumed_odds") is None and h.get("odds"):
+                            h["assumed_odds"] = h["odds"]
+                        if h.get("assumed_popularity") is None and h.get("popularity"):
+                            h["assumed_popularity"] = h["popularity"]
                         recalc_divergence(h)
                         # EV再計算: win_prob × 実オッズ
                         _wp = h.get("win_prob") or 0

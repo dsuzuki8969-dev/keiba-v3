@@ -6,6 +6,40 @@
 
 ---
 
+## 🔴 進行中（最優先）: 表示率の較正（reliability）+ ホーム4枚再設計
+
+> 詳細: `memory/handoff_2026-06-28_v4.md`。本題=表示勝率/連対率/複勝率が過大・上限張り付き（4.1倍の馬を勝92.8%表示＝実際約17%）を実データ較正で正す。**設計確定・ground-truth実データ完成。残るは実装。ただし実装前にマスター4決定が必須**。
+
+**真因**: `scripts/sharpen_win_prob_display.py` Step4オッズ下限フロア（人気上位3頭ピン留め）+ Step5ハードキャップ（`p3_cap=min(0.92,…)` に複勝92%が26頭張り付き）。gamma=2.2は残す（メリハリ源）。生ML復帰・平均化は誤り（実証済）。
+
+**完成済 ground-truth**: `data/_diag/calibration_rates.json`(89KB)+`.csv`(38KB)（race_log 82万件・オッズ別/人気別×勝連複×ALL/JRA/NAR/24場）。**composite版CSVは未保存** → `scripts/build_calibration_composite.py` 作成・実行で `calibration_composite.csv` 再生成要。
+
+**🚩 実装前にマスター4決定（要確認）**:
+| # | 決定事項 | 私の推奨 |
+|---|---|---|
+| 1 | アンカー（オッズ別/人気別/偏差値別/ブレンド） | オッズ別＋複勝はJRA/NAR別＋composite乖離微調整 |
+| 2 | 実力乖離の強さ k（控えめ） | 同オッズで±数%〜十数% |
+| 3 | ホーム4枚の主題（A市場乖離 / B レース構造） | A（"消し"が理念直結） |
+| 4 | 右上「妙味」の分かりにくさ修正 | 「実力◯位/人気◯位」対比表示 |
+
+**実装プラン（4決定後）**: ①composite別をWF予想で測り直し（リーク排除）→②較正関数（odds→base率＋composite乖離nudge→レース内再正規化＋win≤p2≤p3・ハード0.92廃止）→③本番非改変プレビューでk/アンカー決定→④sharpenのキャップ/フロアをソフト較正に置換（フラグ隔離）→⑤WF検証(Brier/logloss)＋実画面＋commit→⑥ホーム4枚再設計。
+
+---
+
+## ✅ 馬場③ T-C(当日馬場状態) + T-B(hook発火確認/hardening) + T-A(残骸停止) 完了 (6/28続き・commit 5e27714 push済)
+
+> 詳細: `memory/handoff_2026-06-28_v3.md`。master「全部完走して順番は任せる」全権委任。前 handoff_v2 残課題(P1 当日track_condition / P1 hook発火確認) + セッション発見(残骸プロセス) を完遂。
+
+**T-A 残骸プロセス停止**: 6/24起動の孤児python(PID8316・:5051非LISTEN・8GB占有・idle・親消滅)を停止しメモリ解放。dashboard 無影響。
+
+**T-B ③hook 発火確認 + hardening**: ③ライブfetchを手動実行し**実動作確認**(福島/小倉/函館の当日cushion/moist/馬場状態)。🔑観測性ギャップ発見=baba発火が logger-only で dashboard_out.log 非到達(前2セッション「起動確認のみ」の真因)。**hardening**: ①baba取得を odds-error gate の外へ(NAR odds失敗でもJRA baba実行) ②print(flush)で発火を dashboard_out.log に可視化。**14:00 odds-scheduler発火で実ログ確認可**(master監視点)。
+
+**T-C 当日馬場状態(良/重)取得・見える化**: JRA馬場情報ページ(index{N}.html)の公式馬場状態(芝/ダート)+天候+時刻を ③parser拡張で取得→baba_detail→frontendバッジ。🔑**鮮度**=良/重ラベルはレース直前まで金曜正午値(JRA運用)→condition_time表示で明示。⚠️**リーク防止**(keiba-reviewer P1): ML名フィールド(race.condition/track_condition_*)へ当日値を書かず baba_detail経由のみ。発見: 当日 race.condition は scraper(odds更新)が設定するため「未発表」は時間帯依存。**実画面(福島5R)で馬場バッジ「芝稍重/ダート稍重」「天候:曇(金曜正午現在)」描画確認**。dashboard :5051 再起動(**PID 17884**)反映済。
+
+**commit `5e27714` push済**(5ファイル)。keiba-reviewer **P0ゼロ**・npm build型0・parser独立検証OK。
+
+---
+
 ## ✅ 馬場見える化 ①A+②B+③含水率ライブ 完了 (6/28・3commit・①②push済/③未push)
 
 > 詳細: `memory/handoff_2026-06-28.md`。master「①②③の順で」。①A見える化commit / ②B WF検証→off commit / ③含水率ライブ取得を新規構築。本番(dashboard PID 22216)デプロイ済。
@@ -20,13 +54,15 @@
 - dashboard odds-scheduler に非致命ライブ取得hook(8時=測定後・finalize前)。keiba-reviewer 規約違反なし・実画面検証済(小倉R1スクショ)。
 - **dashboard 再起動済(PID 22216)で本番反映**・odds-scheduler稼働(次回11:00で③hook初発火)。
 
-**残課題**:
-| 優先 | 項目 |
-|---|---|
-| P0 | **③ push判断** (`97ceb07` 未push・①②は push済) |
-| P1 | 当日track_condition(良/重)の馬場発表後 再finalize運用 (展開ヒント補完) |
-| P2 | results cache払戻集計バグ(`results_tracker.py:3403` list/dict・③無関係・別task `task_d2d72d29`) |
-| 将来 | B展開指数を買い目/印に直接効かせる再設計(composite希釈回避・ROIへ効かせる場合) |
+**残課題** (6/28続きで P0/P1 全解消):
+| 優先 | 項目 | 状態 |
+|---|---|---|
+| ~~P0~~ | ③ push判断 | ✅ `97ceb07` + T-C `5e27714` push済 |
+| ~~P1~~ | 当日track_condition(良/重) | ✅ T-C完了(JRA公式馬場状態を③parser拡張で取得・バッジ表示) |
+| ~~P1~~ | ③ hook発火確認 | ✅ T-B完了(手動実証 + hardening: gate外出し + print可視化) |
+| P2 | results cache払戻集計バグ | 9226acb で修正済(別task `task_d2d72d29` は冗長・取下げ可) |
+| 監視 | 14:00 odds-scheduler で③baba発火を dashboard_out.log 確認 | T-B hardening の本番初発火点 |
+| 将来 | B展開指数を買い目/印に直接効かせる再設計 | composite希釈回避・ROIへ効かせる場合のみ |
 
 ---
 

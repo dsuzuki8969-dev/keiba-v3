@@ -562,6 +562,10 @@ export interface HorseData {
     good_p3: number | null;  // 良馬場複勝率 0-100
     good_n: number;          // 良馬場走数
   };
+  /** 前日想定オッズ（発走前日時点のオッズ推定値）。未取得時は null/undefined */
+  assumed_odds?: number | null;
+  /** 前日想定人気（発走前日時点の人気推定値）。未取得時は null/undefined */
+  assumed_popularity?: number | null;
   [key: string]: unknown;
 }
 

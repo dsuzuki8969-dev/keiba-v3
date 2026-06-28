@@ -380,6 +380,9 @@ class Horse:
     base_weight_kg: float = 55.0  # 性齢定量
     odds: Optional[float] = None  # 確定オッズ (なければNone)
     popularity: Optional[int] = None
+    # 前日想定オッズ/想定人気 — 初回オッズ取得時に固定される。表示専用。ML・composite には使わない
+    assumed_odds: Optional[float] = None
+    assumed_popularity: Optional[int] = None
     horse_weight: Optional[int] = None
     weight_change: Optional[int] = None
 

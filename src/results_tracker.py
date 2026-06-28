@@ -315,6 +315,9 @@ def save_prediction(date: str, analyses_by_venue: dict, *, lightweight: bool = F
                     "weight_confirmed": False,  # オッズ取得時に公式データで上書きされたら True
                     "odds": h.odds,
                     "popularity": h.popularity,
+                    # 前日想定オッズ/想定人気 — 初回固定。表示専用。ML・composite には絶対に使わない
+                    "assumed_odds": getattr(h, "assumed_odds", None),
+                    "assumed_popularity": getattr(h, "assumed_popularity", None),
                     # 総合
                     "mark": ev.mark.value if ev.mark else "-",
                     # assign_marks でスナップショットされた値を優先（印との整合性保証）— 20-100クランプ

@@ -515,6 +515,27 @@ export const HorseCardMobile = memo(function HorseCardMobile({ horses, isBanei, 
                 </span>
               </div>
 
+              {/* ---- 行2.5: 前日想定オッズ + GAP（assumed_odds が有効値のときのみ表示） ---- */}
+              {h.assumed_odds != null && h.assumed_odds > 0 && (
+                <div className="flex items-center gap-1 mt-0.5 text-[11px]">
+                  <span className="text-muted-foreground">想定</span>
+                  <span className="tabular-nums text-muted-foreground">
+                    {h.assumed_odds.toFixed(1)}倍
+                    {h.assumed_popularity != null ? `${h.assumed_popularity}人気` : ""}
+                  </span>
+                  {h.odds != null && h.odds > 0 && (() => {
+                    const gap = (h.odds - h.assumed_odds!) / h.assumed_odds! * 100;
+                    if (Math.abs(gap) < 3) {
+                      return <span className="text-muted-foreground tabular-nums">±0%</span>;
+                    } else if (gap < 0) {
+                      return <span className="tabular-nums text-emerald-600 dark:text-emerald-400 font-semibold">↓{Math.abs(gap).toFixed(0)}%</span>;
+                    } else {
+                      return <span className="tabular-nums text-muted-foreground">↑{gap.toFixed(0)}%</span>;
+                    }
+                  })()}
+                </div>
+              )}
+
               {/* ---- 行3: 馬体重（取得済み時のみ） ---- */}
               {horseWeightNode && (
                 <div className="flex items-center mt-0.5 text-[11px]">

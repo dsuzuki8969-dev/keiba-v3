@@ -1048,6 +1048,19 @@ LEAK_RISK_LOCK_DAYS: int = 3     # race_date + 3日超過で再生成ロック
 # デフォルト False = 本番挙動を一切変えない。True にしてフラグ検証実施。
 BABA_PACE_ADJ_ENABLED: bool = False
 
+# ============================================================
+# composite偏差値アンカー較正フラグ (2026-06-28 追加)
+# ============================================================
+# デフォルト False = 本番現行動作を一切変えない (sharpen_win_prob_display が従来通り動く)。
+# True にすると src/calculator/composite_calibration.py の apply_composite_calibration が
+# sharpen の代わりに呼ばれ、composite別実率テーブルにアンカーした確率を設定する。
+#
+# ⚠️ 本番で True にする前に必ず WF 評価済み calibration_composite.json に差し替えること。
+#    現行ファイル (data/_diag/calibration_composite.json) は本番 pred.json 全期間集計 =
+#    学習リーク懸念あり。詳細: src/calculator/composite_calibration.py 冒頭コメント参照。
+COMPOSITE_CALIBRATION_ENABLED: bool = False  # デフォルトOFF・本番現行維持
+COMPOSITE_CALIBRATION_GAMMA: float = 2.0     # シャープ化指数 (preview_calibration_v2.py と同値)
+
 # 補正係数 (偏差値pt 加算値、控えめ設定)
 # 根拠: 人気層別交絡除去実証 — ダート道悪で逃げの複勝率が全人気帯+2〜5pt
 # (短距離+5.2pt / 中長距離+8.5pt)、差し・追込は-(本命追込-5.9pt)

@@ -462,6 +462,30 @@ const HorseCard = memo(function HorseCard({
                 <span className={`text-[12px] ${h.popularity != null ? rankCls(h.popularity) || "text-muted-foreground" : "text-muted-foreground"}`}>({popStr})</span>
               </span>
             </div>
+            {/* 行E-0: 前日想定オッズ + 当日GAP（assumed_odds が有効値のときのみ表示） */}
+            {h.assumed_odds != null && h.assumed_odds > 0 && (
+              <div className="flex items-center gap-1.5 text-xs mt-0.5">
+                <span className="text-muted-foreground">前日想定</span>
+                <span className="tabular-nums text-muted-foreground">
+                  {h.assumed_odds.toFixed(1)}倍
+                  {h.assumed_popularity != null ? `(${h.assumed_popularity}人気)` : ""}
+                </span>
+                {/* 当日オッズが有効値のときのみ GAP 表示 */}
+                {h.odds != null && h.odds > 0 && (() => {
+                  const gap = (h.odds - h.assumed_odds) / h.assumed_odds * 100;
+                  if (Math.abs(gap) < 3) {
+                    return <span className="text-muted-foreground tabular-nums">±0%</span>;
+                  } else if (gap < 0) {
+                    // 当日オッズが想定より下降 = 買われた → 緑
+                    return <span className="tabular-nums text-emerald-600 dark:text-emerald-400 font-semibold">↓{Math.abs(gap).toFixed(0)}%</span>;
+                  } else {
+                    // 当日オッズが想定より上昇 = 人気離れ → muted
+                    return <span className="tabular-nums text-muted-foreground">↑{gap.toFixed(0)}%</span>;
+                  }
+                })()}
+              </div>
+            )}
+
             {/* 行E: 道悪複勝率（baba_record がある場合のみ） */}
             {h.baba_record && (
               <div className="flex items-center gap-1.5 text-[11px] mt-0.5">
