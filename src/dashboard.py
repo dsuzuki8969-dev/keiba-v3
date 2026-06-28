@@ -1262,16 +1262,17 @@ def _scan_today_predictions(date_str: str) -> dict:
                         "odds": h.get("odds", 0) or 0,
                         "popularity": pop,
                         "composite": round(h.get("composite", 0) or 0, 1),
-                        "ability_rank": jiku_rank,  # ← jiku_score 降順ランクに変更
-                        "jiku_score": round(jiku_val, 1),  # 軸馬度を追加
+                        "jiku_rank": jiku_rank,   # 軸馬度降順ランク（1=最も軸信頼高）
+                        "over": _kiken_gap,        # jiku_rank - 人気順位（過大評価の大きさ）
+                        "jiku_score": round(jiku_val, 1),  # 軸馬度スコア 0-100
                         "divergence_signal": sig,
                         "_gap": _kiken_gap,  # 内部ソート用（APIレスポンスには含まない）
                     }
         for item in best_per_race.values():
             item.pop("_gap", None)
             kiken_horses.append(item)
-    # jiku_rank - 人気順位の降順（最も軸信頼薄の馬を上位へ）でソート、上位5件
-    kiken_horses.sort(key=lambda x: -(x["ability_rank"] - x["popularity"]))
+    # over(=jiku_rank - 人気順位)の降順（最も過大評価の馬を上位へ）でソート、上位5件
+    kiken_horses.sort(key=lambda x: -(x.get("over", 0)))
     kiken_horses = kiken_horses[:5]
 
     return {"races": races, "order": order, "ana_horses": ana_horses, "kiken_horses": kiken_horses}

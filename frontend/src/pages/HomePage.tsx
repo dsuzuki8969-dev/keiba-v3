@@ -96,34 +96,27 @@ export default function HomePage() {
   // 危険な人気馬 — 人気1〜3位だが実力順位が人気順位より3以上下（過大評価）
   const kikenHorses = (pred?.kiken_horses || []).slice(0, 5) as KikenHorse[];
 
-  // 乖離ショーケース「拮抗・波乱注意」枠 — 上位3頭composite差(top3_range)が小さい本命馬
-  // top3_range<8(JRA) / <6(NAR) = 上位3頭が拮抗し本命が紛れやすい波乱含みレース
-  // (scripts/analyze_kikko_threshold.py: top3差<6pt で◎複勝率が全体比15-20pt低下・JRAは<8pt)
+  // 乖離ショーケース「拮抗・波乱注意」枠 — 上位2頭の軸馬度差(jiku_gap)が小さい本命馬
+  // jiku_gap<6 = 上位の軸馬度が拮抗し本命が紛れやすい波乱含みレース（自信度と同一軸）
+  // (scripts/analyze_kikko_jiku.py: jiku_gap<6 で◎複勝率が全体比9.6pt低下・単調でtop3_rangeより判別力高い)
   const kikenRaces = useMemo(() => {
     const _order = (pred?.order || []) as string[];
     const _races = (pred?.races || {}) as Record<string, RaceSummary[]>;
-    // venue名→isJra マップ（venueInfoList の code を使って JRA/NAR を判定）
-    const _venueIsJra: Record<string, boolean> = {};
-    for (const vi of venueInfoList) {
-      _venueIsJra[vi.name] = JRA_CODES.has(vi.code);
-    }
     const candidates: (RaceSummary & { venue: string })[] = [];
     for (const v of _order) {
-      const isJra = _venueIsJra[v] ?? true;  // 不明時はJRA扱い（保守的に）
-      const threshold = isJra ? 8.0 : 6.0;
       for (const r of _races[v] || []) {
         const pop = r.honmei_popularity ?? 99;
-        const top3 = r.top3_range ?? 999;
-        // 1〜3人気なのに上位3頭composite差が閾値未満 = 実力差が小さく「危険な本命」候補
-        if (pop <= 3 && top3 < threshold) {
+        const gap = r.jiku_gap ?? 999;
+        // 1〜3人気なのに上位2頭の軸馬度差が6未満 = 実力拮抗の「危険な本命」候補
+        if (pop <= 3 && gap < 6.0) {
           candidates.push({ ...r, venue: v });
         }
       }
     }
-    // top3_range 昇順（最も拮抗している順）で上位5件
-    candidates.sort((a, b) => (a.top3_range ?? 999) - (b.top3_range ?? 999));
+    // jiku_gap 昇順（最も拮抗している順）で上位5件
+    candidates.sort((a, b) => (a.jiku_gap ?? 999) - (b.jiku_gap ?? 999));
     return candidates.slice(0, 5);
-  }, [pred, venueInfoList]);
+  }, [pred]);
 
   const goToRace = useCallback((venue: string, raceNo: number) => {
     navigate("/today", { state: { venue, raceNo } });
@@ -448,15 +441,15 @@ export default function HomePage() {
                 </PremiumCardAccent>
                 <PremiumCardTitle className="text-sm flex items-center gap-2">
                   危険な人気馬
-                  <span className="text-xs font-normal text-muted-foreground">人気上位・実力下位</span>
+                  <span className="text-xs font-normal text-muted-foreground">人気上位・軸馬度低</span>
                 </PremiumCardTitle>
               </div>
             </PremiumCardHeader>
             <div className="space-y-2">
               {kikenHorses.map((h) => {
-                const abilityRank = h.ability_rank;
+                const jikuRank = h.jiku_rank;
                 const pop = h.popularity;
-                const gapVal = abilityRank - pop;
+                const overVal = h.over ?? (jikuRank - pop);
                 return (
                   <div
                     key={`${h.venue}-${h.race_no}-${h.horse_no}`}
@@ -477,9 +470,9 @@ export default function HomePage() {
                         {h.mark && <span className="font-bold text-foreground">{h.mark}</span>}
                         <span className="text-sm font-semibold">{h.horse_name}</span>
                       </div>
-                      {/* 人気X位なのに実力Y位 — 過大評価の根拠を名指し */}
+                      {/* 人気X位なのに軸馬度Y位 — 過大評価の根拠を名指し */}
                       <div className="text-xs text-red-600 dark:text-red-400 font-semibold mb-1.5 tabular-nums">
-                        人気{pop}位なのに実力{abilityRank}位 — 過大評価+{gapVal}
+                        人気{pop}位なのに軸馬度{jikuRank}位 — 過大評価+{overVal}
                       </div>
                       <div className="flex items-center gap-x-4 gap-y-1 text-xs text-muted-foreground flex-wrap">
                         {h.odds > 0 && (
@@ -518,7 +511,7 @@ export default function HomePage() {
             </PremiumCardHeader>
             <div className="space-y-2">
               {kikenRaces.map((r) => {
-                const top3 = r.top3_range ?? 999;
+                const gap = r.jiku_gap ?? 999;
                 return (
                   <div
                     key={`${r.venue}-${r.race_no}`}
@@ -554,8 +547,8 @@ export default function HomePage() {
                       </div>
                       <div className="flex items-center gap-x-3 text-xs text-muted-foreground flex-wrap">
                         <span className="tabular-nums whitespace-nowrap">
-                          上位3頭差<span className="stat-mono text-sm ml-0.5 font-bold text-amber-600 dark:text-amber-400">
-                            {top3 < 999 ? top3.toFixed(1) : "—"}
+                          軸馬度差<span className="stat-mono text-sm ml-0.5 font-bold text-amber-600 dark:text-amber-400">
+                            {gap < 999 ? gap.toFixed(1) : "—"}
                           </span>
                         </span>
                         {(r.honmei_fukusho_pct ?? 0) > 0 && (
@@ -647,7 +640,7 @@ interface AnaHorse {
   is_star: boolean;
 }
 
-// 危険な人気馬: 人気1〜3位だが実力順位が人気順位より3以上下（過大評価）
+// 危険な人気馬: 人気1〜3位だが軸馬度順位が人気順位より3以上下（過大評価）
 interface KikenHorse {
   venue: string;
   race_no: number;
@@ -659,8 +652,9 @@ interface KikenHorse {
   odds: number;
   popularity: number;
   composite: number;
-  ability_rank: number;  // jiku_score 降順ランク（1=最も軸信頼高）
-  jiku_score?: number;   // 軸馬度 0-100
+  jiku_rank: number;     // 軸馬度降順ランク（1=最も軸信頼高）
+  over: number;          // jiku_rank - 人気順位（過大評価の大きさ）
+  jiku_score?: number;   // 軸馬度スコア 0-100
   divergence_signal: string;
 }
 
