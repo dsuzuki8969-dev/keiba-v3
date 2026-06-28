@@ -6,27 +6,27 @@
 
 ---
 
-## 🟡 表示率較正 ①②③実装完了（本番フラグOFF）・残: 明日検証/ホーム4枚
+## 🟡 見える化を軸馬度/穴馬度の2軸に全面再設計（本番OFF・未push）・残: 穴馬度2位差/push
 
-> 詳細: `memory/handoff_2026-06-28_v4.md`。表示勝率/連対率/複勝率の過大・上限張り付き(4.1倍→勝92.8%表示=実勝率17%)を是正。**commit `c86be32`・本番デフォルトOFF・dashboard反映済**。
+> 詳細: `memory/handoff_2026-06-28_v5.md`。「収益→実力の見える化」を軸馬度/穴馬度2軸に統一。**4 commit(c86be32/140ea03/12251dc/1266c4a)・実画面検証済・未push**。dashboard PID14452稼働。
 
-**確定した設計**（master対話で確定）:
-- 較正 = 偏差値(composite)純粋アンカー(k=0・オッズ加味なし) + 連続補間(同値解消) + gamma2.0シャープ化(メリハリ・飽和なし)
-- 印 = 偏差値順で前日確定（当日オッズで動かさない）
-- 当日オッズ = 数字に混ぜず「当日 / 前日想定 / GAP」をカード表示（乖離シグナル専用）
+**確定設計**:
+- 軸馬度=実力(composite)40%+堅実(複勝率)30%+断トツ(レース内順位)30%。0-100。本命信頼度。
+- 穴馬度=過小評価(人気-実力順位)70%+穴スコア30%。実力削除(1人気≈0)。0-100。
+- 絶対軸=軸馬度TOP5 / 穴馬=穴馬度 / 危険=人気上位かつ軸馬度低 / 拮抗=jiku_gap3<8(軸馬度上位3頭差・複勝-21pt) / 自信度=jiku_gap(SS≥22/S≥16/A≥11/B≥6/C≥3/D<3)
+- LIVE STATS=6カード(勝/連/複+軸馬成績/単勝回収率/収支=◎単勝物差し)
+- 表示率較正=偏差値アンカー+gamma2.0+連続補間(`COMPOSITE_CALIBRATION_ENABLED=False`・本番OFF・フラグ隔離)
 
-**①②③実装完了（commit `c86be32`・全て私が独立検証）**:
-- ① `composite_calibration.py` + settings `COMPOSITE_CALIBRATION_ENABLED=False`(デフォルトOFF) + finalize分岐。ON時 preview一致(レーティッシュ19.2/42.2・◎ニュークレド>○ナリタ)確認。
-- ② `run_odds_update` で `assumed_odds`/`assumed_popularity` 初回固定保存(表示専用・ML/composite非汚染)。
-- ③ 馬カード(HorseCardPC/Mobile)に「前日想定オッズ+GAP」表示(assumed無しは非表示・既存表示不変)。
+**重要な学び**: 重み最適化は循環参照(予測指数で結果予測=同義反復)で不可→意味配分 / `overall_confidence`は買い目使用で変更禁止(表示自信度は別指標) / playwrightキャッシュ罠(`?cb=`回避・見た目だけで判断せずAPI確認) / dashboard再起動は`:5051 PID`をGet-NetTCPConnectionで動的取得
 
 **残課題**:
 | 優先 | 項目 | 内容 |
 |---|---|---|
-| P0 | 明日の実データ検証 | assumed_odds蓄積 / カードに前日想定行+GAP表示(実画面目視) / 198経路(人気rank補完)の想定人気が埋まるか |
-| P1 | 偏差値テーブルWF版精緻化 | 現 `calibration_composite.json` は本番pred由来でリーク懸念 → WF予想で作り直してから本番ON |
-| P1 | 本番ON判断 | WF版テーブル後に `COMPOSITE_CALIBRATION_ENABLED=True` を master判断(数字が偏差値較正に切替) |
-| P2 | ホーム4枚再設計 | 4枚の主題(A市場乖離 推奨)・右上「妙味」の対比表示 |
+| P0 | 穴馬度2位差の見せ方 | 実装済(HomePage 424-426・条件anaDoGap>0)だが穴印馬は穴馬度1位でない→負も表示(相対位置)か絶対値か master確認待ち |
+| P0 | push判断 | 4 commit(c86be32/140ea03/12251dc/1266c4a) 未push |
+| P1 | 実画面目視 | 自信度バッジ/絶対軸の軸馬度/馬柱(軸/穴/EV%)を当日データで(本セッションはホーム4カードまで確認) |
+| P1 | 表示率較正の本番ON | 偏差値テーブルをWF版(リーク除去)に作り直してから`COMPOSITE_CALIBRATION_ENABLED=True` |
+| 参考 | 分析scripts | calibration_composite / analyze_kikko_threshold,jiku,jiku3 / analyze_marks_weight / preview_calibration(_v2) |
 
 ---
 
