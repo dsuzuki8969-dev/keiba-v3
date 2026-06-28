@@ -1113,11 +1113,16 @@ def _scan_today_predictions(date_str: str) -> dict:
                 _jiku_gap_val = round(
                     _jiku_scores_sorted[0] - _jiku_scores_sorted[1], 1
                 ) if len(_jiku_scores_sorted) >= 2 else 0.0
+                # jiku_gap3: 軸馬度1位-3位差（拮抗判定用: 上位3頭が混戦かどうか）
+                _jiku_gap3_val = round(
+                    _jiku_scores_sorted[0] - _jiku_scores_sorted[2], 1
+                ) if len(_jiku_scores_sorted) >= 3 else _jiku_gap_val
                 # RaceSummaryを更新（同一レース番号・会場で特定）
                 for _rs in races.get(_jv, []):
                     if _rs.get("race_no") == _jrno:
                         _rs["honmei_jiku_score"] = round(_honmei_jiku, 1)
                         _rs["jiku_gap"] = _jiku_gap_val
+                        _rs["jiku_gap3"] = _jiku_gap3_val  # 1位-3位差（拮抗判定・表示専用）
                         break
 
     # ── 厳選穴馬: 回帰ベース妙味スコアで評価 ──
@@ -1197,6 +1202,11 @@ def _scan_today_predictions(date_str: str) -> dict:
                     star_rating = 2
                 else:
                     star_rating = 1
+                # そのレースの jiku_gap と本命 composite を RaceSummary から取得（自信度バッジ・差値用）
+                _race_jiku_gap = r.get("jiku_gap", 0.0)
+                _race_honmei_comp = r.get("honmei_composite", 0.0)
+                # 本命compositeとの差（負=本命より指数低い）
+                _comp_vs_honmei = round(comp - (_race_honmei_comp or 0.0), 1)
                 ana_horses.append({
                     "venue": venue_name,
                     "race_no": rno,
@@ -1208,15 +1218,35 @@ def _scan_today_predictions(date_str: str) -> dict:
                     "odds": odds_val,
                     "popularity": h.get("popularity", 0),
                     "composite": round(comp, 1),
+                    "composite_vs_honmei": _comp_vs_honmei,  # 本命compositeとの差（表示専用）
                     "place3_prob": round(p3 * 100, 1),
-                    "miryoku": miryoku,       # 旧互換フィールド（フロント旧コードがあれば活用）
-                    "ana_do": _ana_do_val,    # 新: 穴馬度 0-100
-                    "jiku_score": _jiku_val,  # 新: 軸馬度 0-100
+                    "miryoku": miryoku,          # 旧互換フィールド（フロント旧コードがあれば活用）
+                    "ana_do": _ana_do_val,       # 新: 穴馬度 0-100
+                    "jiku_score": _jiku_val,     # 新: 軸馬度 0-100
+                    "jiku_gap": _race_jiku_gap,  # そのレースの jiku_gap（自信度バッジ用・表示専用）
                     "star_rating": star_rating,
                     "is_star": is_star,
                 })
     # 妙味スコア降順でソート
     ana_horses.sort(key=lambda x: -x["miryoku"])
+
+    # ── 穴馬度2位との差を付与（3行目表示用・表示専用） ──
+    # 同一レース内の穴馬度を降順で並べ、各馬に「自分が1位なら2位との差、それ以外は0」を付与
+    _ana_race_map: dict = {}  # {(venue, rno): [ana_do値リスト]}
+    for _ah in ana_horses:
+        _ak = (_ah["venue"], _ah["race_no"])
+        _ana_race_map.setdefault(_ak, []).append(_ah["ana_do"])
+    for _ak, _vals in _ana_race_map.items():
+        _vals_sorted = sorted(_vals, reverse=True)
+        _ana_2nd = _vals_sorted[1] if len(_vals_sorted) >= 2 else None
+        _ana_1st = _vals_sorted[0]
+        for _ah in ana_horses:
+            if (_ah["venue"], _ah["race_no"]) == _ak:
+                if _ana_2nd is not None and abs(_ah["ana_do"] - _ana_1st) < 0.01:
+                    # このレースの穴馬度1位馬
+                    _ah["ana_do_gap"] = round(_ana_1st - _ana_2nd, 1)
+                else:
+                    _ah["ana_do_gap"] = None  # 1位以外はNone
 
     # ── 危険な人気馬: 人気上位だが軸馬度が低い（軸信頼薄） ──
     # 条件: 人気1〜3位 かつ その馬の jiku_score レース内順位 ≥ 人気順位+3
@@ -1251,6 +1281,23 @@ def _scan_today_predictions(date_str: str) -> dict:
                 key_ = (venue_name, rno)
                 prev = best_per_race.get(key_)
                 if prev is None or _kiken_gap > prev["_gap"]:
+                    # 最上位composite・最上位軸馬度を計算（差値表示用）
+                    _max_comp = max((hh.get("composite", 0) or 0) for hh in valid)
+                    _max_jiku = max((hh.get("jiku_score", 0) or 0) for hh in valid)
+                    _this_comp = h.get("composite", 0) or 0
+                    # その馬が1位なら2位との差、1位でなければ最上位との差
+                    if abs(_this_comp - _max_comp) < 0.01:
+                        # この馬が composite1位 → 2位との差
+                        _sorted_comps = sorted([hh.get("composite", 0) or 0 for hh in valid], reverse=True)
+                        _comp_gap_val = round(_sorted_comps[0] - _sorted_comps[1], 1) if len(_sorted_comps) >= 2 else 0.0
+                    else:
+                        _comp_gap_val = round(_this_comp - _max_comp, 1)  # 負値: 最上位との差
+                    if abs(jiku_val - _max_jiku) < 0.01:
+                        # この馬が jiku1位 → 2位との差
+                        _sorted_jikus = sorted([hh.get("jiku_score", 0) or 0 for hh in valid], reverse=True)
+                        _jiku_gap_val = round(_sorted_jikus[0] - _sorted_jikus[1], 1) if len(_sorted_jikus) >= 2 else 0.0
+                    else:
+                        _jiku_gap_val = round(jiku_val - _max_jiku, 1)  # 負値: 最上位との差
                     best_per_race[key_] = {
                         "venue": venue_name,
                         "race_no": rno,
@@ -1261,10 +1308,13 @@ def _scan_today_predictions(date_str: str) -> dict:
                         "mark": h.get("mark", ""),
                         "odds": h.get("odds", 0) or 0,
                         "popularity": pop,
-                        "composite": round(h.get("composite", 0) or 0, 1),
+                        "composite": round(_this_comp, 1),
+                        "composite_gap_kiken": _comp_gap_val,  # 最上位compositeとの差（または2位差）表示専用
                         "jiku_rank": jiku_rank,   # 軸馬度降順ランク（1=最も軸信頼高）
                         "over": _kiken_gap,        # jiku_rank - 人気順位（過大評価の大きさ）
-                        "jiku_score": round(jiku_val, 1),  # 軸馬度スコア 0-100
+                        "jiku_score": round(jiku_val, 1),   # 軸馬度スコア 0-100
+                        "jiku_gap_kiken": _jiku_gap_val,    # 最上位軸馬度との差（または2位差）表示専用
+                        "jiku_gap": r.get("jiku_gap", 0.0),  # そのレースの jiku_gap（自信度バッジ用・表示専用）
                         "divergence_signal": sig,
                         "_gap": _kiken_gap,  # 内部ソート用（APIレスポンスには含まない）
                     }

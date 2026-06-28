@@ -22,6 +22,17 @@ import { MapPin, Crosshair, Sparkles, AlertTriangle } from "lucide-react";
  *   呼び出し箇所は <StatsCard date={date} title="本日のリアルタイム成績" showRefreshButton />
  */
 
+// ── jiku_gap → 自信度ラベル変換（全カード共通） ──
+// SS>=22 / S>=16 / A>=11 / B>=6 / C>=3 / D<3
+function jikuGapToConf(gap: number): string {
+  if (gap >= 22) return "SS";
+  if (gap >= 16) return "S";
+  if (gap >= 11) return "A";
+  if (gap >= 6)  return "B";
+  if (gap >= 3)  return "C";
+  return "D";
+}
+
 // ── 競馬場ロゴ ──
 function VenueLogo({ name, isJra }: { name: string; isJra: boolean }) {
   // JRAは全場共通ロゴ、NARは競馬場ごとのロゴ
@@ -96,9 +107,8 @@ export default function HomePage() {
   // 危険な人気馬 — 人気1〜3位だが実力順位が人気順位より3以上下（過大評価）
   const kikenHorses = (pred?.kiken_horses || []).slice(0, 5) as KikenHorse[];
 
-  // 乖離ショーケース「拮抗・波乱注意」枠 — 上位2頭の軸馬度差(jiku_gap)が小さい本命馬
-  // jiku_gap<6 = 上位の軸馬度が拮抗し本命が紛れやすい波乱含みレース（自信度と同一軸）
-  // (scripts/analyze_kikko_jiku.py: jiku_gap<6 で◎複勝率が全体比9.6pt低下・単調でtop3_rangeより判別力高い)
+  // 拮抗・波乱注意 — 上位3頭の軸馬度差(jiku_gap3)が小さい本命馬
+  // jiku_gap3<8 = 上位3頭の軸馬度が混戦状態で本命が紛れやすい波乱含みレース
   const kikenRaces = useMemo(() => {
     const _order = (pred?.order || []) as string[];
     const _races = (pred?.races || {}) as Record<string, RaceSummary[]>;
@@ -106,15 +116,15 @@ export default function HomePage() {
     for (const v of _order) {
       for (const r of _races[v] || []) {
         const pop = r.honmei_popularity ?? 99;
-        const gap = r.jiku_gap ?? 999;
-        // 1〜3人気なのに上位2頭の軸馬度差が6未満 = 実力拮抗の「危険な本命」候補
-        if (pop <= 3 && gap < 6.0) {
+        const gap3 = r.jiku_gap3 ?? 999;
+        // 1〜3人気なのに上位3頭の軸馬度差が8未満 = 実力拮抗の「危険な本命」候補
+        if (pop <= 3 && gap3 < 8.0) {
           candidates.push({ ...r, venue: v });
         }
       }
     }
-    // jiku_gap 昇順（最も拮抗している順）で上位5件
-    candidates.sort((a, b) => (a.jiku_gap ?? 999) - (b.jiku_gap ?? 999));
+    // jiku_gap3 昇順（最も混戦の順）で上位5件
+    candidates.sort((a, b) => (a.jiku_gap3 ?? 999) - (b.jiku_gap3 ?? 999));
     return candidates.slice(0, 5);
   }, [pred]);
 
@@ -276,11 +286,11 @@ export default function HomePage() {
             <div className="space-y-2">
               {jikuList.map((r) => {
                 const conf = (r.overall_confidence || "").replace(/⁺/g, "+");
-                const wp = Number(r.honmei_win_pct || 0);
-                const rp = Number(r.honmei_rentai_pct || 0);
                 const fp = Number(r.honmei_fukusho_pct || 0);
                 const comp = Number(r.honmei_composite || 0);
-                const gap = Number(r.composite_gap || 0);
+                const compGap = Number(r.composite_gap || 0);
+                const jikuScore = Number(r.honmei_jiku_score || 0);
+                const jikuGap = Number(r.jiku_gap || 0);
                 return (
                   <div
                     key={`${r.venue}-${r.race_no}`}
@@ -290,8 +300,8 @@ export default function HomePage() {
                     onClick={() => goToRace(r.venue, r.race_no)}
                     onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); goToRace(r.venue, r.race_no); } }}
                   >
-                    {/* 1行目: 評価 レース 印 馬名 */}
-                    <div className="flex items-center gap-2 mb-2 flex-wrap">
+                    {/* 1行目: 自信度バッジ ・ 競馬場 ・ レースNo ・ グレード ・ 印 ・ 馬名 */}
+                    <div className="flex items-center gap-2 mb-1.5 flex-wrap">
                       <ConfidenceBadge rank={conf} />
                       <span className="font-bold text-sm">{r.venue}{r.race_no}R</span>
                       {r.grade && /^(G[123]|Jpn[123]|L|OP|重賞|特別)$/i.test(r.grade) && (
@@ -302,8 +312,8 @@ export default function HomePage() {
                       <span className="font-bold text-foreground">{r.honmei_mark}</span>
                       <span className="text-sm font-semibold">{r.honmei_name || ""}</span>
                     </div>
-                    {/* 2行目: オッズ(人気) 総合指数(差) */}
-                    <div className="flex items-center gap-x-4 gap-y-1 text-xs ml-8 mb-2 text-muted-foreground flex-wrap">
+                    {/* 2行目: オッズ(人気) ・ 総合指数(2位との差) */}
+                    <div className="flex items-center gap-x-4 gap-y-1 text-xs ml-8 mb-1.5 text-muted-foreground flex-wrap">
                       {r.honmei_odds != null && r.honmei_odds > 0 && (
                         <span className="tabular-nums whitespace-nowrap">
                           <span className="stat-mono text-sm text-foreground">{Number(r.honmei_odds).toFixed(1)}</span>
@@ -317,24 +327,23 @@ export default function HomePage() {
                         <span className="tabular-nums whitespace-nowrap">
                           <span>総合</span>
                           <span className="stat-mono text-sm ml-0.5 text-foreground">{comp.toFixed(1)}</span>
-                          {gap > 0 && <span className="ml-0.5">(+{gap.toFixed(1)})</span>}
+                          {compGap > 0 && <span className="ml-0.5 text-emerald-600 dark:text-emerald-400">(+{compGap.toFixed(1)})</span>}
                         </span>
                       )}
                     </div>
-                    {/* 3行目: 勝率 連対率 複勝率 */}
+                    {/* 3行目: 複勝率 ・ 軸馬度(2位との差) */}
                     <div className="flex items-center gap-x-4 gap-y-1 text-xs ml-8 text-muted-foreground flex-wrap">
-                      <span className="tabular-nums whitespace-nowrap">
-                        <span>勝</span>
-                        <span className="stat-mono text-sm ml-0.5 text-foreground">{wp.toFixed(1)}%</span>
-                      </span>
-                      <span className="tabular-nums whitespace-nowrap">
-                        <span>連</span>
-                        <span className="stat-mono text-sm ml-0.5 text-foreground">{rp.toFixed(1)}%</span>
-                      </span>
-                      <span className="tabular-nums whitespace-nowrap">
-                        <span>複</span>
-                        <span className="stat-mono text-sm ml-0.5 text-foreground">{fp.toFixed(1)}%</span>
-                      </span>
+                      {fp > 0 && (
+                        <span className="tabular-nums whitespace-nowrap">
+                          複勝<span className="stat-mono text-sm ml-0.5 text-foreground">{fp.toFixed(1)}%</span>
+                        </span>
+                      )}
+                      {jikuScore > 0 && (
+                        <span className="tabular-nums whitespace-nowrap">
+                          軸馬度<span className="stat-mono text-sm ml-0.5 text-foreground">{jikuScore.toFixed(1)}</span>
+                          {jikuGap > 0 && <span className="ml-0.5 text-emerald-600 dark:text-emerald-400">(+{jikuGap.toFixed(1)})</span>}
+                        </span>
+                      )}
                     </div>
                   </div>
                 );
@@ -360,68 +369,62 @@ export default function HomePage() {
             </PremiumCardHeader>
             <div className="space-y-2">
               {anaHorses.map((h) => {
-                const stars = h.star_rating || 1;
-                const starStr = "★".repeat(stars);
-                const starCls = stars === 3 ? "text-emerald-500 text-base"
-                  : stars === 2 ? "text-emerald-500/70 text-sm"
-                  : "text-emerald-500/40 text-sm";
+                // 自信度バッジ: そのレースの jiku_gap から算出
+                const anaConf = jikuGapToConf(h.jiku_gap ?? 0);
+                const compVsHonmei = h.composite_vs_honmei ?? 0;
+                const anaScore = h.ana_do ?? h.miryoku;
+                const anaDoGap = h.ana_do_gap;
+                const anaColorCls = anaScore >= 65
+                  ? "text-emerald-600 dark:text-emerald-400"
+                  : anaScore >= 50
+                    ? "text-emerald-500/80 dark:text-emerald-400/80"
+                    : "text-emerald-500/60 dark:text-emerald-400/60";
                 return (
                   <div
                     key={`${h.venue}-${h.race_no}-${h.horse_no}`}
-                    className="flex gap-2 p-3 rounded-lg bg-emerald-50/40 dark:bg-emerald-950/20 hover:bg-emerald-50/70 dark:hover:bg-emerald-950/40 cursor-pointer transition-colors border border-emerald-200/40 dark:border-emerald-800/30"
+                    className="p-3 rounded-lg bg-emerald-50/40 dark:bg-emerald-950/20 hover:bg-emerald-50/70 dark:hover:bg-emerald-950/40 cursor-pointer transition-colors border border-emerald-200/40 dark:border-emerald-800/30"
                     role="button"
                     tabIndex={0}
                     onClick={() => goToRace(h.venue, h.race_no)}
                     onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); goToRace(h.venue, h.race_no); } }}
                   >
-                    {/* 左カラム: 星 */}
-                    <div className={`w-[3em] flex-shrink-0 text-center font-bold pt-0.5 ${starCls}`}>{starStr}</div>
-                    {/* 右カラム */}
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2 mb-1.5 flex-wrap">
-                        <span className="font-bold text-sm">{h.venue}{h.race_no}R</span>
-                        {h.mark && <span className="font-bold text-foreground">{h.mark}</span>}
-                        <span className="text-sm font-semibold">{h.horse_name}</span>
-                      </div>
-                      <div className="flex items-center gap-x-4 gap-y-1 text-xs mb-1.5 text-muted-foreground flex-wrap">
-                        {h.odds > 0 && (
-                          <span className="tabular-nums whitespace-nowrap">
-                            <span className="stat-mono text-sm text-foreground">{Number(h.odds).toFixed(1)}</span>倍
-                            {h.popularity > 0 && <span className="ml-0.5">({h.popularity}人気)</span>}
-                          </span>
-                        )}
-                        {h.composite > 0 && (
-                          <span className="tabular-nums whitespace-nowrap">
-                            総合<span className="stat-mono text-sm ml-0.5 text-foreground">{h.composite.toFixed(1)}</span>
-                          </span>
-                        )}
-                      </div>
-                      <div className="flex items-center gap-x-4 gap-y-1 text-xs text-muted-foreground flex-wrap">
+                    {/* 1行目: 自信度バッジ ・ 競馬場 ・ レースNo ・ 印(穴) ・ 馬名 */}
+                    <div className="flex items-center gap-2 mb-1.5 flex-wrap">
+                      <ConfidenceBadge rank={anaConf} />
+                      <span className="font-bold text-sm">{h.venue}{h.race_no}R</span>
+                      <span className="font-bold text-emerald-600 dark:text-emerald-400">{h.mark || "穴"}</span>
+                      <span className="text-sm font-semibold">{h.horse_name}</span>
+                    </div>
+                    {/* 2行目: オッズ(人気) ・ 総合指数(本命との差) */}
+                    <div className="flex items-center gap-x-4 gap-y-1 text-xs ml-8 mb-1.5 text-muted-foreground flex-wrap">
+                      {h.odds > 0 && (
                         <span className="tabular-nums whitespace-nowrap">
-                          複勝<span className="stat-mono text-sm ml-0.5 text-emerald-600 dark:text-emerald-400">{h.place3_prob.toFixed(1)}%</span>
+                          <span className="stat-mono text-sm text-foreground">{Number(h.odds).toFixed(1)}</span>倍
+                          {h.popularity > 0 && <span className="ml-0.5">({h.popularity}人気)</span>}
                         </span>
-                        {/* 穴馬度（新）: ana_do があれば優先、なければ旧miryokuで互換表示 */}
-                        {(() => {
-                          const score = h.ana_do ?? h.miryoku;
-                          const label = h.ana_do != null ? "穴馬度" : "妙味度";
-                          const colorCls = score >= 65
-                            ? "text-emerald-600 dark:text-emerald-400"
-                            : score >= 50
-                              ? "text-emerald-500/80 dark:text-emerald-400/80"
-                              : "text-emerald-500/60 dark:text-emerald-400/60";
-                          return (
-                            <span className="tabular-nums whitespace-nowrap">
-                              {label}<span className={`stat-mono text-sm ml-0.5 font-bold ${colorCls}`}>{score.toFixed(1)}点</span>
+                      )}
+                      {h.composite > 0 && (
+                        <span className="tabular-nums whitespace-nowrap">
+                          総合<span className="stat-mono text-sm ml-0.5 text-foreground">{h.composite.toFixed(1)}</span>
+                          {compVsHonmei !== 0 && (
+                            <span className={`ml-0.5 ${compVsHonmei >= 0 ? "text-emerald-600 dark:text-emerald-400" : "text-muted-foreground"}`}>
+                              ({compVsHonmei >= 0 ? "+" : ""}{compVsHonmei.toFixed(1)})
                             </span>
-                          );
-                        })()}
-                        {/* 軸馬度（新）*/}
-                        {h.jiku_score != null && (
-                          <span className="tabular-nums whitespace-nowrap">
-                            軸馬度<span className="stat-mono text-sm ml-0.5 font-bold text-foreground">{h.jiku_score.toFixed(1)}点</span>
-                          </span>
+                          )}
+                        </span>
+                      )}
+                    </div>
+                    {/* 3行目: 複勝率 ・ 穴馬度(2位との差) */}
+                    <div className="flex items-center gap-x-4 gap-y-1 text-xs ml-8 text-muted-foreground flex-wrap">
+                      <span className="tabular-nums whitespace-nowrap">
+                        複勝<span className="stat-mono text-sm ml-0.5 text-emerald-600 dark:text-emerald-400">{h.place3_prob.toFixed(1)}%</span>
+                      </span>
+                      <span className="tabular-nums whitespace-nowrap">
+                        穴馬度<span className={`stat-mono text-sm ml-0.5 font-bold ${anaColorCls}`}>{anaScore.toFixed(1)}</span>
+                        {anaDoGap != null && anaDoGap > 0 && (
+                          <span className="ml-0.5 text-emerald-600 dark:text-emerald-400">(+{anaDoGap.toFixed(1)})</span>
                         )}
-                      </div>
+                      </span>
                     </div>
                   </div>
                 );
@@ -447,45 +450,62 @@ export default function HomePage() {
             </PremiumCardHeader>
             <div className="space-y-2">
               {kikenHorses.map((h) => {
+                // 自信度バッジ: そのレースの jiku_gap から算出
+                const kikenConf = jikuGapToConf(h.jiku_gap ?? 0);
                 const jikuRank = h.jiku_rank;
                 const pop = h.popularity;
-                const overVal = h.over ?? (jikuRank - pop);
+                const compGapKiken = h.composite_gap_kiken ?? 0;
+                const jikuGapKiken = h.jiku_gap_kiken ?? 0;
                 return (
                   <div
                     key={`${h.venue}-${h.race_no}-${h.horse_no}`}
-                    className="flex gap-2 p-3 rounded-lg bg-red-50/40 dark:bg-red-950/20 hover:bg-red-50/70 dark:hover:bg-red-950/40 cursor-pointer transition-colors border border-red-200/40 dark:border-red-800/30"
+                    className="p-3 rounded-lg bg-red-50/40 dark:bg-red-950/20 hover:bg-red-50/70 dark:hover:bg-red-950/40 cursor-pointer transition-colors border border-red-200/40 dark:border-red-800/30"
                     role="button"
                     tabIndex={0}
                     onClick={() => goToRace(h.venue, h.race_no)}
                     onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); goToRace(h.venue, h.race_no); } }}
                   >
-                    {/* 左カラム: 警告アイコン */}
-                    <div className="w-[3em] flex-shrink-0 text-center pt-0.5">
-                      <AlertTriangle size={16} className="text-red-500 inline-block" />
+                    {/* 1行目: 自信度バッジ ・ 競馬場 ・ レースNo ・ 印 ・ 馬名 */}
+                    <div className="flex items-center gap-2 mb-1.5 flex-wrap">
+                      <ConfidenceBadge rank={kikenConf} />
+                      <span className="font-bold text-sm">{h.venue}{h.race_no}R</span>
+                      {h.mark && <span className="font-bold text-foreground">{h.mark}</span>}
+                      <span className="text-sm font-semibold">{h.horse_name}</span>
                     </div>
-                    {/* 右カラム */}
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2 mb-1.5 flex-wrap">
-                        <span className="font-bold text-sm">{h.venue}{h.race_no}R</span>
-                        {h.mark && <span className="font-bold text-foreground">{h.mark}</span>}
-                        <span className="text-sm font-semibold">{h.horse_name}</span>
-                      </div>
-                      {/* 人気X位なのに軸馬度Y位 — 過大評価の根拠を名指し */}
-                      <div className="text-xs text-red-600 dark:text-red-400 font-semibold mb-1.5 tabular-nums">
-                        人気{pop}位なのに軸馬度{jikuRank}位 — 過大評価+{overVal}
-                      </div>
-                      <div className="flex items-center gap-x-4 gap-y-1 text-xs text-muted-foreground flex-wrap">
-                        {h.odds > 0 && (
-                          <span className="tabular-nums whitespace-nowrap">
-                            <span className="stat-mono text-sm text-foreground">{Number(h.odds).toFixed(1)}</span>倍
-                          </span>
-                        )}
-                        {h.composite > 0 && (
-                          <span className="tabular-nums whitespace-nowrap">
-                            総合<span className="stat-mono text-sm ml-0.5 text-foreground">{h.composite.toFixed(1)}</span>
-                          </span>
-                        )}
-                      </div>
+                    {/* 2行目: オッズ(人気) ・ 総合指数(最上位との差) */}
+                    <div className="flex items-center gap-x-4 gap-y-1 text-xs ml-8 mb-1.5 text-muted-foreground flex-wrap">
+                      {h.odds > 0 && (
+                        <span className="tabular-nums whitespace-nowrap">
+                          <span className="stat-mono text-sm text-foreground">{Number(h.odds).toFixed(1)}</span>倍
+                          <span className="ml-0.5">({pop}人気)</span>
+                        </span>
+                      )}
+                      {h.composite > 0 && (
+                        <span className="tabular-nums whitespace-nowrap">
+                          総合<span className="stat-mono text-sm ml-0.5 text-foreground">{h.composite.toFixed(1)}</span>
+                          {compGapKiken !== 0 && (
+                            <span className={`ml-0.5 ${compGapKiken >= 0 ? "text-emerald-600 dark:text-emerald-400" : "text-red-500 dark:text-red-400"}`}>
+                              ({compGapKiken >= 0 ? "+" : ""}{compGapKiken.toFixed(1)})
+                            </span>
+                          )}
+                        </span>
+                      )}
+                    </div>
+                    {/* 3行目: 軸馬度 ・ 最上位軸馬度との差 ＋ 過大評価メモ */}
+                    <div className="flex items-center gap-x-4 gap-y-1 text-xs ml-8 text-muted-foreground flex-wrap">
+                      {(h.jiku_score ?? 0) > 0 && (
+                        <span className="tabular-nums whitespace-nowrap">
+                          軸馬度<span className="stat-mono text-sm ml-0.5 text-foreground">{(h.jiku_score ?? 0).toFixed(1)}</span>
+                          {jikuGapKiken !== 0 && (
+                            <span className={`ml-0.5 ${jikuGapKiken >= 0 ? "text-emerald-600 dark:text-emerald-400" : "text-red-500 dark:text-red-400"}`}>
+                              ({jikuGapKiken >= 0 ? "+" : ""}{jikuGapKiken.toFixed(1)})
+                            </span>
+                          )}
+                        </span>
+                      )}
+                      <span className="text-red-600 dark:text-red-400 font-semibold tabular-nums whitespace-nowrap">
+                        人{pop}→軸{jikuRank}位 過大+{h.over}
+                      </span>
                     </div>
                   </div>
                 );
@@ -505,58 +525,68 @@ export default function HomePage() {
                 </PremiumCardAccent>
                 <PremiumCardTitle className="text-sm flex items-center gap-2">
                   拮抗（波乱注意）
-                  <span className="text-xs font-normal text-muted-foreground">上位2頭が伯仲</span>
+                  <span className="text-xs font-normal text-muted-foreground">上位3頭が混戦</span>
                 </PremiumCardTitle>
               </div>
             </PremiumCardHeader>
             <div className="space-y-2">
               {kikenRaces.map((r) => {
-                const gap = r.jiku_gap ?? 999;
+                // 自信度バッジ: そのレースの jiku_gap から算出
+                const kitsuConf = jikuGapToConf(r.jiku_gap ?? 0);
+                const gap2 = r.jiku_gap ?? 999;
+                const gap3 = r.jiku_gap3 ?? 999;
+                const comp = Number(r.honmei_composite || 0);
+                const compGap = Number(r.composite_gap || 0);
+                const fp = Number(r.honmei_fukusho_pct || 0);
+                const jikuScore = Number(r.honmei_jiku_score || 0);
                 return (
                   <div
                     key={`${r.venue}-${r.race_no}`}
-                    className="flex gap-2 p-3 rounded-lg bg-amber-50/40 dark:bg-amber-950/20 hover:bg-amber-50/70 dark:hover:bg-amber-950/40 cursor-pointer transition-colors border border-amber-200/40 dark:border-amber-800/30"
+                    className="p-3 rounded-lg bg-amber-50/40 dark:bg-amber-950/20 hover:bg-amber-50/70 dark:hover:bg-amber-950/40 cursor-pointer transition-colors border border-amber-200/40 dark:border-amber-800/30"
                     role="button"
                     tabIndex={0}
                     onClick={() => goToRace(r.venue, r.race_no)}
                     onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); goToRace(r.venue, r.race_no); } }}
                   >
-                    {/* 左カラム: 警告アイコン */}
-                    <div className="w-[3em] flex-shrink-0 text-center pt-0.5">
-                      <AlertTriangle size={16} className="text-amber-500 inline-block" />
+                    {/* 1行目: 自信度バッジ ・ 競馬場 ・ レースNo ・ 印 ・ 馬名 */}
+                    <div className="flex items-center gap-2 mb-1.5 flex-wrap">
+                      <ConfidenceBadge rank={kitsuConf} />
+                      <span className="font-bold text-sm">{r.venue}{r.race_no}R</span>
+                      {r.honmei_mark && <span className="font-bold text-foreground">{r.honmei_mark}</span>}
+                      <span className="text-sm font-semibold">{r.honmei_name || ""}</span>
                     </div>
-                    {/* 右カラム */}
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2 mb-1.5 flex-wrap">
-                        <span className="font-bold text-sm">{r.venue}{r.race_no}R</span>
-                        {r.honmei_mark && <span className="font-bold text-foreground">{r.honmei_mark}</span>}
-                        <span className="text-sm font-semibold">{r.honmei_name || ""}</span>
-                      </div>
-                      <div className="flex items-center gap-x-4 gap-y-1 text-xs mb-1.5 text-muted-foreground flex-wrap">
-                        {(r.honmei_odds ?? 0) > 0 && (
-                          <span className="tabular-nums whitespace-nowrap">
-                            <span className="stat-mono text-sm text-foreground">{Number(r.honmei_odds).toFixed(1)}</span>倍
-                            {(r.honmei_popularity ?? 0) > 0 && <span className="ml-0.5">({r.honmei_popularity}人気)</span>}
-                          </span>
-                        )}
-                        {(r.honmei_composite ?? 0) > 0 && (
-                          <span className="tabular-nums whitespace-nowrap">
-                            総合<span className="stat-mono text-sm ml-0.5 text-foreground">{Number(r.honmei_composite).toFixed(1)}</span>
-                          </span>
-                        )}
-                      </div>
-                      <div className="flex items-center gap-x-3 text-xs text-muted-foreground flex-wrap">
+                    {/* 2行目: オッズ(人気) ・ 総合指数(2位との差) */}
+                    <div className="flex items-center gap-x-4 gap-y-1 text-xs ml-8 mb-1.5 text-muted-foreground flex-wrap">
+                      {(r.honmei_odds ?? 0) > 0 && (
                         <span className="tabular-nums whitespace-nowrap">
-                          軸馬度差<span className="stat-mono text-sm ml-0.5 font-bold text-amber-600 dark:text-amber-400">
-                            {gap < 999 ? gap.toFixed(1) : "—"}
-                          </span>
+                          <span className="stat-mono text-sm text-foreground">{Number(r.honmei_odds).toFixed(1)}</span>倍
+                          {(r.honmei_popularity ?? 0) > 0 && <span className="ml-0.5">({r.honmei_popularity}人気)</span>}
                         </span>
-                        {(r.honmei_fukusho_pct ?? 0) > 0 && (
-                          <span className="tabular-nums whitespace-nowrap">
-                            複勝<span className="stat-mono text-sm ml-0.5 text-foreground">{Number(r.honmei_fukusho_pct).toFixed(1)}%</span>
-                          </span>
-                        )}
-                      </div>
+                      )}
+                      {comp > 0 && (
+                        <span className="tabular-nums whitespace-nowrap">
+                          総合<span className="stat-mono text-sm ml-0.5 text-foreground">{comp.toFixed(1)}</span>
+                          {compGap > 0 && <span className="ml-0.5 text-emerald-600 dark:text-emerald-400">(+{compGap.toFixed(1)})</span>}
+                        </span>
+                      )}
+                    </div>
+                    {/* 3行目: 複勝率 ・ 軸馬度差(2位)・(3位) 併記 */}
+                    <div className="flex items-center gap-x-3 text-xs ml-8 text-muted-foreground flex-wrap">
+                      {fp > 0 && (
+                        <span className="tabular-nums whitespace-nowrap">
+                          複勝<span className="stat-mono text-sm ml-0.5 text-foreground">{fp.toFixed(1)}%</span>
+                        </span>
+                      )}
+                      {jikuScore > 0 && (
+                        <span className="tabular-nums whitespace-nowrap">
+                          軸馬度<span className="stat-mono text-sm ml-0.5 text-foreground">{jikuScore.toFixed(1)}</span>
+                        </span>
+                      )}
+                      <span className="tabular-nums whitespace-nowrap text-amber-600 dark:text-amber-400 font-semibold">
+                        差(2位){gap2 < 999 ? gap2.toFixed(1) : "—"}
+                        <span className="mx-0.5">・</span>
+                        (3位){gap3 < 999 ? gap3.toFixed(1) : "—"}
+                      </span>
                     </div>
                   </div>
                 );
@@ -602,6 +632,8 @@ interface RaceSummary {
   honmei_jiku_score?: number;
   /** 本命jiku_score - 2位jiku_score の差。自信度表示バッジに使用（表示専用） */
   jiku_gap?: number;
+  /** jiku_score 1位-3位差。拮抗判定用: jiku_gap3<8 で混戦（表示専用） */
+  jiku_gap3?: number;
   honmei_no?: number;
   honmei_odds?: number;
   honmei_popularity?: number;
@@ -631,11 +663,14 @@ interface AnaHorse {
   odds: number;
   popularity: number;
   composite: number;
+  composite_vs_honmei?: number;  // 本命(レース1位)compositeとの差（表示専用）
   win_prob: number;
   place3_prob: number;
   miryoku: number;       // 旧互換フィールド
   ana_do?: number;       // 新: 穴馬度 0-100
+  ana_do_gap?: number | null;  // 新: レース内穴馬度2位との差（表示専用）
   jiku_score?: number;   // 新: 軸馬度 0-100
+  jiku_gap?: number;     // そのレースの jiku_gap（自信度バッジ用・表示専用）
   star_rating: number;
   is_star: boolean;
 }
@@ -652,9 +687,12 @@ interface KikenHorse {
   odds: number;
   popularity: number;
   composite: number;
+  composite_gap_kiken?: number;  // 最上位compositeとの差（その馬が1位なら2位差）表示専用
   jiku_rank: number;     // 軸馬度降順ランク（1=最も軸信頼高）
   over: number;          // jiku_rank - 人気順位（過大評価の大きさ）
   jiku_score?: number;   // 軸馬度スコア 0-100
+  jiku_gap_kiken?: number;  // 最上位軸馬度との差（その馬が1位なら2位差）表示専用
+  jiku_gap?: number;     // そのレースの jiku_gap（自信度バッジ用・表示専用）
   divergence_signal: string;
 }
 
