@@ -584,7 +584,7 @@ const HorseCard = memo(function HorseCard({
               </span>
               <span className="text-[11px] text-muted-foreground tabular-nums">
                 EV <span className={`font-bold ${ev != null ? evColorCls(ev) : "text-muted-foreground"}`}>
-                  {ev != null ? `${((ev - 1) * 100).toFixed(1)}%` : "—"}
+                  {ev != null ? ev.toFixed(2) : "—"}
                 </span>
               </span>
             </span>

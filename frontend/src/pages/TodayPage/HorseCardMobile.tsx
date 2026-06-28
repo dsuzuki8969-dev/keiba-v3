@@ -658,7 +658,7 @@ export const HorseCardMobile = memo(function HorseCardMobile({ horses, isBanei, 
                       h.ev >= 1.0 ? "text-blue-600" :
                       "text-muted-foreground"
                     ) : "text-muted-foreground"}`}>
-                      {h.ev != null ? `${((h.ev - 1) * 100).toFixed(1)}%` : "—"}
+                      {h.ev != null ? h.ev.toFixed(2) : "—"}
                     </span>
                   </span>
                 </span>

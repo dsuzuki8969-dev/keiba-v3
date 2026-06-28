@@ -382,7 +382,7 @@ export default function HomePage() {
                 const anaConf = jikuGapToConf(h.jiku_gap ?? 0);
                 const compVsHonmei = h.composite_vs_honmei ?? 0;
                 const anaScore = h.ana_do ?? h.miryoku;
-                const anaDoGap = h.ana_do_gap;
+
                 const anaColorCls = anaScore >= 65
                   ? "text-emerald-600 dark:text-emerald-400"
                   : anaScore >= 50
@@ -431,9 +431,6 @@ export default function HomePage() {
                       </span>
                       <span className="tabular-nums whitespace-nowrap">
                         穴馬度<span className={`stat-mono text-sm ml-0.5 font-bold ${anaColorCls}`}>{anaScore.toFixed(1)}</span>
-                        {anaDoGap != null && anaDoGap > 0 && (
-                          <span className="ml-0.5 text-emerald-600 dark:text-emerald-400">(+{anaDoGap.toFixed(1)})</span>
-                        )}
                       </span>
                     </div>
                   </div>
