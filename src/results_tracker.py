@@ -3383,6 +3383,27 @@ def _get_fukusho_payout(horse_no: int, payouts: dict) -> Optional[int]:
     return None
 
 
+def _single_combo_payout(payouts: dict, *keys: str) -> int:
+    """単一当たりコンボ券種(馬連/三連複/三連単等)の払戻を取得する。
+
+    payouts[券種] の値が dict / list のいずれでも、英語・日本語キー両形式に対応する。
+    単勝(_safe_tansho_payout)・複勝(_get_fukusho_payout)・ワイドと同じ
+    defensive-reader 方針で、複数世代スクレイパーによる形式混在に耐える。
+    list の場合は先頭エントリ(=その券種の当たり1組)を採用する。
+    """
+    for k in keys:
+        v = payouts.get(k)
+        if not v:
+            continue
+        if isinstance(v, list):
+            v = v[0] if v else None
+        if isinstance(v, dict):
+            pay = v.get("payout", 0) or 0
+            if pay:
+                return int(pay)
+    return 0
+
+
 def _check_ticket_hit(
     ticket_type: str,
     combo: tuple,
@@ -3400,7 +3421,8 @@ def _check_ticket_hit(
     if ticket_type == "馬連" or ticket_type == "馬連(F)":
         top2 = {h for h, f in finish_map.items() if f <= 2}
         hit = set(combo) <= top2
-        payout = payouts.get("馬連", {}).get("payout", 0)
+        # dict/list 混在 + 英語キー(umaren) 両対応 (旧コードは dict 前提で list 払戻に AttributeError)
+        payout = _single_combo_payout(payouts, "馬連", "umaren")
         return hit, payout
 
     elif ticket_type == "ワイド":
@@ -3428,19 +3450,9 @@ def _check_ticket_hit(
     elif ticket_type == "三連複":
         top3 = {h for h, f in finish_map.items() if f <= 3}
         hit = set(int(x) for x in combo) == top3
-        # 複数キー形式に対応: 三連複(netkeiba) / 3連複 / sanrenpuku(公式/keibabook)
-        payout = 0
-        for key in ("三連複", "3連複"):
-            p = payouts.get(key, {})
-            if isinstance(p, dict) and p.get("payout", 0) > 0:
-                payout = p["payout"]
-                break
-        if not payout:
-            san = payouts.get("sanrenpuku", [])
-            if isinstance(san, list) and san:
-                payout = san[0].get("payout", 0)
-            elif isinstance(san, dict):
-                payout = san.get("payout", 0)
+        # 複数キー形式 + dict/list 混在に対応 (三連複/3連複/sanrenpuku・複数世代スクレイパー)
+        # 旧コードは三連複の値が list の場合に payout=0 を誤返却していた (13,491レース)
+        payout = _single_combo_payout(payouts, "三連複", "3連複", "sanrenpuku")
         return hit, payout
 
     elif ticket_type == "三連単":
