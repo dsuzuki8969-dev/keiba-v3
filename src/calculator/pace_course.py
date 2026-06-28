@@ -986,9 +986,19 @@ class PaceDeviationCalculator:
             pos_trend_delta=_pos_trend,
             last3f_cv=last3f_cv,  # 改善4: 末脚安定性を❷に組み込み
         )
+        # P3: ダート道悪補正用に race_info から馬場状態を取り出す
+        # surface が芝なら track_condition_turf、ダートなら track_condition_dirt を参照
+        # race_info=None 時は None のまま渡す（後方互換・フラグoff時も完全スキップ）
+        _tc: Optional[str] = None
+        if race_info is not None:
+            if getattr(course, "surface", "") == "ダート":
+                _tc = getattr(race_info, "track_condition_dirt", None) or None
+            else:
+                _tc = getattr(race_info, "track_condition_turf", None) or None
         course_style_bias = self._calc_course_style_bias(
             course, basic_style,
             field_style_distribution=field_style_distribution,  # 改善2: 脚質分布相対化
+            track_condition=_tc,  # P3: 馬場補正用（フラグoffなら_calc内で即スキップ）
         )
 
         # 表示用running_styleはest_position（ML予測 or ルールベース推定）から導出
@@ -1335,7 +1345,8 @@ class PaceDeviationCalculator:
         return 0.0
 
     def _calc_course_style_bias(self, course: CourseMaster, style: RunningStyle,
-                                field_style_distribution: Optional[Dict[str, int]] = None) -> float:
+                                field_style_distribution: Optional[Dict[str, int]] = None,
+                                track_condition: Optional[str] = None) -> float:
         """❹コース脚質バイアス (-8〜+8)
 
         残り600m地点データを活用:
@@ -1443,6 +1454,32 @@ class PaceDeviationCalculator:
                 elif front_ratio <= 0.30 and is_rear:
                     # ペースが流れない → 差し届かない
                     score -= min(1.5, (0.30 - front_ratio) * 5.0)
+
+        # ── P3: ダート道悪×脚質 馬場補正 (フラグoff時は完全にスキップ) ──
+        # フラグ off がデフォルト。本番挙動を一切変えない。
+        from config import settings as _s
+        if (
+            _s.BABA_PACE_ADJ_ENABLED
+            and track_condition is not None
+            and getattr(course, "surface", "") == "ダート"
+        ):
+            # 正規化: "重" "不良" のみ補正対象。良・稍重・空文字はスキップ
+            from src.calculator.ability import _norm_cond
+            _cond = _norm_cond(track_condition)
+            if _cond in ("重", "不良"):
+                # RunningStyle を4分類にマッピング
+                if style == RunningStyle.NIGASHI:
+                    _key = "逃げ"
+                elif style in (RunningStyle.SENKOU, RunningStyle.KOUI):
+                    _key = "先行"
+                elif style in (RunningStyle.SASHIKOMI, RunningStyle.CHUUDAN):
+                    _key = "差し"
+                elif style in (RunningStyle.OIKOMI, RunningStyle.MACURI):
+                    _key = "追込"
+                else:
+                    _key = None
+                if _key is not None:
+                    score += _s.BABA_PACE_DIRT_BAD.get(_key, 0.0)
 
         return max(-8.0, min(8.0, score))
 
