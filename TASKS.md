@@ -6,23 +6,27 @@
 
 ---
 
-## 🔴 進行中（最優先）: 表示率の較正（reliability）+ ホーム4枚再設計
+## 🟡 表示率較正 ①②③実装完了（本番フラグOFF）・残: 明日検証/ホーム4枚
 
-> 詳細: `memory/handoff_2026-06-28_v4.md`。本題=表示勝率/連対率/複勝率が過大・上限張り付き（4.1倍の馬を勝92.8%表示＝実際約17%）を実データ較正で正す。**設計確定・ground-truth実データ完成。残るは実装。ただし実装前にマスター4決定が必須**。
+> 詳細: `memory/handoff_2026-06-28_v4.md`。表示勝率/連対率/複勝率の過大・上限張り付き(4.1倍→勝92.8%表示=実勝率17%)を是正。**commit `c86be32`・本番デフォルトOFF・dashboard反映済**。
 
-**真因**: `scripts/sharpen_win_prob_display.py` Step4オッズ下限フロア（人気上位3頭ピン留め）+ Step5ハードキャップ（`p3_cap=min(0.92,…)` に複勝92%が26頭張り付き）。gamma=2.2は残す（メリハリ源）。生ML復帰・平均化は誤り（実証済）。
+**確定した設計**（master対話で確定）:
+- 較正 = 偏差値(composite)純粋アンカー(k=0・オッズ加味なし) + 連続補間(同値解消) + gamma2.0シャープ化(メリハリ・飽和なし)
+- 印 = 偏差値順で前日確定（当日オッズで動かさない）
+- 当日オッズ = 数字に混ぜず「当日 / 前日想定 / GAP」をカード表示（乖離シグナル専用）
 
-**完成済 ground-truth**: `data/_diag/calibration_rates.json`(89KB)+`.csv`(38KB)（race_log 82万件・オッズ別/人気別×勝連複×ALL/JRA/NAR/24場）。**composite版CSVは未保存** → `scripts/build_calibration_composite.py` 作成・実行で `calibration_composite.csv` 再生成要。
+**①②③実装完了（commit `c86be32`・全て私が独立検証）**:
+- ① `composite_calibration.py` + settings `COMPOSITE_CALIBRATION_ENABLED=False`(デフォルトOFF) + finalize分岐。ON時 preview一致(レーティッシュ19.2/42.2・◎ニュークレド>○ナリタ)確認。
+- ② `run_odds_update` で `assumed_odds`/`assumed_popularity` 初回固定保存(表示専用・ML/composite非汚染)。
+- ③ 馬カード(HorseCardPC/Mobile)に「前日想定オッズ+GAP」表示(assumed無しは非表示・既存表示不変)。
 
-**🚩 実装前にマスター4決定（要確認）**:
-| # | 決定事項 | 私の推奨 |
+**残課題**:
+| 優先 | 項目 | 内容 |
 |---|---|---|
-| 1 | アンカー（オッズ別/人気別/偏差値別/ブレンド） | オッズ別＋複勝はJRA/NAR別＋composite乖離微調整 |
-| 2 | 実力乖離の強さ k（控えめ） | 同オッズで±数%〜十数% |
-| 3 | ホーム4枚の主題（A市場乖離 / B レース構造） | A（"消し"が理念直結） |
-| 4 | 右上「妙味」の分かりにくさ修正 | 「実力◯位/人気◯位」対比表示 |
-
-**実装プラン（4決定後）**: ①composite別をWF予想で測り直し（リーク排除）→②較正関数（odds→base率＋composite乖離nudge→レース内再正規化＋win≤p2≤p3・ハード0.92廃止）→③本番非改変プレビューでk/アンカー決定→④sharpenのキャップ/フロアをソフト較正に置換（フラグ隔離）→⑤WF検証(Brier/logloss)＋実画面＋commit→⑥ホーム4枚再設計。
+| P0 | 明日の実データ検証 | assumed_odds蓄積 / カードに前日想定行+GAP表示(実画面目視) / 198経路(人気rank補完)の想定人気が埋まるか |
+| P1 | 偏差値テーブルWF版精緻化 | 現 `calibration_composite.json` は本番pred由来でリーク懸念 → WF予想で作り直してから本番ON |
+| P1 | 本番ON判断 | WF版テーブル後に `COMPOSITE_CALIBRATION_ENABLED=True` を master判断(数字が偏差値較正に切替) |
+| P2 | ホーム4枚再設計 | 4枚の主題(A市場乖離 推奨)・右上「妙味」の対比表示 |
 
 ---
 

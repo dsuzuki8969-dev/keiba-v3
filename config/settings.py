@@ -659,7 +659,7 @@ MIRYOKU_W_PLACE3    = 0.0266   # place3_prob * 10（5.8%）
 MIRYOKU_W_JRA       = -0.0643  # JRAペナルティ（14.1%）
 MIRYOKU_BIAS        = -2.1620  # 切片
 
-# 妙味グレード閾値（Top N%に基づく）
+# 妙味グレード閾値（旧回帰スコア版 — 参照専用・廃止）
 MIRYOKU_GRADE_SS = 0.92   # Top 1%  複勝49.6% ROI≈440%
 MIRYOKU_GRADE_S  = 0.75   # Top 3%  複勝32.2% ROI≈357%
 MIRYOKU_GRADE_A  = 0.58   # Top 7%  複勝26.3% ROI≈287%
@@ -667,6 +667,12 @@ MIRYOKU_GRADE_B  = 0.42   # Top 15% 複勝16.0% ROI≈216%
 MIRYOKU_GRADE_C  = 0.22   # Top 30% 複勝 8.1% ROI≈108%
 MIRYOKU_GRADE_D  = 0.02   # Top 60% 複勝11.7% ROI≈141%
 # E = それ以下
+
+# 妙味度 0〜100 スケール 星評価閾値（2026-06-28 新スケール）
+# 穴馬の comp は概ね 40〜55 (偏差値50付近) なので理論最大 85.9 点は出にくい
+# 実データ分布: max≈49点/avg≈32点 → Top10%≈40点・Top30%≈30点
+MIRYOKU_100_GRADE_S  = 40.0  # ★★★: 高妙味（Top10%相当）
+MIRYOKU_100_GRADE_A  = 30.0  # ★★: 中妙味（Top30%相当）
 
 # ============================================================
 # TEKIPAN(◉)パラメータ（JRA/NAR分離）

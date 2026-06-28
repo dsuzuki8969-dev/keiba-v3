@@ -634,14 +634,24 @@ export const HorseCardMobile = memo(function HorseCardMobile({ horses, isBanei, 
                   <span className={`tabular-nums font-semibold ${rankCls(p3Rank)}`}>{p3.toFixed(1)}%</span>
                 </span>
 
-                {/* EV */}
+                {/* EV: (ev-1)*100 で%表示 */}
                 {h.ev != null && (
                   <span className={`tabular-nums shrink-0 ${
                     h.ev >= 1.2 ? "text-emerald-600 font-bold" :
                     h.ev >= 1.0 ? "text-blue-600 font-bold" :
                     "text-muted-foreground"
                   }`}>
-                    EV {h.ev.toFixed(2)}
+                    EV {h.ev >= 1 ? "+" : ""}{((h.ev - 1) * 100).toFixed(0)}%
+                  </span>
+                )}
+                {/* 軸馬度・穴馬度 */}
+                {(h.jiku_score != null || h.ana_do != null) && (
+                  <span className="flex items-baseline gap-0.5 shrink-0 text-muted-foreground">
+                    <span>軸</span>
+                    <span className="tabular-nums font-semibold text-foreground">{h.jiku_score != null ? h.jiku_score.toFixed(0) : "—"}</span>
+                    <span className="mx-0.5">/</span>
+                    <span>穴</span>
+                    <span className="tabular-nums font-semibold text-foreground">{h.ana_do != null ? h.ana_do.toFixed(0) : "—"}</span>
                   </span>
                 )}
 

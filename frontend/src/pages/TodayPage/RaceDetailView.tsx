@@ -566,6 +566,10 @@ export interface HorseData {
   assumed_odds?: number | null;
   /** 前日想定人気（発走前日時点の人気推定値）。未取得時は null/undefined */
   assumed_popularity?: number | null;
+  /** 軸馬度 0-100（表示専用・ML非汚染）: 実力50% + 堅実30% + 断トツ20% */
+  jiku_score?: number;
+  /** 穴馬度 0-100（表示専用・ML非汚染）: 過小評価45% + 実力35% + 穴スコア20% */
+  ana_do?: number;
   [key: string]: unknown;
 }
 

@@ -562,9 +562,22 @@ const HorseCard = memo(function HorseCard({
               <span className={`tabular-nums font-bold ${rankCls(p3Rank)}`}>{p3.toFixed(1)}%</span>
               <span className={`text-[12px] ${rankCls(p3Rank)}`}>({p3Rank}位)</span>
             </span>
-            <span className={`tabular-nums font-bold shrink-0 ${evColorCls(ev ?? undefined)}`}>
-              EV {ev != null ? ev.toFixed(2) : "—"}
-            </span>
+            {/* EV: (ev-1)*100 で%表示 */}
+            {ev != null && (
+              <span className={`tabular-nums font-bold shrink-0 ${evColorCls(ev)}`}>
+                EV {ev >= 1 ? "+" : ""}{((ev - 1) * 100).toFixed(0)}%
+              </span>
+            )}
+            {/* 軸馬度・穴馬度 */}
+            {(h.jiku_score != null || h.ana_do != null) && (
+              <span className="flex items-baseline gap-1 shrink-0 text-[12px] text-muted-foreground">
+                <span>軸</span>
+                <span className="tabular-nums font-bold text-foreground">{h.jiku_score?.toFixed(0) ?? "—"}</span>
+                <span className="mx-0.5">/</span>
+                <span>穴</span>
+                <span className="tabular-nums font-bold text-foreground">{h.ana_do?.toFixed(0) ?? "—"}</span>
+              </span>
+            )}
           </div>
         </div>
       </div>

@@ -79,7 +79,6 @@ export const StatsCard = memo(function StatsCard({
   if (!found) return null;
 
   const honmei = (d.honmei ?? {}) as Record<string, number>;
-  const sanrentan = (d.sanrentan ?? {}) as Record<string, number>;
   const total = honmei.total ?? 0;
   const win = honmei.win ?? 0;
   const second = honmei.place2 ?? 0;
@@ -88,9 +87,13 @@ export const StatsCard = memo(function StatsCard({
   const winRate = honmei.win_rate ?? 0;
   const rentai = honmei.place2_rate ?? 0;
   const fukusho = honmei.place_rate ?? 0;
-  const sPlayed = sanrentan.played ?? 0;
-  const sHit = sanrentan.hit ?? 0;
-  const sHitRate = sanrentan.hit_rate_pct ?? 0;
+  // ◎単勝物差し: tansho_roi / tansho_shushi が存在する場合のみ表示
+  const tanshoRoi: number | null = typeof honmei.tansho_roi === "number" && honmei.total > 0
+    ? honmei.tansho_roi
+    : null;
+  const tanshoShushi: number | null = typeof honmei.tansho_shushi === "number" && honmei.total > 0
+    ? honmei.tansho_shushi
+    : null;
   const lastUpdated = (d as { last_updated?: string }).last_updated ?? "";
   const resultsPending = (d as { results_pending?: boolean }).results_pending;
 
@@ -99,14 +102,11 @@ export const StatsCard = memo(function StatsCard({
     const v = (d as Record<string, unknown>)[key];
     return typeof v === "number" && Number.isFinite(v) ? v : 0;
   };
-  const totalRaces = _num("total_races");
-  const finishedRaces = _num("finished_races");
-  const eligibleSanrentan = _num("eligible_for_sanrentan");
   const pendingFetch = _num("pending_fetch");
   const pendingAgeMaxMin = _num("pending_age_max_min");
 
   // 結果待ち中（レースあるが結果未集計）
-  if (resultsPending && total === 0 && sPlayed === 0) {
+  if (resultsPending && total === 0) {
     return (
       <PremiumCard variant="gold" padding="md">
         <div className="flex items-center justify-between gap-2 flex-wrap">
@@ -166,14 +166,14 @@ export const StatsCard = memo(function StatsCard({
         <div>
           <div className="text-xs font-semibold text-muted-foreground mb-1.5">◎本命 的中実績</div>
 
-          {/* 主役: 複勝率・連対率・勝率 の3指標を大きく */}
+          {/* 上段: 勝率・連対率・複勝率 の3指標を大きく（勝→連→複の順） */}
           <div className="grid grid-cols-3 gap-2 mb-2">
             <div className="bg-muted/40 rounded-lg p-2 text-center">
-              <div className="text-[10px] text-muted-foreground font-medium mb-0.5">複勝率</div>
-              <div className={`stat-mono text-xl font-bold ${fukusho >= 70 ? "text-emerald-500" : fukusho >= 50 ? "text-foreground" : "text-foreground/70"}`}>
-                {fukusho.toFixed(1)}<span className="text-sm">%</span>
+              <div className="text-[10px] text-muted-foreground font-medium mb-0.5">勝率</div>
+              <div className={`stat-mono text-xl font-bold ${winRate >= 30 ? "text-brand-gold" : "text-foreground/70"}`}>
+                {winRate.toFixed(1)}<span className="text-sm">%</span>
               </div>
-              <div className="text-[9px] text-muted-foreground mt-0.5 tnum">{win + second + third}/{total}R</div>
+              <div className="text-[9px] text-muted-foreground mt-0.5 tnum">{win}/{total}R</div>
             </div>
             <div className="bg-muted/40 rounded-lg p-2 text-center">
               <div className="text-[10px] text-muted-foreground font-medium mb-0.5">連対率</div>
@@ -183,58 +183,49 @@ export const StatsCard = memo(function StatsCard({
               <div className="text-[9px] text-muted-foreground mt-0.5 tnum">{win + second}/{total}R</div>
             </div>
             <div className="bg-muted/40 rounded-lg p-2 text-center">
-              <div className="text-[10px] text-muted-foreground font-medium mb-0.5">勝率</div>
-              <div className={`stat-mono text-xl font-bold ${winRate >= 30 ? "text-brand-gold" : "text-foreground/70"}`}>
-                {winRate.toFixed(1)}<span className="text-sm">%</span>
+              <div className="text-[10px] text-muted-foreground font-medium mb-0.5">複勝率</div>
+              <div className={`stat-mono text-xl font-bold ${fukusho >= 70 ? "text-emerald-500" : fukusho >= 50 ? "text-foreground" : "text-foreground/70"}`}>
+                {fukusho.toFixed(1)}<span className="text-sm">%</span>
               </div>
-              <div className="text-[9px] text-muted-foreground mt-0.5 tnum">{win}/{total}R</div>
+              <div className="text-[9px] text-muted-foreground mt-0.5 tnum">{win + second + third}/{total}R</div>
             </div>
           </div>
 
-          {/* 副次: 着順のみ (見える化転換: 回収率は非表示・的中率に徹する 2026-06-27) */}
-          <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-muted-foreground tabular-nums">
-            <span>
-              着順 <span className="text-positive">{win}</span>
-              <span className="mx-0.5 text-muted-foreground/50">-</span>
-              {second}
-              <span className="mx-0.5 text-muted-foreground/50">-</span>
-              {third}
-              <span className="mx-0.5 text-muted-foreground/50">-</span>
-              <span className="text-muted-foreground/50">{out}</span>
-            </span>
+          {/* 下段: 軸馬成績 / 単勝回収率 / 収支 の3カード（◎単勝の物差し） */}
+          <div className="grid grid-cols-3 gap-2">
+            <div className="bg-muted/40 rounded-lg p-2 text-center">
+              <div className="text-[10px] text-muted-foreground font-medium mb-0.5">軸馬成績</div>
+              <div className="stat-mono text-base font-bold tabular-nums">
+                <span className="text-positive">{win}</span>
+                <span className="mx-0.5 text-muted-foreground/50">-</span>
+                {second}
+                <span className="mx-0.5 text-muted-foreground/50">-</span>
+                {third}
+                <span className="mx-0.5 text-muted-foreground/50">-</span>
+                <span className="text-muted-foreground/50">{out}</span>
+              </div>
+              <div className="text-[9px] text-muted-foreground mt-0.5">1-2-3-着外</div>
+            </div>
+            {tanshoRoi !== null ? (
+              <div className="bg-muted/40 rounded-lg p-2 text-center">
+                <div className="text-[10px] text-muted-foreground font-medium mb-0.5">単勝回収率</div>
+                <div className={`stat-mono text-xl font-bold ${tanshoRoi >= 100 ? "text-emerald-500" : "text-foreground/70"}`}>
+                  {tanshoRoi.toFixed(1)}<span className="text-sm">%</span>
+                </div>
+                <div className="text-[9px] text-muted-foreground mt-0.5">◎単勝100円</div>
+              </div>
+            ) : <div />}
+            {tanshoShushi !== null ? (
+              <div className="bg-muted/40 rounded-lg p-2 text-center">
+                <div className="text-[10px] text-muted-foreground font-medium mb-0.5">収支</div>
+                <div className={`stat-mono text-xl font-bold ${tanshoShushi >= 0 ? "text-emerald-500" : "text-foreground/70"}`}>
+                  {tanshoShushi >= 0 ? "+" : ""}{tanshoShushi.toLocaleString()}<span className="text-sm">円</span>
+                </div>
+                <div className="text-[9px] text-muted-foreground mt-0.5">◎単勝100円</div>
+              </div>
+            ) : <div />}
           </div>
         </div>
-
-        {/* ── 三連複 的中実績 (主役: 的中率を前面化) ── */}
-        {sPlayed > 0 && (
-        <div>
-          <div className="text-xs font-semibold text-muted-foreground mb-1.5">三連複 的中実績</div>
-
-          {/* 主役: 的中率 大きく表示 */}
-          <div className="flex items-baseline gap-3 mb-1.5">
-            <span className="tabular-nums">
-              <span className={`stat-mono text-2xl font-bold ${sHitRate >= 30 ? "text-emerald-500" : "text-foreground"}`}>
-                {sHitRate.toFixed(1)}
-              </span>
-              <span className="text-sm text-muted-foreground ml-0.5">%的中</span>
-            </span>
-            <span className="tabular-nums text-base">
-              <span className="text-positive font-bold">{sHit}R</span>
-              <span className="text-muted-foreground"> / {sPlayed}R</span>
-            </span>
-          </div>
-
-          {/* 副次: 集計分母のみ (見える化転換: 回収率は非表示・的中率に徹する 2026-06-27) */}
-          {(totalRaces > 0 || eligibleSanrentan > 0) && (
-          <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-muted-foreground tabular-nums">
-            {/* T-001: 3 段表記 — 集計 / 終了 / 対象 を分母として明示 */}
-            <span>
-              対象{eligibleSanrentan}R / 終了{finishedRaces}R / 総予想{totalRaces}R
-            </span>
-          </div>
-          )}
-        </div>
-        )}
 
         {/* T-001: 取り込み遅延警告（発走済みなのに results.json 未取り込みのレースがある） */}
         {pendingFetch > 0 && (

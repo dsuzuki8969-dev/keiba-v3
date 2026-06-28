@@ -855,6 +855,7 @@ def _scan_today_predictions(date_str: str) -> dict:
                 "honmei_mark": "" if _has_scrape_failed else html_meta.get("honmei_mark", ""),
                 "honmei_composite": 0 if _has_scrape_failed else html_meta.get("honmei_composite", 0),
                 "composite_gap": 0 if _has_scrape_failed else (_comp_gap(_pred_horses.get((venue, race_no), []), {}) if (venue, race_no) in _pred_horses else 0),
+                "top3_range": 999,  # 上位3頭の1位〜3位composite差（後段の honmei block で上書き）
                 "honmei_win_pct": 0 if _has_scrape_failed else html_meta.get("honmei_win_pct", 0),
                 "honmei_rentai_pct": 0 if _has_scrape_failed else html_meta.get("honmei_rentai_pct", 0),
                 "honmei_fukusho_pct": 0 if _has_scrape_failed else html_meta.get("honmei_fukusho_pct", 0),
@@ -885,15 +886,22 @@ def _scan_today_predictions(date_str: str) -> dict:
                 honmei_comp = honmei.get("composite", 0)
                 sorted_comps = sorted([h.get("composite", 0) for h in horses], reverse=True)
                 comp_gap = round(sorted_comps[0] - sorted_comps[1], 1) if len(sorted_comps) >= 2 else 0
+                # 上位3頭の1位〜3位composite差（拮抗判定用）
+                top3_range = round(sorted_comps[0] - sorted_comps[2], 1) if len(sorted_comps) >= 3 else 999
+                # 軸馬度差: 本命の jiku_score（後段付与前のため暫定0・後段で上書き）
+                # ※実際の honmei_jiku_score / jiku_gap は後段の全馬ループで上書きされる
                 races[venue][-1].update({
                     "honmei_no": honmei.get("horse_no", 0),
                     "honmei_name": honmei.get("horse_name", ""),
                     "honmei_mark": honmei.get("mark", ""),
                     "honmei_composite": honmei_comp,
                     "composite_gap": comp_gap,
+                    "top3_range": top3_range,
                     "honmei_win_pct": round(honmei.get("win_prob", 0) * 100, 1),
                     "honmei_rentai_pct": round(honmei.get("place2_prob", 0) * 100, 1),
                     "honmei_fukusho_pct": round(honmei.get("place3_prob", 0) * 100, 1),
+                    "honmei_jiku_score": 0.0,  # 後段の全馬ループで上書き（表示専用）
+                    "jiku_gap": 0.0,            # 本命jiku_score - 2位jiku_score（表示専用）
                 })
                 if honmei.get("odds") and honmei["odds"] > 0:
                     races[venue][-1]["honmei_odds"] = honmei["odds"]
@@ -981,6 +989,8 @@ def _scan_today_predictions(date_str: str) -> dict:
                         "honmei_mark": honmei.get("mark", "") if honmei else "",
                         "honmei_composite": honmei.get("composite", 0) if honmei else 0,
                         "composite_gap": _comp_gap(_pr_horses, honmei) if honmei else 0,
+                        "honmei_jiku_score": 0.0,  # 後段の全馬ループで上書き（表示専用）
+                        "jiku_gap": 0.0,            # 本命jiku_score - 2位jiku_score（表示専用）
                         "honmei_win_pct": round(honmei.get("win_prob", 0) * 100, 1) if honmei else 0,
                         "honmei_rentai_pct": round(honmei.get("place2_prob", 0) * 100, 1) if honmei else 0,
                         "honmei_fukusho_pct": round(honmei.get("place3_prob", 0) * 100, 1) if honmei else 0,
@@ -1021,6 +1031,95 @@ def _scan_today_predictions(date_str: str) -> dict:
             except Exception:
                 pass
 
+    # ── 軸馬度 / 穴馬度 ヘルパー（表示専用・ML非汚染）2026-06-28 再設計 ──
+    # jiku_score = 実力40% + 堅実30% + 断トツ30%
+    #   実力 = clamp((composite-20)/80*100, 0, 100)  ← 偏差値20-100を0-100に引き伸ばし
+    #   堅実 = clamp(place3_prob*100, 0, 100)
+    #   断トツ = (N-comp_rank)/(N-1)*100  （comp_rank=composite降順1始まり）
+    # ana_do = 過小評価70% + 穴スコア30%  ← 実力を削除
+    #   過小評価 = max(0, pop_rank-comp_rank)/(N-1)*100  （1人気実力1位=0、過小評価大=高）
+    #             pop_rank欠損時は0
+    #   穴スコア = clamp(ana_score/10*100, 0, 100)
+    def _compute_jiku_ana(
+        composite: float,
+        place3_prob: float,
+        ana_score: float,
+        comp_rank: int,
+        pop_rank: int | None,
+        N: int,
+    ) -> tuple[float, float]:
+        """軸馬度・穴馬度を計算して (jiku_score, ana_do) で返す。"""
+        # 軸馬度
+        _jitsu    = max(0.0, min((composite - 20.0) / 80.0 * 100.0, 100.0))
+        _kenzen   = max(0.0, min(place3_prob * 100.0, 100.0))
+        _dantotsu = ((N - comp_rank) / (N - 1) * 100.0) if N > 1 else 100.0
+        jiku = round(max(0.0, min(0.40 * _jitsu + 0.30 * _kenzen + 0.30 * _dantotsu, 100.0)), 1)
+        # 穴馬度（実力を使わない）
+        if pop_rank is not None and N > 1:
+            _kashoka = max(0.0, (pop_rank - comp_rank)) / (N - 1) * 100.0
+        else:
+            _kashoka = 0.0  # 人気欠損または1頭立て→過小評価なし
+        _ana_sc_norm = max(0.0, min(ana_score / 10.0 * 100.0, 100.0))
+        ana = round(max(0.0, min(0.70 * _kashoka + 0.30 * _ana_sc_norm, 100.0)), 1)
+        return jiku, ana
+
+    # ── 全馬に軸馬度(jiku_score) / 穴馬度(ana_do) を付与（表示専用・ML非汚染） ──
+    for _jv in list(races.keys()):
+        for _jr in races[_jv]:
+            _jrno = _jr["race_no"]
+            _jhorses = _pred_horses.get((_jv, _jrno), [])
+            # 取消馬・補完馬を除いた有効馬のみ対象
+            _jvalid = [_h for _h in _jhorses if not _h.get("is_scratched") and not _h.get("scrape_failed")]
+            _jN = len(_jvalid)
+            if _jN == 0:
+                continue
+            # composite 降順ランク付け（1始まり）
+            _sorted_by_comp = sorted(_jvalid, key=lambda _h: -(_h.get("composite", 0) or 0))
+            _comp_rank_map: dict = {_h.get("horse_no", 0): (i + 1) for i, _h in enumerate(_sorted_by_comp)}
+            # popularity 昇順ランク付け（1=最人気）。popularity 欠損馬は None 扱い
+            _sorted_by_pop = sorted(
+                _jvalid,
+                key=lambda _h: (_h.get("popularity") or 99)
+            )
+            _pop_rank_map: dict = {_h.get("horse_no", 0): (i + 1) for i, _h in enumerate(_sorted_by_pop)}
+            for _h in _jvalid:
+                _hno = _h.get("horse_no", 0)
+                _comp = _h.get("composite", 0) or 0
+                _p3   = _h.get("place3_prob", 0) or 0
+                _ana_sc = _h.get("ana_score", 0) or 0
+                _pop = _h.get("popularity") or None
+                _comp_rank = _comp_rank_map.get(_hno, _jN)
+                _pop_rank  = _pop_rank_map.get(_hno, None) if _pop is not None else None
+
+                _h["jiku_score"], _h["ana_do"] = _compute_jiku_ana(
+                    _comp, _p3, _ana_sc, _comp_rank, _pop_rank, _jN
+                )
+            # ── 本命馬の honmei_jiku_score / jiku_gap をRaceSummaryに付与（表示専用） ──
+            # 全馬の jiku_score が確定した後、本命の jiku_score と2位との差を計算する
+            _honmei_h = None
+            for _mk in ("◉", "◎"):
+                for _h2 in _jvalid:
+                    if _h2.get("mark") == _mk:
+                        _honmei_h = _h2
+                        break
+                if _honmei_h:
+                    break
+            if _honmei_h:
+                _jiku_scores_sorted = sorted(
+                    [_h2.get("jiku_score", 0.0) for _h2 in _jvalid],
+                    reverse=True
+                )
+                _honmei_jiku = _honmei_h.get("jiku_score", 0.0)
+                _jiku_gap_val = round(
+                    _jiku_scores_sorted[0] - _jiku_scores_sorted[1], 1
+                ) if len(_jiku_scores_sorted) >= 2 else 0.0
+                # RaceSummaryを更新（同一レース番号・会場で特定）
+                for _rs in races.get(_jv, []):
+                    if _rs.get("race_no") == _jrno:
+                        _rs["honmei_jiku_score"] = round(_honmei_jiku, 1)
+                        _rs["jiku_gap"] = _jiku_gap_val
+                        break
+
     # ── 厳選穴馬: 回帰ベース妙味スコアで評価 ──
     from config import settings as _s
     ana_horses: list = []
@@ -1048,24 +1147,56 @@ def _scan_today_predictions(date_str: str) -> dict:
                 if mk != "穴":
                     continue
 
-                # 回帰ベース妙味スコア
-                miryoku = round(
-                    _s.MIRYOKU_W_TOKUSEN * ts
-                    + _s.MIRYOKU_W_COMPOSITE * (comp - 45) / 10
-                    + _s.MIRYOKU_W_COURSE * (course - 45) / 10
-                    + _s.MIRYOKU_W_ANA * ana_sc / 5
-                    + _s.MIRYOKU_W_PLACE3 * p3 * 10
-                    + _s.MIRYOKU_W_JRA * (1 if is_jra else 0),
-                    2)
+                # 妙味度 0〜100点満点スコア（2026-06-28 改定）
+                # 旧: 回帰ベース加重和（-2.5〜2.5程度）
+                # 新: 各要素を 0〜100 正規化 → MIRYOKU_W_* 比率で加重平均
+                # JRAは従来ペナルティだったため重みの符号を維持しつつ 0/100 フラグで換算
+                _n_ts     = min(ts / 10.0, 1.0) * 100.0          # tokusen_score: 0〜10→0〜100
+                _n_comp   = max(0.0, min(comp, 100.0))            # composite: 偏差値スケールそのまま
+                _n_course = max(0.0, min(course, 100.0))          # course_total: 偏差値スケールそのまま
+                _n_ana    = min(ana_sc / 10.0, 1.0) * 100.0      # ana_score: 0〜10→0〜100
+                _n_p3     = p3 * 100.0                            # place3_prob: 0〜1→0〜100
+                _n_jra    = 100.0 if is_jra else 0.0              # JRAフラグ: 重み負なのでJRA=100がペナルティ
+                # 絶対値重みで正規化（全要素を同じ100点尺度で加重平均）
+                _w_sum = (
+                    abs(_s.MIRYOKU_W_TOKUSEN)
+                    + abs(_s.MIRYOKU_W_COMPOSITE)
+                    + abs(_s.MIRYOKU_W_COURSE)
+                    + abs(_s.MIRYOKU_W_ANA)
+                    + abs(_s.MIRYOKU_W_PLACE3)
+                    + abs(_s.MIRYOKU_W_JRA)
+                )
+                # _w_sum で割るだけで -14〜86 程度のスケールになる（理論最大 85.9 / 最小 -14.1）
+                # * 100 は不要（各 _n_* が既に 0〜100 スケール）
+                _raw = (
+                    _s.MIRYOKU_W_TOKUSEN   * _n_ts
+                    + _s.MIRYOKU_W_COMPOSITE * _n_comp
+                    + _s.MIRYOKU_W_COURSE    * _n_course
+                    + _s.MIRYOKU_W_ANA       * _n_ana
+                    + _s.MIRYOKU_W_PLACE3    * _n_p3
+                    + _s.MIRYOKU_W_JRA       * _n_jra
+                ) / _w_sum  # → 実際 -14〜86 程度
+                miryoku = round(max(0.0, min(_raw, 100.0)), 1)  # clamp して 0〜100 に収める
 
-                # 星評価判定（SS/S→★★★、A→★★、B/C→★、D/E→除外）
-                if miryoku >= _s.MIRYOKU_GRADE_S:
+                # 星評価判定（0-100スケール）
+                if miryoku >= _s.MIRYOKU_100_GRADE_S:
                     star_rating = 3  # ★★★
-                elif miryoku >= _s.MIRYOKU_GRADE_A:
+                elif miryoku >= _s.MIRYOKU_100_GRADE_A:
                     star_rating = 2  # ★★
                 else:
                     star_rating = 1  # ★（穴印馬は grade 下限割れでも必ず表示=印と一致保証）
 
+                # 穴馬度(新) を取得（前段の全馬ループで付与済）
+                _ana_do_val = h.get("ana_do", miryoku)  # 前段で付与済、フォールバックはmiryoku
+                _jiku_val   = h.get("jiku_score", 0)
+                # 星評価: 新 ana_do スケール（過小評価主軸=分布が低側寄り）に合わせ閾値調整
+                # ★★★ ≥50 / ★★ ≥25 / ★ <25（穴印馬が極端に消えない安全マージン）
+                if _ana_do_val >= 50:
+                    star_rating = 3
+                elif _ana_do_val >= 25:
+                    star_rating = 2
+                else:
+                    star_rating = 1
                 ana_horses.append({
                     "venue": venue_name,
                     "race_no": rno,
@@ -1078,14 +1209,72 @@ def _scan_today_predictions(date_str: str) -> dict:
                     "popularity": h.get("popularity", 0),
                     "composite": round(comp, 1),
                     "place3_prob": round(p3 * 100, 1),
-                    "miryoku": miryoku,
+                    "miryoku": miryoku,       # 旧互換フィールド（フロント旧コードがあれば活用）
+                    "ana_do": _ana_do_val,    # 新: 穴馬度 0-100
+                    "jiku_score": _jiku_val,  # 新: 軸馬度 0-100
                     "star_rating": star_rating,
                     "is_star": is_star,
                 })
     # 妙味スコア降順でソート
     ana_horses.sort(key=lambda x: -x["miryoku"])
 
-    return {"races": races, "order": order, "ana_horses": ana_horses}
+    # ── 危険な人気馬: 人気上位だが軸馬度が低い（軸信頼薄） ──
+    # 条件: 人気1〜3位 かつ その馬の jiku_score レース内順位 ≥ 人気順位+3
+    #   = 人気のわりに軸信頼度が低い（過大評価を軸馬度で検出）
+    kiken_horses: list = []
+    for venue_name in list(races.keys()):
+        best_per_race: dict = {}  # {(venue, rno): 最も乖離大きい馬}
+        for r in races[venue_name]:
+            rno = r["race_no"]
+            horses = _pred_horses.get((venue_name, rno), [])
+            if not horses:
+                continue
+            # scrape_failed・取消馬を除外
+            valid = [h for h in horses if not h.get("is_scratched") and not h.get("scrape_failed")]
+            if not valid:
+                continue
+            # jiku_score 降順ランク: 1始まり（1=最も軸信頼高）
+            sorted_by_jiku = sorted(valid, key=lambda h: -(h.get("jiku_score", 0.0) or 0.0))
+            jiku_rank_map = {h.get("horse_no", 0): (i + 1) for i, h in enumerate(sorted_by_jiku)}
+            for h in valid:
+                pop = h.get("popularity") or 0
+                if pop < 1 or pop > 3:
+                    continue  # 人気1〜3位以外はスキップ
+                hno = h.get("horse_no", 0)
+                jiku_rank = jiku_rank_map.get(hno, 99)
+                # jiku_rank が人気順位+3以上 = 人気に見合う軸信頼がない
+                _kiken_gap = jiku_rank - pop
+                if _kiken_gap < 3:
+                    continue
+                jiku_val = h.get("jiku_score", 0.0) or 0.0
+                sig = h.get("divergence_signal", "")
+                key_ = (venue_name, rno)
+                prev = best_per_race.get(key_)
+                if prev is None or _kiken_gap > prev["_gap"]:
+                    best_per_race[key_] = {
+                        "venue": venue_name,
+                        "race_no": rno,
+                        "race_name": r.get("name", f"{rno}R"),
+                        "post_time": r.get("post_time", ""),
+                        "horse_no": hno,
+                        "horse_name": h.get("horse_name", ""),
+                        "mark": h.get("mark", ""),
+                        "odds": h.get("odds", 0) or 0,
+                        "popularity": pop,
+                        "composite": round(h.get("composite", 0) or 0, 1),
+                        "ability_rank": jiku_rank,  # ← jiku_score 降順ランクに変更
+                        "jiku_score": round(jiku_val, 1),  # 軸馬度を追加
+                        "divergence_signal": sig,
+                        "_gap": _kiken_gap,  # 内部ソート用（APIレスポンスには含まない）
+                    }
+        for item in best_per_race.values():
+            item.pop("_gap", None)
+            kiken_horses.append(item)
+    # jiku_rank - 人気順位の降順（最も軸信頼薄の馬を上位へ）でソート、上位5件
+    kiken_horses.sort(key=lambda x: -(x["ability_rank"] - x["popularity"]))
+    kiken_horses = kiken_horses[:5]
+
+    return {"races": races, "order": order, "ana_horses": ana_horses, "kiken_horses": kiken_horses}
 
 
 def _get_db_state():
@@ -1620,7 +1809,8 @@ def create_app():
                 pass
         return jsonify(date=date, races=result["races"], order=result["order"],
                        total=total, odds_updated_at=odds_ts,
-                       ana_horses=result.get("ana_horses", []))
+                       ana_horses=result.get("ana_horses", []),
+                       kiken_horses=result.get("kiken_horses", []))
 
     def _apply_paraphrase_cache(race: dict) -> int:
         """
@@ -1911,6 +2101,28 @@ def create_app():
                         _wp = _hd.get("win_prob") or 0
                         _o = _hd.get("odds") or _hd.get("predicted_tansho_odds") or 0
                         _hd["ev"] = round(_wp * _o, 3) if _wp > 0 and _o > 0 else None
+
+                    # 軸馬度(jiku_score) / 穴馬度(ana_do) をレース内全馬に付与（表示専用）
+                    _rp_all = race.get("horses", [])
+                    _rp_valid = [_h for _h in _rp_all if not _h.get("is_scratched") and not _h.get("scrape_failed")]
+                    _rp_N = len(_rp_valid)
+                    if _rp_N > 0:
+                        _rp_sorted_comp = sorted(_rp_valid, key=lambda _h: -(_h.get("composite", 0) or 0))
+                        _rp_cr = {_h.get("horse_no", 0): (i + 1) for i, _h in enumerate(_rp_sorted_comp)}
+                        _rp_sorted_pop = sorted(_rp_valid, key=lambda _h: (_h.get("popularity") or 99))
+                        _rp_pr = {_h.get("horse_no", 0): (i + 1) for i, _h in enumerate(_rp_sorted_pop)}
+                        for _hd in _rp_valid:
+                            _hno = _hd.get("horse_no", 0)
+                            _comp = _hd.get("composite", 0) or 0
+                            _p3   = _hd.get("place3_prob", 0) or 0
+                            _ana_sc = _hd.get("ana_score", 0) or 0
+                            _pop = _hd.get("popularity") or None
+                            _cr = _rp_cr.get(_hno, _rp_N)
+                            _pr = _rp_pr.get(_hno, None) if _pop is not None else None
+                            # ヘルパー _compute_jiku_ana を使用（2箇所共通・重複解消）
+                            _hd["jiku_score"], _hd["ana_do"] = _compute_jiku_ana(
+                                _comp, _p3, _ana_sc, _cr, _pr, _rp_N
+                            )
 
                     if patched:
                         try:
@@ -6317,7 +6529,8 @@ function dNavRefreshOdds(date){{
                     total_races=len(pred_cached.get("races", [])),
                     honmei={"total": 0, "win": 0, "place2": 0, "place3": 0,
                             "win_rate": 0, "place2_rate": 0, "place_rate": 0,
-                            "tansho_stake": 0, "tansho_ret": 0, "tansho_roi": 0},
+                            "tansho_stake": 0, "tansho_ret": 0, "tansho_roi": 0,
+                            "tansho_shushi": 0},
                     sanrentan={"played": 0, "hit": 0, "stake": 0, "payback": 0, "roi_pct": 0},
                 )
 
@@ -6343,6 +6556,8 @@ function dNavRefreshOdds(date){{
                 "tansho_stake": h_stake,
                 "tansho_ret":   h_ret,
                 "tansho_roi":   round(h_ret / h_stake * 100, 1) if h_stake > 0 else 0.0,
+                # ◎単勝収支（円）= 配当合計 - 投資合計
+                "tansho_shushi": h_ret - h_stake,
             }
 
             # M' / T-050: 三連複集計 — pred.json 永続値ベース (LIVE STATS 表示用)
