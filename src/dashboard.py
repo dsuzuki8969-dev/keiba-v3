@@ -2854,6 +2854,21 @@ def create_app():
                         logger.warning("[odds-scheduler] オッズ取得失敗→elite再選定スキップ(既存印保持): %s",
                                        _odds_state.get("error"))
                     else:
+                        # JRA 当日馬場 (クッション値/含水率) をライブ取得 (見える化用)。
+                        # finalize の Step3(add_baba_record) が race.baba_detail に紐付けるため、その前に実行。
+                        # 非致命: 失敗しても odds/finalize は継続。JRA非開催日は空取得で no-op。
+                        try:
+                            _baba_iso = f"{date_key[:4]}-{date_key[4:6]}-{date_key[6:8]}"
+                            _bp = subprocess.run(
+                                [sys.executable,
+                                 os.path.join(PROJECT_ROOT, "scripts", "fetch_jra_baba_live.py"),
+                                 "--date", _baba_iso],
+                                capture_output=True, text=True, timeout=120, cwd=PROJECT_ROOT,
+                            )
+                            logger.info("[odds-scheduler] JRA当日馬場ライブ取得 rc=%s", _bp.returncode)
+                        except Exception as _be:
+                            logger.warning("[odds-scheduler] JRA当日馬場ライブ取得失敗(見える化のみ・非致命): %s", _be)
+
                         try:
                             from src.calculator.finalize_predictions import finalize_predictions
                             _fin = finalize_predictions(date_key)

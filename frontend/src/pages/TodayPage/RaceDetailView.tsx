@@ -116,6 +116,18 @@ export function RaceDetailView({
   // ばんえい判定
   const isBanei = race?.is_banei || race?.venue === "帯広";
 
+  // ── JRA馬場詳細（クッション値/含水率/使用コース）────────────────────────
+  const babaDetail = race?.baba_detail ?? null;
+
+  /** クッション値→JRA公式基準ラベル */
+  const cushionLabel = (v: number): string => {
+    if (v >= 12) return "硬め";
+    if (v >= 10) return "やや硬め";
+    if (v >= 8)  return "標準";
+    if (v >= 7)  return "やや軟らかめ";
+    return "軟らかめ";
+  };
+
   // レースライブURL（JRA: 公式トップ / NAR: keiba-lv-st 会場別ライブ）
   const liveUrl = (() => {
     if (!race) return "";
@@ -310,6 +322,42 @@ export function RaceDetailView({
                   </span>
                 )}
               </div>
+
+              {/* ── JRA馬場詳細バッジ（クッション値/含水率/使用コース） ─────────────
+                  baba_detail が null（NAR・データ無し）の場合は非表示。
+                  JRA当日開催かつバックエンドが値を取得できた場合のみ表示。 */}
+              {babaDetail && (
+                <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1.5 text-[11px]">
+                  {/* クッション値バッジ */}
+                  {babaDetail.cushion_value != null && (
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-800 font-semibold">
+                      クッション {babaDetail.cushion_value.toFixed(1)}（{cushionLabel(babaDetail.cushion_value)}）
+                    </span>
+                  )}
+                  {/* 含水率バッジ（芝） */}
+                  {(babaDetail.moist_turf_goal != null || babaDetail.moist_turf_corner != null) && (
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-sky-50 dark:bg-sky-950/40 text-sky-700 dark:text-sky-400 border border-sky-200 dark:border-sky-800">
+                      芝含水率:
+                      {babaDetail.moist_turf_goal != null && <> ゴール{babaDetail.moist_turf_goal.toFixed(1)}%</>}
+                      {babaDetail.moist_turf_corner != null && <> 4角{babaDetail.moist_turf_corner.toFixed(1)}%</>}
+                    </span>
+                  )}
+                  {/* 含水率バッジ（ダート） */}
+                  {(babaDetail.moist_dirt_goal != null || babaDetail.moist_dirt_corner != null) && (
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-50 dark:bg-amber-950/40 text-amber-700 dark:text-amber-400 border border-amber-200 dark:border-amber-800">
+                      ダート含水率:
+                      {babaDetail.moist_dirt_goal != null && <> ゴール{babaDetail.moist_dirt_goal.toFixed(1)}%</>}
+                      {babaDetail.moist_dirt_corner != null && <> 4角{babaDetail.moist_dirt_corner.toFixed(1)}%</>}
+                    </span>
+                  )}
+                  {/* 使用コースバッジ */}
+                  {babaDetail.turf_course && (
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-violet-50 dark:bg-violet-950/40 text-violet-700 dark:text-violet-400 border border-violet-200 dark:border-violet-800 font-semibold">
+                      {babaDetail.turf_course}コース使用
+                    </span>
+                  )}
+                </div>
+              )}
             </div>
           </PremiumCard>
 
@@ -358,6 +406,22 @@ export function RaceDetailView({
   );
 }
 
+// ── JRA当日馬場詳細データ型 ──────────────────────────────────────────────
+export interface BabaDetail {
+  /** クッション値（芝コース硬度指標） */
+  cushion_value?: number | null;
+  /** 含水率 芝ゴール前(%) */
+  moist_turf_goal?: number | null;
+  /** 含水率 芝4角(%) */
+  moist_turf_corner?: number | null;
+  /** 含水率 ダートゴール前(%) */
+  moist_dirt_goal?: number | null;
+  /** 含水率 ダート4角(%) */
+  moist_dirt_corner?: number | null;
+  /** 使用コース記号 例: "A" / "B" / "C" / "B2" */
+  turf_course?: string | null;
+}
+
 // 型定義（APIレスポンス互換）
 export interface RaceDetail {
   race_no: number;
@@ -399,6 +463,8 @@ export interface RaceDetail {
   track_condition_turf?: string;
   /** 馬場状態（ダート）: 良/稍重/重/不良。当日未発表時は空文字 */
   track_condition_dirt?: string;
+  /** JRA当日馬場詳細（クッション値/含水率/使用コース）。NAR・データ無し時は null */
+  baba_detail?: BabaDetail | null;
   top10_odds?: {
     umaren?: Array<{ combo: number[]; odds: number }>;
     umatan?: Array<{ combo: number[]; odds: number }>;

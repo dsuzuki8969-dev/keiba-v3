@@ -39,6 +39,9 @@ _ROOT = Path(__file__).resolve().parent.parent
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
+# race_id → venue_code 変換 (JRA 当日馬場詳細の突合用)
+from data.masters.venue_master import get_venue_code_from_race_id
+
 # ─── 定数 ───────────────────────────────────────────────────────────────────────
 
 # 道悪馬場の condition 値 (略字 + 正式名 両対応)
@@ -48,6 +51,21 @@ _GOOD_CONDITIONS = {"良"}
 # n がこのしきい値未満の場合 p3 = None (データ不足)
 # bad/good 両方に同一基準を適用 (非対称にしない)
 _MIN_N = 3
+
+# JRA 当日馬場 (クッション値/含水率) JSON のパス (見える化用・JRA限定)
+_TRACK_COND_PATH = _ROOT / "data" / "masters" / "track_condition_daily.json"
+
+
+def _load_track_condition_day(race_date: str) -> dict:
+    """track_condition_daily.json から race_date(YYYY-MM-DD) の {venue_code: {cushion...}} を返す。
+
+    見える化専用 (JRA 当日クッション値/含水率)。ファイル無し/壊れ時は {} で graceful。
+    """
+    try:
+        with open(_TRACK_COND_PATH, encoding="utf-8") as f:
+            return json.load(f).get(race_date, {})
+    except (OSError, json.JSONDecodeError):
+        return {}
 
 # ─── race_log から道悪成績を一括取得 ─────────────────────────────────────────────
 
@@ -216,6 +234,11 @@ def add_baba_record(date_key: str, dry_run: bool = False) -> dict:
     cutoff_date = f"{date_key[:4]}-{date_key[4:6]}-{date_key[6:8]}"
     print(f"[baba_record] cutoff_date={cutoff_date} (この日付未満のみ集計・リーク防止)")
 
+    # JRA 当日馬場詳細 (クッション値/含水率) を race レベルに付与するため読み込み (見える化用・JRA限定)
+    day_baba_detail = _load_track_condition_day(cutoff_date)
+    if day_baba_detail:
+        print(f"[baba_record] 当日馬場詳細: {len(day_baba_detail)} 会場 (クッション値/含水率)")
+
     # DB は読み取り専用 URI で接続 (誤書き込み防止)
     con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
     con.row_factory = None  # tuple で取得(速度優先)
@@ -246,6 +269,12 @@ def add_baba_record(date_key: str, dry_run: bool = False) -> dict:
             # 障害・その他
             race["track_condition_turf"] = ""
             race["track_condition_dirt"] = ""
+
+        # ─ race レベル: JRA 当日馬場詳細 (クッション値/含水率) 付与 (JRA限定・見える化用) ─
+        # race_id から venue_code を導出し track_condition_daily.json と突合。
+        # NAR・データ無しは None (フロントは None なら非表示)。
+        _vc = get_venue_code_from_race_id(race.get("race_id", "") or "")
+        race["baba_detail"] = day_baba_detail.get(_vc) if _vc else None
 
         # ─ horse レベル: baba_record 追加 ─
         for horse in race.get("horses", []):
