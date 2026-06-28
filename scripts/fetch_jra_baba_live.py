@@ -288,6 +288,69 @@ def parse_moist_html(html: str) -> Dict[str, Dict[str, float]]:
 
 
 # ---------------------------------------------------------------------------
+# パーサ: index{N}.html → 馬場状態 (新規追加)
+# ---------------------------------------------------------------------------
+
+def parse_index_html_for_condition(html: str) -> dict:
+    """
+    index{N}.html から公式馬場状態・天候・時刻を抽出する。
+
+    対象セクション:
+      <div class="line condition" id="course_condition" ...>
+        <div class="main"><h3>馬場状態<span class="time">（6月26日（金曜）正午現在）</span></h3>
+        <div class="grid">
+          <div class="cell weather">...<strong>曇</strong>...
+          <div class="cell turf"><ul>...<p>稍重</p>...
+          <div class="cell dirt"><ul>...<p>稍重</p>...
+
+    Returns:
+        {
+          "condition_turf": str | None,   # 芝馬場状態 例: "稍重" / None (芝コース無)
+          "condition_dirt": str | None,   # ダート馬場状態 例: "良" / None
+          "condition_time": str | None,   # 時刻テキスト 例: "6月26日（金曜）正午現在"
+          "weather": str | None,          # 天候 例: "曇" / "雨"
+        }
+    要素欠落時は None (堅牢に)。
+    """
+    soup = _parse_html_from_string(html)
+    result: dict = {
+        "condition_turf": None,
+        "condition_dirt": None,
+        "condition_time": None,
+        "weather": None,
+    }
+
+    # 馬場状態セクション取得
+    section = soup.find("div", id="course_condition")
+    if not section:
+        return result
+
+    # 時刻: .main h3 span.time の全角括弧を除去
+    time_span = section.select_one(".main h3 span.time")
+    if time_span:
+        raw_time = time_span.get_text(strip=True)
+        # 全角括弧「（）」を外側のみ除去 (removeprefix/suffix で内側の（金曜）を保護)
+        result["condition_time"] = raw_time.removeprefix("（").removesuffix("）")
+
+    # 天候: .cell.weather strong
+    weather_strong = section.select_one(".cell.weather strong")
+    if weather_strong:
+        result["weather"] = weather_strong.get_text(strip=True) or None
+
+    # 芝: .cell.turf .content p
+    turf_p = section.select_one(".cell.turf .content p")
+    if turf_p:
+        result["condition_turf"] = turf_p.get_text(strip=True) or None
+
+    # ダート: .cell.dirt .content p
+    dirt_p = section.select_one(".cell.dirt .content p")
+    if dirt_p:
+        result["condition_dirt"] = dirt_p.get_text(strip=True) or None
+
+    return result
+
+
+# ---------------------------------------------------------------------------
 # パーサ: index{N}.html → 使用コース
 # ---------------------------------------------------------------------------
 
@@ -331,12 +394,16 @@ def parse_index_html_for_course(html: str) -> Tuple[Optional[str], Optional[str]
 # ライブ取得: 使用コース
 # ---------------------------------------------------------------------------
 
-def fetch_turf_courses_live() -> Dict[str, Optional[str]]:
+def fetch_turf_courses_live() -> Tuple[Dict[str, Optional[str]], Dict[str, dict]]:
     """
-    index.html / index2.html / ... をGETして {venue_ja: turf_course} を返す。
+    index.html / index2.html / ... をGETして (course_map, condition_map) を返す。
+
+    course_map:    {venue_ja: turf_course}    (既存互換)
+    condition_map: {venue_ja: {condition_turf, condition_dirt, condition_time, weather}}
     404 または会場名が空になった時点で打ち切り。
     """
-    result: Dict[str, Optional[str]] = {}
+    course_result: Dict[str, Optional[str]] = {}
+    cond_result: Dict[str, dict] = {}
     suffixes = ["", "2", "3", "4", "5"]  # 通常 3 場まで
 
     for i, suffix in enumerate(suffixes):
@@ -354,25 +421,42 @@ def fetch_turf_courses_live() -> Dict[str, Optional[str]]:
             print(f"  [INFO] index{suffix}.html: 会場名なし → 打ち切り")
             break
 
-        result[venue_ja] = turf_course
+        course_result[venue_ja] = turf_course
+
+        # 馬場状態も抽出
+        cond = parse_index_html_for_condition(html)
+        cond_result[venue_ja] = cond
+        print(
+            f"  [COND] {venue_ja}: 芝={cond['condition_turf']} "
+            f"ダート={cond['condition_dirt']} 天候={cond['weather']} "
+            f"時刻={cond['condition_time']}"
+        )
 
         # レート制限 (最後のループは待機不要)
         if i < len(suffixes) - 1:
             print(f"  [RATE] {_RATE_LIMIT_SLEEP:.1f} 秒待機中...")
             time.sleep(_RATE_LIMIT_SLEEP)
 
-    return result
+    return course_result, cond_result
 
 
 # ---------------------------------------------------------------------------
 # サンプルHTMLからの使用コース取得 (開発・テスト用)
 # ---------------------------------------------------------------------------
 
-def fetch_turf_courses_from_samples(sample_dir: Path) -> Dict[str, Optional[str]]:
+def fetch_turf_courses_from_samples(
+    sample_dir: Path,
+) -> Tuple[Dict[str, Optional[str]], Dict[str, dict]]:
     """
-    data/_diag/baba_live_sample/index{N}.html からコースを取得する (テスト用)。
+    data/_diag/baba_live_sample/index{N}.html からコースと馬場状態を取得する (テスト用)。
+
+    Returns:
+        (course_map, condition_map)
+        course_map:    {venue_ja: turf_course}    (既存互換)
+        condition_map: {venue_ja: {condition_turf, condition_dirt, condition_time, weather}}
     """
-    result: Dict[str, Optional[str]] = {}
+    course_result: Dict[str, Optional[str]] = {}
+    cond_result: Dict[str, dict] = {}
     for suffix in ["1", "2", "3", "4", "5"]:
         path = sample_dir / f"index{suffix}.html"
         if not path.exists():
@@ -381,8 +465,18 @@ def fetch_turf_courses_from_samples(sample_dir: Path) -> Dict[str, Optional[str]
         venue_ja, turf_course = parse_index_html_for_course(html)
         if not venue_ja:
             break
-        result[venue_ja] = turf_course
-    return result
+        course_result[venue_ja] = turf_course
+
+        # 馬場状態も抽出
+        cond = parse_index_html_for_condition(html)
+        cond_result[venue_ja] = cond
+        print(
+            f"  [COND] {venue_ja}: 芝={cond['condition_turf']} "
+            f"ダート={cond['condition_dirt']} 天候={cond['weather']} "
+            f"時刻={cond['condition_time']}"
+        )
+
+    return course_result, cond_result
 
 
 # ---------------------------------------------------------------------------
@@ -394,17 +488,24 @@ def build_result(
     cushion_map: Dict[str, float],
     moist_map: Dict[str, Dict[str, float]],
     course_map: Dict[str, Optional[str]],
+    condition_map: Optional[Dict[str, dict]] = None,
 ) -> Dict:
     """
-    クッション値・含水率・使用コースを統合して track_condition_daily.json 形式のエントリを作る。
+    クッション値・含水率・使用コース・馬場状態を統合して
+    track_condition_daily.json 形式のエントリを作る。
 
-    cushion_map: {venue_ja: cushion_value}
-    moist_map:   {venue_ja: {moist_turf_goal, ...}}
-    course_map:  {venue_ja: turf_course}
+    cushion_map:    {venue_ja: cushion_value}
+    moist_map:      {venue_ja: {moist_turf_goal, ...}}
+    course_map:     {venue_ja: turf_course}
+    condition_map:  {venue_ja: {condition_turf, condition_dirt, condition_time, weather}}
+                    None の場合は馬場状態フィールドを追加しない (後方互換)
 
     Returns:
         { "YYYY-MM-DD": { "<venue_code>": {...} } }
     """
+    if condition_map is None:
+        condition_map = {}
+
     venue_names = set(cushion_map.keys()) | set(moist_map.keys())
     date_entry: Dict = {}
 
@@ -417,6 +518,7 @@ def build_result(
         cushion = cushion_map.get(venue_ja)
         moist = moist_map.get(venue_ja, {})
         turf_course = course_map.get(venue_ja)
+        cond = condition_map.get(venue_ja, {})
 
         if cushion is None:
             print(f"  [WARN] {venue_ja}: クッション値なし (スキップ)")
@@ -432,6 +534,11 @@ def build_result(
             "moist_dirt_goal": moist["moist_dirt_goal"],
             "moist_dirt_corner": moist["moist_dirt_corner"],
             "turf_course": turf_course if turf_course else "",
+            # 馬場状態 (index{N}.html から取得。取得できない場合は None)
+            "condition_turf": cond.get("condition_turf"),
+            "condition_dirt": cond.get("condition_dirt"),
+            "condition_time": cond.get("condition_time"),
+            "weather": cond.get("weather"),
         }
         date_entry[venue_code] = entry
         print(
@@ -440,7 +547,10 @@ def build_result(
             f"moist_tc={moist['moist_turf_corner']} "
             f"moist_dg={moist['moist_dirt_goal']} "
             f"moist_dc={moist['moist_dirt_corner']} "
-            f"course={turf_course}"
+            f"course={turf_course} "
+            f"cond_turf={cond.get('condition_turf')} "
+            f"cond_dirt={cond.get('condition_dirt')} "
+            f"weather={cond.get('weather')}"
         )
 
     return {date_str: date_entry}
@@ -536,8 +646,8 @@ def main() -> None:
             sys.exit(1)
         moist_html = moist_path.read_text(encoding="utf-8", errors="replace")
 
-        # 使用コース (index1.html / index2.html / index3.html)
-        course_map = fetch_turf_courses_from_samples(sample_dir)
+        # 使用コース + 馬場状態 (index1.html / index2.html / index3.html)
+        course_map, condition_map = fetch_turf_courses_from_samples(sample_dir)
 
     # ---- ライブモード ----
     else:
@@ -559,9 +669,9 @@ def main() -> None:
         print(f"  [RATE] {_RATE_LIMIT_SLEEP:.1f} 秒待機中...")
         time.sleep(_RATE_LIMIT_SLEEP)
 
-        # 使用コース取得 (index.html / index2.html / ...)
-        print("[STEP 3/3] 使用コース取得 (index.html 系)")
-        course_map = fetch_turf_courses_live()
+        # 使用コース + 馬場状態取得 (index.html / index2.html / ...)
+        print("[STEP 3/3] 使用コース・馬場状態取得 (index.html 系)")
+        course_map, condition_map = fetch_turf_courses_live()
 
     print()
     print("[PARSE] クッション値パース中...")
@@ -578,7 +688,7 @@ def main() -> None:
 
     print()
     print("[MERGE] データ統合中...")
-    result = build_result(date_str, cushion_map, moist_map, course_map)
+    result = build_result(date_str, cushion_map, moist_map, course_map, condition_map)
 
     # サマリー表示
     print()
@@ -595,7 +705,10 @@ def main() -> None:
                 f"cushion={entry['cushion_value']} "
                 f"芝G={entry['moist_turf_goal']} 芝4C={entry['moist_turf_corner']} "
                 f"ダートG={entry['moist_dirt_goal']} ダート4C={entry['moist_dirt_corner']} "
-                f"コース={entry['turf_course']}"
+                f"コース={entry['turf_course']} "
+                f"芝状態={entry.get('condition_turf')} "
+                f"ダート状態={entry.get('condition_dirt')} "
+                f"天候={entry.get('weather')}"
             )
 
     # dry-run: JSON 出力のみ

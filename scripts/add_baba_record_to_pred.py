@@ -270,11 +270,18 @@ def add_baba_record(date_key: str, dry_run: bool = False) -> dict:
             race["track_condition_turf"] = ""
             race["track_condition_dirt"] = ""
 
-        # ─ race レベル: JRA 当日馬場詳細 (クッション値/含水率) 付与 (JRA限定・見える化用) ─
+        # ─ race レベル: JRA 当日馬場詳細 (クッション値/含水率/馬場状態) 付与 (JRA限定・見える化用) ─
         # race_id から venue_code を導出し track_condition_daily.json と突合。
         # NAR・データ無しは None (フロントは None なら非表示)。
         _vc = get_venue_code_from_race_id(race.get("race_id", "") or "")
-        race["baba_detail"] = day_baba_detail.get(_vc) if _vc else None
+        _baba_raw = day_baba_detail.get(_vc) if _vc else None
+        race["baba_detail"] = _baba_raw
+
+        # ⚠️ 当日ライブ馬場状態(良/重)は baba_detail.condition_turf/dirt に保持済(上記)。
+        # race["condition"] / race["track_condition_turf"/"dirt"] へは書かない:
+        # これらは engine.py / lgbm_model.py の RaceInfo(ML入力)と同名フィールドで、
+        # 予想後取得の当日値を入れると将来 pred 読み戻し時にリーク源となる(keiba-reviewer P1)。
+        # 表示・展開ヒントは frontend が baba_detail 経由で参照する(見える化専用)。
 
         # ─ horse レベル: baba_record 追加 ─
         for horse in race.get("horses", []):

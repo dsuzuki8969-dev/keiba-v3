@@ -107,9 +107,11 @@ export function RaceDetailView({
 
   // 当日馬場状態（芝/ダート別）
   const isDirt = (race?.surface || "").includes("ダート") || (race?.surface || "") === "ダ";
+  // 当日ライブ馬場状態は baba_detail(見える化専用)優先・無ければ予想時 track_condition。
+  // race.track_condition_* は ML入力(RaceInfo)同名のため backend では当日値を入れない(リーク防止)。
   const trackCondition = isDirt
-    ? (race?.track_condition_dirt || "")
-    : (race?.track_condition_turf || "");
+    ? (race?.baba_detail?.condition_dirt || race?.track_condition_dirt || "")
+    : (race?.baba_detail?.condition_turf || race?.track_condition_turf || "");
   // ダート道悪（重/不良）のみ展開ヒントを表示（芝は出さない）
   const showBadaHint = isDirt && (trackCondition === "重" || trackCondition === "不良");
 
@@ -356,6 +358,24 @@ export function RaceDetailView({
                       {babaDetail.turf_course}コース使用
                     </span>
                   )}
+                  {/* 公式馬場状態バッジ（芝/ダート）*/}
+                  {(babaDetail.condition_turf != null || babaDetail.condition_dirt != null) && (
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-rose-50 dark:bg-rose-950/40 text-rose-700 dark:text-rose-400 border border-rose-200 dark:border-rose-800 font-semibold">
+                      馬場:
+                      {babaDetail.condition_turf && <> 芝{babaDetail.condition_turf}</>}
+                      {babaDetail.condition_turf && babaDetail.condition_dirt && <> /</>}
+                      {babaDetail.condition_dirt && <> ダート{babaDetail.condition_dirt}</>}
+                    </span>
+                  )}
+                  {/* 天候バッジ */}
+                  {babaDetail.weather && (
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-slate-50 dark:bg-slate-800/60 text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-700">
+                      天候: {babaDetail.weather}
+                      {babaDetail.condition_time && (
+                        <span className="text-[10px] opacity-70">（{babaDetail.condition_time}）</span>
+                      )}
+                    </span>
+                  )}
                 </div>
               )}
             </div>
@@ -420,6 +440,14 @@ export interface BabaDetail {
   moist_dirt_corner?: number | null;
   /** 使用コース記号 例: "A" / "B" / "C" / "B2" */
   turf_course?: string | null;
+  /** 公式馬場状態（芝）: 良/稍重/重/不良。JRA当日取得。無い場合は null */
+  condition_turf?: string | null;
+  /** 公式馬場状態（ダート）: 良/稍重/重/不良。JRA当日取得。無い場合は null */
+  condition_dirt?: string | null;
+  /** 馬場状態の公開時刻テキスト 例: "6月28日（日曜）正午現在" */
+  condition_time?: string | null;
+  /** 天候 例: "曇" / "雨" / "晴" */
+  weather?: string | null;
 }
 
 // 型定義（APIレスポンス互換）

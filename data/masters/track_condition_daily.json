@@ -11228,7 +11228,11 @@
       "moist_turf_corner": 17.3,
       "moist_dirt_goal": 9.1,
       "moist_dirt_corner": 11.5,
-      "turf_course": "C"
+      "turf_course": "C",
+      "condition_turf": "良",
+      "condition_dirt": "良",
+      "condition_time": "6月26日（金曜）正午現在",
+      "weather": "曇"
     },
     "10": {
       "cushion_value": 9.1,
@@ -11236,7 +11240,11 @@
       "moist_turf_corner": 10.6,
       "moist_dirt_goal": 10.3,
       "moist_dirt_corner": 13.6,
-      "turf_course": "B"
+      "turf_course": "B",
+      "condition_turf": "重",
+      "condition_dirt": "不良",
+      "condition_time": "6月26日（金曜）正午現在",
+      "weather": "雨"
     },
     "03": {
       "cushion_value": 9.7,
@@ -11244,7 +11252,11 @@
       "moist_turf_corner": 12.9,
       "moist_dirt_goal": 7.0,
       "moist_dirt_corner": 6.2,
-      "turf_course": "A"
+      "turf_course": "A",
+      "condition_turf": "稍重",
+      "condition_dirt": "稍重",
+      "condition_time": "6月26日（金曜）正午現在",
+      "weather": "曇"
     }
   }
 }

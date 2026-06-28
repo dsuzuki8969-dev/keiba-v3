@@ -2845,39 +2845,48 @@ def create_app():
                     logger.info("[odds-scheduler] 自動取得開始: %s", date_key)
                     _run_odds_update(date_key, source="auto")
                     _odds_last_auto_fetch = datetime.now()
+
+                    # ── ③ JRA 当日馬場 (クッション値/含水率/馬場状態) ライブ取得 (見える化用) ──
+                    # T-B hardening (2026-06-28): odds結果に依存せず実行する。
+                    #   旧実装は else 枝(odds成功時のみ)に置かれ、NAR odds 失敗時に JRA baba を取りこぼした。
+                    #   JRA baba は NAR odds と独立(JRA公式のみ)なので odds error に関わらず取得すべき。
+                    # 可視化: logger は本プロセスで dashboard_out.log へ到達しないため print(flush) を併用
+                    #   (発火確認= master の監視権)。非致命: 失敗しても odds/finalize は継続。JRA非開催日は no-op。
+                    try:
+                        _baba_iso = f"{date_key[:4]}-{date_key[4:6]}-{date_key[6:8]}"
+                        _bp = subprocess.run(
+                            [sys.executable,
+                             os.path.join(PROJECT_ROOT, "scripts", "fetch_jra_baba_live.py"),
+                             "--date", _baba_iso],
+                            capture_output=True, text=True, timeout=120, cwd=PROJECT_ROOT,
+                        )
+                        print(f"[odds-scheduler] JRA当日馬場ライブ取得 rc={_bp.returncode} ({date_key})", flush=True)
+                        logger.info("[odds-scheduler] JRA当日馬場ライブ取得 rc=%s", _bp.returncode)
+                    except Exception as _be:
+                        print(f"[odds-scheduler] JRA当日馬場ライブ取得 失敗(非致命): {_be}", flush=True)
+                        logger.warning("[odds-scheduler] JRA当日馬場ライブ取得失敗(見える化のみ・非致命): %s", _be)
+
                     # 🔧 穴馬再発防止 (2026-06-24 マスター指示): オッズ確定後に elite(穴/◉)を再選定。
                     # 翌日予想は前日18:00生成=オッズ前で穴選定(odds>=10)が0頭→穴0のまま固定される。
                     # _run_odds_update は reassign_marks_dict で◉/穴を保護するのみで新規穴選定しないため、
                     # ここで finalize(elite)を再実行し odds確定値で穴/◉を選び直す(sharpenは冪等skip)。
                     # P0(reviewer): オッズ取得失敗時は odds=None→穴0で上書きの危険があるため error時はskip(既存印保持)。
                     if _odds_state.get("error"):
+                        print(f"[odds-scheduler] オッズ取得失敗のため elite再選定スキップ(既存印保持) ({date_key})", flush=True)
                         logger.warning("[odds-scheduler] オッズ取得失敗→elite再選定スキップ(既存印保持): %s",
                                        _odds_state.get("error"))
                     else:
-                        # JRA 当日馬場 (クッション値/含水率) をライブ取得 (見える化用)。
-                        # finalize の Step3(add_baba_record) が race.baba_detail に紐付けるため、その前に実行。
-                        # 非致命: 失敗しても odds/finalize は継続。JRA非開催日は空取得で no-op。
-                        try:
-                            _baba_iso = f"{date_key[:4]}-{date_key[4:6]}-{date_key[6:8]}"
-                            _bp = subprocess.run(
-                                [sys.executable,
-                                 os.path.join(PROJECT_ROOT, "scripts", "fetch_jra_baba_live.py"),
-                                 "--date", _baba_iso],
-                                capture_output=True, text=True, timeout=120, cwd=PROJECT_ROOT,
-                            )
-                            logger.info("[odds-scheduler] JRA当日馬場ライブ取得 rc=%s", _bp.returncode)
-                        except Exception as _be:
-                            logger.warning("[odds-scheduler] JRA当日馬場ライブ取得失敗(見える化のみ・非致命): %s", _be)
-
                         try:
                             from src.calculator.finalize_predictions import finalize_predictions
                             _fin = finalize_predictions(date_key)
                             _el = _fin.get("elite", {}) if isinstance(_fin, dict) else {}
+                            print(f"[odds-scheduler] elite再選定 pivot={_el.get('pivot_count')} ana={_el.get('ana_count')} ({date_key})", flush=True)
                             logger.info("[odds-scheduler] オッズ確定後 elite再選定: %s ◉=%s 穴=%s",
                                         date_key, _el.get("pivot_count"), _el.get("ana_count"))
                             # P1(reviewer): finalize が pred.json を書換えるためキャッシュクリアで最新印を反映。
                             _predictions_cache.pop(date_key[:4] + "-" + date_key[4:6] + "-" + date_key[6:8], None)
                         except Exception as _fe:
+                            print(f"[odds-scheduler] elite再選定 失敗: {_fe}", flush=True)
                             logger.error("[odds-scheduler] elite再選定失敗: %s", _fe, exc_info=True)
                 except Exception as e:
                     logger.error("[odds-scheduler] 例外発生: %s", e, exc_info=True)
