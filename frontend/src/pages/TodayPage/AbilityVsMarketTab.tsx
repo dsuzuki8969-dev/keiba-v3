@@ -1,6 +1,7 @@
 import { memo, useMemo } from "react";
 import { WAKU_BG, markCls } from "@/lib/constants";
 import { MARK_SYMBOL } from "@/lib/keibaUtils";
+import { displayMark } from "@/lib/markDisplay";
 import {
   PremiumCard,
   PremiumCardHeader,
@@ -32,7 +33,7 @@ interface RankedHorse {
 /** 印シンボル(文字列)を取得 */
 function getMarkSymbol(mark: string | undefined): string {
   if (!mark) return "";
-  return MARK_SYMBOL[mark] || mark;
+  return displayMark(MARK_SYMBOL[mark] || mark);
 }
 
 /** 乖離スコアから表示ラベルを返す */

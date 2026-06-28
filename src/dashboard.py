@@ -717,6 +717,40 @@ def _race_belongs_to_date(race_id: str, date_key: str) -> bool:
     return race_id[6:10] == mmdd
 
 
+# ── 軸馬度 / 穴馬度 ヘルパー（表示専用・ML非汚染）2026-06-28 再設計 ──
+# jiku_score = 実力40% + 堅実30% + 断トツ30%
+#   実力 = clamp((composite-20)/80*100, 0, 100)  ← 偏差値20-100を0-100に引き伸ばし
+#   堅実 = clamp(place3_prob*100, 0, 100)
+#   断トツ = (N-comp_rank)/(N-1)*100  （comp_rank=composite降順1始まり）
+# ana_do = 過小評価70% + 穴スコア30%  ← 実力を削除
+#   過小評価 = max(0, pop_rank-comp_rank)/(N-1)*100  （1人気実力1位=0、過小評価大=高）
+#             pop_rank欠損時は0
+#   穴スコア = clamp(ana_score/10*100, 0, 100)
+# 注: モジュールレベル定義（_scan_today_predictions と api_race_prediction の2箇所から呼ぶため）
+def _compute_jiku_ana(
+    composite: float,
+    place3_prob: float,
+    ana_score: float,
+    comp_rank: int,
+    pop_rank: int | None,
+    N: int,
+) -> tuple[float, float]:
+    """軸馬度・穴馬度を計算して (jiku_score, ana_do) で返す。"""
+    # 軸馬度
+    _jitsu    = max(0.0, min((composite - 20.0) / 80.0 * 100.0, 100.0))
+    _kenzen   = max(0.0, min(place3_prob * 100.0, 100.0))
+    _dantotsu = ((N - comp_rank) / (N - 1) * 100.0) if N > 1 else 100.0
+    jiku = round(max(0.0, min(0.40 * _jitsu + 0.30 * _kenzen + 0.30 * _dantotsu, 100.0)), 1)
+    # 穴馬度（実力を使わない）
+    if pop_rank is not None and N > 1:
+        _kashoka = max(0.0, (pop_rank - comp_rank)) / (N - 1) * 100.0
+    else:
+        _kashoka = 0.0  # 人気欠損または1頭立て→過小評価なし
+    _ana_sc_norm = max(0.0, min(ana_score / 10.0 * 100.0, 100.0))
+    ana = round(max(0.0, min(0.70 * _kashoka + 0.30 * _ana_sc_norm, 100.0)), 1)
+    return jiku, ana
+
+
 def _scan_today_predictions(date_str: str) -> dict:
     """指定日の個別レースHTML (YYYYMMDD_場名XR.html) をスキャンして会場別に整理"""
     date_key = date_str.replace("-", "")
@@ -1031,38 +1065,6 @@ def _scan_today_predictions(date_str: str) -> dict:
             except Exception:
                 pass
 
-    # ── 軸馬度 / 穴馬度 ヘルパー（表示専用・ML非汚染）2026-06-28 再設計 ──
-    # jiku_score = 実力40% + 堅実30% + 断トツ30%
-    #   実力 = clamp((composite-20)/80*100, 0, 100)  ← 偏差値20-100を0-100に引き伸ばし
-    #   堅実 = clamp(place3_prob*100, 0, 100)
-    #   断トツ = (N-comp_rank)/(N-1)*100  （comp_rank=composite降順1始まり）
-    # ana_do = 過小評価70% + 穴スコア30%  ← 実力を削除
-    #   過小評価 = max(0, pop_rank-comp_rank)/(N-1)*100  （1人気実力1位=0、過小評価大=高）
-    #             pop_rank欠損時は0
-    #   穴スコア = clamp(ana_score/10*100, 0, 100)
-    def _compute_jiku_ana(
-        composite: float,
-        place3_prob: float,
-        ana_score: float,
-        comp_rank: int,
-        pop_rank: int | None,
-        N: int,
-    ) -> tuple[float, float]:
-        """軸馬度・穴馬度を計算して (jiku_score, ana_do) で返す。"""
-        # 軸馬度
-        _jitsu    = max(0.0, min((composite - 20.0) / 80.0 * 100.0, 100.0))
-        _kenzen   = max(0.0, min(place3_prob * 100.0, 100.0))
-        _dantotsu = ((N - comp_rank) / (N - 1) * 100.0) if N > 1 else 100.0
-        jiku = round(max(0.0, min(0.40 * _jitsu + 0.30 * _kenzen + 0.30 * _dantotsu, 100.0)), 1)
-        # 穴馬度（実力を使わない）
-        if pop_rank is not None and N > 1:
-            _kashoka = max(0.0, (pop_rank - comp_rank)) / (N - 1) * 100.0
-        else:
-            _kashoka = 0.0  # 人気欠損または1頭立て→過小評価なし
-        _ana_sc_norm = max(0.0, min(ana_score / 10.0 * 100.0, 100.0))
-        ana = round(max(0.0, min(0.70 * _kashoka + 0.30 * _ana_sc_norm, 100.0)), 1)
-        return jiku, ana
-
     # ── 全馬に軸馬度(jiku_score) / 穴馬度(ana_do) を付与（表示専用・ML非汚染） ──
     for _jv in list(races.keys()):
         for _jr in races[_jv]:
@@ -1324,6 +1326,38 @@ def _scan_today_predictions(date_str: str) -> dict:
     # over(=jiku_rank - 人気順位)の降順（最も過大評価の馬を上位へ）でソート、上位5件
     kiken_horses.sort(key=lambda x: -(x.get("over", 0)))
     kiken_horses = kiken_horses[:5]
+
+    # ── honmei_chaku: 本命馬◎/◉の確定着順を RaceSummary に付与（レースカード枠色分け用） ──
+    # results.json は race_id キーの dict（{race_id: {"order": [...], "payouts", "source"}}）。
+    # RaceSummary の race_id で直接引き、order から本命馬の horse_no の finish を取得する。
+    # 未取得・未確定時は honmei_chaku = None（枠なし）。
+    _res_fp = os.path.join(
+        PROJECT_ROOT, "data", "results", f"{date_key}_results.json"
+    )
+    _res_data: dict = {}
+    if os.path.isfile(_res_fp):
+        try:
+            with open(_res_fp, encoding="utf-8") as _rf:
+                _res_data = json.load(_rf)
+        except (OSError, json.JSONDecodeError, Exception):
+            _res_data = {}  # 取得失敗は graceful に無視
+
+    # 各 RaceSummary の本命馬着順を付与（results は race_id キーで直接突合）
+    for _cv, _rlist in races.items():
+        for _rs in _rlist:
+            _race_id = str(_rs.get("race_id") or "")
+            _honmei_no = _rs.get("honmei_no")
+            _res_race = _res_data.get(_race_id) if _race_id else None
+            _chaku = None
+            if _res_race and _honmei_no is not None:
+                for _o in _res_race.get("order", []):
+                    try:
+                        if int(_o["horse_no"]) == int(_honmei_no):
+                            _chaku = int(_o["finish"])
+                            break
+                    except (KeyError, TypeError, ValueError):
+                        pass
+            _rs["honmei_chaku"] = _chaku  # 1〜n 着 or None
 
     return {"races": races, "order": order, "ana_horses": ana_horses, "kiken_horses": kiken_horses}
 

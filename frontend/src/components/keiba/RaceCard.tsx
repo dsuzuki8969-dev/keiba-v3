@@ -10,7 +10,7 @@ import { Clock3, Users } from "lucide-react";
 import RaceCardOddsLine from "./RaceCardOddsLine";
 import { BREAKPOINTS } from "@/lib/breakpoints";
 import { cn } from "@/lib/utils";
-// T-039: 的中バッジ用型
+// T-039: 的中バッジ用型（三連複的中バッジ削除後も型定義は残す）
 import type { RaceCardHitResult } from "@/api/hooks";
 
 /**
@@ -67,9 +67,13 @@ interface RaceData {
   honmei_no?: number;
   honmei_composite?: number;
   honmei_win_pct?: number;
+  /** 本命馬の軸馬度（0〜100）— レースカードに表示 */
+  honmei_jiku_score?: number;
   honmei_odds?: number;
   honmei_popularity?: number;
   url?: string;
+  /** 本命馬◎/◉の確定着順（1〜n 着）。未確定・取得前は null/undefined */
+  honmei_chaku?: number | null;
 }
 
 interface Props {
@@ -98,21 +102,19 @@ export const RaceCard = memo(function RaceCard({ race, onOpen, winPctRank, hitRe
 
   const markKey = race.honmei_mark || "";
 
-  // T-039 + 5/23 マスター指摘: 三連複の 3 状態判定
-  // true=的中(○) / false=不的中(×) / "skipped"=未購入(ー) / null=結果未取得(非表示)
-  const sanrenpukuHit = hitResult?.sanrenpuku_hit;
-  // 6/21 マスター指示: カード枠は「購入レース=黒 / 的中=赤」の2状態のみ。
-  //   的中 (三連複○ のみ・単勝は対象外)  → 太い赤枠（最優先）
-  //   購入 (purchased・結果非依存)        → 太い黒枠
-  //   未購入 (見送り)                     → 枠なし（デフォルト）
-  const isHit = sanrenpukuHit === true;
-  const isPurchased = hitResult?.purchased === true;
-  let frameClass = "";
-  if (isHit) {
-    frameClass = "border-2 border-red-600 ring-1 ring-red-600/40";
-  } else if (isPurchased) {
-    frameClass = "border-2 border-zinc-900 ring-1 ring-zinc-900/20 dark:border-zinc-100 dark:ring-zinc-100/20";
-  }
+  // hitResult は winPctRank（gold-gradient）以外で現在未使用だが、
+  // Props 型の互換性維持のため参照のみ保持（unused lint エラー回避）
+  void hitResult;
+
+  // honmei_chaku による枠色分け: 1着=緑枠, 2着=赤枠, 3着=青枠, それ以外=枠なし
+  const chakuBorderCls = (() => {
+    const c = race.honmei_chaku;
+    if (c == null) return "";
+    if (c === 1) return "border-2 border-emerald-600 ring-1 ring-emerald-600/40";
+    if (c === 2) return "border-2 border-red-600 ring-1 ring-red-600/40";
+    if (c === 3) return "border-2 border-blue-600 ring-1 ring-blue-600/40";
+    return "";
+  })();
 
   return (
     <PremiumCard
@@ -120,10 +122,10 @@ export const RaceCard = memo(function RaceCard({ race, onOpen, winPctRank, hitRe
       padding="md"
       interactive
       onClick={handleClick}
-      className={cn("group space-y-2.5", frameClass)}
+      className={cn("group space-y-2.5", chakuBorderCls)}
       as="button"
     >
-      {/* 上段: レース番号 + グレード + 自信度バッジ + T-039 的中バッジ + 発走時刻（右寄せ） */}
+      {/* 上段: レース番号 + グレード + 自信度バッジ + 発走時刻（右寄せ） */}
       <div className="flex items-center gap-2">
         <span
           className={[
@@ -135,31 +137,13 @@ export const RaceCard = memo(function RaceCard({ race, onOpen, winPctRank, hitRe
           <span className="text-base font-bold ml-0.5">R</span>
         </span>
         {race.grade && <GradeBadge grade={race.grade} />}
-        {/* 単勝/三連複 独立 confidence バッジ */}
+        {/* 単勝自信度バッジ（「単」ラベル付き） */}
         {race.tansho_confidence && (
           <ConfidenceBadge rank={(race.tansho_confidence || "").replace(/⁺/g, "+")} label="単" className="ml-1" />
         )}
-        {race.sanrenpuku_confidence && (
-          <ConfidenceBadge rank={(race.sanrenpuku_confidence || "").replace(/⁺/g, "+")} label="三" />
-        )}
-        {/* fallback: 新confidence未設定時は従来の overall を表示 */}
-        {!race.tansho_confidence && !race.sanrenpuku_confidence && (
+        {/* fallback: tansho_confidence 未設定時は overall を表示 */}
+        {!race.tansho_confidence && (
           <ConfidenceBadge rank={conf} className="ml-1" />
-        )}
-        {/* 三連複的中バッジ: ○=的中 / ×=不的中 / ー=未購入 / null=非表示
-            6/21 マスター指示で単勝は運用対象外 → 単勝バッジは廃止し三連複のみ表示 */}
-        {sanrenpukuHit !== null && sanrenpukuHit !== undefined && (
-          <span
-            className={cn(
-              "text-xs font-bold leading-none",
-              sanrenpukuHit === true ? "text-red-500" :
-              sanrenpukuHit === "skipped" ? "text-zinc-300 dark:text-zinc-600" :
-              "text-zinc-400 dark:text-zinc-500"
-            )}
-            aria-label={sanrenpukuHit === true ? "三連複 的中" : sanrenpukuHit === "skipped" ? "三連複 未購入" : "三連複 不的中"}
-          >
-            三連複{sanrenpukuHit === true ? "○" : sanrenpukuHit === "skipped" ? "ー" : "×"}
-          </span>
         )}
         {race.post_time && (
           <span className="ml-auto inline-flex items-center gap-1 text-xs font-medium text-muted-foreground tnum">
@@ -188,7 +172,7 @@ export const RaceCard = memo(function RaceCard({ race, onOpen, winPctRank, hitRe
         )}
       </div>
 
-      {/* 本命行（Accent） — T-034 本実装: 馬名 + 勝率 + オッズ（人気）を 1 行で表示 */}
+      {/* 本命行（Accent） — 馬名 + 軸馬度 + オッズ（人気）を 1 行で表示 */}
       {race.honmei_name && (
         <div className="pt-2 border-t border-border/60">
           <div className="flex items-center gap-2">
@@ -197,7 +181,7 @@ export const RaceCard = memo(function RaceCard({ race, onOpen, winPctRank, hitRe
             <RaceCardOddsLine
               horseName={race.honmei_name}
               mark={race.honmei_mark}
-              winPct={race.honmei_win_pct}
+              jikuScore={race.honmei_jiku_score}
               odds={race.honmei_odds}
               popularity={race.honmei_popularity}
               isMobile={isMobile}

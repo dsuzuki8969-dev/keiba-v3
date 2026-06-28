@@ -8,6 +8,7 @@ import { PremiumCard, PremiumCardHeader, PremiumCardTitle, PremiumCardAccent } f
 // 印キー → 表示シンボル
 // MARK_SYMBOL は Fast Refresh 互換のため @/lib/keibaUtils に移動。
 import { MARK_SYMBOL } from "@/lib/keibaUtils";
+import { displayMark } from "@/lib/markDisplay";
 
 // グレード文字列 → 推定偏差値
 function gradeToApproxDev(grade: string | undefined): number {
@@ -188,7 +189,7 @@ export const AbilityTable = memo(function AbilityTable({ horses, isBanei }: Prop
             const displayOdds = realOdds ?? predOdds;
             const pop = h.popularity;
 
-            const markSym = h.mark ? MARK_SYMBOL[h.mark] || h.mark : "";
+            const markSym = h.mark ? displayMark(MARK_SYMBOL[h.mark] || h.mark) : "";
             const mCls = markSym ? markCls(markSym) : "";
             return (
               <tr key={h.horse_no} className="border-b border-border/50 hover:bg-brand-gold/5 transition-colors">

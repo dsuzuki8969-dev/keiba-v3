@@ -15,6 +15,7 @@ import type { RunEntry } from "./HorseHistoryChart";
 import { rankToAxisMark } from "@/lib/horseSummary";
 import { parseStableComment } from "@/lib/parseStableComment";
 import { useAbilityDisplayMode } from "@/hooks/useAbilityDisplayMode";
+import { displayMark } from "@/lib/markDisplay";
 
 interface Props {
   horses: HorseData[];
@@ -408,7 +409,7 @@ export const HorseCardMobile = memo(function HorseCardMobile({ horses, isBanei, 
         const isOpen = openNo === h.horse_no;
         // h.mark には "tekipan" 等のキー or 既に "◎" 等のシンボルが入っている。
         // PC 版と同じ fallback 順序で MARK_SYMBOL → 元値 → "－" の順で解決。
-        const markSym = MARK_SYMBOL[h.mark || ""] || h.mark || "－";
+        const markSym = displayMark(MARK_SYMBOL[h.mark || ""] || h.mark) || "－";
         const rowAccent = markRowAccent(h.mark);
         const isTekipan = h.mark === "tekipan";
 
@@ -620,65 +621,73 @@ export const HorseCardMobile = memo(function HorseCardMobile({ horses, isBanei, 
                   <span className="text-muted-foreground tabular-nums shrink-0">{corners}</span>
                 )}
 
-                {/* 三連率 */}
-                <span className="flex items-baseline gap-0.5 shrink-0">
-                  <span className="text-muted-foreground">勝</span>
-                  <span className={`tabular-nums font-semibold ${rankCls(wpRank)}`}>{wp.toFixed(1)}%</span>
+                {/* 三連率 + 軸馬度/穴馬度/EV を縦2段で表示（上段: ラベル+確率 / 下段: 対応値） */}
+                {/* 勝率 → 下段に軸馬度 */}
+                <span className="flex flex-col items-start shrink-0 gap-0">
+                  <span className="flex items-baseline gap-0.5">
+                    <span className="text-muted-foreground">勝</span>
+                    <span className={`tabular-nums font-semibold ${rankCls(wpRank)}`}>{wp.toFixed(1)}%</span>
+                  </span>
+                  <span className="text-[10px] text-muted-foreground tabular-nums">
+                    軸 <span className="font-semibold text-foreground">
+                      {h.jiku_score != null ? h.jiku_score.toFixed(1) : "—"}
+                    </span>
+                  </span>
                 </span>
-                <span className="flex items-baseline gap-0.5 shrink-0">
-                  <span className="text-muted-foreground">連</span>
-                  <span className={`tabular-nums font-semibold ${rankCls(p2Rank)}`}>{p2.toFixed(1)}%</span>
+                {/* 連対率 → 下段に穴馬度 */}
+                <span className="flex flex-col items-start shrink-0 gap-0">
+                  <span className="flex items-baseline gap-0.5">
+                    <span className="text-muted-foreground">連</span>
+                    <span className={`tabular-nums font-semibold ${rankCls(p2Rank)}`}>{p2.toFixed(1)}%</span>
+                  </span>
+                  <span className="text-[10px] text-muted-foreground tabular-nums">
+                    穴 <span className="font-semibold text-foreground">
+                      {h.ana_do != null ? h.ana_do.toFixed(1) : "—"}
+                    </span>
+                  </span>
                 </span>
-                <span className="flex items-baseline gap-0.5 shrink-0">
-                  <span className="text-muted-foreground">複</span>
-                  <span className={`tabular-nums font-semibold ${rankCls(p3Rank)}`}>{p3.toFixed(1)}%</span>
+                {/* 複勝率 → 下段に EV */}
+                <span className="flex flex-col items-start shrink-0 gap-0">
+                  <span className="flex items-baseline gap-0.5">
+                    <span className="text-muted-foreground">複</span>
+                    <span className={`tabular-nums font-semibold ${rankCls(p3Rank)}`}>{p3.toFixed(1)}%</span>
+                  </span>
+                  <span className="text-[10px] text-muted-foreground tabular-nums">
+                    EV <span className={`font-semibold ${h.ev != null ? (
+                      h.ev >= 1.2 ? "text-emerald-600" :
+                      h.ev >= 1.0 ? "text-blue-600" :
+                      "text-muted-foreground"
+                    ) : "text-muted-foreground"}`}>
+                      {h.ev != null ? `${((h.ev - 1) * 100).toFixed(1)}%` : "—"}
+                    </span>
+                  </span>
                 </span>
 
-                {/* EV: (ev-1)*100 で%表示 */}
-                {h.ev != null && (
-                  <span className={`tabular-nums shrink-0 ${
-                    h.ev >= 1.2 ? "text-emerald-600 font-bold" :
-                    h.ev >= 1.0 ? "text-blue-600 font-bold" :
-                    "text-muted-foreground"
-                  }`}>
-                    EV {h.ev >= 1 ? "+" : ""}{((h.ev - 1) * 100).toFixed(0)}%
-                  </span>
-                )}
-                {/* 軸馬度・穴馬度 */}
-                {(h.jiku_score != null || h.ana_do != null) && (
-                  <span className="flex items-baseline gap-0.5 shrink-0 text-muted-foreground">
-                    <span>軸</span>
-                    <span className="tabular-nums font-semibold text-foreground">{h.jiku_score != null ? h.jiku_score.toFixed(0) : "—"}</span>
-                    <span className="mx-0.5">/</span>
-                    <span>穴</span>
-                    <span className="tabular-nums font-semibold text-foreground">{h.ana_do != null ? h.ana_do.toFixed(0) : "—"}</span>
-                  </span>
-                )}
-
-                {/* 道悪複勝率（baba_record がある場合のみ） */}
-                {h.baba_record && (
-                  <span className="flex items-center gap-0.5 shrink-0">
-                    {h.baba_record.bad_p3 != null ? (
-                      <>
-                        <span className="text-muted-foreground">道悪</span>
-                        <span className={`tabular-nums font-semibold ${
-                          h.baba_record.bad_p3 - (h.baba_record.good_p3 ?? h.baba_record.bad_p3) >= 10
-                            ? "text-emerald-600 dark:text-emerald-400"
-                            : h.baba_record.good_p3 != null && h.baba_record.bad_p3 - h.baba_record.good_p3 <= -10
-                              ? "text-muted-foreground"
-                              : "text-foreground"
-                        }`}>
-                          {h.baba_record.bad_p3.toFixed(0)}%
-                        </span>
-                        <span className="text-muted-foreground">({h.baba_record.bad_n}走)</span>
-                        {h.baba_record.good_p3 != null && h.baba_record.bad_p3 - h.baba_record.good_p3 >= 10 && (
-                          <span className="px-0.5 rounded bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-400 text-[10px] font-bold">
-                            道悪◎
-                          </span>
-                        )}
-                      </>
-                    ) : (
-                      <span className="text-muted-foreground">道悪 —</span>
+                {/* 道悪着度数（baba_record.bad_n > 0 のみ表示） */}
+                {h.baba_record && h.baba_record.bad_n > 0 && (
+                  <span className="flex items-center gap-0.5 shrink-0 flex-wrap">
+                    <span className="text-muted-foreground">道悪</span>
+                    {/* 着度数: 1-2-3-着外（XX走：複勝率XX.X%） */}
+                    <span className={`tabular-nums font-semibold ${
+                      h.baba_record.bad_p3 != null && h.baba_record.good_p3 != null && h.baba_record.bad_p3 - h.baba_record.good_p3 >= 10
+                        ? "text-emerald-600 dark:text-emerald-400"
+                        : h.baba_record.bad_p3 != null && h.baba_record.good_p3 != null && h.baba_record.bad_p3 - h.baba_record.good_p3 <= -10
+                          ? "text-muted-foreground"
+                          : "text-foreground"
+                    }`}>
+                      {h.baba_record.bad_1 ?? 0}-{h.baba_record.bad_2 ?? 0}-{h.baba_record.bad_3 ?? 0}-{h.baba_record.bad_other ?? 0}
+                    </span>
+                    <span className="text-muted-foreground">
+                      ({h.baba_record.bad_n}走
+                      {h.baba_record.bad_p3 != null
+                        ? `：複${h.baba_record.bad_p3.toFixed(1)}%`
+                        : ""}
+                      )
+                    </span>
+                    {h.baba_record.bad_p3 != null && h.baba_record.good_p3 != null && h.baba_record.bad_p3 - h.baba_record.good_p3 >= 10 && (
+                      <span className="px-0.5 rounded bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-400 text-[10px] font-bold">
+                        道悪◎
+                      </span>
                     )}
                   </span>
                 )}

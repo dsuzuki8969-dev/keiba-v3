@@ -6,27 +6,30 @@
 
 ---
 
-## 🟡 見える化を軸馬度/穴馬度の2軸に全面再設計（本番OFF・未push）・残: 穴馬度2位差/push
+## 🟡 見える化2軸 仕上げ（印6種化/馬柱軸穴EV/道悪着度数）— 残: 検証→commit / 馬柱バランス / 自信度
 
-> 詳細: `memory/handoff_2026-06-28_v5.md`。「収益→実力の見える化」を軸馬度/穴馬度2軸に統一。**4 commit(c86be32/140ea03/12251dc/1266c4a)・実画面検証済・未push**。dashboard PID14452稼働。
+> 詳細: `memory/handoff_2026-06-28_v5.md` + 前セッション続き。「収益→実力の見える化」を軸馬度/穴馬度2軸に統一。土台4 commit(c86be32/140ea03/12251dc/1266c4a)は**push済(HEAD=origin=5eb2c72)**。その後の仕上げ A〜H は**未commit**。dashboard PID23968稼働。
 
-**確定設計**:
-- 軸馬度=実力(composite)40%+堅実(複勝率)30%+断トツ(レース内順位)30%。0-100。本命信頼度。
-- 穴馬度=過小評価(人気-実力順位)70%+穴スコア30%。実力削除(1人気≈0)。0-100。
-- 絶対軸=軸馬度TOP5 / 穴馬=穴馬度 / 危険=人気上位かつ軸馬度低 / 拮抗=jiku_gap3<8(軸馬度上位3頭差・複勝-21pt) / 自信度=jiku_gap(SS≥22/S≥16/A≥11/B≥6/C≥3/D<3)
-- LIVE STATS=6カード(勝/連/複+軸馬成績/単勝回収率/収支=◎単勝物差し)
-- 表示率較正=偏差値アンカー+gamma2.0+連続補間(`COMPOSITE_CALIBRATION_ENABLED=False`・本番OFF・フラグ隔離)
+**確定設計（不変）**:
+- 軸馬度 jiku_score = 実力(composite)40%+堅実(複勝率)30%+断トツ(レース内順位)30%。0-100。本命信頼度。
+- 穴馬度 ana_do = 過小評価(人気-実力順位)70%+穴スコア30%。実力削除(1人気≈0)。0-100。
+- 絶対軸=軸馬度TOP5 / 穴馬=穴馬度 / 危険=人気上位かつ軸馬度低 / 拮抗=jiku_gap3<8 / 自信度=jiku_gap(SS≥22/S≥16/A≥11/B≥6/C≥3/D<3)
+- jiku_score/ana_do/honmei_chaku/baba_record着度数 は全て**表示専用**(ML/印/買い目 非汚染)
 
-**重要な学び**: 重み最適化は循環参照(予測指数で結果予測=同義反復)で不可→意味配分 / `overall_confidence`は買い目使用で変更禁止(表示自信度は別指標) / playwrightキャッシュ罠(`?cb=`回避・見た目だけで判断せずAPI確認) / dashboard再起動は`:5051 PID`をGet-NetTCPConnectionで動的取得
+**前セッション成果（未commit・A〜H）**: A印6種化(◉◎○▲△★穴・MarkBadge+markDisplay.ts新規) / B三連複表示削除 / Cカード勝率→軸馬度 / D馬柱バグ修正(`_compute_jiku_ana`モジュール化・NameError解消) / E馬柱に軸/穴/EV配置 / F並び順(軸馬度・穴馬度降順) / Gカード枠=軸馬結果色 / H道悪着度数
 
-**残課題**:
-| 優先 | 項目 | 内容 |
-|---|---|---|
-| P0 | 穴馬度2位差の見せ方 | 実装済(HomePage 424-426・条件anaDoGap>0)だが穴印馬は穴馬度1位でない→負も表示(相対位置)か絶対値か master確認待ち |
-| P0 | push判断 | 4 commit(c86be32/140ea03/12251dc/1266c4a) 未push |
-| P1 | 実画面目視 | 自信度バッジ/絶対軸の軸馬度/馬柱(軸/穴/EV%)を当日データで(本セッションはホーム4カードまで確認) |
-| P1 | 表示率較正の本番ON | 偏差値テーブルをWF版(リーク除去)に作り直してから`COMPOSITE_CALIBRATION_ENABLED=True` |
-| 参考 | 分析scripts | calibration_composite / analyze_kikko_threshold,jiku,jiku3 / analyze_marks_weight / preview_calibration(_v2) |
+**重要な学び（永続）**: 重み最適化は循環参照(予測指数で結果予測=同義反復)で不可→意味配分 / `overall_confidence`は買い目使用で変更禁止(表示自信度は別指標) / playwrightキャッシュ罠(`?cb=`回避・見た目だけで判断せずAPI確認) / dashboard再起動は`:5051 PID`をGet-NetTCPConnectionで動的取得 / frontend/distは.gitignore対象(commitはソースのみ)
+
+**残タスク（ロードマップ）**:
+| 優先 | ID | 項目 | 状態 |
+|---|---|---|---|
+| P0 | T-1 | 前セッション成果A〜Hの実画面検証→commit | 検証中 |
+| P0 | T-2 | 🚨馬柱・個別馬カードのバランス改善(本丸) | 未着手・要設計(master対話) |
+| P1 | T-3 | 自信度SS/S/A/B/C/Dの打ち方 | master議論希望 |
+| P1 | T-4 | 印断層タブ確率行(軸穴EV)の実画面検証 | 未目視 |
+| P2 | T-5 | 穴馬度2位差の見せ方 | master確認待ち(負も表示か絶対値か) |
+| P2 | T-6 | ゴミ掃除(home_*.md×5削除・分析script×7のcommit判断) | — |
+| P3 | T-7 | 表示率較正の本番ON(要WF版テーブル) | 長期 |
 
 ---
 

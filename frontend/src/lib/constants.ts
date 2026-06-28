@@ -32,8 +32,8 @@ export const MARKS = {
   taikou:   { symbol: "○", label: "対抗" },
   tannuke:  { symbol: "▲", label: "単穴" },
   rendashi: { symbol: "△", label: "連下" },
-  rendashi2:{ symbol: "★", label: "連下2" },
-  oana:     { symbol: "☆", label: "連下3" },
+  rendashi2:{ symbol: "★", label: "注目" },
+  oana:     { symbol: "穴", label: "穴" },
   // v5: kiken(×) は廃止
   // ホーム穴馬カード専用印 (2026-06-22 マスター指示: 無印馬のみを「穴」で表示)
   ana_home: { symbol: "穴", label: "穴" },

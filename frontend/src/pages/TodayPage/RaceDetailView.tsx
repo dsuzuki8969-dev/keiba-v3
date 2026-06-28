@@ -561,6 +561,11 @@ export interface HorseData {
     bad_n: number;           // 道悪走数
     good_p3: number | null;  // 良馬場複勝率 0-100
     good_n: number;          // 良馬場走数
+    // 道悪レースでの着度数（タスク5 2026-06-28 追加）
+    bad_1?: number;          // 道悪1着回数
+    bad_2?: number;          // 道悪2着回数
+    bad_3?: number;          // 道悪3着回数
+    bad_other?: number;      // 道悪着外回数
   };
   /** 前日想定オッズ（発走前日時点のオッズ推定値）。未取得時は null/undefined */
   assumed_odds?: number | null;

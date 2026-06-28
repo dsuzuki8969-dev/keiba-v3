@@ -116,6 +116,10 @@ def _build_baba_stats(con: sqlite3.Connection, horse_ids: list[str], cutoff_date
         SELECT
             horse_id,
             condition,
+            SUM(CASE WHEN finish_pos = 1 THEN 1 ELSE 0 END)  AS cnt_1,
+            SUM(CASE WHEN finish_pos = 2 THEN 1 ELSE 0 END)  AS cnt_2,
+            SUM(CASE WHEN finish_pos = 3 THEN 1 ELSE 0 END)  AS cnt_3,
+            SUM(CASE WHEN finish_pos > 3 THEN 1 ELSE 0 END)  AS cnt_other,
             SUM(CASE WHEN finish_pos <= 3 THEN 1 ELSE 0 END) AS p3_cnt,
             COUNT(*) AS n
         FROM race_log
@@ -129,20 +133,29 @@ def _build_baba_stats(con: sqlite3.Connection, horse_ids: list[str], cutoff_date
     params = [*horse_ids, cutoff_date]
     rows = con.execute(sql, params).fetchall()
 
-    # horse_id → {bad_p3_cnt, bad_n, good_p3_cnt, good_n}
+    # horse_id → {bad_p3_cnt, bad_n, good_p3_cnt, good_n, bad_1, bad_2, bad_3, bad_other}
     result: Dict[str, dict] = {}
-    for horse_id, condition, p3_cnt, n in rows:
+    for horse_id, condition, cnt_1, cnt_2, cnt_3, cnt_other, p3_cnt, n in rows:
         if not horse_id:
             continue
         if horse_id not in result:
-            result[horse_id] = {"bad_p3_cnt": 0, "bad_n": 0, "good_p3_cnt": 0, "good_n": 0}
+            result[horse_id] = {
+                "bad_p3_cnt": 0, "bad_n": 0,
+                "good_p3_cnt": 0, "good_n": 0,
+                # 道悪着度数（1着/2着/3着/着外）
+                "bad_1": 0, "bad_2": 0, "bad_3": 0, "bad_other": 0,
+            }
         stats = result[horse_id]
         if condition in _BAD_CONDITIONS:
             stats["bad_p3_cnt"] += p3_cnt
-            stats["bad_n"] += n
+            stats["bad_n"]      += n
+            stats["bad_1"]      += cnt_1
+            stats["bad_2"]      += cnt_2
+            stats["bad_3"]      += cnt_3
+            stats["bad_other"]  += cnt_other
         elif condition in _GOOD_CONDITIONS:
             stats["good_p3_cnt"] += p3_cnt
-            stats["good_n"] += n
+            stats["good_n"]      += n
         # condition が空文字や未知の場合は無視
 
     return result
@@ -155,26 +168,36 @@ def _compute_baba_record(stats: Optional[dict]) -> dict:
     Returns
     -------
     dict
-        bad_p3: float(0-100) or None, bad_n: int, good_p3: float(0-100) or None, good_n: int
+        bad_p3: float(0-100) or None, bad_n: int, good_p3: float(0-100) or None, good_n: int,
+        bad_1: int, bad_2: int, bad_3: int, bad_other: int  ← 道悪着度数（新規追加）
         n < _MIN_N の場合は p3 = None (データ不足を明示)
     """
     if not stats:
-        return {"bad_p3": None, "bad_n": 0, "good_p3": None, "good_n": 0}
+        return {
+            "bad_p3": None, "bad_n": 0,
+            "good_p3": None, "good_n": 0,
+            "bad_1": 0, "bad_2": 0, "bad_3": 0, "bad_other": 0,
+        }
 
-    bad_n = stats["bad_n"]
-    bad_p3_cnt = stats["bad_p3_cnt"]
-    good_n = stats["good_n"]
-    good_p3_cnt = stats["good_p3_cnt"]
+    bad_n        = stats["bad_n"]
+    bad_p3_cnt   = stats["bad_p3_cnt"]
+    good_n       = stats["good_n"]
+    good_p3_cnt  = stats["good_p3_cnt"]
 
     # n < _MIN_N の場合はデータ不足で None (bad/good 同一基準)
-    bad_p3 = round(bad_p3_cnt * 100 / bad_n, 1) if bad_n >= _MIN_N else None
+    bad_p3  = round(bad_p3_cnt  * 100 / bad_n,  1) if bad_n  >= _MIN_N else None
     good_p3 = round(good_p3_cnt * 100 / good_n, 1) if good_n >= _MIN_N else None
 
     return {
-        "bad_p3": bad_p3,
-        "bad_n": bad_n,
-        "good_p3": good_p3,
-        "good_n": good_n,
+        "bad_p3":   bad_p3,
+        "bad_n":    bad_n,
+        "good_p3":  good_p3,
+        "good_n":   good_n,
+        # 道悪レースでの着度数（1着/2着/3着/着外）
+        "bad_1":     stats.get("bad_1",     0),
+        "bad_2":     stats.get("bad_2",     0),
+        "bad_3":     stats.get("bad_3",     0),
+        "bad_other": stats.get("bad_other", 0),
     }
 
 

@@ -36,8 +36,10 @@ export interface RaceCardOddsLineProps {
   horseName: string;
   /** 本命印（◎ / ◉ 等）— 穴判定に使用 */
   mark?: string;
-  /** 勝率（0〜100, %表示前の値。例: 31.6） */
+  /** 勝率（0〜100, %表示前の値。例: 31.6）— 穴判定に使用するが表示には使わない */
   winPct?: number;
+  /** 軸馬度（0〜100）— レースカードに表示する */
+  jikuScore?: number;
   /** 単勝オッズ（取得済みの場合のみ。0 / null の場合は非表示） */
   odds?: number | null;
   /** 人気順位（取得済みの場合のみ） */
@@ -81,7 +83,7 @@ function hasValidOdds(odds?: number | null): odds is number {
 export const RaceCardOddsLinePC = memo(function RaceCardOddsLinePC({
   horseName,
   mark,
-  winPct,
+  jikuScore,
   odds,
   popularity,
   className = "",
@@ -103,12 +105,10 @@ export const RaceCardOddsLinePC = memo(function RaceCardOddsLinePC({
         {horseName}
       </span>
 
-      {/* 勝率
-          [MEDIUM-1 修正] winPct > 0 の判定だと予測値 0% の馬が非表示になる。
-          undefined / null / NaN のみを除外し、0 は正規値として表示する。 */}
-      {winPct !== undefined && winPct !== null && !isNaN(winPct) && (
+      {/* 軸馬度（0 は正規値として表示・null/undefined/NaN は非表示） */}
+      {jikuScore !== undefined && jikuScore !== null && !isNaN(jikuScore) && (
         <span className="tabular-nums font-semibold text-foreground whitespace-nowrap">
-          勝{winPct.toFixed(1)}%
+          軸{jikuScore.toFixed(1)}
         </span>
       )}
 
@@ -136,7 +136,7 @@ RaceCardOddsLinePC.displayName = "RaceCardOddsLinePC";
 export const RaceCardOddsLineMobile = memo(function RaceCardOddsLineMobile({
   horseName,
   mark,
-  winPct,
+  jikuScore,
   odds,
   popularity,
   className = "",
@@ -158,12 +158,10 @@ export const RaceCardOddsLineMobile = memo(function RaceCardOddsLineMobile({
         {horseName}
       </span>
 
-      {/* 勝率
-          [MEDIUM-1 修正] winPct > 0 の判定だと予測値 0% の馬が非表示になる。
-          undefined / null / NaN のみを除外し、0 は正規値として表示する。 */}
-      {winPct !== undefined && winPct !== null && !isNaN(winPct) && (
+      {/* 軸馬度（0 は正規値として表示・null/undefined/NaN は非表示） */}
+      {jikuScore !== undefined && jikuScore !== null && !isNaN(jikuScore) && (
         <span className="tabular-nums font-semibold text-foreground whitespace-nowrap">
-          勝{winPct.toFixed(1)}%
+          軸{jikuScore.toFixed(1)}
         </span>
       )}
 

@@ -4,6 +4,7 @@ import type { HorseData, RaceDetail } from "./RaceDetailView";
 import type { WinProbEntry } from "@/components/charts/WinProbBar";
 import { PremiumCard, PremiumCardHeader, PremiumCardTitle, PremiumCardAccent } from "@/components/ui/premium/PremiumCard";
 import { ChevronDown, ChevronUp } from "lucide-react";
+import { displayMark } from "@/lib/markDisplay";
 
 // v6.1.22: recharts WinProbBar を遅延ロードして RaceDetailView 初回バンドル
 // から分離。オッズタブを開くまで recharts はロードされない。
@@ -282,6 +283,7 @@ export function OddsPanel({ horses: rawHorses, race }: Props) {
           <tbody>
             {sorted.map((h) => {
               const mark = h.mark || "";
+              const markSym = displayMark(MARK_KEY_TO_SYM[mark] || mark);
               const realOdds = h.odds != null && h.odds > 0 ? h.odds : null;
               const predOdds = h.predicted_tansho_odds;
               const displayOdds = realOdds ?? predOdds;
@@ -297,7 +299,7 @@ export function OddsPanel({ horses: rawHorses, race }: Props) {
                   </td>
                   <td className="py-1.5 px-1 font-bold text-xs whitespace-nowrap">{h.horse_name}</td>
                   <td className="py-1.5 px-1 text-center">
-                    {mark && <span className={`${MARK_COLORS[mark] || ""} font-bold text-sm leading-none`}>{mark}</span>}
+                    {markSym && markSym !== "－" && <span className={`${MARK_COLORS[mark] || ""} font-bold text-sm leading-none`}>{markSym}</span>}
                   </td>
                   <td className="py-1.5 px-1 text-right tabular-nums font-semibold">
                     {displayOdds != null ? displayOdds.toFixed(1) : "—"}

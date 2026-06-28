@@ -2,6 +2,7 @@ import { PastRunsTable } from "./PastRunsTable";
 import { WAKU_BG, markCls } from "@/lib/constants";
 import { PremiumCard } from "@/components/ui/premium/PremiumCard";
 import type { HorseData, PastRunData } from "./RaceDetailView";
+import { displayMark } from "@/lib/markDisplay";
 
 // ============================================================
 // 前三走成績パネル — 全馬の前三走を一覧表示
@@ -32,7 +33,7 @@ export function PastRunsPanel({ horses }: Props) {
     <div className="space-y-5">
       {sorted.map((h) => {
         const runs = ((h as Record<string, unknown>).past_3_runs as PastRunData[]) || [];
-        const markSym = h.mark ? MARK_SYMBOL[h.mark] || h.mark : "";
+        const markSym = h.mark ? displayMark(MARK_SYMBOL[h.mark] || h.mark) : "";
         const mCls = markSym ? markCls(markSym) : "";
         const gate = h.gate_no || 0;
         // 総合指数と順位（同一値は同順位、値が無い馬は順位計算から除外）

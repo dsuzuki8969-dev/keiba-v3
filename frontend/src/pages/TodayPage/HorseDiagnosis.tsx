@@ -3,6 +3,7 @@ import { PremiumCard } from "@/components/ui/premium/PremiumCard";
 import { circledNum, devGrade, pastRunResultUrl } from "@/lib/constants";
 import { paraphraseTrainingComment } from "@/lib/paraphrase";
 import { parseStableComment } from "@/lib/parseStableComment";
+import { displayMark } from "@/lib/markDisplay";
 import type { HorseData, PastRunData, TrainingRecord } from "./RaceDetailView";
 
 interface Props {
@@ -589,6 +590,7 @@ export function HorseDiagnosis({ horses }: Props) {
           const isOpen = openSet.has(no);
           const mark = h.mark || "";
           const markColor = MARK_COLORS[mark] || "";
+          const markSym = displayMark(mark);
 
           // オッズ表示
           const realOdds = h.odds != null && h.odds > 0;
@@ -607,8 +609,8 @@ export function HorseDiagnosis({ horses }: Props) {
                   {h.gate_no as number}
                 </span>
                 <span className="text-sm font-bold w-5 text-center shrink-0">{circledNum(no)}</span>
-                {mark && (
-                  <span className={`${markColor} font-bold text-lg min-w-[18px] text-center leading-none`}>{mark}</span>
+                {markSym && markSym !== "－" && (
+                  <span className={`${markColor} font-bold text-lg min-w-[18px] text-center leading-none`}>{markSym}</span>
                 )}
                 <span className="font-bold text-sm truncate max-w-[7em]">{h.horse_name}</span>
                 <span className="text-[11px] text-muted-foreground shrink-0">{h.sex}{h.age}</span>

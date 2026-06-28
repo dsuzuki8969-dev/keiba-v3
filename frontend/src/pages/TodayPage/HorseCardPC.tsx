@@ -24,6 +24,7 @@ import { rankToAxisMark } from "@/lib/horseSummary";
 import { parseStableComment } from "@/lib/parseStableComment";
 import { ResponsiveAxes } from "@/components/keiba/ResponsiveAxes";
 import { useAbilityDisplayMode } from "@/hooks/useAbilityDisplayMode";
+import { displayMark } from "@/lib/markDisplay";
 
 // ---------- 定数 ----------
 
@@ -336,7 +337,7 @@ const HorseCard = memo(function HorseCard({
   const no = h.horse_no;
   const gate = h.gate_no || 1;
   const mark = h.mark || "－";
-  const markSym = MARK_SYMBOL[mark] || mark;
+  const markSym = displayMark(MARK_SYMBOL[mark] || mark);
   const rsShort = STYLE_SHORT[h.running_style || ""] || h.running_style || "—";
   const corners = estimatedCorners(h);
   // 出走取消判定 (pred.json `is_scratched` フラグ優先 + 旧フォールバック)
@@ -486,30 +487,31 @@ const HorseCard = memo(function HorseCard({
               </div>
             )}
 
-            {/* 行E: 道悪複勝率（baba_record がある場合のみ） */}
-            {h.baba_record && (
+            {/* 行E: 道悪着度数（baba_record.bad_n > 0 のみ表示） */}
+            {h.baba_record && h.baba_record.bad_n > 0 && (
               <div className="flex items-center gap-1.5 text-[11px] mt-0.5">
-                {h.baba_record.bad_p3 != null ? (
-                  <>
-                    <span className="text-muted-foreground">道悪</span>
-                    <span className={`tabular-nums font-semibold ${
-                      h.baba_record.bad_p3 - (h.baba_record.good_p3 ?? h.baba_record.bad_p3) >= 10
-                        ? "text-emerald-600 dark:text-emerald-400"
-                        : h.baba_record.good_p3 != null && h.baba_record.bad_p3 - h.baba_record.good_p3 <= -10
-                          ? "text-muted-foreground"
-                          : "text-foreground"
-                    }`}>
-                      {h.baba_record.bad_p3.toFixed(0)}%
-                    </span>
-                    <span className="text-muted-foreground">({h.baba_record.bad_n}走)</span>
-                    {h.baba_record.good_p3 != null && h.baba_record.bad_p3 - h.baba_record.good_p3 >= 10 && (
-                      <span className="inline-flex items-center px-1 py-0 rounded bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-400 text-[10px] font-bold border border-emerald-300 dark:border-emerald-700">
-                        道悪◎
-                      </span>
-                    )}
-                  </>
-                ) : (
-                  <span className="text-muted-foreground">道悪 —</span>
+                <span className="text-muted-foreground">道悪</span>
+                {/* 着度数: 1-2-3-着外（XX走：複勝率XX.X%） */}
+                <span className={`tabular-nums font-semibold ${
+                  h.baba_record.bad_p3 != null && h.baba_record.good_p3 != null && h.baba_record.bad_p3 - h.baba_record.good_p3 >= 10
+                    ? "text-emerald-600 dark:text-emerald-400"
+                    : h.baba_record.bad_p3 != null && h.baba_record.good_p3 != null && h.baba_record.bad_p3 - h.baba_record.good_p3 <= -10
+                      ? "text-muted-foreground"
+                      : "text-foreground"
+                }`}>
+                  {h.baba_record.bad_1 ?? 0}-{h.baba_record.bad_2 ?? 0}-{h.baba_record.bad_3 ?? 0}-{h.baba_record.bad_other ?? 0}
+                </span>
+                <span className="text-muted-foreground">
+                  ({h.baba_record.bad_n}走
+                  {h.baba_record.bad_p3 != null
+                    ? `：複勝率${h.baba_record.bad_p3.toFixed(1)}%`
+                    : "：複勝率—"}
+                  )
+                </span>
+                {h.baba_record.bad_p3 != null && h.baba_record.good_p3 != null && h.baba_record.bad_p3 - h.baba_record.good_p3 >= 10 && (
+                  <span className="inline-flex items-center px-1 py-0 rounded bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-400 text-[10px] font-bold border border-emerald-300 dark:border-emerald-700">
+                    道悪◎
+                  </span>
                 )}
               </div>
             )}
@@ -545,39 +547,47 @@ const HorseCard = memo(function HorseCard({
               );
             })}
           </ResponsiveAxes>
-          {/* 三連率（flex-1 で 8軸 直下から下端まで・フォント大きめ） */}
+          {/* 三連率 + 軸馬度/穴馬度/EV を縦2段で表示（上段: ラベル+確率+順位 / 下段: 対応値） */}
           <div className="flex-1 flex items-center gap-4 text-[14px] flex-wrap">
-            <span className="flex items-baseline gap-1 shrink-0">
-              <span className="text-muted-foreground text-[12px]">勝率</span>
-              <span className={`tabular-nums font-bold ${rankCls(wpRank)}`}>{wp.toFixed(1)}%</span>
-              <span className={`text-[12px] ${rankCls(wpRank)}`}>({wpRank}位)</span>
-            </span>
-            <span className="flex items-baseline gap-1 shrink-0">
-              <span className="text-muted-foreground text-[12px]">連対</span>
-              <span className={`tabular-nums font-bold ${rankCls(p2Rank)}`}>{p2.toFixed(1)}%</span>
-              <span className={`text-[12px] ${rankCls(p2Rank)}`}>({p2Rank}位)</span>
-            </span>
-            <span className="flex items-baseline gap-1 shrink-0">
-              <span className="text-muted-foreground text-[12px]">複勝</span>
-              <span className={`tabular-nums font-bold ${rankCls(p3Rank)}`}>{p3.toFixed(1)}%</span>
-              <span className={`text-[12px] ${rankCls(p3Rank)}`}>({p3Rank}位)</span>
-            </span>
-            {/* EV: (ev-1)*100 で%表示 */}
-            {ev != null && (
-              <span className={`tabular-nums font-bold shrink-0 ${evColorCls(ev)}`}>
-                EV {ev >= 1 ? "+" : ""}{((ev - 1) * 100).toFixed(0)}%
+            {/* 勝率 → 下段に軸馬度 */}
+            <span className="flex flex-col items-start shrink-0 gap-0.5">
+              <span className="flex items-baseline gap-1">
+                <span className="text-muted-foreground text-[12px]">勝率</span>
+                <span className={`tabular-nums font-bold ${rankCls(wpRank)}`}>{wp.toFixed(1)}%</span>
+                <span className={`text-[12px] ${rankCls(wpRank)}`}>({wpRank}位)</span>
               </span>
-            )}
-            {/* 軸馬度・穴馬度 */}
-            {(h.jiku_score != null || h.ana_do != null) && (
-              <span className="flex items-baseline gap-1 shrink-0 text-[12px] text-muted-foreground">
-                <span>軸</span>
-                <span className="tabular-nums font-bold text-foreground">{h.jiku_score?.toFixed(0) ?? "—"}</span>
-                <span className="mx-0.5">/</span>
-                <span>穴</span>
-                <span className="tabular-nums font-bold text-foreground">{h.ana_do?.toFixed(0) ?? "—"}</span>
+              <span className="text-[11px] text-muted-foreground tabular-nums">
+                軸 <span className="font-bold text-foreground">
+                  {h.jiku_score != null ? h.jiku_score.toFixed(1) : "—"}
+                </span>
               </span>
-            )}
+            </span>
+            {/* 連対率 → 下段に穴馬度 */}
+            <span className="flex flex-col items-start shrink-0 gap-0.5">
+              <span className="flex items-baseline gap-1">
+                <span className="text-muted-foreground text-[12px]">連対</span>
+                <span className={`tabular-nums font-bold ${rankCls(p2Rank)}`}>{p2.toFixed(1)}%</span>
+                <span className={`text-[12px] ${rankCls(p2Rank)}`}>({p2Rank}位)</span>
+              </span>
+              <span className="text-[11px] text-muted-foreground tabular-nums">
+                穴 <span className="font-bold text-foreground">
+                  {h.ana_do != null ? h.ana_do.toFixed(1) : "—"}
+                </span>
+              </span>
+            </span>
+            {/* 複勝率 → 下段に EV */}
+            <span className="flex flex-col items-start shrink-0 gap-0.5">
+              <span className="flex items-baseline gap-1">
+                <span className="text-muted-foreground text-[12px]">複勝</span>
+                <span className={`tabular-nums font-bold ${rankCls(p3Rank)}`}>{p3.toFixed(1)}%</span>
+                <span className={`text-[12px] ${rankCls(p3Rank)}`}>({p3Rank}位)</span>
+              </span>
+              <span className="text-[11px] text-muted-foreground tabular-nums">
+                EV <span className={`font-bold ${ev != null ? evColorCls(ev) : "text-muted-foreground"}`}>
+                  {ev != null ? `${((ev - 1) * 100).toFixed(1)}%` : "—"}
+                </span>
+              </span>
+            </span>
           </div>
         </div>
       </div>

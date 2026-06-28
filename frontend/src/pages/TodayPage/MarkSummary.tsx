@@ -44,17 +44,17 @@ interface MarkDef {
   border: string;
 }
 
-// 色体系: ◉/◎=緑, ○/☆=青, ▲=赤, △=紫, ★=黒, 抑=slate
+// 色体系: ◉/◎=緑, ○=青, ▲=赤, △=紫, ★=黒(注目), 穴(☆)=amber
+// ★→「注目」・☆→「穴」に統一。抑(무)は非表示のため除外。
 const MARK_ORDER: MarkDef[] = [
   { key: "◉", sym: "◉", label: "鉄板", aliases: ["tekipan"], color: "text-emerald-700", bg: "bg-emerald-50 dark:bg-emerald-950/30", border: "border-l-emerald-200" },
   { key: "◎", sym: "◎", label: "本命", aliases: ["honmei"], color: "text-emerald-700", bg: "bg-emerald-50 dark:bg-emerald-950/30", border: "border-l-emerald-200" },
   { key: "○", sym: "○", label: "対抗", aliases: ["taikou"], color: "text-blue-700", bg: "bg-blue-50 dark:bg-blue-950/30", border: "border-l-blue-200" },
   { key: "▲", sym: "▲", label: "単穴", aliases: ["tannuke"], color: "text-red-700", bg: "bg-red-50 dark:bg-red-950/30", border: "border-l-red-200" },
   { key: "△", sym: "△", label: "連下", aliases: ["rendashi"], color: "text-purple-700", bg: "bg-purple-50 dark:bg-purple-950/30", border: "border-l-purple-200" },
-  { key: "★", sym: "★", label: "連下2", aliases: ["rendashi2"], color: "text-foreground", bg: "bg-gray-50 dark:bg-gray-950/30", border: "border-l-gray-200" },
-  { key: "☆", sym: "☆", label: "連下3", aliases: ["oana"], color: "text-blue-700", bg: "bg-blue-50 dark:bg-blue-950/30", border: "border-l-blue-200" },
-  // 抑え印: 無印1-2人気の救済印（補助印扱い・穴の近く）(2026-06-22)
-  { key: "抑", sym: "抑", label: "抑え", aliases: ["oshi"], color: "text-slate-600", bg: "bg-slate-50 dark:bg-slate-950/30", border: "border-l-slate-200" },
+  { key: "★", sym: "★", label: "注目", aliases: ["rendashi2"], color: "text-foreground", bg: "bg-gray-50 dark:bg-gray-950/30", border: "border-l-gray-200" },
+  // ☆は「穴」表記で統一 (2026-06-28)
+  { key: "穴", sym: "穴", label: "穴", aliases: ["oana", "☆"], color: "text-amber-600 dark:text-amber-400", bg: "bg-amber-50 dark:bg-amber-950/30", border: "border-l-amber-300" },
 ];
 
 /** 全馬の値から順位・色を計算 */
@@ -179,35 +179,45 @@ function MarkRow({ mo, h, rankColors, indexRanks, isNarrow }: { mo: MarkDef; h: 
           <span><span className="text-muted-foreground">適：</span><span className={gradeCls(devGrade(h.course_total || 0))}>{devGrade(h.course_total || 0)}</span><span className="text-muted-foreground ml-0.5">{indexRanks.courseRank}位</span></span>
         </div>
       )}
-      {/* 勝率・連対率・複勝率・期待値 */}
+      {/* 勝率↓軸馬度 / 連対↓穴馬度 / 複勝↓EV — 縦2段レイアウト（HorseCardPC 準拠） */}
       <div className="ml-auto flex items-center gap-3 text-xs tabular-nums text-muted-foreground whitespace-nowrap">
         {winP != null && (
-          <span className="inline-flex items-center gap-1">
-            勝 <strong className={rankColors?.wpColor || "text-foreground"}>{winP.toFixed(1)}%</strong>
-            <div className="w-12 h-2 bg-border rounded-full overflow-hidden">
-              <div className="h-full bg-emerald-400 rounded-full transition-all" style={{ width: `${Math.min(winP * 2, 100)}%` }} />
-            </div>
+          <span className="flex flex-col items-start shrink-0 gap-0.5">
+            <span className="flex items-baseline gap-1">
+              <span className="text-muted-foreground">勝率</span>
+              <strong className={rankColors?.wpColor || "text-foreground"}>{winP.toFixed(1)}%</strong>
+            </span>
+            <span className="text-[11px] text-muted-foreground">
+              軸 <span className="font-bold text-foreground">
+                {h.jiku_score != null ? h.jiku_score.toFixed(1) : "—"}
+              </span>
+            </span>
           </span>
         )}
         {place2 != null && (
-          <span className="inline-flex items-center gap-1">
-            連 <strong className={rankColors?.p2Color || "text-foreground"}>{place2.toFixed(1)}%</strong>
-            <div className="w-12 h-2 bg-border rounded-full overflow-hidden">
-              <div className="h-full bg-blue-400 rounded-full transition-all" style={{ width: `${Math.min(place2, 100)}%` }} />
-            </div>
+          <span className="flex flex-col items-start shrink-0 gap-0.5">
+            <span className="flex items-baseline gap-1">
+              <span className="text-muted-foreground">連対</span>
+              <strong className={rankColors?.p2Color || "text-foreground"}>{place2.toFixed(1)}%</strong>
+            </span>
+            <span className="text-[11px] text-muted-foreground">
+              穴 <span className="font-bold text-foreground">
+                {h.ana_do != null ? h.ana_do.toFixed(1) : "—"}
+              </span>
+            </span>
           </span>
         )}
         {place3 != null && (
-          <span className="inline-flex items-center gap-1">
-            複 <strong className={rankColors?.p3Color || "text-foreground"}>{place3.toFixed(1)}%</strong>
-            <div className="w-12 h-2 bg-border rounded-full overflow-hidden">
-              <div className="h-full bg-red-400 rounded-full transition-all" style={{ width: `${Math.min(place3, 100)}%` }} />
-            </div>
-          </span>
-        )}
-        {ev != null && (
-          <span className={evCls(ev)}>
-            EV <strong>{ev.toFixed(2)}</strong>
+          <span className="flex flex-col items-start shrink-0 gap-0.5">
+            <span className="flex items-baseline gap-1">
+              <span className="text-muted-foreground">複勝</span>
+              <strong className={rankColors?.p3Color || "text-foreground"}>{place3.toFixed(1)}%</strong>
+            </span>
+            <span className="text-[11px] text-muted-foreground">
+              EV <span className={`font-bold ${ev != null ? evCls(ev) : "text-muted-foreground"}`}>
+                {ev != null ? ev.toFixed(2) : "—"}
+              </span>
+            </span>
           </span>
         )}
       </div>

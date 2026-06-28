@@ -7,6 +7,7 @@ import { useViewMode } from "@/hooks/useViewMode";
 import { ConfidenceBadge } from "@/components/keiba/ConfidenceBadge";
 import { StatsCard } from "@/components/keiba/StatsCard";
 import { JRA_CODES } from "@/lib/constants";
+import { displayMark } from "@/lib/markDisplay";
 import { OperationsPanel } from "./TodayPage/OperationsPanel";
 import { HomePageHero } from "./HomePageHero";
 import { DataQualityBanner } from "@/components/keiba/DataQualityBanner";
@@ -95,14 +96,19 @@ export default function HomePage() {
         else if (r.honmei_mark === "◎") tier2.push({ ...r, venue: v });
       }
     }
-    // 絶対軸=断トツ順: 2位との指数差(composite_gap)が大きい順（master指示 2026-06-28）
-    tier1.sort((a, b) => (b.composite_gap || 0) - (a.composite_gap || 0));
-    tier2.sort((a, b) => (b.composite_gap || 0) - (a.composite_gap || 0));
-    return [...tier1, ...tier2].slice(0, 5);
+    // 絶対軸=軸馬度(honmei_jiku_score)の降順（master指示 2026-06-28: 軸馬度の点数順で並べる）
+    // ◉/◎ を区別せず軸馬度の高い順に統合して上位5頭を選ぶ
+    const _all = [...tier1, ...tier2];
+    _all.sort((a, b) => (b.honmei_jiku_score || 0) - (a.honmei_jiku_score || 0));
+    return _all.slice(0, 5);
   }, [pred]);
 
   // 厳選穴馬 — ☆印 + 高乖離馬（バックエンドで計算済み）: 乖離ショーケース「妙味」枠
-  const anaHorses = (pred?.ana_horses || []).slice(0, 5) as AnaHorse[];
+  // master指示 2026-06-28: 穴馬度(ana_do)の降順で並べる
+  const anaHorses = ((pred?.ana_horses || []) as AnaHorse[])
+    .slice()
+    .sort((a, b) => (b.ana_do ?? 0) - (a.ana_do ?? 0))
+    .slice(0, 5);
 
   // 危険な人気馬 — 人気1〜3位だが実力順位が人気順位より3以上下（過大評価）
   const kikenHorses = (pred?.kiken_horses || []).slice(0, 5) as KikenHorse[];
@@ -309,7 +315,10 @@ export default function HomePage() {
                           /G1|Jpn1/i.test(r.grade) ? "bg-red-600" : /G2|Jpn2/i.test(r.grade) ? "bg-blue-600" : /G3|Jpn3/i.test(r.grade) ? "bg-green-600" : "bg-orange-500"
                         }`}>{r.grade}</span>
                       )}
-                      <span className="font-bold text-foreground">{r.honmei_mark}</span>
+                      {/* displayMark で ☆→穴 / 抑|무|× を非表示に変換 */}
+                      {displayMark(r.honmei_mark) && (
+                        <span className="font-bold text-foreground">{displayMark(r.honmei_mark)}</span>
+                      )}
                       <span className="text-sm font-semibold">{r.honmei_name || ""}</span>
                     </div>
                     {/* 2行目: オッズ(人気) ・ 総合指数(2位との差) */}
@@ -392,7 +401,8 @@ export default function HomePage() {
                     <div className="flex items-center gap-2 mb-1.5 flex-wrap">
                       <ConfidenceBadge rank={anaConf} />
                       <span className="font-bold text-sm">{h.venue}{h.race_no}R</span>
-                      <span className="font-bold text-emerald-600 dark:text-emerald-400">{h.mark || "穴"}</span>
+                      {/* displayMark で ☆→穴 / 抑|무|× を非表示に変換。未設定時は「穴」 */}
+                      <span className="font-bold text-emerald-600 dark:text-emerald-400">{displayMark(h.mark) || "穴"}</span>
                       <span className="text-sm font-semibold">{h.horse_name}</span>
                     </div>
                     {/* 2行目: オッズ(人気) ・ 総合指数(本命との差) */}
@@ -469,7 +479,10 @@ export default function HomePage() {
                     <div className="flex items-center gap-2 mb-1.5 flex-wrap">
                       <ConfidenceBadge rank={kikenConf} />
                       <span className="font-bold text-sm">{h.venue}{h.race_no}R</span>
-                      {h.mark && <span className="font-bold text-foreground">{h.mark}</span>}
+                      {/* displayMark で ☆→穴 / 抑|무|× を非表示に変換 */}
+                      {displayMark(h.mark) && displayMark(h.mark) !== "－" && (
+                        <span className="font-bold text-foreground">{displayMark(h.mark)}</span>
+                      )}
                       <span className="text-sm font-semibold">{h.horse_name}</span>
                     </div>
                     {/* 2行目: オッズ(人気) ・ 総合指数(最上位との差) */}
@@ -552,7 +565,10 @@ export default function HomePage() {
                     <div className="flex items-center gap-2 mb-1.5 flex-wrap">
                       <ConfidenceBadge rank={kitsuConf} />
                       <span className="font-bold text-sm">{r.venue}{r.race_no}R</span>
-                      {r.honmei_mark && <span className="font-bold text-foreground">{r.honmei_mark}</span>}
+                      {/* displayMark で ☆→穴 / 抑|무|× を非表示に変換 */}
+                      {displayMark(r.honmei_mark) && displayMark(r.honmei_mark) !== "－" && (
+                        <span className="font-bold text-foreground">{displayMark(r.honmei_mark)}</span>
+                      )}
                       <span className="text-sm font-semibold">{r.honmei_name || ""}</span>
                     </div>
                     {/* 2行目: オッズ(人気) ・ 総合指数(2位との差) */}
@@ -570,8 +586,8 @@ export default function HomePage() {
                         </span>
                       )}
                     </div>
-                    {/* 3行目: 複勝率 ・ 軸馬度差(2位)・(3位) 併記 */}
-                    <div className="flex items-center gap-x-3 text-xs ml-8 text-muted-foreground flex-wrap">
+                    {/* 3行目: 複勝率 ・ 軸馬度＋差(他カードと同構成) */}
+                    <div className="flex items-center gap-x-4 gap-y-1 text-xs ml-8 text-muted-foreground flex-wrap">
                       {fp > 0 && (
                         <span className="tabular-nums whitespace-nowrap">
                           複勝<span className="stat-mono text-sm ml-0.5 text-foreground">{fp.toFixed(1)}%</span>
@@ -580,13 +596,12 @@ export default function HomePage() {
                       {jikuScore > 0 && (
                         <span className="tabular-nums whitespace-nowrap">
                           軸馬度<span className="stat-mono text-sm ml-0.5 text-foreground">{jikuScore.toFixed(1)}</span>
+                          {/* 差(2位)・差(3位)をコンパクトに amber で付記 */}
+                          <span className="ml-1 text-amber-600 dark:text-amber-400 font-semibold">
+                            ({gap2 < 999 ? `-${gap2.toFixed(1)}` : "—"}・{gap3 < 999 ? `-${gap3.toFixed(1)}` : "—"})
+                          </span>
                         </span>
                       )}
-                      <span className="tabular-nums whitespace-nowrap text-amber-600 dark:text-amber-400 font-semibold">
-                        差(2位){gap2 < 999 ? gap2.toFixed(1) : "—"}
-                        <span className="mx-0.5">・</span>
-                        (3位){gap3 < 999 ? gap3.toFixed(1) : "—"}
-                      </span>
                     </div>
                   </div>
                 );

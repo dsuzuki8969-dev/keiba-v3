@@ -1,6 +1,7 @@
 import { useMemo } from "react";
 import { useRaceResult } from "@/api/hooks";
 import { WAKU_BG, posCls, markCls, rankCls } from "@/lib/constants";
+import { displayMark } from "@/lib/markDisplay";
 import { PremiumCard, PremiumCardHeader } from "@/components/ui/premium/PremiumCard";
 import { Trophy, Banknote } from "lucide-react";
 import type { RaceResultEntry, RaceResultPayout } from "@/api/client";
@@ -163,8 +164,9 @@ export function RaceResultPanel({ date, raceId }: Props) {
             </thead>
             <tbody>
               {order.map((o: RaceResultEntry, i: number) => {
-                const markSym = o.mark ? (MARK_SYMBOL[o.mark] || o.mark) : "";
-                const mCls = markSym ? markCls(markSym) : "";
+                // displayMark で ☆→穴 / 抑|무|× → 非表示に変換
+                const markSym = o.mark ? displayMark(MARK_SYMBOL[o.mark] || o.mark) : "";
+                const mCls = markSym && markSym !== "－" ? markCls(markSym) : "";
                 const corners = o.corners;
                 const last3f = o.last_3f;
                 // バック API は time_sec (秒数) で返すため formatTime で "m:ss.f" に変換

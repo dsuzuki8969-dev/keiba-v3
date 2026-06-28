@@ -25,10 +25,11 @@ const STYLES: Record<string, Style> = {
   taikou:    { color: "text-mark-taikou",    glow: "rgba(37,99,235,0.45)" },
   tannuke:   { color: "text-mark-tannuke",   glow: "rgba(220,38,38,0.45)" },
   rendashi:  { color: "text-mark-rendashi",  glow: "rgba(124,58,237,0.45)" },
+  // rendashi2 (★): 注目印としてフォアグラウンド色
   rendashi2: { color: "text-foreground",     glow: "rgba(148,163,184,0.45)" },
-  oana:      { color: "text-mark-oana",      glow: "rgba(37,99,235,0.45)" },
-  // 抑え印: slate系（抑え・保険の中間色）2026-06-22
-  oshi:      { color: "text-mark-oshi",      glow: "rgba(100,116,139,0.45)" },
+  // oana (穴表記): amber系で穴馬を強調
+  oana:      { color: "text-amber-600 dark:text-amber-400", glow: "rgba(217,119,6,0.45)" },
+  // oshi (抑): 削除（表示しない）
 };
 
 interface Props {
@@ -40,10 +41,16 @@ interface Props {
 }
 
 export const MarkBadge = memo(function MarkBadge({ mark, size = "md", subtle = false, className = "" }: Props) {
-  const m = MARKS[mark as MarkType];
+  // 무 (抑え) / × (危険・廃止印) は表示しない
+  if (mark === "무" || mark === "抑" || mark === "×") return null;
+
+  // ☆ は「穴」表記にマップして表示
+  const normalizedMark = mark === "☆" ? "oana" : mark;
+
+  const m = MARKS[normalizedMark as MarkType] ?? MARKS[mark as MarkType];
   if (!m) return null;
 
-  const style = STYLES[mark] ?? { color: "text-muted-foreground" };
+  const style = STYLES[normalizedMark] ?? STYLES[mark] ?? { color: "text-muted-foreground" };
   const sizeClass =
     size === "sm" ? "text-sm" :
     size === "lg" ? "text-2xl" :
@@ -58,6 +65,11 @@ export const MarkBadge = memo(function MarkBadge({ mark, size = "md", subtle = f
   // インライン style でホバー glow を可変色に
   const glowVar = !subtle && style.glow ? { "--mb-glow": style.glow } as React.CSSProperties : undefined;
 
+  // ☆（穴馬）は表示シンボルを「穴」に変換
+  const displaySymbol = mark === "☆" ? "穴" : m.symbol;
+  // ☆（穴馬）のラベルも「穴」に統一
+  const displayLabel = mark === "☆" ? "穴" : m.label;
+
   return (
     <span
       className={[
@@ -69,10 +81,10 @@ export const MarkBadge = memo(function MarkBadge({ mark, size = "md", subtle = f
         className,
       ].join(" ")}
       style={glowVar}
-      title={m.label}
-      aria-label={m.label}
+      title={displayLabel}
+      aria-label={displayLabel}
     >
-      {m.symbol}
+      {displaySymbol}
     </span>
   );
 });
