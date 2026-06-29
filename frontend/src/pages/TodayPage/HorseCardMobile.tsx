@@ -505,26 +505,28 @@ export const HorseCardMobile = memo(function HorseCardMobile({ horses, isBanei, 
                 {!isBanei && corners && (
                   <span className="shrink-0 text-[11px] tabular-nums text-muted-foreground">{corners}</span>
                 )}
-                {/* 前日想定オッズ + 当日GAP（assumed_odds が有効値のときのみ表示） */}
-                {h.assumed_odds != null && h.assumed_odds > 0 && (
-                  <>
-                    <span className="shrink-0 text-muted-foreground text-[11px]">前日想定</span>
-                    <span className="shrink-0 tabular-nums text-muted-foreground text-[11px]">
-                      {h.assumed_odds.toFixed(1)}倍{h.assumed_popularity != null ? `(${h.assumed_popularity}人気)` : ""}
-                    </span>
-                    {h.odds != null && h.odds > 0 && (() => {
-                      const gap = (h.odds - h.assumed_odds!) / h.assumed_odds! * 100;
-                      if (Math.abs(gap) < 3) {
-                        return <span className="shrink-0 text-muted-foreground tabular-nums text-[11px]">±0%</span>;
-                      } else if (gap < 0) {
-                        return <span className="shrink-0 tabular-nums text-emerald-600 dark:text-emerald-400 font-semibold text-[11px]">↓{Math.abs(gap).toFixed(0)}%</span>;
-                      } else {
-                        return <span className="shrink-0 tabular-nums text-muted-foreground text-[11px]">↑{gap.toFixed(0)}%</span>;
-                      }
-                    })()}
-                  </>
-                )}
               </div>
+
+              {/* ---- 行1.2: 前日想定オッズ + 当日GAP（別行へ分離・馬名フル表示を確保） ---- */}
+              {/* 行1に同居させると 390px 幅で馬名が ellipsis で潰れるため独立行へ（assumed_odds 有効時のみ） */}
+              {h.assumed_odds != null && h.assumed_odds > 0 && (
+                <div className="flex items-center gap-1.5 mt-0.5 pt-0.5 border-t border-dashed border-border/40">
+                  <span className="shrink-0 text-muted-foreground text-[11px]">前日想定</span>
+                  <span className="shrink-0 tabular-nums text-muted-foreground text-[11px]">
+                    {h.assumed_odds.toFixed(1)}倍{h.assumed_popularity != null ? `(${h.assumed_popularity}人気)` : ""}
+                  </span>
+                  {h.odds != null && h.odds > 0 && (() => {
+                    const gap = (h.odds - h.assumed_odds!) / h.assumed_odds! * 100;
+                    if (Math.abs(gap) < 3) {
+                      return <span className="shrink-0 text-muted-foreground tabular-nums text-[11px]">±0%</span>;
+                    } else if (gap < 0) {
+                      return <span className="shrink-0 tabular-nums text-emerald-600 dark:text-emerald-400 font-semibold text-[11px]">↓{Math.abs(gap).toFixed(0)}%</span>;
+                    } else {
+                      return <span className="shrink-0 tabular-nums text-muted-foreground text-[11px]">↑{gap.toFixed(0)}%</span>;
+                    }
+                  })()}
+                </div>
+              )}
 
               {/* ---- 行1.5: 軸馬度(主役・大) + 穴馬度(ana_do>0のみ) + 内訳(小) ---- */}
               <div className="flex items-center flex-wrap gap-x-1.5 gap-y-0.5 mt-0.5">
