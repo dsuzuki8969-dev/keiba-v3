@@ -377,7 +377,7 @@ const HorseCard = memo(function HorseCard({
 
   // 馬体重（前走比）
   const horseWeightNode = h.horse_weight != null ? (
-    <span className="flex items-baseline gap-0.5 whitespace-nowrap tabular-nums">
+    <span className="inline-flex items-baseline gap-0.5 whitespace-nowrap tabular-nums">
       <span className="text-foreground">{Number(h.horse_weight).toFixed(0)}kg</span>
       {h.weight_change != null && (
         <span className={`font-semibold ${
@@ -397,48 +397,130 @@ const HorseCard = memo(function HorseCard({
     <div
       className={`bg-card border rounded-md transition-all hover:border-brand-gold/60 hover:shadow-[0_0_8px_-2px_rgba(212,168,83,0.3)] ${rowAccent} ${open ? "shadow-md" : ""} ${isScratched ? "opacity-40" : ""}`}
     >
-      {/* ======== クリックで展開するヘッダ部（2カラム構成・最上位） ======== */}
+      {/* ======== クリックで展開するヘッダ部（縦3段構成） ======== */}
       <div
-        className="cursor-pointer px-2 py-1.5 flex flex-col md:flex-row gap-2 md:gap-3 md:items-stretch"
+        className="cursor-pointer px-2 py-1.5 flex flex-col gap-1"
         role="button"
         tabIndex={0}
         aria-expanded={open}
         onClick={() => setOpen(!open)}
         onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setOpen(!open); } }}
       >
+        {/* 【1】馬名行: 馬番 + MY印 + AI印 + 馬名 + 騎手 + オッズ(人気) + 脚質チップ + 通過順 */}
+        <div className="flex items-center gap-1">
+          <span
+            className="w-6 h-6 rounded flex items-center justify-center text-xs font-bold shrink-0"
+            style={gateColorStyle(gate)}
+          >
+            {no}
+          </span>
+          <span className="w-5 flex items-center justify-center shrink-0">
+            <DMarkChip horseNo={no} raceId={raceId} dMarks={dMarks} setDMarks={setDMarks} />
+          </span>
+          <span className={`w-5 flex items-center justify-center shrink-0 text-[13px] font-bold ${markSym === "－" ? "text-muted-foreground/30" : markCls(markSym)}`}>
+            {markSym}
+          </span>
+          <span className={`font-bold text-[15px] min-w-0 truncate leading-tight ${isScratched ? "line-through text-muted-foreground" : ""}`}>{h.horse_name}</span>
+          {/* 騎手・当日オッズ・脚質チップ・通過順（馬名の直後に配置） */}
+          <span className="shrink-0 flex items-center gap-1.5 whitespace-nowrap">
+            <span className="font-bold text-[13px] text-foreground">{h.jockey || "—"}</span>
+            <span className={`text-[14px] tabular-nums font-bold ${isScratched ? "text-red-500 dark:text-red-400" : oddsCls(h.popularity)}`}>{oddsStr}</span>
+            <span className={`text-[12px] ${h.popularity != null ? rankCls(h.popularity) || "text-muted-foreground" : "text-muted-foreground"}`}>({popStr})</span>
+            {/* 脚質チップ（rsChipCls 色） */}
+            {rsShort !== "—" && (
+              <span className={`px-1.5 py-0 rounded text-[12px] font-bold ${rsChipCls(h.running_style || "")}`}>{rsShort}</span>
+            )}
+            {/* 通過順 */}
+            {corners !== "—" && (
+              <span className="text-[12px] tabular-nums text-muted-foreground">{corners}</span>
+            )}
+            {/* 前日想定オッズ + 当日GAP（assumed_odds が有効値のときのみ表示） */}
+            {h.assumed_odds != null && h.assumed_odds > 0 && (
+              <>
+                <span className="text-muted-foreground text-[12px]">前日想定</span>
+                <span className="tabular-nums text-muted-foreground text-[12px]">
+                  {h.assumed_odds.toFixed(1)}倍{h.assumed_popularity != null ? `(${h.assumed_popularity}人気)` : ""}
+                </span>
+                {h.odds != null && h.odds > 0 && (() => {
+                  const gap = (h.odds - h.assumed_odds) / h.assumed_odds * 100;
+                  if (Math.abs(gap) < 3) {
+                    return <span className="text-muted-foreground tabular-nums text-[12px]">±0%</span>;
+                  } else if (gap < 0) {
+                    return <span className="tabular-nums text-emerald-600 dark:text-emerald-400 font-semibold text-[12px]">↓{Math.abs(gap).toFixed(0)}%</span>;
+                  } else {
+                    return <span className="tabular-nums text-muted-foreground text-[12px]">↑{gap.toFixed(0)}%</span>;
+                  }
+                })()}
+              </>
+            )}
+          </span>
+        </div>
 
-        {/* 左カラム: 馬名行 + 父/母父/厩舎+騎手/通過順+オッズ */}
+        {/* 【2】強さ指標行（軸馬度を主役・内訳を小さく） */}
+        <div className="flex items-center flex-wrap gap-x-2 gap-y-0.5">
+          {/* 軸馬度バッジ（主役・大） */}
+          {h.jiku_score != null && (
+            <span className="inline-flex items-baseline gap-1 px-2 py-0.5 rounded bg-emerald-100 dark:bg-emerald-900/40">
+              <span className="text-[12px] font-semibold text-emerald-700 dark:text-emerald-300">軸馬度</span>
+              <span className="text-[22px] font-medium tabular-nums text-emerald-700 dark:text-emerald-300 leading-none">{h.jiku_score.toFixed(1)}</span>
+            </span>
+          )}
+          {/* 穴馬度バッジ（主役・大・ana_do != null なら0.0でも常時表示） */}
+          {h.ana_do != null && (
+            <span className="inline-flex items-baseline gap-1 px-2 py-0.5 rounded bg-amber-100 dark:bg-amber-900/40">
+              <span className="text-[12px] font-semibold text-amber-700 dark:text-amber-300">穴馬度</span>
+              <span className="text-[22px] font-medium tabular-nums text-amber-700 dark:text-amber-300 leading-none">{h.ana_do.toFixed(1)}</span>
+            </span>
+          )}
+          {/* 縦区切り（バッジと内訳確率の間） */}
+          {(h.jiku_score != null || h.ana_do != null) && (
+            <span className="text-muted-foreground/40 select-none">｜</span>
+          )}
+          {/* 勝率（内訳） */}
+          <span className="flex items-baseline gap-0.5 shrink-0">
+            <span className="text-muted-foreground text-[11px]">勝</span>
+            <span className={`tabular-nums text-[13px] font-semibold ${rankCls(wpRank)}`}>{wp.toFixed(1)}%</span>
+            <span className={`text-[11px] ${rankCls(wpRank)}`}>({wpRank}位)</span>
+          </span>
+          {/* 連対率（内訳） */}
+          <span className="flex items-baseline gap-0.5 shrink-0">
+            <span className="text-muted-foreground text-[11px]">連</span>
+            <span className={`tabular-nums text-[13px] font-semibold ${rankCls(p2Rank)}`}>{p2.toFixed(1)}%</span>
+            <span className={`text-[11px] ${rankCls(p2Rank)}`}>({p2Rank}位)</span>
+          </span>
+          {/* 複勝率（内訳） */}
+          <span className="flex items-baseline gap-0.5 shrink-0">
+            <span className="text-muted-foreground text-[11px]">複</span>
+            <span className={`tabular-nums text-[13px] font-semibold ${rankCls(p3Rank)}`}>{p3.toFixed(1)}%</span>
+            <span className={`text-[11px] ${rankCls(p3Rank)}`}>({p3Rank}位)</span>
+          </span>
+          {/* EV（内訳） */}
+          <span className="flex items-baseline gap-0.5 shrink-0">
+            <span className="text-muted-foreground text-[11px]">EV</span>
+            <span className={`tabular-nums text-[13px] font-semibold ${ev != null ? evColorCls(ev) : "text-muted-foreground"}`}>
+              {ev != null ? ev.toFixed(2) : "—"}
+            </span>
+          </span>
+        </div>
+
+        {/* 【3】左右2カラム: 左=性齢父母...道悪 / 右=8ファクター */}
+        <div className="flex flex-col md:flex-row gap-2 md:gap-3 md:items-stretch">
+
+        {/* 左カラム: 性齢斤量馬体重/父/母父/厩舎+騎手/通過順+オッズ/前日想定/道悪 */}
         <div className="w-full md:w-[300px] shrink-0">
-          {/* 馬名行: 馬番 + MY印 + AI印 + 馬名 */}
-          <div className="flex items-center gap-1 mb-1">
-            <span
-              className="w-6 h-6 rounded flex items-center justify-center text-xs font-bold shrink-0"
-              style={gateColorStyle(gate)}
-            >
-              {no}
-            </span>
-            <span className="w-5 flex items-center justify-center shrink-0">
-              <DMarkChip horseNo={no} raceId={raceId} dMarks={dMarks} setDMarks={setDMarks} />
-            </span>
-            <span className={`w-5 flex items-center justify-center shrink-0 text-[13px] font-bold ${markSym === "－" ? "text-muted-foreground/30" : markCls(markSym)}`}>
-              {markSym}
-            </span>
-            <span className={`font-bold text-[15px] truncate leading-tight ${isScratched ? "line-through text-muted-foreground" : ""}`}>{h.horse_name}</span>
-          </div>
+          <div className="ml-0 space-y-px">
+            {/* 行A1: 性齢・斤量・馬体重（全幅・折り返しなし） */}
+            <div className="flex items-baseline gap-1.5 text-[12px] whitespace-nowrap">
+              <span className="text-foreground">{sexAge}</span>
+              {weightKg && <span className="text-muted-foreground">{weightKg}</span>}
+              {horseWeightNode && (
+                <span className="text-[12px] text-muted-foreground whitespace-nowrap">馬体重 {horseWeightNode}</span>
+              )}
+            </div>
 
-          <div className="ml-[34px] space-y-px">
-            {/* 行A: 父 + 性齢・斤量・馬体重 */}
-            <div className="flex items-baseline text-[12px]">
-              <span className="w-[140px] shrink-0 text-muted-foreground">
-                父 <span className="text-foreground">{sire || "—"}</span>
-              </span>
-              <span className="flex items-baseline gap-1.5 whitespace-nowrap text-foreground">
-                <span>{sexAge}</span>
-                {weightKg && <span className="text-muted-foreground">{weightKg}</span>}
-                {horseWeightNode && (
-                  <span className="text-[11px] text-muted-foreground">馬体重 {horseWeightNode}</span>
-                )}
-              </span>
+            {/* 行A2: 父のみ */}
+            <div className="text-[12px] text-muted-foreground">
+              父 <span className="text-foreground">{sire || "—"}</span>
             </div>
 
             {/* 行B: 母父 */}
@@ -446,80 +528,48 @@ const HorseCard = memo(function HorseCard({
               母父 <span className="text-foreground">{mgs || "—"}</span>
             </div>
 
-            {/* 行C: 厩舎（左） + 騎手（右寄せ） */}
-            <div className="flex items-baseline text-[12px]">
-              <span className="w-[140px] shrink-0 text-muted-foreground truncate">{h.trainer || "—"}</span>
-              <span className="font-bold text-[13px] text-foreground">{h.jockey || "—"}</span>
+            {/* 行C: 厩舎のみ（騎手は馬名行へ移動） */}
+            <div className="text-[12px] text-muted-foreground truncate">
+              {h.trainer || "—"}
             </div>
 
-            {/* 行D: 通過順+脚質（左） + オッズ+人気（右寄せ） */}
-            <div className="flex items-center text-[12px] mt-0.5">
-              <span className="w-[140px] shrink-0 flex items-center gap-1">
-                <span className="font-semibold tabular-nums text-muted-foreground text-[13px]">{corners}</span>
-                <span className={`px-1.5 py-0 rounded text-[12px] font-bold ${rsChipCls(h.running_style || "")}`}>{rsShort}</span>
-              </span>
-              <span className="flex items-center gap-1 whitespace-nowrap">
-                <span className={`text-[14px] tabular-nums font-bold ${isScratched ? "text-red-500 dark:text-red-400" : oddsCls(h.popularity)}`}>{oddsStr}</span>
-                <span className={`text-[12px] ${h.popularity != null ? rankCls(h.popularity) || "text-muted-foreground" : "text-muted-foreground"}`}>({popStr})</span>
-              </span>
-            </div>
-            {/* 行E-0: 前日想定オッズ + 当日GAP（assumed_odds が有効値のときのみ表示） */}
-            {h.assumed_odds != null && h.assumed_odds > 0 && (
-              <div className="flex items-center gap-1.5 text-xs mt-0.5">
-                <span className="text-muted-foreground">前日想定</span>
-                <span className="tabular-nums text-muted-foreground">
-                  {h.assumed_odds.toFixed(1)}倍
-                  {h.assumed_popularity != null ? `(${h.assumed_popularity}人気)` : ""}
-                </span>
-                {/* 当日オッズが有効値のときのみ GAP 表示 */}
-                {h.odds != null && h.odds > 0 && (() => {
-                  const gap = (h.odds - h.assumed_odds) / h.assumed_odds * 100;
-                  if (Math.abs(gap) < 3) {
-                    return <span className="text-muted-foreground tabular-nums">±0%</span>;
-                  } else if (gap < 0) {
-                    // 当日オッズが想定より下降 = 買われた → 緑
-                    return <span className="tabular-nums text-emerald-600 dark:text-emerald-400 font-semibold">↓{Math.abs(gap).toFixed(0)}%</span>;
-                  } else {
-                    // 当日オッズが想定より上昇 = 人気離れ → muted
-                    return <span className="tabular-nums text-muted-foreground">↑{gap.toFixed(0)}%</span>;
-                  }
-                })()}
-              </div>
-            )}
-
-            {/* 行E: 道悪着度数（baba_record.bad_n > 0 のみ表示） */}
-            {h.baba_record && h.baba_record.bad_n > 0 && (
-              <div className="flex items-center gap-1.5 text-[11px] mt-0.5">
-                <span className="text-muted-foreground">道悪</span>
-                {/* 着度数: 1-2-3-着外（XX走：複勝率XX.X%） */}
-                <span className={`tabular-nums font-semibold ${
-                  h.baba_record.bad_p3 != null && h.baba_record.good_p3 != null && h.baba_record.bad_p3 - h.baba_record.good_p3 >= 10
-                    ? "text-emerald-600 dark:text-emerald-400"
-                    : h.baba_record.bad_p3 != null && h.baba_record.good_p3 != null && h.baba_record.bad_p3 - h.baba_record.good_p3 <= -10
-                      ? "text-muted-foreground"
-                      : "text-foreground"
-                }`}>
-                  {h.baba_record.bad_1 ?? 0}-{h.baba_record.bad_2 ?? 0}-{h.baba_record.bad_3 ?? 0}-{h.baba_record.bad_other ?? 0}
-                </span>
-                <span className="text-muted-foreground">
-                  ({h.baba_record.bad_n}走
-                  {h.baba_record.bad_p3 != null
-                    ? `：複勝率${h.baba_record.bad_p3.toFixed(1)}%`
-                    : "：複勝率—"}
-                  )
-                </span>
-                {h.baba_record.bad_p3 != null && h.baba_record.good_p3 != null && h.baba_record.bad_p3 - h.baba_record.good_p3 >= 10 && (
-                  <span className="inline-flex items-center px-1 py-0 rounded bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-400 text-[10px] font-bold border border-emerald-300 dark:border-emerald-700">
-                    道悪◎
+            {/* 行E: 道悪着度数（全馬表示・未経験は「経験なし」） */}
+            <div className="flex items-center gap-1.5 text-[11px] mt-0.5">
+              <span className="text-muted-foreground">道悪</span>
+              {h.baba_record && h.baba_record.bad_n > 0 ? (
+                <>
+                  {/* 着度数: 1-2-3-着外（XX走：複勝率XX.X%） */}
+                  <span className={`tabular-nums font-semibold ${
+                    h.baba_record.bad_p3 != null && h.baba_record.good_p3 != null && h.baba_record.bad_p3 - h.baba_record.good_p3 >= 10
+                      ? "text-emerald-600 dark:text-emerald-400"
+                      : h.baba_record.bad_p3 != null && h.baba_record.good_p3 != null && h.baba_record.bad_p3 - h.baba_record.good_p3 <= -10
+                        ? "text-muted-foreground"
+                        : "text-foreground"
+                  }`}>
+                    {h.baba_record.bad_1 ?? 0}-{h.baba_record.bad_2 ?? 0}-{h.baba_record.bad_3 ?? 0}-{h.baba_record.bad_other ?? 0}
                   </span>
-                )}
-              </div>
-            )}
+                  <span className="text-muted-foreground">
+                    ({h.baba_record.bad_n}走
+                    {h.baba_record.bad_p3 != null
+                      ? `：複勝率${h.baba_record.bad_p3.toFixed(1)}%`
+                      : "：複勝率—"}
+                    )
+                  </span>
+                  {h.baba_record.bad_p3 != null && h.baba_record.good_p3 != null && h.baba_record.bad_p3 - h.baba_record.good_p3 >= 10 && (
+                    <span className="inline-flex items-center px-1 py-0 rounded bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-400 text-[10px] font-bold border border-emerald-300 dark:border-emerald-700">
+                      道悪◎
+                    </span>
+                  )}
+                </>
+              ) : (
+                <span className="text-[11px] text-muted-foreground">経験なし</span>
+              )}
+            </div>
           </div>
         </div>
 
-        {/* 右カラム: 8軸（上端=馬名行高さ） + 三連率（下端まで広げる・大きめフォント） */}
-        <div className="flex flex-col flex-1 min-w-0 gap-1">
+        {/* 右カラム: 8軸のみ */}
+        <div className="flex flex-col flex-1 min-w-0">
           {/* 8軸（馬名行の上端から始まる） */}
           <ResponsiveAxes count={8}>
             {INDEX_DEFS.map((def) => {
@@ -547,50 +597,9 @@ const HorseCard = memo(function HorseCard({
               );
             })}
           </ResponsiveAxes>
-          {/* 三連率 + 軸馬度/穴馬度/EV を縦2段で表示（上段: ラベル+確率+順位 / 下段: 対応値） */}
-          <div className="flex-1 flex items-center gap-4 text-[14px] flex-wrap">
-            {/* 勝率 → 下段に軸馬度 */}
-            <span className="flex flex-col items-start shrink-0 gap-0.5">
-              <span className="flex items-baseline gap-1">
-                <span className="text-muted-foreground text-[12px]">勝率</span>
-                <span className={`tabular-nums font-bold ${rankCls(wpRank)}`}>{wp.toFixed(1)}%</span>
-                <span className={`text-[12px] ${rankCls(wpRank)}`}>({wpRank}位)</span>
-              </span>
-              <span className="text-[11px] text-muted-foreground tabular-nums">
-                軸 <span className="font-bold text-foreground">
-                  {h.jiku_score != null ? h.jiku_score.toFixed(1) : "—"}
-                </span>
-              </span>
-            </span>
-            {/* 連対率 → 下段に穴馬度 */}
-            <span className="flex flex-col items-start shrink-0 gap-0.5">
-              <span className="flex items-baseline gap-1">
-                <span className="text-muted-foreground text-[12px]">連対</span>
-                <span className={`tabular-nums font-bold ${rankCls(p2Rank)}`}>{p2.toFixed(1)}%</span>
-                <span className={`text-[12px] ${rankCls(p2Rank)}`}>({p2Rank}位)</span>
-              </span>
-              <span className="text-[11px] text-muted-foreground tabular-nums">
-                穴 <span className="font-bold text-foreground">
-                  {h.ana_do != null ? h.ana_do.toFixed(1) : "—"}
-                </span>
-              </span>
-            </span>
-            {/* 複勝率 → 下段に EV */}
-            <span className="flex flex-col items-start shrink-0 gap-0.5">
-              <span className="flex items-baseline gap-1">
-                <span className="text-muted-foreground text-[12px]">複勝</span>
-                <span className={`tabular-nums font-bold ${rankCls(p3Rank)}`}>{p3.toFixed(1)}%</span>
-                <span className={`text-[12px] ${rankCls(p3Rank)}`}>({p3Rank}位)</span>
-              </span>
-              <span className="text-[11px] text-muted-foreground tabular-nums">
-                EV <span className={`font-bold ${ev != null ? evColorCls(ev) : "text-muted-foreground"}`}>
-                  {ev != null ? ev.toFixed(2) : "—"}
-                </span>
-              </span>
-            </span>
-          </div>
         </div>
-      </div>
+        </div>{/* 【3】左右2カラム 終わり */}
+      </div>{/* ヘッダー 終わり */}
 
       {/* ======== アコーディオン展開詳細 ======== */}
       {open && (

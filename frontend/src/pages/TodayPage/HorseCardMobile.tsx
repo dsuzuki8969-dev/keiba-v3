@@ -74,16 +74,6 @@ function fmtTime(sec: number | null | undefined): string {
   return m > 0 ? `${m}:${s.toFixed(1).padStart(4, "0")}` : s.toFixed(1);
 }
 
-// 脚質色
-function rsColorCls(style: string): string {
-  const s = STYLE_SHORT[style] || style;
-  if (s === "逃") return "text-emerald-600 font-bold";
-  if (s === "先") return "text-blue-600 font-bold";
-  if (s === "差") return "text-red-600 font-bold";
-  if (s === "追") return "text-purple-600 font-bold";
-  return "";
-}
-
 // 印マーク別に行背景グラデ（PC と統一）
 function markRowAccent(mark: string | undefined): string {
   if (!mark) return "";
@@ -476,8 +466,8 @@ export const HorseCardMobile = memo(function HorseCardMobile({ horses, isBanei, 
               className={`px-2 py-2 cursor-pointer active:bg-muted/50 hover:bg-brand-gold/5 transition-colors ${rowAccent}`}
               onClick={() => setOpenNo(isOpen ? null : h.horse_no)}
             >
-              {/* ---- 行1: 馬番 | MY印 | AI印 | 馬名 | 単勝オッズ ---- */}
-              <div className="flex items-center gap-1">
+              {/* ---- 行1: 馬番 | MY印 | AI印 | 馬名 | 単勝オッズ | 脚質チップ | 通過順 ---- */}
+              <div className="flex items-center gap-1 flex-wrap">
                 {/* 馬番（枠色） */}
                 <span className={`inline-flex w-5 h-5 items-center justify-center rounded-sm text-[10px] font-bold shrink-0 ${WAKU_BG[h.gate_no as number] || "bg-gray-200"}`}>
                   {h.horse_no}
@@ -500,6 +490,91 @@ export const HorseCardMobile = memo(function HorseCardMobile({ horses, isBanei, 
                 <span className={`shrink-0 text-[12px] font-bold tabular-nums ml-1 ${isScratched ? "text-red-500 dark:text-red-400" : (h.popularity != null && h.popularity > 0 ? (rankCls(h.popularity) || "text-foreground") : "text-foreground")}`}>
                   {oddsStr}
                 </span>
+
+                {/* 脚質チップ */}
+                {runStyle !== "—" && (
+                  <span className={`shrink-0 px-1 py-0 rounded text-[11px] font-bold ${
+                    runStyle === "逃" ? "bg-emerald-50 text-emerald-600 dark:bg-emerald-950/40" :
+                    runStyle === "先" ? "bg-blue-50 text-blue-600 dark:bg-blue-950/40" :
+                    runStyle === "差" ? "bg-red-50 text-red-600 dark:bg-red-950/40" :
+                    "bg-purple-50 text-purple-600 dark:bg-purple-950/40"
+                  }`}>{runStyle}</span>
+                )}
+
+                {/* 通過順 */}
+                {!isBanei && corners && (
+                  <span className="shrink-0 text-[11px] tabular-nums text-muted-foreground">{corners}</span>
+                )}
+                {/* 前日想定オッズ + 当日GAP（assumed_odds が有効値のときのみ表示） */}
+                {h.assumed_odds != null && h.assumed_odds > 0 && (
+                  <>
+                    <span className="shrink-0 text-muted-foreground text-[11px]">前日想定</span>
+                    <span className="shrink-0 tabular-nums text-muted-foreground text-[11px]">
+                      {h.assumed_odds.toFixed(1)}倍{h.assumed_popularity != null ? `(${h.assumed_popularity}人気)` : ""}
+                    </span>
+                    {h.odds != null && h.odds > 0 && (() => {
+                      const gap = (h.odds - h.assumed_odds!) / h.assumed_odds! * 100;
+                      if (Math.abs(gap) < 3) {
+                        return <span className="shrink-0 text-muted-foreground tabular-nums text-[11px]">±0%</span>;
+                      } else if (gap < 0) {
+                        return <span className="shrink-0 tabular-nums text-emerald-600 dark:text-emerald-400 font-semibold text-[11px]">↓{Math.abs(gap).toFixed(0)}%</span>;
+                      } else {
+                        return <span className="shrink-0 tabular-nums text-muted-foreground text-[11px]">↑{gap.toFixed(0)}%</span>;
+                      }
+                    })()}
+                  </>
+                )}
+              </div>
+
+              {/* ---- 行1.5: 軸馬度(主役・大) + 穴馬度(ana_do>0のみ) + 内訳(小) ---- */}
+              <div className="flex items-center flex-wrap gap-x-1.5 gap-y-0.5 mt-0.5">
+                {/* 軸馬度バッジ（主役・大） */}
+                {h.jiku_score != null && (
+                  <span className="inline-flex items-baseline gap-0.5 px-1.5 py-0.5 rounded bg-emerald-100 dark:bg-emerald-900/40">
+                    <span className="text-[11px] font-semibold text-emerald-700 dark:text-emerald-300">軸馬度</span>
+                    <span className="text-[18px] font-medium tabular-nums text-emerald-700 dark:text-emerald-300 leading-none">{h.jiku_score.toFixed(1)}</span>
+                  </span>
+                )}
+                {/* 穴馬度バッジ（主役・大・ana_do != null なら0.0でも常時表示） */}
+                {h.ana_do != null && (
+                  <span className="inline-flex items-baseline gap-0.5 px-1.5 py-0.5 rounded bg-amber-100 dark:bg-amber-900/40">
+                    <span className="text-[11px] font-semibold text-amber-700 dark:text-amber-300">穴馬度</span>
+                    <span className="text-[18px] font-medium tabular-nums text-amber-700 dark:text-amber-300 leading-none">{h.ana_do.toFixed(1)}</span>
+                  </span>
+                )}
+                {/* 縦区切り（バッジと内訳の間） */}
+                {(h.jiku_score != null || h.ana_do != null) && (
+                  <span className="text-muted-foreground/40 select-none text-[11px]">｜</span>
+                )}
+                {/* 勝率（内訳） */}
+                <span className="flex items-baseline gap-0.5 shrink-0">
+                  <span className="text-muted-foreground text-[10px]">勝</span>
+                  <span className={`tabular-nums text-[12px] font-semibold ${rankCls(wpRank)}`}>{wp.toFixed(1)}%</span>
+                  <span className={`text-[10px] ${rankCls(wpRank)}`}>({wpRank}位)</span>
+                </span>
+                {/* 連対率（内訳） */}
+                <span className="flex items-baseline gap-0.5 shrink-0">
+                  <span className="text-muted-foreground text-[10px]">連</span>
+                  <span className={`tabular-nums text-[12px] font-semibold ${rankCls(p2Rank)}`}>{p2.toFixed(1)}%</span>
+                  <span className={`text-[10px] ${rankCls(p2Rank)}`}>({p2Rank}位)</span>
+                </span>
+                {/* 複勝率（内訳） */}
+                <span className="flex items-baseline gap-0.5 shrink-0">
+                  <span className="text-muted-foreground text-[10px]">複</span>
+                  <span className={`tabular-nums text-[12px] font-semibold ${rankCls(p3Rank)}`}>{p3.toFixed(1)}%</span>
+                  <span className={`text-[10px] ${rankCls(p3Rank)}`}>({p3Rank}位)</span>
+                </span>
+                {/* EV（内訳） */}
+                <span className="flex items-baseline gap-0.5 shrink-0">
+                  <span className="text-muted-foreground text-[10px]">EV</span>
+                  <span className={`tabular-nums text-[12px] font-semibold ${h.ev != null ? (
+                    h.ev >= 1.2 ? "text-emerald-600" :
+                    h.ev >= 1.0 ? "text-blue-600" :
+                    "text-muted-foreground"
+                  ) : "text-muted-foreground"}`}>
+                    {h.ev != null ? h.ev.toFixed(2) : "—"}
+                  </span>
+                </span>
               </div>
 
               {/* ---- 行2: 性齢 | 騎手 | 斤量 | 人気 ---- */}
@@ -516,30 +591,10 @@ export const HorseCardMobile = memo(function HorseCardMobile({ horses, isBanei, 
                 </span>
               </div>
 
-              {/* ---- 行2.5: 前日想定オッズ + GAP（assumed_odds が有効値のときのみ表示） ---- */}
-              {h.assumed_odds != null && h.assumed_odds > 0 && (
-                <div className="flex items-center gap-1 mt-0.5 text-[11px]">
-                  <span className="text-muted-foreground">想定</span>
-                  <span className="tabular-nums text-muted-foreground">
-                    {h.assumed_odds.toFixed(1)}倍
-                    {h.assumed_popularity != null ? `${h.assumed_popularity}人気` : ""}
-                  </span>
-                  {h.odds != null && h.odds > 0 && (() => {
-                    const gap = (h.odds - h.assumed_odds!) / h.assumed_odds! * 100;
-                    if (Math.abs(gap) < 3) {
-                      return <span className="text-muted-foreground tabular-nums">±0%</span>;
-                    } else if (gap < 0) {
-                      return <span className="tabular-nums text-emerald-600 dark:text-emerald-400 font-semibold">↓{Math.abs(gap).toFixed(0)}%</span>;
-                    } else {
-                      return <span className="tabular-nums text-muted-foreground">↑{gap.toFixed(0)}%</span>;
-                    }
-                  })()}
-                </div>
-              )}
-
-              {/* ---- 行3: 馬体重（取得済み時のみ） ---- */}
+              {/* ---- 行2.3: 馬体重（発表後のみ） ---- */}
               {horseWeightNode && (
-                <div className="flex items-center mt-0.5 text-[11px]">
+                <div className="flex items-center gap-1 mt-0.5 text-[11px] text-muted-foreground">
+                  <span>馬体重</span>
                   {horseWeightNode}
                 </div>
               )}
@@ -609,88 +664,40 @@ export const HorseCardMobile = memo(function HorseCardMobile({ horses, isBanei, 
               {/* ---- セパレータ ---- */}
               <div className="border-t border-border/40 mt-1.5 mb-1" />
 
-              {/* ---- 下部: 脚質 | 通過順 | 三連率 | EV | 短評 ---- */}
+              {/* ---- 下部: 道悪 ---- */}
               <div className="flex items-center flex-wrap gap-x-2 gap-y-0.5 text-[11px]">
-                {/* 脚質 */}
-                <span className={`shrink-0 font-bold ${rsColorCls(h.running_style || "")}`}>
-                  {runStyle}
-                </span>
-
-                {/* 通過順（バネイは非表示） */}
-                {!isBanei && corners && (
-                  <span className="text-muted-foreground tabular-nums shrink-0">{corners}</span>
-                )}
-
-                {/* 三連率 + 軸馬度/穴馬度/EV を縦2段で表示（上段: ラベル+確率 / 下段: 対応値） */}
-                {/* 勝率 → 下段に軸馬度 */}
-                <span className="flex flex-col items-start shrink-0 gap-0">
-                  <span className="flex items-baseline gap-0.5">
-                    <span className="text-muted-foreground">勝</span>
-                    <span className={`tabular-nums font-semibold ${rankCls(wpRank)}`}>{wp.toFixed(1)}%</span>
-                  </span>
-                  <span className="text-[10px] text-muted-foreground tabular-nums">
-                    軸 <span className="font-semibold text-foreground">
-                      {h.jiku_score != null ? h.jiku_score.toFixed(1) : "—"}
-                    </span>
-                  </span>
-                </span>
-                {/* 連対率 → 下段に穴馬度 */}
-                <span className="flex flex-col items-start shrink-0 gap-0">
-                  <span className="flex items-baseline gap-0.5">
-                    <span className="text-muted-foreground">連</span>
-                    <span className={`tabular-nums font-semibold ${rankCls(p2Rank)}`}>{p2.toFixed(1)}%</span>
-                  </span>
-                  <span className="text-[10px] text-muted-foreground tabular-nums">
-                    穴 <span className="font-semibold text-foreground">
-                      {h.ana_do != null ? h.ana_do.toFixed(1) : "—"}
-                    </span>
-                  </span>
-                </span>
-                {/* 複勝率 → 下段に EV */}
-                <span className="flex flex-col items-start shrink-0 gap-0">
-                  <span className="flex items-baseline gap-0.5">
-                    <span className="text-muted-foreground">複</span>
-                    <span className={`tabular-nums font-semibold ${rankCls(p3Rank)}`}>{p3.toFixed(1)}%</span>
-                  </span>
-                  <span className="text-[10px] text-muted-foreground tabular-nums">
-                    EV <span className={`font-semibold ${h.ev != null ? (
-                      h.ev >= 1.2 ? "text-emerald-600" :
-                      h.ev >= 1.0 ? "text-blue-600" :
-                      "text-muted-foreground"
-                    ) : "text-muted-foreground"}`}>
-                      {h.ev != null ? h.ev.toFixed(2) : "—"}
-                    </span>
-                  </span>
-                </span>
-
-                {/* 道悪着度数（baba_record.bad_n > 0 のみ表示） */}
-                {h.baba_record && h.baba_record.bad_n > 0 && (
-                  <span className="flex items-center gap-0.5 shrink-0 flex-wrap">
-                    <span className="text-muted-foreground">道悪</span>
-                    {/* 着度数: 1-2-3-着外（XX走：複勝率XX.X%） */}
-                    <span className={`tabular-nums font-semibold ${
-                      h.baba_record.bad_p3 != null && h.baba_record.good_p3 != null && h.baba_record.bad_p3 - h.baba_record.good_p3 >= 10
-                        ? "text-emerald-600 dark:text-emerald-400"
-                        : h.baba_record.bad_p3 != null && h.baba_record.good_p3 != null && h.baba_record.bad_p3 - h.baba_record.good_p3 <= -10
-                          ? "text-muted-foreground"
-                          : "text-foreground"
-                    }`}>
-                      {h.baba_record.bad_1 ?? 0}-{h.baba_record.bad_2 ?? 0}-{h.baba_record.bad_3 ?? 0}-{h.baba_record.bad_other ?? 0}
-                    </span>
-                    <span className="text-muted-foreground">
-                      ({h.baba_record.bad_n}走
-                      {h.baba_record.bad_p3 != null
-                        ? `：複${h.baba_record.bad_p3.toFixed(1)}%`
-                        : ""}
-                      )
-                    </span>
-                    {h.baba_record.bad_p3 != null && h.baba_record.good_p3 != null && h.baba_record.bad_p3 - h.baba_record.good_p3 >= 10 && (
-                      <span className="px-0.5 rounded bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-400 text-[10px] font-bold">
-                        道悪◎
+                {/* 道悪着度数（全馬表示・未経験は「経験なし」） */}
+                <span className="flex items-center gap-0.5 shrink-0 flex-wrap">
+                  <span className="text-muted-foreground">道悪</span>
+                  {h.baba_record && h.baba_record.bad_n > 0 ? (
+                    <>
+                      {/* 着度数: 1-2-3-着外（XX走：複勝率XX.X%） */}
+                      <span className={`tabular-nums font-semibold ${
+                        h.baba_record.bad_p3 != null && h.baba_record.good_p3 != null && h.baba_record.bad_p3 - h.baba_record.good_p3 >= 10
+                          ? "text-emerald-600 dark:text-emerald-400"
+                          : h.baba_record.bad_p3 != null && h.baba_record.good_p3 != null && h.baba_record.bad_p3 - h.baba_record.good_p3 <= -10
+                            ? "text-muted-foreground"
+                            : "text-foreground"
+                      }`}>
+                        {h.baba_record.bad_1 ?? 0}-{h.baba_record.bad_2 ?? 0}-{h.baba_record.bad_3 ?? 0}-{h.baba_record.bad_other ?? 0}
                       </span>
-                    )}
-                  </span>
-                )}
+                      <span className="text-muted-foreground">
+                        ({h.baba_record.bad_n}走
+                        {h.baba_record.bad_p3 != null
+                          ? `：複${h.baba_record.bad_p3.toFixed(1)}%`
+                          : ""}
+                        )
+                      </span>
+                      {h.baba_record.bad_p3 != null && h.baba_record.good_p3 != null && h.baba_record.bad_p3 - h.baba_record.good_p3 >= 10 && (
+                        <span className="px-0.5 rounded bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-400 text-[10px] font-bold">
+                          道悪◎
+                        </span>
+                      )}
+                    </>
+                  ) : (
+                    <span className="text-[11px] text-muted-foreground">経験なし</span>
+                  )}
+                </span>
               </div>
             </div>
 
