@@ -1226,6 +1226,7 @@ def _scan_today_predictions(date_str: str) -> dict:
                     "ana_do": _ana_do_val,       # 新: 穴馬度 0-100
                     "jiku_score": _jiku_val,     # 新: 軸馬度 0-100
                     "jiku_gap": _race_jiku_gap,  # そのレースの jiku_gap（自信度バッジ用・表示専用）
+                    "jiku_gap3": r.get("jiku_gap3", 0.0),  # T-3: 軸馬の信頼度バッジ用(1位-3位差・表示専用)
                     "star_rating": star_rating,
                     "is_star": is_star,
                 })
@@ -1317,6 +1318,7 @@ def _scan_today_predictions(date_str: str) -> dict:
                         "jiku_score": round(jiku_val, 1),   # 軸馬度スコア 0-100
                         "jiku_gap_kiken": _jiku_gap_val,    # 最上位軸馬度との差（または2位差）表示専用
                         "jiku_gap": r.get("jiku_gap", 0.0),  # そのレースの jiku_gap（自信度バッジ用・表示専用）
+                        "jiku_gap3": r.get("jiku_gap3", 0.0),  # T-3: 軸馬の信頼度バッジ用(1位-3位差・表示専用)
                         "divergence_signal": sig,
                         "_gap": _kiken_gap,  # 内部ソート用（APIレスポンスには含まない）
                     }
