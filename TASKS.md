@@ -30,10 +30,11 @@
 | ✅ | — | EV表記を倍率(3.87)に統一(馬柱PC/Mobile) | 完了 `fe1248f`(MarkSummary/OddsPanel と整合) |
 | ✅ | T-5 | 穴馬度を絶対値のみ表示(2位差削除) | 完了 `fe1248f`(master決定) |
 | ✅ | T-2 | 馬柱バランス改善(本丸) | 完了。軸馬度を主役化(大22px緑バッジ)+穴馬度全馬表示+確率内訳化(13px)+最上段に集約(馬名/騎手/オッズ/脚質/通過順/前日想定)+父は性齢斤量馬体重の下+馬体重1行。master「だいぶすっきりした」 |
-| 待 | T-3 | 自信度SS〜Dの打ち方 | master議論希望(現状維持・据え置き) |
-| 待 | push | commit 2本(`8aab17c`/`fe1248f`) | master決定=push しない(T-2後にまとめて) |
-| 待 | 保留物 | track_condition / baba_pdf_cache / 分析script×7 | 据え置き(gitignore判断含む) |
-| 参考 | 気づき | ホーム「本日の開催競馬場 **4場**」表記だが実3場(盛岡/大井/船橋) | 軽微・別途 |
+| ✅ | T-3 | 自信度=軸馬の信頼度(SS〜D→断トツ/優位/拮抗3段) | 完了 `ce84e1b`/`dfcabb4` push済。jiku_gap3場別較正・ホーム4カード+一覧+印断層に展開。検証で穴馬度ベース荒れ度(2軸案)は不成立=不採用。詳細 `memory/project_jiku_confidence_grade.md` |
+| ✅ | push | T-3コミット | `ce84e1b`/`dfcabb4` push済(origin=dfcabb4)。モバイル馬名修正`c0b6e81`・保留物`1f64e80`も済 |
+| ✅ | 保留物 | track_condition / baba_pdf_cache / 分析script×7 | 完了 `1f64e80`。track_condition資産commit / baba_pdf_cache+分析script×7をgitignore |
+| ✅ | モバイル | レース一覧・印断層の新バッジ モバイル幅実画面目視 | 完了。390pxで一覧=断トツ緑バッジ・印断層=軸馬の信頼度断トツ・横崩れ0・横スクロール無し |
+| ✅ | 修正 | ホーム「N場」表記に帯広(ばんえい)混入 | 完了。`_get_todays_venues`(home_info専用)がNAR公式の帯広65 race_idをvenuesに取込→「実態+1場」化。`is_banei()`除外を追加+帯広を積極補完する「ばんえい安全策」削除([[feedback_banei_excluded]]逆行)。pred側は帯広除外済の非対称を根治。表示専用でML/印/買い目 非汚染。dashboard再起動(PID10592)で本番反映・今日は帯広非開催で5場不変=回帰なし |
 
 ---
 

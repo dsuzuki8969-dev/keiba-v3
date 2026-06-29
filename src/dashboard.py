@@ -208,11 +208,12 @@ def _get_todays_venues(date_str: str) -> list:
     PremiumNetkeibaScraper.fetch_date() と同等のフォールバック構成:
     1. netkeiba (JRA + NAR)
     2. JRA公式 (netkeibaが空の場合)
-    3. NAR公式 (常に補完 — ばんえい含む)
-    4. ばんえい安全策 (NAR公式が帯広を返さない場合のみ)
+    3. NAR公式 (常に補完)
+    4. 岩手安全策 (水沢・盛岡がまだ含まれていない場合のみ)
+    なお、ばんえい(帯広)はホーム表示対象外として除外する (feedback_banei_excluded)。
     """
     try:
-        from data.masters.venue_master import get_venue_code_from_race_id, get_venue_name
+        from data.masters.venue_master import get_venue_code_from_race_id, get_venue_name, is_banei
         from src.scraper.netkeiba import NetkeibaClient, RaceListScraper
 
         client = NetkeibaClient(no_cache=True)
@@ -245,29 +246,8 @@ def _get_todays_venues(date_str: str) -> list:
         except Exception as e:
             logger.debug("NAR公式補完失敗: %s", e)
 
-        # ばんえい安全策（NAR公式が帯広を返さなかった場合のみ発動）
-        if not any(rid[4:6] == "65" for rid in ids):
-            try:
-                from src.scraper.netkeiba import NAR_URL
-                year = date_str[:4]
-                mmdd = date_str[5:7] + date_str[8:10]
-                # nar.netkeiba.comで1R目を試行（キャッシュ or ネットワーク）
-                probe_id = f"{year}65{mmdd}01"
-                probe_soup = client.get(
-                    f"{NAR_URL}/race/shutuba.html",
-                    params={"race_id": probe_id}
-                )
-                horse_links = probe_soup.select("a[href*='/horse/']") if probe_soup else []
-                if len(horse_links) >= 3:
-                    # 出走馬が確認できた場合のみ開催とみなす
-                    banei_ids = [f"{year}65{mmdd}{rno:02d}" for rno in range(1, 13)]
-                    for rid in banei_ids:
-                        if rid not in existing:
-                            ids.append(rid)
-                            existing.add(rid)
-                    logger.info("ばんえいプローブ補完: 12R")
-            except Exception as e:
-                logger.debug("ばんえい補完失敗: %s", e)
+        # 注: ばんえい(帯広65)はホーム表示対象外（feedback_banei_excluded: 買わない・予想しない・表示しない）。
+        #     以前ここにあった「ばんえい安全策(帯広を積極補完)」は方針逆行のため削除。venues構築側で is_banei 除外する。
 
         # 岩手安全策（水沢・盛岡がまだ含まれていない場合のみ発動）
         for iwate_vc, iwate_name in [("36", "水沢"), ("35", "盛岡")]:
@@ -297,6 +277,9 @@ def _get_todays_venues(date_str: str) -> list:
         for rid in ids:
             vc = get_venue_code_from_race_id(rid)
             if not vc:
+                continue
+            # ばんえい(帯広)はホーム表示対象外（feedback_banei_excluded）
+            if is_banei(vc):
                 continue
             name = get_venue_name(vc)
             if not name or name in seen_names:
