@@ -184,3 +184,10 @@ scripts/retrain_phase2b.py
 scripts/build_rich_preload.py
 # 診断成果物 (data/_diag 既存追跡分は維持・今後の新規 csv/md/py は管理外)
 data/_diag/
+
+# 2026-06-30 追加: 馬場/買い目 使い捨て分析スクリプト (結論は handoff/memory に永続化済・本番非依存)
+scripts/analyze_baba_*.py
+scripts/analyze_bet_combinations*.py
+scripts/explore_alt_bet_structures.py
+# 馬場 PDF 生キャッシュ (JRA公式から再取得可能・4.2MB・誤commit防止)
+data/baba_pdf_cache/
