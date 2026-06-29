@@ -2,7 +2,7 @@ import { useMemo, useState, useEffect } from "react";
 import { PremiumCard, PremiumCardHeader, PremiumCardTitle, PremiumCardAccent } from "@/components/ui/premium/PremiumCard";
 import { Target as TargetIcon } from "lucide-react";
 import { devGrade, evCls, gradeCls, rankCls, WAKU_BG } from "@/lib/constants";
-import { ConfidenceBadge } from "@/components/keiba/ConfidenceBadge";
+import { JikuConfBadge, jikuConfTier, isJraVenue } from "@/components/keiba/JikuConfBadge";
 import type { HorseData } from "./RaceDetailView";
 
 // 狭い画面判定フック（印行の表示制御用）
@@ -271,6 +271,19 @@ export function MarkSummary({ horses: rawHorses, race }: Props) {
   // モバイルプレビューモードでも 2 行レイアウトに切替
   const isNarrow = useIsNarrowOrMobile();
 
+  // 軸馬の信頼度(T-3): 本命-3位の軸馬度差(jiku_gap3)を場別に3段階化
+  const jikuGap3 = useMemo(() => {
+    const js = horses
+      .map((h) => h.jiku_score)
+      .filter((v): v is number => typeof v === "number" && v > 0)
+      .sort((a, b) => b - a);
+    if (js.length >= 3) return js[0] - js[2];
+    if (js.length === 2) return js[0] - js[1];
+    return 0;
+  }, [horses]);
+  const isJraRace =
+    race.is_jra != null ? Boolean(race.is_jra) : isJraVenue(race.venue as string | undefined);
+
   // 全馬の三連率順位を計算
   const probRanks = useMemo(() => {
     const wp = rankInfo(horses.map((h) => h.win_prob || 0));
@@ -319,15 +332,8 @@ export function MarkSummary({ horses: rawHorses, race }: Props) {
           </PremiumCardAccent>
           <PremiumCardTitle className="text-base flex items-center gap-2">
             印断層分析
-            {(() => {
-              const _c = (race.overall_confidence || race.confidence) as string | undefined;
-              return _c ? (
-                <>
-                  <span className="text-sm text-muted-foreground font-normal">自信度</span>
-                  <ConfidenceBadge rank={_c} className="text-sm px-3 py-1" />
-                </>
-              ) : null;
-            })()}
+            <span className="text-sm text-muted-foreground font-normal">軸馬の信頼度</span>
+            <JikuConfBadge tier={jikuConfTier(jikuGap3, isJraRace)} className="px-2 py-0.5" />
           </PremiumCardTitle>
         </div>
       </PremiumCardHeader>

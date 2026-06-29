@@ -1,5 +1,6 @@
 import { useState, useCallback, useEffect, useMemo } from "react";
 import { useLocation, useSearchParams } from "react-router-dom";
+import { isJraVenue } from "@/components/keiba/JikuConfBadge";
 import { useTodayPredictions, useHomeInfo, useRaceCardResults } from "@/api/hooks";
 import { localDate } from "@/lib/constants";
 import { VenueTabs } from "@/components/keiba/VenueTabs";
@@ -202,6 +203,7 @@ export default function TodayPage() {
               <RaceCard
                 key={r.race_no}
                 race={r}
+                isJra={isJraVenue(currentVenue)}
                 winPctRank={rankMap.get(r.race_no)}
                 onOpen={handleOpenRace}
                 hitResult={

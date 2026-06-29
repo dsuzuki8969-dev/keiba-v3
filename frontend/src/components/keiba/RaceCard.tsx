@@ -3,6 +3,7 @@ import { PremiumCard } from "@/components/ui/premium/PremiumCard";
 import { SurfaceBadge } from "./SurfaceBadge";
 import { GradeBadge } from "./GradeBadge";
 import { ConfidenceBadge } from "./ConfidenceBadge";
+import { JikuConfBadge, jikuConfTier } from "./JikuConfBadge";
 import { MarkBadge } from "./MarkBadge";
 import { surfShort } from "@/lib/constants";
 import { Clock3, Users } from "lucide-react";
@@ -69,6 +70,8 @@ interface RaceData {
   honmei_win_pct?: number;
   /** 本命馬の軸馬度（0〜100）— レースカードに表示 */
   honmei_jiku_score?: number;
+  /** T-3: 本命-3位の軸馬度差。軸馬の信頼度バッジ用（表示専用） */
+  jiku_gap3?: number;
   honmei_odds?: number;
   honmei_popularity?: number;
   url?: string;
@@ -84,6 +87,9 @@ interface Props {
   winPctRank?: number;
   /** T-039: 的中バッジ情報（親 component が useRaceCardResults で取得して渡す） */
   hitResult?: RaceCardHitResult | null;
+  /** T-3: このレースが JRA(中央) か。軸馬の信頼度を場別判定するため親(会場既知)が渡す。
+   *  undefined のとき(過去成績等)は従来の自信度バッジにフォールバック */
+  isJra?: boolean;
 }
 
 // 6/21 マスター指示: 勝率1位の金枠 / 2位のネイビー枠は廃止。
@@ -92,7 +98,7 @@ interface Props {
 // computeWinPctRanks は @/lib/keibaUtils に移動済。Fast Refresh 互換のため
 // このファイルからの re-export は廃止。利用側で `@/lib/keibaUtils` から直接 import すること。
 
-export const RaceCard = memo(function RaceCard({ race, onOpen, winPctRank, hitResult }: Props) {
+export const RaceCard = memo(function RaceCard({ race, onOpen, winPctRank, hitResult, isJra }: Props) {
   const conf = (race.overall_confidence || "C").replace(/⁺/g, "+");
   const surf = surfShort(race.surface || "");
   // [HIGH-1 修正] isMobile を検知して RaceCardOddsLine に渡す
@@ -137,12 +143,13 @@ export const RaceCard = memo(function RaceCard({ race, onOpen, winPctRank, hitRe
           <span className="text-base font-bold ml-0.5">R</span>
         </span>
         {race.grade && <GradeBadge grade={race.grade} />}
-        {/* 単勝自信度バッジ（「単」ラベル付き） */}
-        {race.tansho_confidence && (
+        {/* 軸馬の信頼度バッジ(T-3): jiku_gap3 + 場(JRA/NAR)があれば3段階(断トツ/優位/拮抗)。
+            無ければ従来の自信度バッジにフォールバック(過去成績カード等) */}
+        {isJra !== undefined && race.jiku_gap3 != null ? (
+          <JikuConfBadge tier={jikuConfTier(race.jiku_gap3, isJra)} className="ml-1" />
+        ) : race.tansho_confidence ? (
           <ConfidenceBadge rank={(race.tansho_confidence || "").replace(/⁺/g, "+")} label="単" className="ml-1" />
-        )}
-        {/* fallback: tansho_confidence 未設定時は overall を表示 */}
-        {!race.tansho_confidence && (
+        ) : (
           <ConfidenceBadge rank={conf} className="ml-1" />
         )}
         {race.post_time && (
