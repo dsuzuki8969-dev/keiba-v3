@@ -36,15 +36,10 @@ import { DataAnalysisPanel } from "./DataAnalysisPanel";
 import { RaceResultPanel } from "./RaceResultPanel";
 import PaceFormation from "./PaceFormation";
 import { PastRunsPanel } from "./PastRunsPanel";
-import { TicketSection } from "./TicketSection";
 import { MovieEmbed } from "./MovieEmbed";
 import { AbilityVsMarketTab } from "./AbilityVsMarketTab";
 import type { HorseData, RaceDetail } from "./RaceDetailView";
 import { NAR_LIVE_TRACK_MAP, jraVideoTarget } from "@/lib/constants";
-
-// 買い目指南タブを非表示にするフラグ（可逆・Step 1a 見える化転換）
-// true にすると「買い目指南」タブが非表示になる。false で元に戻せる。
-const HIDE_BAIME_TAB = true;
 
 // タブ項目の種類
 type TabItem =
@@ -109,22 +104,18 @@ export function TabGroup3Horse({
     { type: "content", key: "odds", label: "オッズ" },
   ];
 
-  // 3行目: 印断層分析・実力vs市場・[買い目指南]・レース結果・レース映像
+  // 3行目: 印断層分析・実力vs市場・レース結果・レース映像
   // レース映像はページ内に iframe 埋め込み。外部リンクは MovieEmbed 内の「別タブで開く↗」を使用
   const marksTab: TabItem = { type: "content", key: "marks", label: "印断層分析" };
   // Step 1a 見える化転換: 「実力vs市場」新タブ
   const abilVsMarketTab: TabItem = { type: "content", key: "abilvsmarket", label: "実力vs市場" };
-  // 買い目指南タブ: HIDE_BAIME_TAB=true のとき非表示（コメントアウトでなくフラグ制御・可逆）
-  const baimeTab: TabItem = { type: "content", key: "baime", label: "買い目指南" };
   const resultTab: TabItem = { type: "content", key: "result", label: "レース結果" };
   const movieTab: TabItem | null = movieUrl
     ? { type: "content", key: "movie", label: "レース映像" }
     : null;
-  // 3行目に表示するコンテンツタブ（最大4つ）
-  // HIDE_BAIME_TAB=true 時は baimeTab を除外し abilVsMarketTab を先頭に追加
-  const row3Tabs: TabItem[] = HIDE_BAIME_TAB
-    ? [marksTab, abilVsMarketTab, resultTab, ...(movieTab ? [movieTab] : [])]
-    : [marksTab, abilVsMarketTab, baimeTab, resultTab, ...(movieTab ? [movieTab] : [])];
+  // 3行目に表示するコンテンツタブ（最大4つ: 印断層分析・実力vs市場・レース結果・レース映像）
+  // 買い目指南タブは見える化転換で廃止（買い目算出 backend は休眠）
+  const row3Tabs: TabItem[] = [marksTab, abilVsMarketTab, resultTab, ...(movieTab ? [movieTab] : [])];
 
   // トップ・ボトム両方のタブグリッドの参照（ボトムクリック時にトップへスクロール）
   const topTabsRef = useRef<HTMLDivElement | null>(null);
@@ -169,9 +160,8 @@ export function TabGroup3Horse({
         })}
       </div>
 
-      {/* 3行目: 印断層分析・実力vs市場・レース結果・レース映像 のコンテンツタブ */}
-      {/* row3Tabs が5列(HIDE_BAIME_TAB=false+映像あり)になる場合は grid-cols-5 に切り替え */}
-      <div role="tablist" className={`grid ${row3Tabs.length >= 5 ? "grid-cols-5" : "grid-cols-4"} p-0.5 bg-muted/60 border border-border rounded-lg`}>
+      {/* 3行目: 印断層分析・実力vs市場・レース結果・レース映像 のコンテンツタブ（最大4列） */}
+      <div role="tablist" className="grid grid-cols-4 p-0.5 bg-muted/60 border border-border rounded-lg">
         {row3Tabs.map((tab) => {
           const isActive = tab.key === activeTab;
           return (
@@ -193,8 +183,8 @@ export function TabGroup3Horse({
             </button>
           );
         })}
-        {/* タブ数が列数未満なら空セルでレイアウトを維持（4列 or 5列） */}
-        {Array.from({ length: Math.max(0, (row3Tabs.length >= 5 ? 5 : 4) - row3Tabs.length) }).map((_, i) => (
+        {/* タブ数が4列未満なら空セルでレイアウトを維持 */}
+        {Array.from({ length: Math.max(0, 4 - row3Tabs.length) }).map((_, i) => (
           <div
             key={`empty-${fromBottom ? "b" : "t"}-${i}`}
             className="rounded-md"
@@ -233,30 +223,6 @@ export function TabGroup3Horse({
         {activeTab === "pastruns" && <PastRunsPanel horses={horses} />}
         {/* 実力vs市場タブ (Step 1a 見える化転換) */}
         {activeTab === "abilvsmarket" && <AbilityVsMarketTab horses={horses} />}
-        {/* 買い目指南タブ: HIDE_BAIME_TAB=false のときのみ表示 */}
-        {!HIDE_BAIME_TAB && activeTab === "baime" && (() => {
-          // Phase 1-c: 3モード / 旧tickets / 買わない判定のいずれかがあれば表示
-          const tbm = race.tickets_by_mode;
-          const hasModes =
-            tbm &&
-            (((tbm as { fixed?: unknown[] })?.fixed?.length || 0) +
-              (tbm.accuracy?.length || 0) +
-              (tbm.balanced?.length || 0) +
-              (tbm.recovery?.length || 0) > 0);
-          const hasTickets =
-            (race.tickets && race.tickets.length > 0) ||
-            (race.formation_tickets && race.formation_tickets.length > 0);
-          const skip = race.bet_decision?.skip;
-
-          if (!hasModes && !hasTickets && !skip) {
-            return (
-              <p className="text-sm text-muted-foreground py-6 text-center">
-                買い目の推奨がありません（データ未算出）。
-              </p>
-            );
-          }
-          return <TicketSection race={race} />;
-        })()}
         {activeTab === "movie" && movieUrl && (
           <MovieEmbed
             url={movieUrl}

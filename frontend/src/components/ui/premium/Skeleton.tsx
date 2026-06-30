@@ -56,7 +56,7 @@ export function SummaryCardsSkeleton() {
 }
 
 /**
- * ChartSkeleton — TrendCharts 用のプレースホルダ
+ * ChartSkeleton — チャート系コンポーネント用のプレースホルダ（汎用）
  */
 export function ChartSkeleton({ count = 2 }: { count?: number }) {
   return (
