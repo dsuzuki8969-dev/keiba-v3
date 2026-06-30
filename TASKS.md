@@ -129,7 +129,8 @@
 - ✅ Step1b: `StatsCard.tsx`的中率主役+回収率(参考)撤去 / `HomePage.tsx`乖離ショーケース(妙味=緑・危険枠を「**拮抗・波乱注意**」amber化=master A承認・複勝92%本命を赤=危険と断じる違和感を解消・上位拮抗検知ロジックは維持)。
 - ✅ **成績ページ(ResultsPage)再有効化**(2026-05-29非表示を解除・master A承認): 回収率/ROI/純利/買い目/高配当を**全排除**し的中率特化(複勝/連対/勝率・印別成績・自信度別的中率・過去予想は残置)。`App.tsx`+`constants.ts`(ナビ復活)+`ResultsPage.tsx`(TrendCharts撤去・回収率hooks整理)+`DetailedAnalysis.tsx`(回収率列/競馬場ROIバッジ/単勝高配当TOP10削除・印別成績は残置)。
 - ✅ 全体通し検証: PC+モバイル(375px横崩れ無し)・console0・build型0。
-- ⬜ **Step2(買い目backend撤去・不要component物理削除)= master確認後・P2**。現状 hybrid=null / HIDE_BAIME_TAB で非表示化(可逆)。物理削除対象=UmarenCards/SanrenpukuExtendedCards/MPrimeSummarySection/TrendCharts.tsx + backend買い目算出。dead import残置中。
+- ✅ **Step2 frontend dead除去 完了(2026-06-30・master決定=frontend deadのみ・commit `9ed4e48`)**: 並列Explore×2でscope確定(frontend dead / backend印依存)→ **削除4ファイル**(UmarenCards/SanrenpukuExtendedCards/TrendCharts=参照0 + TicketSection=HIDE_BAIME_TAB到達不能の買い目指南UI) + TabGroup3Horse の `HIDE_BAIME_TAB`/`baimeTab`/買い目render除去(3行目=印断層分析/実力vs市場/レース結果/レース映像・grid-cols-4)。**-1,921行**。npm build型0 / playwright実画面(買い目タブ消失・見える化[印断層/実力vs市場]健在・console0 today+results) / typescript-reviewer Approve。
+- 🚫 **backend買い目算出(tickets_by_mode/formation/bet_decision)= 物理削除せず休眠維持(master決定)**。理由: ◉/穴のelite印(見える化で表示)が `apply_elite_and_formation` 内でformation生成と同居→引き剥がすと印破壊リスク・表示無影響で価値≈0([[feedback_minimal_change_principle]])。やるなら将来 `BETTING_ENABLED=False` フラグでoff(可逆)。
 
 **(b) 別構造探索 = 黒字無し確定**:
 - ◎軸以外(○-▲/○-△/▲-△ 馬連ワイド)・複勝単体・◎単勝条件層化・◎軸少点数三連複・馬単 を2025実データ検証 → **全クラス赤字**。三連複「黒字」6件は `_roi_val`(L780)の bet約分バグによる偽陽性(真値77-82%赤字)。市場効率の壁を再確認。`data/_diag/alt_bet_structures.csv`。
