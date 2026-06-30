@@ -3310,7 +3310,14 @@ def create_app():
                             _pred_venues = {
                                 r.get("venue") for r in _pred_sched.get("races", []) if r.get("venue")
                             }
-                            from src.scraper.kaisai_calendar_util import get_open_venues as _gov
+                            # dashboard は常駐プロセスでカレンダーをキャッシュするため、
+                            # 別プロセス(run_analysis_date 自己補完 / repair script)の更新を
+                            # 取り込むよう判定直前に再ロードする。
+                            from src.scraper.kaisai_calendar_util import (
+                                get_open_venues as _gov,
+                                reload_calendar as _reload_cal,
+                            )
+                            _reload_cal()
                             _exp = _gov(tomorrow)
                             _expected_venues = set(_exp.get("jra", [])) | set(_exp.get("nar", []))
                             _missing_venues = _expected_venues - _pred_venues

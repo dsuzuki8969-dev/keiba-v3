@@ -46,7 +46,12 @@ logger = get_logger(__name__)
 def repair(start: datetime.date, days: int) -> int:
     all_courses = get_all_courses()
     scraper = PremiumNetkeibaScraper(all_courses, ignore_ttl=True)
-    scraper.login()
+    try:
+        scraper.login()
+    except Exception as e:  # noqa: BLE001
+        # ログイン失敗でも NAR 公式レース一覧 (fetch_date) は取得できる場合があるため続行。
+        logger.warning("[repair] ログイン失敗 (続行・キャッシュ/公式のみ): %s", e)
+        print(f"  [警告] ログイン失敗 (続行): {e}")
 
     total_added = 0
     for i in range(days):
