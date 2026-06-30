@@ -54,16 +54,21 @@ export function DetailedAnalysis({ data, cat, setCat, selectedVenue, setSelected
         </div>
       </PremiumCardHeader>
       <div className="space-y-4">
-        {/* カテゴリタブ */}
-        <div className="inline-flex items-center gap-0.5 p-0.5 bg-muted/60 border border-border rounded-lg">
+        {/* カテゴリタブ — ピル様式（期間セレクタと統一） */}
+        <div role="tablist" className="inline-flex items-center gap-0.5 p-0.5 bg-muted/60 border border-border rounded-lg">
           {CAT_TABS.map((t) => (
             <button
               key={t.key}
-              className={`px-3 py-1 text-xs font-semibold rounded-md whitespace-nowrap transition-all ${
+              role="tab"
+              aria-selected={cat === t.key}
+              className={[
+                "px-3 text-xs font-semibold rounded-md whitespace-nowrap",
+                "min-h-[36px] inline-flex items-center",
+                "transition-all duration-[var(--dur-base)] ease-[var(--ease-out)]",
                 cat === t.key
                   ? "bg-gradient-to-br from-brand-navy to-brand-navy-light text-white shadow-[0_1px_3px_rgba(0,0,0,0.2),0_0_0_1px_var(--brand-gold)]"
-                  : "text-muted-foreground hover:text-foreground hover:bg-background/60"
-              }`}
+                  : "text-muted-foreground hover:text-foreground hover:bg-background/60",
+              ].join(" ")}
               onClick={() => {
                 setCat(t.key);
                 setSelectedVenue(null);
@@ -74,7 +79,7 @@ export function DetailedAnalysis({ data, cat, setCat, selectedVenue, setSelected
           ))}
         </div>
 
-        {/* 競馬場ボタン */}
+        {/* 競馬場チップ — ピル同系統（選択=navy塗り、非選択=チップ枠） */}
         {venueKeys.length > 0 && (
           <div className="flex flex-wrap gap-1.5">
             {venueKeys.map((v) => {
@@ -82,17 +87,21 @@ export function DetailedAnalysis({ data, cat, setCat, selectedVenue, setSelected
               return (
                 <button
                   key={v}
+                  aria-pressed={selectedVenue === v}
                   onClick={() =>
                     setSelectedVenue(selectedVenue === v ? null : v)
                   }
-                  className={`px-2.5 py-1 text-xs rounded-md border transition-colors ${
+                  className={[
+                    "px-2.5 text-xs font-semibold rounded-md border",
+                    "min-h-[36px] inline-flex items-center gap-1",
+                    "transition-all duration-[var(--dur-base)] ease-[var(--ease-out)]",
                     selectedVenue === v
-                      ? "bg-primary text-primary-foreground border-primary"
-                      : "border-border hover:bg-muted"
-                  }`}
+                      ? "bg-gradient-to-br from-brand-navy to-brand-navy-light text-white border-brand-navy shadow-[0_1px_3px_rgba(0,0,0,0.2),0_0_0_1px_var(--brand-gold)]"
+                      : "border-border text-muted-foreground hover:text-foreground hover:bg-muted",
+                  ].join(" ")}
                 >
-                  {v}{" "}
-                  <span className="text-muted-foreground">
+                  {v}
+                  <span className={selectedVenue === v ? "text-white/70" : "text-muted-foreground"}>
                     {vs.total_races as number}R
                   </span>
                 </button>

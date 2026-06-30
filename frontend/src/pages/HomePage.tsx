@@ -312,7 +312,7 @@ export default function HomePage() {
                       {displayMark(r.honmei_mark) && (
                         <span className="font-bold text-foreground">{displayMark(r.honmei_mark)}</span>
                       )}
-                      <span className="text-sm font-semibold">{r.honmei_name || ""}</span>
+                      <span className="text-base font-bold">{r.honmei_name || ""}</span>
                     </div>
                     {/* 2行目: オッズ(人気) ・ 総合指数(2位との差) */}
                     <div className="flex items-center gap-x-4 gap-y-1 text-xs ml-8 mb-1.5 text-muted-foreground flex-wrap">
@@ -342,7 +342,7 @@ export default function HomePage() {
                       )}
                       {jikuScore > 0 && (
                         <span className="tabular-nums whitespace-nowrap">
-                          軸馬度<span className="stat-mono text-sm ml-0.5 text-foreground">{jikuScore.toFixed(1)}</span>
+                          軸馬度<span className="stat-mono text-base font-bold ml-0.5 text-foreground">{jikuScore.toFixed(1)}</span>
                           {jikuGap > 0 && <span className="ml-0.5 text-emerald-600 dark:text-emerald-400">(+{jikuGap.toFixed(1)})</span>}
                         </span>
                       )}
@@ -396,7 +396,7 @@ export default function HomePage() {
                       <span className="font-bold text-sm">{h.venue}{h.race_no}R</span>
                       {/* displayMark で ☆→穴 / 抑|무|× を非表示に変換。未設定時は「穴」 */}
                       <span className="font-bold text-emerald-600 dark:text-emerald-400">{displayMark(h.mark) || "穴"}</span>
-                      <span className="text-sm font-semibold">{h.horse_name}</span>
+                      <span className="text-base font-bold">{h.horse_name}</span>
                     </div>
                     {/* 2行目: オッズ(人気) ・ 総合指数(本命との差) */}
                     <div className="flex items-center gap-x-4 gap-y-1 text-xs ml-8 mb-1.5 text-muted-foreground flex-wrap">
@@ -423,7 +423,7 @@ export default function HomePage() {
                         複勝<span className="stat-mono text-sm ml-0.5 text-emerald-600 dark:text-emerald-400">{h.place3_prob.toFixed(1)}%</span>
                       </span>
                       <span className="tabular-nums whitespace-nowrap">
-                        穴馬度<span className={`stat-mono text-sm ml-0.5 font-bold ${anaColorCls}`}>{anaScore.toFixed(1)}</span>
+                        穴馬度<span className={`stat-mono text-base font-bold ml-0.5 ${anaColorCls}`}>{anaScore.toFixed(1)}</span>
                       </span>
                     </div>
                   </div>
@@ -473,7 +473,7 @@ export default function HomePage() {
                       {displayMark(h.mark) && displayMark(h.mark) !== "－" && (
                         <span className="font-bold text-foreground">{displayMark(h.mark)}</span>
                       )}
-                      <span className="text-sm font-semibold">{h.horse_name}</span>
+                      <span className="text-base font-bold">{h.horse_name}</span>
                     </div>
                     {/* 2行目: オッズ(人気) ・ 総合指数(最上位との差) */}
                     <div className="flex items-center gap-x-4 gap-y-1 text-xs ml-8 mb-1.5 text-muted-foreground flex-wrap">
@@ -498,7 +498,7 @@ export default function HomePage() {
                     <div className="flex items-center gap-x-4 gap-y-1 text-xs ml-8 text-muted-foreground flex-wrap">
                       {(h.jiku_score ?? 0) > 0 && (
                         <span className="tabular-nums whitespace-nowrap">
-                          軸馬度<span className="stat-mono text-sm ml-0.5 text-foreground">{(h.jiku_score ?? 0).toFixed(1)}</span>
+                          軸馬度<span className="stat-mono text-base ml-0.5 text-foreground">{(h.jiku_score ?? 0).toFixed(1)}</span>
                           {jikuGapKiken !== 0 && (
                             <span className={`ml-0.5 ${jikuGapKiken >= 0 ? "text-emerald-600 dark:text-emerald-400" : "text-red-500 dark:text-red-400"}`}>
                               ({jikuGapKiken >= 0 ? "+" : ""}{jikuGapKiken.toFixed(1)})
@@ -585,7 +585,7 @@ export default function HomePage() {
                       )}
                       {jikuScore > 0 && (
                         <span className="tabular-nums whitespace-nowrap">
-                          軸馬度<span className="stat-mono text-sm ml-0.5 text-foreground">{jikuScore.toFixed(1)}</span>
+                          軸馬度<span className="stat-mono text-base ml-0.5 text-foreground">{jikuScore.toFixed(1)}</span>
                           {/* 差(2位)・差(3位)をコンパクトに amber で付記 */}
                           <span className="ml-1 text-amber-600 dark:text-amber-400 font-semibold">
                             ({gap2 < 999 ? `-${gap2.toFixed(1)}` : "—"}・{gap3 < 999 ? `-${gap3.toFixed(1)}` : "—"})

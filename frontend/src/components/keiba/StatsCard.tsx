@@ -87,13 +87,6 @@ export const StatsCard = memo(function StatsCard({
   const winRate = honmei.win_rate ?? 0;
   const rentai = honmei.place2_rate ?? 0;
   const fukusho = honmei.place_rate ?? 0;
-  // ◎単勝物差し: tansho_roi / tansho_shushi が存在する場合のみ表示
-  const tanshoRoi: number | null = typeof honmei.tansho_roi === "number" && honmei.total > 0
-    ? honmei.tansho_roi
-    : null;
-  const tanshoShushi: number | null = typeof honmei.tansho_shushi === "number" && honmei.total > 0
-    ? honmei.tansho_shushi
-    : null;
   const lastUpdated = (d as { last_updated?: string }).last_updated ?? "";
   const resultsPending = (d as { results_pending?: boolean }).results_pending;
 
@@ -170,29 +163,29 @@ export const StatsCard = memo(function StatsCard({
           <div className="grid grid-cols-3 gap-2 mb-2">
             <div className="bg-muted/40 rounded-lg p-2 text-center">
               <div className="text-[10px] text-muted-foreground font-medium mb-0.5">勝率</div>
-              <div className={`stat-mono text-xl font-bold ${winRate >= 30 ? "text-brand-gold" : "text-foreground/70"}`}>
+              <div className={`stat-mono text-xl font-bold ${winRate >= 30 ? "text-brand-gold" : "text-foreground/85"}`}>
                 {winRate.toFixed(1)}<span className="text-sm">%</span>
               </div>
-              <div className="text-[9px] text-muted-foreground mt-0.5 tnum">{win}/{total}R</div>
+              <div className="text-[10px] text-muted-foreground mt-0.5 tnum">{win}/{total}R</div>
             </div>
             <div className="bg-muted/40 rounded-lg p-2 text-center">
               <div className="text-[10px] text-muted-foreground font-medium mb-0.5">連対率</div>
-              <div className={`stat-mono text-xl font-bold ${rentai >= 50 ? "text-emerald-500" : "text-foreground/70"}`}>
+              <div className={`stat-mono text-xl font-bold ${rentai >= 50 ? "text-emerald-500" : "text-foreground/85"}`}>
                 {rentai.toFixed(1)}<span className="text-sm">%</span>
               </div>
-              <div className="text-[9px] text-muted-foreground mt-0.5 tnum">{win + second}/{total}R</div>
+              <div className="text-[10px] text-muted-foreground mt-0.5 tnum">{win + second}/{total}R</div>
             </div>
             <div className="bg-muted/40 rounded-lg p-2 text-center">
               <div className="text-[10px] text-muted-foreground font-medium mb-0.5">複勝率</div>
-              <div className={`stat-mono text-xl font-bold ${fukusho >= 70 ? "text-emerald-500" : fukusho >= 50 ? "text-foreground" : "text-foreground/70"}`}>
+              <div className={`stat-mono text-xl font-bold ${fukusho >= 70 ? "text-emerald-500" : fukusho >= 50 ? "text-foreground" : "text-foreground/85"}`}>
                 {fukusho.toFixed(1)}<span className="text-sm">%</span>
               </div>
-              <div className="text-[9px] text-muted-foreground mt-0.5 tnum">{win + second + third}/{total}R</div>
+              <div className="text-[10px] text-muted-foreground mt-0.5 tnum">{win + second + third}/{total}R</div>
             </div>
           </div>
 
-          {/* 下段: 軸馬成績 / 単勝回収率 / 収支 の3カード（◎単勝の物差し） */}
-          <div className="grid grid-cols-3 gap-2">
+          {/* 下段: 軸馬成績（的中系指標のみ） */}
+          <div className="grid grid-cols-1 gap-2">
             <div className="bg-muted/40 rounded-lg p-2 text-center">
               <div className="text-[10px] text-muted-foreground font-medium mb-0.5">軸馬成績</div>
               <div className="stat-mono text-base font-bold tabular-nums">
@@ -204,26 +197,8 @@ export const StatsCard = memo(function StatsCard({
                 <span className="mx-0.5 text-muted-foreground/50">-</span>
                 <span className="text-muted-foreground/50">{out}</span>
               </div>
-              <div className="text-[9px] text-muted-foreground mt-0.5">1-2-3-着外</div>
+              <div className="text-[10px] text-muted-foreground mt-0.5">1-2-3-着外</div>
             </div>
-            {tanshoRoi !== null ? (
-              <div className="bg-muted/40 rounded-lg p-2 text-center">
-                <div className="text-[10px] text-muted-foreground font-medium mb-0.5">単勝回収率</div>
-                <div className={`stat-mono text-xl font-bold ${tanshoRoi >= 100 ? "text-emerald-500" : "text-foreground/70"}`}>
-                  {tanshoRoi.toFixed(1)}<span className="text-sm">%</span>
-                </div>
-                <div className="text-[9px] text-muted-foreground mt-0.5">◎単勝100円</div>
-              </div>
-            ) : <div />}
-            {tanshoShushi !== null ? (
-              <div className="bg-muted/40 rounded-lg p-2 text-center">
-                <div className="text-[10px] text-muted-foreground font-medium mb-0.5">収支</div>
-                <div className={`stat-mono text-xl font-bold ${tanshoShushi >= 0 ? "text-emerald-500" : "text-foreground/70"}`}>
-                  {tanshoShushi >= 0 ? "+" : ""}{tanshoShushi.toLocaleString()}<span className="text-sm">円</span>
-                </div>
-                <div className="text-[9px] text-muted-foreground mt-0.5">◎単勝100円</div>
-              </div>
-            ) : <div />}
           </div>
         </div>
 

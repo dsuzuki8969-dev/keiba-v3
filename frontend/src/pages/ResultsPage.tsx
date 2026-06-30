@@ -65,7 +65,8 @@ export default function ResultsPage() {
                     aria-selected={active}
                     onClick={() => setYear(y)}
                     className={[
-                      "px-3 py-1 text-xs font-semibold rounded-md whitespace-nowrap tnum",
+                      "px-3 text-xs font-semibold rounded-md whitespace-nowrap tnum",
+                      "min-h-[36px] inline-flex items-center",
                       "transition-all duration-[var(--dur-base)] ease-[var(--ease-out)]",
                       active
                         ? "bg-gradient-to-br from-brand-navy to-brand-navy-light text-white shadow-[0_1px_3px_rgba(0,0,0,0.2),0_0_0_1px_var(--brand-gold)]"
