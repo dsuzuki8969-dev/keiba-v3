@@ -2,7 +2,7 @@
  * 過去予想カレンダー
  * カレンダーUIで日付を選択→その日の予想を会場別に表示
  */
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useCallback, useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "@/api/client";
 import { PremiumCard, PremiumCardHeader, PremiumCardTitle, PremiumCardAccent } from "@/components/ui/premium/PremiumCard";
@@ -265,32 +265,39 @@ export function PastPredictions({ initialDate }: { initialDate?: string }) {
     return (datesData?.daily_stats || {}) as Record<string, DailyStat>;
   }, [datesData]);
 
-  // 初期カレンダー月を最新データに合わせる
-  // 同じ値の場合は setState しないガードを入れて不要な再レンダリングを防ぐ
-  useEffect(() => {
-    if (!datesData?.dates?.length) return;
-    const now = new Date();
-    const curYear = now.getFullYear();
-    const datesThisYear = datesData.dates.filter((d: string) =>
-      d.startsWith(String(curYear))
-    );
-    if (datesThisYear.length > 0) {
-      setCalYear((prev) => (prev === curYear ? prev : curYear));
-      setCalMonth((prev) => {
-        const m = now.getMonth();
-        return prev === m ? prev : m;
-      });
-    } else {
-      // 当年データなし→最新データの年月に移動
-      const latest = datesData.dates[0]; // 新しい順
-      if (latest) {
-        const y = parseInt(latest.substring(0, 4), 10);
-        const m = parseInt(latest.substring(5, 7), 10) - 1;
-        setCalYear((prev) => (prev === y ? prev : y));
-        setCalMonth((prev) => (prev === m ? prev : m));
+  // 初期カレンダー月を最新データに合わせる。
+  // useEffect 内 setState (react-hooks/set-state-in-effect) を避け、render 中の
+  // 「データ変化検知 → state 同期」パターンで実装 (React 公式の derived-state)。
+  // setCalYear/setCalMonth は同値ガード付きなので無限ループしない。
+  // 初期値は undefined 固定: キャッシュ即時返却(マウント時に datesData あり)でも
+  // 初回 render で datesData!==undefined となり旧 useEffect と同様に必ず一度同期する。
+  const [prevDatesData, setPrevDatesData] = useState<typeof datesData>(undefined);
+  if (datesData !== prevDatesData) {
+    setPrevDatesData(datesData);
+    if (datesData?.dates?.length) {
+      const now = new Date();
+      const curYear = now.getFullYear();
+      const datesThisYear = datesData.dates.filter((d: string) =>
+        d.startsWith(String(curYear))
+      );
+      if (datesThisYear.length > 0) {
+        setCalYear((prev) => (prev === curYear ? prev : curYear));
+        setCalMonth((prev) => {
+          const m = now.getMonth();
+          return prev === m ? prev : m;
+        });
+      } else {
+        // 当年データなし→最新データの年月に移動
+        const latest = datesData.dates[0]; // 新しい順
+        if (latest) {
+          const y = parseInt(latest.substring(0, 4), 10);
+          const m = parseInt(latest.substring(5, 7), 10) - 1;
+          setCalYear((prev) => (prev === y ? prev : y));
+          setCalMonth((prev) => (prev === m ? prev : m));
+        }
       }
     }
-  }, [datesData]);
+  }
 
   // 選択日の予想データ
   const { data: predData, isLoading: loadingPred } = useQuery({

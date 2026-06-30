@@ -371,8 +371,8 @@ export default function HomePage() {
             </PremiumCardHeader>
             <div className="space-y-2">
               {anaHorses.map((h) => {
-                // 軸馬の信頼度バッジ: そのレースの jiku_gap3 を場別に3段階化
-                const anaTier = jikuConfTier(h.jiku_gap3 ?? 0, isJraVenue(h.venue));
+                // 注: 軸馬の信頼度バッジは「そのレースの本命」の信頼度を表すため、
+                // 表示馬が本命でない穴馬カードでは誤帰属になる → 非表示(2026-06-30)
                 const compVsHonmei = h.composite_vs_honmei ?? 0;
                 const anaScore = h.ana_do ?? h.miryoku;
 
@@ -390,9 +390,8 @@ export default function HomePage() {
                     onClick={() => goToRace(h.venue, h.race_no)}
                     onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); goToRace(h.venue, h.race_no); } }}
                   >
-                    {/* 1行目: 自信度バッジ ・ 競馬場 ・ レースNo ・ 印(穴) ・ 馬名 */}
+                    {/* 1行目: 競馬場 ・ レースNo ・ 印(穴) ・ 馬名 */}
                     <div className="flex items-center gap-2 mb-1.5 flex-wrap">
-                      <JikuConfBadge tier={anaTier} />
                       <span className="font-bold text-sm">{h.venue}{h.race_no}R</span>
                       {/* displayMark で ☆→穴 / 抑|무|× を非表示に変換。未設定時は「穴」 */}
                       <span className="font-bold text-emerald-600 dark:text-emerald-400">{displayMark(h.mark) || "穴"}</span>
@@ -450,8 +449,8 @@ export default function HomePage() {
             </PremiumCardHeader>
             <div className="space-y-2">
               {kikenHorses.map((h) => {
-                // 軸馬の信頼度バッジ: そのレースの jiku_gap3 を場別に3段階化
-                const kikenTier = jikuConfTier(h.jiku_gap3 ?? 0, isJraVenue(h.venue));
+                // 注: 軸馬の信頼度バッジは「そのレースの本命」の信頼度を表すため、
+                // 表示馬が本命でない危険な人気馬カードでは誤帰属になる → 非表示(2026-06-30)
                 const jikuRank = h.jiku_rank;
                 const pop = h.popularity;
                 const compGapKiken = h.composite_gap_kiken ?? 0;
@@ -465,9 +464,8 @@ export default function HomePage() {
                     onClick={() => goToRace(h.venue, h.race_no)}
                     onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); goToRace(h.venue, h.race_no); } }}
                   >
-                    {/* 1行目: 自信度バッジ ・ 競馬場 ・ レースNo ・ 印 ・ 馬名 */}
+                    {/* 1行目: 競馬場 ・ レースNo ・ 印 ・ 馬名 */}
                     <div className="flex items-center gap-2 mb-1.5 flex-wrap">
-                      <JikuConfBadge tier={kikenTier} />
                       <span className="font-bold text-sm">{h.venue}{h.race_no}R</span>
                       {/* displayMark で ☆→穴 / 抑|무|× を非表示に変換 */}
                       {displayMark(h.mark) && displayMark(h.mark) !== "－" && (

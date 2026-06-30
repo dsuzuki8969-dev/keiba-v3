@@ -19,7 +19,10 @@
 
 **検証**: npm build型0 / playwright(home+results+today × PC/Mobile・console0全画面・横崩れ0・買い目タブ消失維持=無回帰) / typescript-reviewer マージ可(diff内CRITICAL/HIGH無し・P1 role=tablist欠落は即修正済)。**push保留**(本番はCloudflare Tunnelローカル配信でcommit/build時点反映・push承認待ち)。
 
-**残(別チケット候補・P1/P2)**: PastPredictions L278 既存 `set-state-in-effect` ESLint(今回diff外) / ホーム「断トツ」バッジが穴馬/危険カードにも付く文脈違和感(批評🟡-b・未着手) / カード角丸・影トークンの横断統一(デザインシステム層・未着手)。
+**残課題も全クリア(2026-06-30・master「残課題もクリアにしろよ」)**:
+- ✅ **#1 断トツバッジ誤帰属**: バッジは「そのレースの本命の信頼度」→表示馬が本命でない穴馬/危険カードでは誤帰属だった。`HomePage.tsx` 穴馬/危険から `JikuConfBadge` 除去(絶対軸/拮抗=本命表示は維持)+未使用 anaTier/kikenTier 削除。実画面: 穴馬0/危険0・絶対軸5/拮抗2維持。
+- ✅ **#2 カードトークン横断統一**: 調査結果=`PremiumCard.tsx`(rounded-xl+--shadow-sm/md)が全ページ共通コンテナで**既に統一済**・rogue card無し。実際の不揃いはセレクタ様式で③で解消済。無理なトークン再リファクタは回帰リスクのみ([[feedback_minimal_change_principle]])→コード変更不要で実質クリア。
+- ✅ **#3 set-state-in-effect 根治**: `PastPredictions.tsx` の `useEffect(setCalYear/setCalMonth)` を render中 derived-state パターン(prevDatesData ガード)に置換+useEffect import除去。**ESLint 0**・カレンダーは現在月(2026年6月)に正常位置=挙動等価・無回帰。
 
 ---
 
