@@ -6,6 +6,23 @@
 
 ---
 
+## ✅ UI磨き（批評→コード磨き）4点 完了（2026-06-30 v6・全権委任自走・commit `6648b13` 未push）
+
+> master「Claude DesignにてUIを磨けるか」→「批評→コード磨き(推奨)」「全画面」「全4項目」→「寝るから完走しておいて」。`design:design-critique` で6画面(PC/Mobile)批評→優先リスト→Sonnet×2並列実装→playwright全画面検証→typescript-reviewer。**表示のみ・backend/pred/印 非改変**。
+
+| # | 改善 | 実装 | 検証 |
+|---|---|---|---|
+| ① | ホームLive Statsの回収率/収支撤去(的中率特化と整合) | `StatsCard.tsx` 単勝回収率/収支カード削除→的中率3指標+軸馬成績に統一・未使用変数除去 | ✅ PC/Mobile で単勝回収率/収支 消失・軸馬成績/的中実績 健在 |
+| ② | 密カードの視覚階層 | `HomePage.tsx` 4カードの馬名 `text-base font-bold` 主役化・主指標(軸馬度/穴馬度)を太字大 | ✅ 馬名/軸馬度が一目で主役に |
+| ③ | 過去成績の3セレクタ統一 | `ResultsPage.tsx`/`DetailedAnalysis.tsx`/`PastPredictions.tsx` 期間ピル/全体JRA NARタブ/競馬場チップを navy統一様式 | ✅ PC/Mobile で統一・連動(cat/venue→本命カード)無回帰 |
+| ④ | アクセシビリティ | セレクタ min-h-[36px](実測40px)・text-[9px]→[10px]・foreground/70→/85・role=tablist/tab/aria-pressed 整合 | ✅ タップ標的40px・横崩れ0 |
+
+**検証**: npm build型0 / playwright(home+results+today × PC/Mobile・console0全画面・横崩れ0・買い目タブ消失維持=無回帰) / typescript-reviewer マージ可(diff内CRITICAL/HIGH無し・P1 role=tablist欠落は即修正済)。**push保留**(本番はCloudflare Tunnelローカル配信でcommit/build時点反映・push承認待ち)。
+
+**残(別チケット候補・P1/P2)**: PastPredictions L278 既存 `set-state-in-effect` ESLint(今回diff外) / ホーム「断トツ」バッジが穴馬/危険カードにも付く文脈違和感(批評🟡-b・未着手) / カード角丸・影トークンの横断統一(デザインシステム層・未着手)。
+
+---
+
 ## ✅ 過去成績ページ 4点改修 完了（2026-06-30・実画面検証済・未commit）
 
 > master指示4点。ワークフロー(backend+frontend並列→build→keiba/typescript-reviewer)で実装→P0修正→cache再構築→dashboard再起動→playwright実画面検証(全体+JRA)。
