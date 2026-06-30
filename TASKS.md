@@ -19,13 +19,14 @@
 
 > **偏差値区切りの較正(2026-06-30・master指示「ターゲットのバランス感に」)**: 全頭449,820の実複勝率カーブを計測→上位を細分化し下中盤を広く取る**候補D**を採用(`scripts`相当の分析は scratchpad)。実データの honest 知見: 複勝75%級は偏差値90+のエリート帯でのみ(70〜全体は61%)・中盤は実態がやや平坦。dev_finish不変ゆえ version bump不要・aggregate cache無効化のみで再集計(33秒)。dashboard PID14512。
 
-> **タブ連動(2026-06-30・master指示)**: 詳細分析の全体/JRA/NARタブ切替で上部の本命的中カード(勝率/連対率/複勝率)も連動。`cat`状態をResultsPageへ持ち上げ→SummaryCardsが `detailed[cat].stats` の本命集計を読む(backend不要・frontendのみ)。カードラベルに(全体/JRA/NAR)表示。全体は36.1→36.2%(detailed基準=帯広除外整合)。実画面で3カテゴリ連動確認。
+> **タブ連動(2026-06-30・master指示・commit c298e7b)**: 詳細分析の全体/JRA/NARタブ切替で上部の本命的中カード(勝率/連対率/複勝率)も連動。`cat`状態をResultsPageへ持ち上げ→SummaryCardsが `detailed[cat].stats` の本命集計を読む(backend不要・frontendのみ)。カードラベルに(全体/JRA/NAR)表示。全体は36.1→36.2%(detailed基準=帯広除外整合)。実画面で3カテゴリ連動確認。
+> **競馬場連動(2026-06-30・master指示・commit 1340cb7)**: 競馬場ボタン選択でも本命カードがその場の成績に連動。`selectedVenue`をResultsPageへ持ち上げ→SummaryCardsが `detailed[cat].by_venue[venue]` を読む。ラベルに競馬場名(例:園田)。再クリックで全体へ。全24場・実画面で園田(勝38.7/複70.8%)確認。**全 push 済 origin/master=1340cb7**。
 
 **技術**: `_DETAIL_CACHE_VERSION`=3で全910日 detail cache 再構築(35秒)。`invalidate_aggregate_cache` に detail/サブdir削除追加(reviewer P0)。frontend型を `MarkStatRow`/`DetailedStats` で配線(reviewer P0)。dashboard PID17276稼働。**未commit**(master判断待ち)。
 
 ---
 
-## 🔴 T-7 表示率較正の本番ON — choice A実行 → **NO-GO**（マスター最終判断待ち・2026-06-30 v4）
+## 🔴 T-7 表示率較正の本番ON — choice A実行 → **NO-GO**（🎯次セッション集中・master指示「次はT-7だけ」・2026-06-30 v4/v5）
 
 > 詳細: `memory/handoff_2026-06-30_v4.md`。WF版(leak-free)較正テーブルを生成→**本番ON不可**を確証。本番完全無改変。
 
