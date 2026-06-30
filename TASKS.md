@@ -275,7 +275,9 @@
 - legacy `race["formation_tickets"]` は stale(未使用・実買いは tickets_by_mode)。低優先で除去可
 - dashboard PID 7024 稼働中。**Ctrl+Shift+R** で 6/22 card 確認(◉赤/穴amber/勝率メリハリ/4パターン買い目)
 
-## 🎯🎯🎯 精度ROI改善ロードマップ (6/21 全システム監査42エージェント結論)
+## 🚫 精度ROI改善ロードマップ = **正式クローズ**(2026-06-30 master決定)
+
+> **製品は的中率特化の見える化へ舵を切り済み。betting/ROI改善は構造天井で到達不可能と実証済＝scope外でクローズ**。backend買い目算出 flag-off / B-7新規データ / B-8モデル切替 は**着手しない**(将来やるなら単発研究として明示再起票)。判断と実証の保全: `memory/project_roi_roadmap_closed.md`。以下は**歴史的記録**(P0〜P3を全て dead end まで探索済の経緯)として保持。
 
 詳細: `memory/project_improvement_roadmap.md` / 全発見: `data/_diag/improvement_audit_findings.md`
 
@@ -385,10 +387,10 @@
 | B-2b 種牡馬母父正規化 | **クローズ(不実施)** | 同上。bloodline_db は id 主キーで実害軽微 |
 | git commit/push | **実行** (本セッション) | マスター承認 |
 
-### 真の長期改修パス (基準110%への唯一の道・別途大規模セッション)
-- **B-7** 新規データ取得 (風向き/内側使用率/含水量 detail/コース形態) — 個別指数の真の入力
-- **B-8** モデル切替検証 (XGBoost / CatBoost / PyTorch NN)
-- いずれも `feedback_construction_ceiling` の「長期改修必須」に対応。小手先(P4.2/指数いじり)は構造的天井で到達不可と既証明。
+### 🚫 真の長期改修パス (基準110%) = **クローズ**(2026-06-30 master決定・scope外)
+> 製品が的中率特化の見える化へ転換し、黒字化目標自体が撤退済。下記は**着手しない**(歴史的記録)。`memory/project_roi_roadmap_closed.md`。
+- ~~**B-7** 新規データ取得~~ → P3パイロット(含水率/クッション値)で **NO-GO実証済**(ΔROI/ΔAUC≈0・市場織込)
+- ~~**B-8** モデル切替検証 (XGBoost / CatBoost / PyTorch NN)~~ → 未検証だが市場の壁(AUCレベルで実証)で期待薄・やるなら単発研究として再起票
 
 ### ✅ D-6' 7月以降カレンダー 公式から取得 完了 (6/21)
 - **JRA**: 公式月別ページ (jra.go.jp/keiba/calendar/{mon}.html) は JS描画。**playwright で描画後DOM抽出**(requests/PDF/.ics は403で不可)。7-12月=55開催日。年間固定のため一度取得で確実
