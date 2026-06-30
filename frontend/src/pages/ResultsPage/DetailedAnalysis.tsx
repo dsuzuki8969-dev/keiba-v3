@@ -1,10 +1,15 @@
 import { useState } from "react";
 import { PremiumCard, PremiumCardHeader, PremiumCardTitle, PremiumCardAccent } from "@/components/ui/premium/PremiumCard";
 import { BarChart3 } from "lucide-react";
+import { displayMark } from "@/lib/markDisplay";
+import type { DeviationStatRow, MarkStatRow, DetailedStats } from "@/api/client";
 
 interface Props {
   data: Record<string, unknown>;
 }
+
+// 偏差値帯の固定表示順（降順・高偏差値を上に）。境界は実データ複勝率カーブで較正(候補D)。
+const DEV_BUCKET_ORDER = ["90〜", "82-90", "72-82", "62-72", "53-62", "45-53", "〜45"] as const;
 
 const CAT_TABS = [
   { key: "all", label: "全体" },
@@ -23,10 +28,11 @@ export function DetailedAnalysis({ data }: Props) {
   const catData = (data[cat] || {}) as Record<string, unknown>;
   if (!catData.stats) return null;
 
-  const stats = catData.stats as Record<string, unknown>;
+  const stats = (catData.stats || {}) as DetailedStats;
   const byVenue = (catData.by_venue || {}) as Record<string, Record<string, unknown>>;
-  const byMark = (selectedVenue ? (byVenue[selectedVenue]?.by_mark || {}) : (stats.by_mark || {})) as Record<string, Record<string, number>>;
-  const byConf = (selectedVenue ? (byVenue[selectedVenue]?.by_conf || {}) : (stats.by_conf || {})) as Record<string, Record<string, number>>;
+  const byMark = (selectedVenue ? (byVenue[selectedVenue]?.by_mark || {}) : (stats.by_mark || {})) as Record<string, MarkStatRow>;
+  // 偏差値帯別: 場選択時はその場の by_deviation、未選択時は全体 stats.by_deviation
+  const byDeviation = (selectedVenue ? (byVenue[selectedVenue]?.by_deviation || {}) : (stats.by_deviation || {})) as Record<string, DeviationStatRow>;
 
   // 競馬場リスト（レース数降順）
   const venueKeys = Object.keys(byVenue).sort(
@@ -100,10 +106,10 @@ export function DetailedAnalysis({ data }: Props) {
             <MarkTable data={byMark} />
           </div>
 
-          {/* 自信度別 的中率 */}
+          {/* 偏差値別 成績 */}
           <div>
-            <div className="text-sm font-semibold mb-2">自信度別 的中率</div>
-            <ConfTable data={byConf} />
+            <div className="text-sm font-semibold mb-2">偏差値別 成績</div>
+            <DevTable data={byDeviation} />
           </div>
         </div>
 
@@ -113,7 +119,7 @@ export function DetailedAnalysis({ data }: Props) {
 }
 
 // 印別テーブル
-function MarkTable({ data }: { data: Record<string, Record<string, number>> }) {
+function MarkTable({ data }: { data: Record<string, MarkStatRow> }) {
   const marks = ["◉", "◎", "○", "▲", "△", "★", "☆"].filter((m) => data[m]);
   if (!marks.length)
     return <p className="text-xs text-muted-foreground">データなし</p>;
@@ -135,7 +141,8 @@ function MarkTable({ data }: { data: Record<string, Record<string, number>> }) {
             const s = data[m];
             return (
               <tr key={m} className="border-b border-border/50 hover:bg-brand-gold/5 transition-colors">
-                <td className="py-1 px-1 font-bold">{m}</td>
+                {/* ☆ は「穴」表示に変換（データキー自体は変更しない） */}
+                <td className="py-1 px-1 font-bold">{displayMark(m)}</td>
                 <td className="text-right py-1 px-1 tabular-nums">
                   {s.total}
                 </td>
@@ -157,10 +164,11 @@ function MarkTable({ data }: { data: Record<string, Record<string, number>> }) {
   );
 }
 
-// 自信度別テーブル（的中率のみ）
-function ConfTable({ data }: { data: Record<string, Record<string, number>> }) {
-  const confs = ["SS", "S", "A", "B", "C"].filter((c) => data[c]);
-  if (!confs.length)
+// 偏差値帯別テーブル（印別と同じ列構成: 頭数/勝率/連対率/複勝率）
+function DevTable({ data }: { data: Record<string, DeviationStatRow> }) {
+  // 固定順（昇順）で存在する bucket のみ表示。データ無し bucket は行スキップ
+  const buckets = DEV_BUCKET_ORDER.filter((b) => data[b]);
+  if (!buckets.length)
     return <p className="text-xs text-muted-foreground">データなし</p>;
 
   return (
@@ -168,26 +176,30 @@ function ConfTable({ data }: { data: Record<string, Record<string, number>> }) {
       <table className="w-full text-xs">
         <thead>
           <tr className="border-b border-border">
-            <th className="text-left py-1 px-1">自信度</th>
-            <th className="text-right py-1 px-1">購入R</th>
-            <th className="text-right py-1 px-1">的中</th>
-            <th className="text-right py-1 px-1">的中率</th>
+            <th className="text-left py-1 px-1">偏差値帯</th>
+            <th className="text-right py-1 px-1">頭数</th>
+            <th className="text-right py-1 px-1">勝率</th>
+            <th className="text-right py-1 px-1">連対率</th>
+            <th className="text-right py-1 px-1">複勝率</th>
           </tr>
         </thead>
         <tbody>
-          {confs.map((c) => {
-            const s = data[c];
+          {buckets.map((b) => {
+            const s = data[b];
             return (
-              <tr key={c} className="border-b border-border/50 hover:bg-brand-gold/5 transition-colors">
-                <td className="py-1 px-1 font-bold">{c}</td>
+              <tr key={b} className="border-b border-border/50 hover:bg-brand-gold/5 transition-colors">
+                <td className="py-1 px-1 font-bold">{b}</td>
                 <td className="text-right py-1 px-1 tabular-nums">
                   {s.total}
                 </td>
                 <td className="text-right py-1 px-1 tabular-nums">
-                  {s.hits}
+                  {fmtPct(s.win_rate)}
                 </td>
                 <td className="text-right py-1 px-1 tabular-nums">
-                  {fmtPct(s.hit_rate)}
+                  {fmtPct(s.place2_rate)}
+                </td>
+                <td className="text-right py-1 px-1 tabular-nums">
+                  {fmtPct(s.place_rate)}
                 </td>
               </tr>
             );

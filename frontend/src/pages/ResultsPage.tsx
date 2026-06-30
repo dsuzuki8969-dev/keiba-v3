@@ -81,8 +81,8 @@ export default function ResultsPage() {
       {/* v6.1.6: 読み込み中は skeleton を表示（234 秒級の API が返るまで視覚的フィードバック） */}
       {loadingSummary && <SummaryCardsSkeleton />}
 
-      {/* サマリーカード（的中率ヒーロー: 複勝率・連対率・勝率） */}
-      {summaryData && <SummaryCards data={summaryData} hybrid={null} />}
+      {/* サマリーカード（的中率ヒーロー: 勝率・連対率・複勝率） */}
+      {summaryData && <SummaryCards data={summaryData} />}
 
       {/* データなし */}
       {summaryData && !summaryData.total_races && (

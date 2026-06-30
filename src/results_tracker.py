@@ -37,6 +37,51 @@ except Exception:
     _DB_AVAILABLE = False
 
 
+# ============================================================
+# 偏差値(composite)別バケット定義（全頭集計用・backend↔frontend 契約）
+# ============================================================
+# 順序固定（昇順）。composite は総合偏差値。範囲外(負値/100超)は両端bucketが吸収する。
+# 境界は実データの複勝率カーブで較正(2026-06-30): 上位を細分化し下中盤を広く取ることで
+# 〜45:複勝11.8% → 90〜:複勝72.8% の綺麗な単調勾配を出す(候補D・master決定)。
+_DEV_BUCKETS = ["〜45", "45-53", "53-62", "62-72", "72-82", "82-90", "90〜"]
+
+
+def _composite_to_dev_bucket(c) -> str:
+    """composite(偏差値) を _DEV_BUCKETS のいずれかに分類する。
+
+    境界（順序固定・実データ較正済）:
+        c < 45            → "〜45"   (複勝~11.8%)
+        45 <= c < 53      → "45-53"  (~27.8%)
+        53 <= c < 62      → "53-62"  (~35.6%)
+        62 <= c < 72      → "62-72"  (~42.2%)
+        72 <= c < 82      → "72-82"  (~52.4%)
+        82 <= c < 90      → "82-90"  (~62.4%)
+        c >= 90           → "90〜"   (~72.8% エリート帯)
+    None / 0 は "〜45" に丸める（無情報・低評価扱い）。
+    """
+    if c is None:
+        return "〜45"
+    try:
+        c = float(c)
+    except (TypeError, ValueError):
+        return "〜45"
+    if c == 0:
+        return "〜45"
+    if c < 45:
+        return "〜45"
+    if c < 53:
+        return "45-53"
+    if c < 62:
+        return "53-62"
+    if c < 72:
+        return "62-72"
+    if c < 82:
+        return "72-82"
+    if c < 90:
+        return "82-90"
+    return "90〜"
+
+
 def _build_bloodline_lookup() -> Dict[str, Tuple[str, str]]:
     """keiba.db race_logから horse_id → (sire_name, bms_name) のルックアップを構築"""
     try:
@@ -3552,6 +3597,17 @@ def invalidate_aggregate_cache() -> None:
                     os.remove(fp)
                 except OSError:
                     pass
+    # detail/ サブディレクトリ(日付別 detail cache)も削除する。
+    # os.listdir(_DAILY_CACHE_DIR) はサブディレクトリ配下を辿らず os.path.isfile で
+    # スキップされるため、明示的に detail/*.json を消さないと旧版 cache が残存する。
+    if os.path.exists(_DETAIL_CACHE_DIR):
+        for f in os.listdir(_DETAIL_CACHE_DIR):
+            fp = os.path.join(_DETAIL_CACHE_DIR, f)
+            if os.path.isfile(fp):
+                try:
+                    os.remove(fp)
+                except OSError:
+                    pass
 
 
 # ============================================================
@@ -3614,7 +3670,7 @@ def _save_daily_cache(date: str, data: dict) -> None:
 # pred.json (2.5MB) の代わりに ~15KB の抽出済みデータを読む
 # ============================================================
 _DETAIL_CACHE_DIR = os.path.join(_DAILY_CACHE_DIR, "detail")
-_DETAIL_CACHE_VERSION = 2  # v2: horses_marked に tansho_ret/fukusho_ret/ana_type/is_tokusen_kiken 追加
+_DETAIL_CACHE_VERSION = 3  # v3: dev_finish 全頭偏差値+着順を追加
 _DETAIL_MEM: Dict[str, list] = {}
 
 
@@ -3772,6 +3828,24 @@ def _extract_detail_races(date: str, JRA_CODES, get_venue_name) -> Optional[list
                 "is_tokusen_kiken": h.get("is_tokusen_kiken", False),
             })
 
+        # v3: 全頭の偏差値(composite)+着順を抽出（印無し含む）
+        # 偏差値別(by_deviation) 全頭集計用。取消/scratched・着順欠落・偏差値欠落はスキップ。
+        dev_finish = []
+        for h in race.get("horses", []):
+            if h.get("is_scratched"):
+                continue
+            hno = h.get("horse_no")
+            pos = finish_map.get(hno, 99)
+            if pos == 99:
+                continue  # 走っていない（finish 欠落）
+            comp = h.get("composite")
+            if comp is None or comp == 0:
+                continue
+            try:
+                dev_finish.append([round(float(comp), 2), int(pos)])
+            except (TypeError, ValueError):
+                continue
+
         tansho_data = race_by_type.get("単勝")
         rd = {
             "race_id": race_id,
@@ -3787,6 +3861,7 @@ def _extract_detail_races(date: str, JRA_CODES, get_venue_name) -> Optional[list
             "tansho": {"stake": tansho_data["stake"], "hit": tansho_data["hit"],
                        "ret": tansho_data["ret"]} if tansho_data else None,
             "horses": horses_marked,
+            "dev_finish": dev_finish,
             "finish_map": {str(k): v for k, v in finish_map.items()},
             "honmei_hno": honmei_hno,
             "honmei_name": honmei_name,
@@ -3981,6 +4056,8 @@ def _new_detail_stats() -> dict:
         "hit_rate": 0.0,
         "tansho":     {"total": 0, "hits": 0, "stake": 0, "ret": 0, "roi": 0.0, "hit_rate": 0.0, "payouts": []},
         "by_mark": {},       # {mark: {total, win, place2, placed, tansho_stake, tansho_ret}}
+        # v3: 偏差値別 全頭集計 {bucket_label: {total, win, place2, placed, *_rate}}
+        "by_deviation": {},
         "by_conf": {},       # {conf: {total, hits, stake, ret, payouts:[]}}
         # 本命（◉◎）統計
         "honmei_total": 0, "honmei_win": 0, "honmei_place2": 0, "honmei_placed": 0,
@@ -4080,6 +4157,21 @@ def _add_to_detail_stats(stats: dict, race_by_type: dict,
                 if pos >= 4:
                     stats["by_kiken"]["fell_through"] += 1
 
+    # 偏差値別 全頭集計（v3: 印無し含む走った全馬）
+    if race:
+        bd = stats["by_deviation"]
+        for comp, pos in race.get("dev_finish", []):
+            bucket = _composite_to_dev_bucket(comp)
+            if bucket not in bd:
+                bd[bucket] = {"total": 0, "win": 0, "place2": 0, "placed": 0}
+            bd[bucket]["total"] += 1
+            if pos == 1:
+                bd[bucket]["win"] += 1
+            if pos <= 2:
+                bd[bucket]["place2"] += 1
+            if pos <= 3:
+                bd[bucket]["placed"] += 1
+
     # 自信度別成績（単勝ベース）
     if race and tansho:
         conf = race.get("confidence", "B")
@@ -4135,6 +4227,13 @@ def _finalize_detail_stats(stats: dict) -> None:
         ts_mk = ms.get("tansho_stake", 0)
         ms["tansho_roi"]  = round(ms.get("tansho_ret", 0) / ts_mk * 100, 1) if ts_mk > 0 else 0.0
 
+    # 偏差値別: 勝率/連対率/複勝率（by_mark と同様）
+    for bk, bs in stats.get("by_deviation", {}).items():
+        t = bs["total"]
+        bs["win_rate"]    = round(bs["win"]    / t * 100, 1) if t else 0.0
+        bs["place2_rate"] = round(bs["place2"] / t * 100, 1) if t else 0.0
+        bs["place_rate"]  = round(bs["placed"] / t * 100, 1) if t else 0.0
+
     # 自信度別: 的中率/回収率/最高/平均配当
     for conf, cs in stats.get("by_conf", {}).items():
         cs["hit_rate"] = round(cs["hits"] / cs["total"] * 100, 1) if cs["total"] else 0.0
@@ -4184,7 +4283,10 @@ def aggregate_detailed(year_filter: str = "all", after_filter: str = "",
         after_filter: この日付以降のみ集計（"YYYY-MM-DD" 形式）
         exclude_venues: 除外する競馬場名のセット（例: {"帯広"}）
     """
-    cache_key = f"{year_filter}_{after_filter}_{sorted(exclude_venues) if exclude_venues else ''}"
+    # v3: cache_key に _DETAIL_CACHE_VERSION を含めることで、版bump時に
+    # aggregate_detailed の結果メモ（_AGG_CACHE / ディスク _agg_*.json）も自動失効させる。
+    # （by_deviation 欠落の stale 結果が返るのを防ぐ）
+    cache_key = f"v{_DETAIL_CACHE_VERSION}_{year_filter}_{after_filter}_{sorted(exclude_venues) if exclude_venues else ''}"
     cached = _get_cached("aggregate_detailed", cache_key)
     if cached is not None:
         return cached
@@ -4245,13 +4347,18 @@ def aggregate_detailed(year_filter: str = "all", after_filter: str = "",
             tansho = rd.get("tansho")
             if tansho is None:
                 continue
-            # 除外競馬場フィルタ（ばんえい等）
+            # ばんえい(帯広)は成績集計対象外（feedback_banei_excluded: 買わない・予想しない・表示しない）
+            # 全 detail cache に vc(場コード)が存在するため版bump不要・home修正(7587e20)と同パターン
+            if is_banei(rd.get("vc", "")):
+                continue
+            # 除外競馬場フィルタ（呼び出し側が任意に追加除外する場合）
             if exclude_venues and rd.get("venue") in exclude_venues:
                 continue
             race_by_type = {"単勝": tansho}
 
             # _add_to_detail_stats 用のrace/finish_map
-            race_dict = {"horses": rd["horses"], "confidence": rd["confidence"]}
+            race_dict = {"horses": rd["horses"], "confidence": rd["confidence"],
+                         "dev_finish": rd.get("dev_finish", [])}
             finish_map = {int(k): v for k, v in rd["finish_map"].items()}
             extra = dict(race=race_dict, finish_map=finish_map)
 

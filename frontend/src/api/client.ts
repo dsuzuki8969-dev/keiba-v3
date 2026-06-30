@@ -462,6 +462,40 @@ export interface ResultsDetailedResponse {
   results: DetailedResult[];
 }
 
+// 印別・自信度別・偏差値別 集計（/api/results/detailed の stats / by_venue[*]）
+// backend ↔ frontend 契約。詳細分析テーブルが参照する。
+export interface DetailedStats {
+  // 印別成績（◉◎○▲△★☆）
+  by_mark?: Record<string, MarkStatRow>;
+  // 自信度別 的中率（SS/S/A/B/C）— 表示からは撤去したが契約として残置
+  by_conf?: Record<string, Record<string, number>>;
+  // 偏差値帯別 成績（"〜45","45-50",...,"70〜"）
+  by_deviation?: Record<string, DeviationStatRow>;
+  [key: string]: unknown;
+}
+
+// 印別 1行（勝率/連対率/複勝率）
+export interface MarkStatRow {
+  total: number;
+  win: number;
+  place2: number;
+  placed: number;
+  win_rate: number;
+  place2_rate: number;
+  place_rate: number;
+}
+
+// 偏差値帯別 1行（MarkStatRow と同形）
+export interface DeviationStatRow {
+  total: number;
+  win: number;
+  place2: number;
+  placed: number;
+  win_rate: number;
+  place2_rate: number;
+  place_rate: number;
+}
+
 export interface DetailedResult {
   date: string;
   venue: string;

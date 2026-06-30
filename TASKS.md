@@ -6,6 +6,45 @@
 
 ---
 
+## ✅ 過去成績ページ 4点改修 完了（2026-06-30・実画面検証済・未commit）
+
+> master指示4点。ワークフロー(backend+frontend並列→build→keiba/typescript-reviewer)で実装→P0修正→cache再構築→dashboard再起動→playwright実画面検証(全体+JRA)。
+
+| # | 指示 | 実装 | 検証 |
+|---|---|---|---|
+| 1 | 上部カード順を 勝率-連対率-複勝率 に統一 | `SummaryCards.tsx` JSX並替 | ✅ 勝36.1/連55.8/複68.0 |
+| 2 | 印別成績 ☆をOUT・穴をIN | `DetailedAnalysis.tsx` MarkTableに `displayMark()` 適用(☆→穴) | ✅ 最終行「穴」表示 |
+| 3 | 自信度別 的中率 削除(自信度は軸馬の信頼度3段に置換済) + M'戦略セクションごと削除 | ConfTable/byConf削除・SummaryCardsのM'/買い目回収一掃 | ✅ 消滅 |
+| 4 | 偏差値別 7区分 新規(全頭・**降順**・実データ較正) | backend: detail cache v2→v3(dev_finish全頭)+ `by_deviation`集計(_new/_add/_finalize)+ `_composite_to_dev_bucket` / frontend: DevTable(`DEV_BUCKET_ORDER`降順) | ✅ 候補D境界(〜45/45-53/53-62/62-72/72-82/82-90/90〜)・90〜:複勝72.8%(先頭)→〜45:11.8% 綺麗な単調勾配・JRA/NAR/venue切替も動作 |
+
+> **偏差値区切りの較正(2026-06-30・master指示「ターゲットのバランス感に」)**: 全頭449,820の実複勝率カーブを計測→上位を細分化し下中盤を広く取る**候補D**を採用(`scripts`相当の分析は scratchpad)。実データの honest 知見: 複勝75%級は偏差値90+のエリート帯でのみ(70〜全体は61%)・中盤は実態がやや平坦。dev_finish不変ゆえ version bump不要・aggregate cache無効化のみで再集計(33秒)。dashboard PID14512。
+
+**技術**: `_DETAIL_CACHE_VERSION`=3で全910日 detail cache 再構築(35秒)。`invalidate_aggregate_cache` に detail/サブdir削除追加(reviewer P0)。frontend型を `MarkStatRow`/`DetailedStats` で配線(reviewer P0)。dashboard PID17276稼働。**未commit**(master判断待ち)。
+
+---
+
+## 🔴 T-7 表示率較正の本番ON — choice A実行 → **NO-GO**（マスター最終判断待ち・2026-06-30 v4）
+
+> 詳細: `memory/handoff_2026-06-30_v4.md`。WF版(leak-free)較正テーブルを生成→**本番ON不可**を確証。本番完全無改変。
+
+**結論**: **T-7 WF版較正 = NO-GO**。WF probe の composite偏差値が本番より圧縮（月次 sparse course_db）→ 本番composite(75+常在)に適用不可。リーク無の真値は高composite馬が実際に高率＝Phase0で見えた「飽和」はリーク版の産物。**全gammaで飽和は悪化**（複勝>90%馬数 gamma1.0:15→15 / 1.5:→40 / 2.0:→58・最大複勝→100%）。
+
+**証拠（本番版 vs WF版・複勝率%・逆転）**: 60-64 [42.0→**74.8**] / 65-69 [46.6→**91.8**] / **75+ [69.2→ WF n=0]**。WFの「65-69」=WFサンプル内最強馬≈本番「75+」相当＝binラベル一致でも別物。inversion は太いbin(n159-361)でも頑健＝小サンプル由来でなく構造。
+
+**進捗**:
+- ✅ Phase0/1 完了（`fedd756`/`29103e3`）。probe配線実証。
+- ✅ フルWF実行（3回レンジ修正・実測ドリブン）→ 2026-01〜05 cap80・235R測定・2,711頭。WF版テーブル `data/_diag/calibration_composite_wf.json` 生成（本番版別名・無改変）。
+- ✅ Phase2プレビュー(`--table wf`)で飽和悪化＋大波及（軸馬度|Δ|2.89pt・◉入替±2）を確認。
+- ❌ Phase3-4 本番ON = **NO-GO**（適用しない）。
+
+**マスター判断事項**:
+1. **T-7撤退**（推奨・WF-calibrationは confound・救済=richpreloadは-35回帰でrevert済）か
+2. **choice B(リーク版で本番ON)再評価**（cosmeticに飽和解消は可・但しそもそも飽和が実問題か疑問）か
+3. **別アプローチ**（raw composite→rate写像の上限cap等・別途設計・[[feedback_indices_post_hoc_limit]]構造天井注意）
+[[feedback_production_vs_wf_pred_distinction]] [[project_engine_course_db_richpreload]] [[feedback_indices_post_hoc_limit]]
+
+---
+
 ## 🟡 見える化2軸 仕上げ（印6種化/馬柱軸穴EV/道悪着度数）— 残: 検証→commit / 馬柱バランス / 自信度
 
 > 詳細: `memory/handoff_2026-06-28_v5.md` + 前セッション続き。「収益→実力の見える化」を軸馬度/穴馬度2軸に統一。土台4 commit(c86be32/140ea03/12251dc/1266c4a)は**push済(HEAD=origin=5eb2c72)**。その後の仕上げ A〜H は**未commit**。dashboard PID23968稼働。
