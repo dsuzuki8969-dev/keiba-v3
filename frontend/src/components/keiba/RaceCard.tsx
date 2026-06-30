@@ -1,4 +1,4 @@
-import { useState, useEffect, memo, useCallback } from "react";
+import { memo, useCallback, useSyncExternalStore } from "react";
 import { PremiumCard } from "@/components/ui/premium/PremiumCard";
 import { SurfaceBadge } from "./SurfaceBadge";
 import { GradeBadge } from "./GradeBadge";
@@ -22,20 +22,19 @@ import type { RaceCardHitResult } from "@/api/hooks";
  * breakpoints.ts の BREAKPOINTS.MD (768px) と Tailwind の md: ブレークポイントを整合させる。
  */
 function useIsMobile(breakpoint: number = BREAKPOINTS.MD): boolean {
-  const [isMobile, setIsMobile] = useState<boolean>(
-    () => typeof window !== "undefined" && window.innerWidth < breakpoint
+  // matchMedia 購読は useSyncExternalStore で実装 (React 18 公式の外部ストア購読パターン)。
+  // 旧 useEffect+setState 実装は set-state-in-effect に当たるため置換。SSR は getServerSnapshot=false。
+  const query = `(max-width: ${breakpoint - 1}px)`;
+  const subscribe = useCallback(
+    (cb: () => void) => {
+      const mq = window.matchMedia(query);
+      mq.addEventListener("change", cb);
+      return () => mq.removeEventListener("change", cb);
+    },
+    [query]
   );
-
-  useEffect(() => {
-    const mq = window.matchMedia(`(max-width: ${breakpoint - 1}px)`);
-    const handler = (e: MediaQueryListEvent) => setIsMobile(e.matches);
-    // 初期値を確実に同期（SSR→CSR ハイドレーション対策）
-    setIsMobile(mq.matches);
-    mq.addEventListener("change", handler);
-    return () => mq.removeEventListener("change", handler);
-  }, [breakpoint]);
-
-  return isMobile;
+  const getSnapshot = useCallback(() => window.matchMedia(query).matches, [query]);
+  return useSyncExternalStore(subscribe, getSnapshot, () => false);
 }
 
 /**

@@ -104,6 +104,7 @@ export function OperationsPanel({ date, venues, onAnalyzeComplete }: Props) {
       }
     }
     startOdds(dates);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- startOdds は同一レンダー生成の安定 useCallback(deps追加は宣言順=TDZで不可)。date 変化のみで再生成すれば十分
   }, [date]);
 
   const startOdds = useCallback(async (dates: string[]) => {
@@ -266,6 +267,7 @@ export function OperationsPanel({ date, venues, onAnalyzeComplete }: Props) {
       }
     }
     startResults(dates);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- startResults は同一レンダー生成の安定 useCallback(deps追加は宣言順=TDZで不可)。date 変化のみで再生成すれば十分
   }, [date]);
 
   const startResults = useCallback(async (dates: string[]) => {
@@ -309,7 +311,7 @@ export function OperationsPanel({ date, venues, onAnalyzeComplete }: Props) {
         }
       } catch { /* ignore */ }
     }, 2000);
-  }, [onAnalyzeComplete]);
+  }, [onAnalyzeComplete, queryClient]);
 
   const cancelResults = useCallback(async () => {
     try { await api.resultsFetchCancel(); } catch { /* */ }
@@ -332,6 +334,7 @@ export function OperationsPanel({ date, venues, onAnalyzeComplete }: Props) {
       body.date = date;
     }
     startDb(body);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- startDb は同一レンダー生成の安定 useCallback(deps追加は宣言順=TDZで不可)。date 変化のみで再生成すれば十分
   }, [date]);
 
   const startDb = useCallback(async (body: { type: string; date?: string; start_date?: string; end_date?: string }) => {

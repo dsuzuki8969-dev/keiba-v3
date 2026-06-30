@@ -30,4 +30,20 @@ export default defineConfig([
       }],
     },
   },
+  {
+    // design-system プリミティブ / 共有モジュールは variants(cva)・helper を
+    // 意図的にコンポーネントと co-locate している。
+    // react-refresh/only-export-components は Fast Refresh(開発HMR)専用ルールで
+    // 実行時/正当性に影響しないため、これらのファイルでは無効化する。
+    files: [
+      'src/components/ui/badge.tsx',
+      'src/components/ui/button.tsx',
+      'src/components/ui/tabs.tsx',
+      'src/components/keiba/JikuConfBadge.tsx',
+      'src/hooks/useViewMode.tsx',
+    ],
+    rules: {
+      'react-refresh/only-export-components': 'off',
+    },
+  },
 ])

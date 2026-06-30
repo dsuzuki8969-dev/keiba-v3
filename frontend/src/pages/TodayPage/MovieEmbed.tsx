@@ -33,11 +33,19 @@ export function MovieEmbed({ url, externalUrl, label, external }: Props) {
   const [timedOut, setTimedOut] = useState(false);
   const iframeRef = useRef<HTMLIFrameElement>(null);
 
-  useEffect(() => {
-    // URL が変わったらロード状態をリセット
+  // URL が変わったらロード状態をリセット。
+  // useEffect 内 setState (react-hooks/set-state-in-effect) を避け、
+  // render 中の「prop 変化検知 → state 同期」パターン (React 公式 derived-state) で実装。
+  const [prevUrl, setPrevUrl] = useState(url);
+  if (url !== prevUrl) {
+    setPrevUrl(url);
     setLoaded(false);
     setTimedOut(false);
-    // 6秒以内に onLoad が来なかったら timedOut にする
+  }
+
+  // 6秒以内に onLoad が来なかったら timedOut にする (timer は外部システム同期=effect が正当)。
+  // setTimedOut は setTimeout コールバック内 (非同期) のため set-state-in-effect には当たらない。
+  useEffect(() => {
     const timer = window.setTimeout(() => setTimedOut(true), 6000);
     return () => window.clearTimeout(timer);
   }, [url]);

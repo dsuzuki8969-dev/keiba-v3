@@ -24,6 +24,13 @@
 - ✅ **#2 カードトークン横断統一**: 調査結果=`PremiumCard.tsx`(rounded-xl+--shadow-sm/md)が全ページ共通コンテナで**既に統一済**・rogue card無し。実際の不揃いはセレクタ様式で③で解消済。無理なトークン再リファクタは回帰リスクのみ([[feedback_minimal_change_principle]])→コード変更不要で実質クリア。
 - ✅ **#3 set-state-in-effect 根治**: `PastPredictions.tsx` の `useEffect(setCalYear/setCalMonth)` を render中 derived-state パターン(prevDatesData ガード)に置換+useEffect import除去。**ESLint 0**・カレンダーは現在月(2026年6月)に正常位置=挙動等価・無回帰。
 
+**🧹 ESLint 全0化 完遂(2026-06-30・master「残や憂いを完全になくす」)**: フロント全体の既存lintも一掃し `npx eslint .` = **exit 0(21問題→0)**。
+- react-refresh/only-export-components×6(badge/button/tabs/JikuConfBadge/useViewMode) → design-system/共有のco-export意図につき eslint.config で精密override off(HMR専用ルール・実行時影響ゼロ)
+- set-state-in-effect: `RaceCard.tsx` useIsMobile を **useSyncExternalStore**化 / `MovieEmbed.tsx` URLリセットをrender-phase化(timerはeffect維持)
+- preserve-manual-memoization + exhaustive-deps: `DataAnalysisPanel.tsx` KANJI_VARIANTS/normName を module scope化 / `PersonnelTable.tsx` rawPersons を useMemo化 / `OperationsPanel.tsx` startResults に queryClient追加+prepare系3つは前方参照で正当化disable
+- no-explicit-any+未使用disable: `client.ts` block disable整理 / `TodayPage.tsx` 未使用disable除去
+- 検証: build型0 / playwright(本日予想・データ分析・レース映像・DB・過去予想RaceCard×PC/Mobile・ホーム=全console0・全描画OK・OperationsPanelはmobile `hidden sm:block`仕様で正常) / typescript-reviewer。**表示/型のみ・backend非改変**。
+
 ---
 
 ## ✅ 過去成績ページ 4点改修 完了（2026-06-30・実画面検証済・未commit）

@@ -40,7 +40,6 @@ export default function TodayPage() {
       setVenueIdx(0);
       setSelectedRace(null);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [queryDate]);
 
   // HomePageや過去成績からの遷移: state に date/venue/raceNo があればレース詳細を開く

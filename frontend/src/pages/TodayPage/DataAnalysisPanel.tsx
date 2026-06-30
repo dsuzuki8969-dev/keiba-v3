@@ -35,6 +35,25 @@ function recordStr(win: number, p2: number, p3: number, total: number): string {
   return `${win}-${p2 - win}-${p3 - p2}-${out}`;
 }
 
+// 漢字異体字マップ（旧字体→新字体）
+const KANJI_VARIANTS: Record<string, string> = {
+  "齊": "斉", "齋": "斉", "髙": "高", "﨑": "崎", "濵": "浜", "濱": "浜",
+  "邊": "辺", "邉": "辺", "廣": "広", "眞": "真", "國": "国", "島": "島",
+  "櫻": "桜", "澤": "沢", "關": "関", "鷗": "鴎", "戶": "戸", "條": "条",
+  "藤": "藤", "瀨": "瀬", "龍": "竜", "萬": "万", "實": "実", "祐": "祐",
+};
+
+// 名前の正規化: 所属除去 + スペース除去 + 異体字統一。
+// module scope の安定参照にすることで raceNames useMemo の
+// preserve-manual-memoization / exhaustive-deps を解消する。
+function normName(name: string): string {
+  let s = name.replace(/（.*）$/, "").replace(/\(.*\)$/, "").replace(/\s/g, "").trim();
+  for (const [old, nw] of Object.entries(KANJI_VARIANTS)) {
+    s = s.replaceAll(old, nw);
+  }
+  return s;
+}
+
 export function DataAnalysisPanel({ horses, race }: Props) {
   // モバイルプレビュー検知（PC ブラウザの「モバイル」ビューモード時に sm: メディアクエリが効かない問題対応）
   const { isMobile } = useViewMode();
@@ -45,23 +64,6 @@ export function DataAnalysisPanel({ horses, race }: Props) {
 
   // コースデータ取得
   const { data: courseData, isLoading: courseLoading } = useCourseStats(courseKey);
-
-  // 漢字異体字マップ（旧字体→新字体）
-  const KANJI_VARIANTS: Record<string, string> = {
-    "齊": "斉", "齋": "斉", "髙": "高", "﨑": "崎", "濵": "浜", "濱": "浜",
-    "邊": "辺", "邉": "辺", "廣": "広", "眞": "真", "國": "国", "島": "島",
-    "櫻": "桜", "澤": "沢", "關": "関", "鷗": "鴎", "戶": "戸", "條": "条",
-    "藤": "藤", "瀨": "瀬", "龍": "竜", "萬": "万", "實": "実", "祐": "祐",
-  };
-
-  // 名前の正規化: 所属除去 + スペース除去 + 異体字統一
-  const normName = (name: string): string => {
-    let s = name.replace(/（.*）$/, "").replace(/\(.*\)$/, "").replace(/\s/g, "").trim();
-    for (const [old, nw] of Object.entries(KANJI_VARIANTS)) {
-      s = s.replaceAll(old, nw);
-    }
-    return s;
-  };
 
   // 省略名マッチング（安全網）:
   // race_log は personnel_db フルネームに正規化済みだが、念のため:

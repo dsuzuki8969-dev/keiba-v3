@@ -24,21 +24,20 @@ export const api = {
   authMode: () => get<{ admin: boolean }>("/api/auth_mode"),
 
   // ホーム
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- API レスポンス型未定義 (将来的に型定義追加予定)
+  // 以下4メソッドは API レスポンス型が未定義 (将来的に型定義追加予定) のため
+  // Record<string, any> を許容する。consumer 側で as キャストして利用。
+  /* eslint-disable @typescript-eslint/no-explicit-any */
   homeInfo: (date: string) => get<Record<string, any>>(`/api/home_info?date=${date}`),
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   homeTodayStats: (date: string) => get<Record<string, any>>(`/api/home/today_stats?date=${date}`),
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   todayPredictions: (date: string, nocache = false) =>
     get<Record<string, any>>(
       `/api/today_predictions?date=${date}${nocache ? "&nocache=1" : ""}`
     ),
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   racePrediction: (date: string, venue: string, raceNo: number) =>
     get<Record<string, any>>(
       `/api/race_prediction?date=${date}&venue=${encodeURIComponent(venue)}&race_no=${raceNo}`
     ),
+  /* eslint-enable @typescript-eslint/no-explicit-any */
   raceOdds: (body: OddsRequest) => post<OddsResponse>("/api/race_odds", body),
   portfolio: () => get<PortfolioResponse>("/api/portfolio"),
 

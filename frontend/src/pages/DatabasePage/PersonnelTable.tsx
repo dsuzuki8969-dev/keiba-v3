@@ -160,8 +160,12 @@ export function PersonnelTable({ type, search }: Props) {
   }, [type, search, sort, jraNar, venue, surface, smile, year]);
 
   const { data, isLoading, error } = usePersonnelAgg(qs);
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const rawPersons = ((data as any)?.persons || []) as PersonRow[];
+  // rawPersons は useMemo 化 (data 変化時のみ再生成)。下段 persons useMemo の
+  // exhaustive-deps (毎レンダー参照変化) を解消する。
+  const rawPersons = useMemo(
+    () => ((data as { persons?: PersonRow[] })?.persons || []) as PersonRow[],
+    [data]
+  );
   const period = data?.period;
 
   // 偏差値計算 & ソート
