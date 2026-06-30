@@ -17,8 +17,9 @@ const YEARS = (() => {
 
 export default function ResultsPage() {
   const [year, setYear] = useState("all");
-  // 全体/JRA/NAR の選択を SummaryCards と DetailedAnalysis で共有(タブ連動)
+  // 全体/JRA/NAR・競馬場 の選択を SummaryCards と DetailedAnalysis で共有(カード連動)
   const [cat, setCat] = useState("all");
+  const [selectedVenue, setSelectedVenue] = useState<string | null>(null);
 
   // CalendarPage からの遷移: ?date=YYYY-MM-DD クエリパラメータを PastPredictions の初期選択日として渡す
   const [searchParams] = useSearchParams();
@@ -84,7 +85,7 @@ export default function ResultsPage() {
       {loadingSummary && <SummaryCardsSkeleton />}
 
       {/* サマリーカード（的中率ヒーロー: 勝率・連対率・複勝率）— cat(全体/JRA/NAR)連動 */}
-      {summaryData && <SummaryCards data={summaryData} detailed={detailedData} cat={cat} />}
+      {summaryData && <SummaryCards data={summaryData} detailed={detailedData} cat={cat} selectedVenue={selectedVenue} />}
 
       {/* データなし */}
       {summaryData && !summaryData.total_races && (
@@ -94,7 +95,7 @@ export default function ResultsPage() {
       )}
 
       {/* 詳細分析 (単勝ベース) — タブ(全体/JRA/NAR)は上部カードと共有 */}
-      {detailedData && <DetailedAnalysis data={detailedData} cat={cat} setCat={setCat} />}
+      {detailedData && <DetailedAnalysis data={detailedData} cat={cat} setCat={setCat} selectedVenue={selectedVenue} setSelectedVenue={setSelectedVenue} />}
 
       {/* 過去予想カレンダー（CalendarPage からクエリ ?date= で初期選択日を受け取る） */}
       <PastPredictions initialDate={initialDate} />

@@ -1,4 +1,3 @@
-import { useState } from "react";
 import { PremiumCard, PremiumCardHeader, PremiumCardTitle, PremiumCardAccent } from "@/components/ui/premium/PremiumCard";
 import { BarChart3 } from "lucide-react";
 import { displayMark } from "@/lib/markDisplay";
@@ -6,9 +5,11 @@ import type { DeviationStatRow, MarkStatRow, DetailedStats } from "@/api/client"
 
 interface Props {
   data: Record<string, unknown>;
-  // 全体/JRA/NAR の選択状態は親(ResultsPage)で共有し、上部カードと連動させる
+  // 全体/JRA/NAR・競馬場 の選択状態は親(ResultsPage)で共有し、上部カードと連動させる
   cat: string;
   setCat: (c: string) => void;
+  selectedVenue: string | null;
+  setSelectedVenue: (v: string | null) => void;
 }
 
 // 偏差値帯の固定表示順（降順・高偏差値を上に）。境界は実データ複勝率カーブで較正(候補D)。
@@ -24,8 +25,7 @@ function fmtPct(v: number): string {
   return (v ?? 0).toFixed(1) + "%";
 }
 
-export function DetailedAnalysis({ data, cat, setCat }: Props) {
-  const [selectedVenue, setSelectedVenue] = useState<string | null>(null);
+export function DetailedAnalysis({ data, cat, setCat, selectedVenue, setSelectedVenue }: Props) {
 
   const catData = (data[cat] || {}) as Record<string, unknown>;
   if (!catData.stats) return null;
