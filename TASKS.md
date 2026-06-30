@@ -6,6 +6,23 @@
 
 ---
 
+## ✅ 4場開催なのに門別だけ生成バグ 恒久修正(3層) 完了（2026-07-01・master報告→根治・commit `237dc6f`/`4e4b865` 未push）
+
+> master「今日は4場開催なのに門別しかないのはなぜだ？バグってるぞ」。**当初私が「本州は当日朝公開」と憶測で言い訳→master「昨日4場確認済」と指摘→撤回**。実ログで真因確定。
+
+**真因(検証済)**: `kaisai_calendar.json`(6/21生成・netkeiba由来)が未来NAR本州場(大井/名古屋/園田)を落とし、`run_analysis_date.py` の **T-038カレンダー突合がライブ(fetch_date)で取得した実在48レースのうち36を「カレンダーに無い」とskip**→門別11だけ生成。scheduler.log で「0:25に48レース(4場)検出済」=レース公開タイミングは無関係(master指摘通り)。predict-scheduler が「ファイル存在」だけで生成済判定し不完全predを自己修復しなかったのも一因。
+
+**修正3層**:
+- **#1核** `run_analysis_date.py`+`kaisai_calendar_util.py`: ライブ由来(`not RACE_IDS_FROM_PRED/DB`)は実在の正→捨てず採用+`add_venue_to_calendar`でカレンダー自己補完。pred/db由来のみ汚染検知でskip維持。ヒール経路 関数テスト合格。
+- **#2** `scripts/repair_calendar_from_live.py`新設: ライブground truthでカレンダーproactive修復。7/1=4場・**7/2=5場(名古屋/園田欠落も修復)**・7/3=4場 実修復。netkeiba全再生成(欠落源)でなくライブ修復が正。
+- **#3** `dashboard.py` predict-scheduler: 「全開催場カバー」で生成判定(reload_calendar()で別プロセス補完反映)。完備性テスト合格。
+
+**即時**: カレンダー7/1修正→再分析で**T-038全48件整合(skip=0)→4場47レース生成**。実画面「4 場開催」門別/大井/名古屋/園田・絶対軸/穴馬4場分散・console0・dashboard再起動で#3活性化。
+
+**検証**: 構文0 / #1ヒール経路+#3完備性 関数テスト合格 / python-reviewer 条件付承認(指摘4件=TOC/TOU・未使用import・cache stale・login handle 全反映`4e4b865`) / 生成経路 scheduler.py=run_analysis_date(#1適用)・main.py=T-038無し(無影響)確認。**教訓**: 憶測で言い訳せず実ログ確認([[feedback_no_speculation]])。
+
+---
+
 ## ✅ UI磨き（批評→コード磨き）4点 完了（2026-06-30 v6・全権委任自走・commit `6648b13` 未push）
 
 > master「Claude DesignにてUIを磨けるか」→「批評→コード磨き(推奨)」「全画面」「全4項目」→「寝るから完走しておいて」。`design:design-critique` で6画面(PC/Mobile)批評→優先リスト→Sonnet×2並列実装→playwright全画面検証→typescript-reviewer。**表示のみ・backend/pred/印 非改変**。
