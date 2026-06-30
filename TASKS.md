@@ -26,24 +26,24 @@
 
 ---
 
-## 🔴 T-7 表示率較正の本番ON — choice A実行 → **NO-GO**（🎯次セッション集中・master指示「次はT-7だけ」・2026-06-30 v4/v5）
+## ✅ T-7 表示率較正の本番ON — **撤退クローズ**（master決定・2026-06-30）
 
-> 詳細: `memory/handoff_2026-06-30_v4.md`。WF版(leak-free)較正テーブルを生成→**本番ON不可**を確証。本番完全無改変。
+> 詳細: `memory/handoff_2026-06-30_v4.md` / `v5`。WF版(leak-free)較正テーブルを生成→**本番ON = NO-GO**を確証。本番完全無改変。**2026-06-30 master判断=撤退**でT-7クローズ。
 
-**結論**: **T-7 WF版較正 = NO-GO**。WF probe の composite偏差値が本番より圧縮（月次 sparse course_db）→ 本番composite(75+常在)に適用不可。リーク無の真値は高composite馬が実際に高率＝Phase0で見えた「飽和」はリーク版の産物。**全gammaで飽和は悪化**（複勝>90%馬数 gamma1.0:15→15 / 1.5:→40 / 2.0:→58・最大複勝→100%）。
+**撤退判断の根拠（3点）**:
+1. **WF較正路線は原理的に直せない** — composite スケール不整合(confound)。救済(WFでrich course_db)は richpreload -35回帰で revert済=不可。
+2. **リーク版ON(choice2)は cosmetic** — leak-free真値は「高composite馬=実際に高率」を示す→**直す対象が存在しない**改変になる。
+3. **実態は既に可視化済** — 当セッションの偏差値別7区分テーブル(記述統計・leak-free)で表示率の実態をユーザーに honest 提示済。後段表示較正は [[feedback_indices_post_hoc_limit]] の構造天井に該当。
+
+**結論（確証・参考保存）**: WF probe の composite偏差値が本番より圧縮（月次 sparse course_db）→ 本番composite(75+常在)に適用不可。リーク無の真値は高composite馬が実際に高率＝Phase0で見えた「飽和」はリーク版の産物。**全gammaで飽和は悪化**（複勝>90%馬数 gamma1.0:15→15 / 1.5:→40 / 2.0:→58・最大複勝→100%）。
 
 **証拠（本番版 vs WF版・複勝率%・逆転）**: 60-64 [42.0→**74.8**] / 65-69 [46.6→**91.8**] / **75+ [69.2→ WF n=0]**。WFの「65-69」=WFサンプル内最強馬≈本番「75+」相当＝binラベル一致でも別物。inversion は太いbin(n159-361)でも頑健＝小サンプル由来でなく構造。
 
-**進捗**:
+**進捗（全完了・クローズ）**:
 - ✅ Phase0/1 完了（`fedd756`/`29103e3`）。probe配線実証。
-- ✅ フルWF実行（3回レンジ修正・実測ドリブン）→ 2026-01〜05 cap80・235R測定・2,711頭。WF版テーブル `data/_diag/calibration_composite_wf.json` 生成（本番版別名・無改変）。
+- ✅ フルWF実行（3回レンジ修正・実測ドリブン）→ 2026-01〜05 cap80・235R測定・2,711頭。WF版テーブル `data/_diag/calibration_composite_wf.json`(gitignore・参考保持) 生成（本番版別名・無改変）。
 - ✅ Phase2プレビュー(`--table wf`)で飽和悪化＋大波及（軸馬度|Δ|2.89pt・◉入替±2）を確認。
-- ❌ Phase3-4 本番ON = **NO-GO**（適用しない）。
-
-**マスター判断事項**:
-1. **T-7撤退**（推奨・WF-calibrationは confound・救済=richpreloadは-35回帰でrevert済）か
-2. **choice B(リーク版で本番ON)再評価**（cosmeticに飽和解消は可・但しそもそも飽和が実問題か疑問）か
-3. **別アプローチ**（raw composite→rate写像の上限cap等・別途設計・[[feedback_indices_post_hoc_limit]]構造天井注意）
+- ✅ Phase3-4 本番ON = **NO-GO** → **master判断で撤退クローズ**。`COMPOSITE_CALIBRATION_ENABLED=False` のまま固定。
 [[feedback_production_vs_wf_pred_distinction]] [[project_engine_course_db_richpreload]] [[feedback_indices_post_hoc_limit]]
 
 ---
