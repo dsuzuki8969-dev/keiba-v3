@@ -3,20 +3,29 @@ import { Trophy, ListChecks, CheckCircle2, Target } from "lucide-react";
 
 interface Props {
   data: Record<string, unknown>;
+  // 詳細分析データ(全体/JRA/NAR)。cat に応じた本命集計をカードに反映する
+  detailed?: Record<string, unknown>;
+  cat?: string;
 }
 
 function fmtNum(v: number | null | undefined): string {
   return (v ?? 0).toLocaleString();
 }
 
-export function SummaryCards({ data }: Props) {
+export function SummaryCards({ data, detailed, cat = "all" }: Props) {
   if (!data.total_races) return null;
 
+  // 本命的中の母数: 選択カテゴリ(全体/JRA/NAR)の detailed[cat].stats を優先。
+  // 無い場合は summary(全体) にフォールバック。
+  const catStats = ((detailed?.[cat] as Record<string, unknown> | undefined)?.stats
+    ?? {}) as Record<string, unknown>;
+  const catLabel = cat === "jra" ? "JRA" : cat === "nar" ? "NAR" : "全体";
+
   // 結果 X-X-X-X（1着-2着-3着-着外）
-  const win = Number(data.honmei_win ?? 0);
-  const p2 = Number(data.honmei_place2 ?? 0);
-  const p3 = Number(data.honmei_placed ?? 0);
-  const total = Number(data.honmei_total ?? 0);
+  const win = Number(catStats.honmei_win ?? data.honmei_win ?? 0);
+  const p2 = Number(catStats.honmei_place2 ?? data.honmei_place2 ?? 0);
+  const p3 = Number(catStats.honmei_placed ?? data.honmei_placed ?? 0);
+  const total = Number(catStats.honmei_total ?? data.honmei_total ?? 0);
   const second = p2 - win;
   const third = p3 - p2;
   const out = total - p3;
@@ -49,7 +58,7 @@ export function SummaryCards({ data }: Props) {
         <div className="flex items-center gap-1.5">
           <Target size={13} className="text-brand-gold" />
           <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
-            ◎本命 的中実績
+            ◎本命 的中実績（{catLabel}）
           </span>
         </div>
 

@@ -6,6 +6,9 @@ import type { DeviationStatRow, MarkStatRow, DetailedStats } from "@/api/client"
 
 interface Props {
   data: Record<string, unknown>;
+  // 全体/JRA/NAR の選択状態は親(ResultsPage)で共有し、上部カードと連動させる
+  cat: string;
+  setCat: (c: string) => void;
 }
 
 // 偏差値帯の固定表示順（降順・高偏差値を上に）。境界は実データ複勝率カーブで較正(候補D)。
@@ -21,8 +24,7 @@ function fmtPct(v: number): string {
   return (v ?? 0).toFixed(1) + "%";
 }
 
-export function DetailedAnalysis({ data }: Props) {
-  const [cat, setCat] = useState("all");
+export function DetailedAnalysis({ data, cat, setCat }: Props) {
   const [selectedVenue, setSelectedVenue] = useState<string | null>(null);
 
   const catData = (data[cat] || {}) as Record<string, unknown>;

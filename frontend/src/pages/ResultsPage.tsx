@@ -17,6 +17,8 @@ const YEARS = (() => {
 
 export default function ResultsPage() {
   const [year, setYear] = useState("all");
+  // 全体/JRA/NAR の選択を SummaryCards と DetailedAnalysis で共有(タブ連動)
+  const [cat, setCat] = useState("all");
 
   // CalendarPage からの遷移: ?date=YYYY-MM-DD クエリパラメータを PastPredictions の初期選択日として渡す
   const [searchParams] = useSearchParams();
@@ -81,8 +83,8 @@ export default function ResultsPage() {
       {/* v6.1.6: 読み込み中は skeleton を表示（234 秒級の API が返るまで視覚的フィードバック） */}
       {loadingSummary && <SummaryCardsSkeleton />}
 
-      {/* サマリーカード（的中率ヒーロー: 勝率・連対率・複勝率） */}
-      {summaryData && <SummaryCards data={summaryData} />}
+      {/* サマリーカード（的中率ヒーロー: 勝率・連対率・複勝率）— cat(全体/JRA/NAR)連動 */}
+      {summaryData && <SummaryCards data={summaryData} detailed={detailedData} cat={cat} />}
 
       {/* データなし */}
       {summaryData && !summaryData.total_races && (
@@ -91,8 +93,8 @@ export default function ResultsPage() {
         </p>
       )}
 
-      {/* 詳細分析 (単勝ベース) */}
-      {detailedData && <DetailedAnalysis data={detailedData} />}
+      {/* 詳細分析 (単勝ベース) — タブ(全体/JRA/NAR)は上部カードと共有 */}
+      {detailedData && <DetailedAnalysis data={detailedData} cat={cat} setCat={setCat} />}
 
       {/* 過去予想カレンダー（CalendarPage からクエリ ?date= で初期選択日を受け取る） */}
       <PastPredictions initialDate={initialDate} />
