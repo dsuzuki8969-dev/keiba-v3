@@ -314,11 +314,20 @@ P(f"  {len(race_ids)}レース: {race_ids}")
 # kaisai_calendar.json とのカレンダー整合チェック。
 # JRA race_id が NAR の元旦に配置される等の汚染 race_id を即時排除する。
 # --offline 時: カレンダー未登録でブロックされるのを防ぐためスキップ
-from src.scraper.kaisai_calendar_util import validate_race_against_calendar
+from src.scraper.kaisai_calendar_util import (
+    validate_race_against_calendar,
+    add_venue_to_calendar as _add_venue_to_calendar,
+)
 from data.masters.venue_master import VENUE_CODE_TO_NAME, JRA_VENUE_CODES as _JRA_VC
 
+# ライブ由来 (fetch_date) の race_ids は NAR/JRA 公式レース一覧 = 実在の ground truth。
+# pred/db 由来 (--race-ids-from-pred/--race-ids-from-db) は過去の汚染 race_id を含み得る。
+# → ライブ由来はカレンダー欠落でも「捨てず採用 + カレンダー自己補完」、
+#   pred/db 由来のみ T-033 型汚染検知のため従来通り skip する。
+_IS_LIVE_SOURCE = not (RACE_IDS_FROM_PRED or RACE_IDS_FROM_DB)
 _calendar_skipped: list = []
 _calendar_valid: list = []
+_calendar_healed: list = []
 if OFFLINE_MODE:
     _calendar_valid = list(race_ids)
     P("  [yellow][T-038] オフラインモード: カレンダー突合スキップ[/]")
@@ -333,12 +342,21 @@ else:
             _calendar_valid.append(_rid)
             continue
         _ok, _reason = validate_race_against_calendar(_rid, DATE, _vname, _is_jra)
-        if not _ok:
+        if _ok:
+            _calendar_valid.append(_rid)
+        elif _IS_LIVE_SOURCE:
+            # ライブ検出は実在の正 → 捨てずに採用し、カレンダーを自己補完する
+            logger.warning("[T-038] カレンダー欠落だがライブ検出 → 採用+補完: %s", _reason)
+            if _add_venue_to_calendar(DATE, _vname, "jra" if _is_jra else "nar"):
+                _calendar_healed.append(_vname)
+            _calendar_valid.append(_rid)
+        else:
+            # pred/db 由来のカレンダー不整合は汚染の可能性 → 従来通り skip
             logger.warning("[T-038] カレンダー不整合 → skip: %s", _reason)
             _calendar_skipped.append(_rid)
-        else:
-            _calendar_valid.append(_rid)
 
+if _calendar_healed:
+    P(f"  [bold cyan][T-038] カレンダー自己補完: {sorted(set(_calendar_healed))} (ライブ検出を採用)[/]")
 if _calendar_skipped:
     P(f"  [bold yellow][T-038] カレンダー突合 skip: {len(_calendar_skipped)}件"
       f" → {_calendar_skipped}[/]")

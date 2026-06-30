@@ -173,6 +173,47 @@ def get_open_dates(kind: Literal["jra", "nar", "all"] = "all") -> List[str]:
     return result
 
 
+def add_venue_to_calendar(
+    date: str, venue: str, kind: Literal["jra", "nar"]
+) -> bool:
+    """ライブ検出 (fetch_date) で実在が確認された開催会場をカレンダーに追記する。
+
+    T-038 自己補完: 事前生成カレンダー (netkeiba 由来で未来 NAR 本州場を落とす)
+    が不完全でも、ライブの NAR/JRA 公式レース一覧という ground truth で
+    カレンダーを自動修復する。これにより「カレンダーに無い実在レースを捨てる」
+    バグ (門別だけ生成される等) を構造的に根絶する。
+
+    Parameters
+    ----------
+    date : str   "YYYY-MM-DD"
+    venue : str  会場名 (例: "大井")
+    kind : "jra" | "nar"
+
+    Returns
+    -------
+    bool  追記したら True / 既に登録済 or 失敗なら False
+    """
+    data = _load_calendar()  # ロック内で読み込み (ここでは未保持)
+    if data is None:
+        return False
+    with _calendar_lock:
+        days = data.setdefault("days", {})
+        entry = days.setdefault(date, {"jra": [], "nar": []})
+        lst = entry.setdefault(kind, [])
+        if venue in lst:
+            return False
+        lst.append(venue)
+        try:
+            with open(_CALENDAR_PATH, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            logger.error("[calendar] 自己補完の保存失敗 (%s %s %s): %s", date, kind, venue, e)
+            lst.remove(venue)  # 保存失敗時はメモリも巻き戻す
+            return False
+        logger.info("[calendar] 自己補完: %s の %s に %s を追加 (ライブ検出)", date, kind, venue)
+        return True
+
+
 def reload_calendar() -> None:
     """
     キャッシュをクリアして kaisai_calendar.json を再ロードする。

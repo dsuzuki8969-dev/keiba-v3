@@ -3299,12 +3299,36 @@ def create_app():
                     pred_file = os.path.join(
                         PROJECT_ROOT, "data", "predictions", f"{date_key}_pred.json"
                     )
+                    # 「ファイル存在」だけでなく「全開催場をカバーしているか」で判定する。
+                    # (門別だけの不完全 pred が存在しても、欠落場があれば再生成する。
+                    #  カレンダーは run_analysis_date の T-038 自己補完でライブ実態に追従する)
                     if os.path.isfile(pred_file):
-                        logger.info(
-                            "[predict-scheduler] %s の予想データは既に存在 → スキップ",
-                            tomorrow,
-                        )
-                        continue
+                        try:
+                            import json as _json_sched
+                            with open(pred_file, "r", encoding="utf-8") as _pf:
+                                _pred_sched = _json_sched.load(_pf)
+                            _pred_venues = {
+                                r.get("venue") for r in _pred_sched.get("races", []) if r.get("venue")
+                            }
+                            from src.scraper.kaisai_calendar_util import get_open_venues as _gov
+                            _exp = _gov(tomorrow)
+                            _expected_venues = set(_exp.get("jra", [])) | set(_exp.get("nar", []))
+                            _missing_venues = _expected_venues - _pred_venues
+                            if not _missing_venues:
+                                logger.info(
+                                    "[predict-scheduler] %s 予想データ完備 (%d場: %s) → スキップ",
+                                    tomorrow, len(_pred_venues), sorted(_pred_venues),
+                                )
+                                continue
+                            logger.warning(
+                                "[predict-scheduler] %s 予想データ不完全: 欠落場=%s (既存=%s) → 再生成",
+                                tomorrow, sorted(_missing_venues), sorted(_pred_venues),
+                            )
+                        except Exception as _pe:
+                            logger.warning(
+                                "[predict-scheduler] %s pred 完備性チェック失敗 (%s) → 再生成",
+                                tomorrow, _pe,
+                            )
 
                     if _analyzer_state.get("running"):
                         logger.info("[predict-scheduler] 手動分析実行中 → スキップ")
