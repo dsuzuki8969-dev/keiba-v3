@@ -40,9 +40,10 @@ function CalendarTooltip({
   const second = stat.place2 - stat.win;
   const third = stat.placed - stat.place2;
   const out = stat.total - stat.placed;
-  const profit = stat.profit;
-  const profitColor = profit >= 0 ? "text-emerald-400" : "text-red-400";
-  const roiColor = stat.roi >= 100 ? "text-emerald-400" : "text-red-400";
+  // 的中率特化: ◎本命の的中率 (勝/連対/複勝) を表示 (単勝収支・回収率は廃止)
+  const winRate = stat.total > 0 ? (stat.win / stat.total) * 100 : 0;
+  const rentaiRate = stat.total > 0 ? (stat.place2 / stat.total) * 100 : 0;
+  const fukushoRate = stat.total > 0 ? (stat.placed / stat.total) * 100 : 0;
 
   return (
     <div
@@ -67,14 +68,14 @@ function CalendarTooltip({
           </span>
         </div>
         <div className="flex items-center gap-3">
-          <span className={`font-bold ${profitColor}`}>
-            {profit >= 0 ? "+" : ""}{profit.toLocaleString()}円
+          <span className="text-gray-300">
+            勝<span className="font-bold text-white">{winRate.toFixed(0)}%</span>
           </span>
-          <span className={`${roiColor}`}>
-            回収{stat.roi.toFixed(0)}%
+          <span className="text-gray-300">
+            連対<span className="font-bold text-white">{rentaiRate.toFixed(0)}%</span>
           </span>
-          <span className="text-gray-400">
-            複勝{stat.rate.toFixed(0)}%
+          <span className="text-gray-300">
+            複勝<span className={`font-bold ${fukushoRate >= 60 ? "text-emerald-300" : "text-white"}`}>{fukushoRate.toFixed(0)}%</span>
           </span>
         </div>
         {/* 吹き出し矢印 */}
@@ -158,12 +159,17 @@ function Calendar({
           const isSelected = selectedDate === dateStr;
           const dow = (firstDay + day - 1) % 7;
           const stat = dailyStats[dateStr];
-          // 収支インジケータ（小さいドット）
-          const dotColor = stat
-            ? stat.profit >= 0
-              ? "bg-emerald-400"
-              : "bg-red-400"
-            : "";
+          // 的中インジケータ（小さいドット）— ◎本命の複勝率で色分け（単勝収支は廃止）
+          const dayFukushoRate =
+            stat && stat.total > 0 ? (stat.placed / stat.total) * 100 : null;
+          const dotColor =
+            dayFukushoRate === null
+              ? ""
+              : dayFukushoRate >= 60
+                ? "bg-emerald-400" // 好調（複勝率60%以上）
+                : dayFukushoRate >= 40
+                  ? "bg-amber-400" // 標準（40-60%）
+                  : "bg-red-400"; // 不調（40%未満）
           return (
             <div
               key={day}
