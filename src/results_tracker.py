@@ -3886,6 +3886,11 @@ def aggregate_all(year_filter: str = "all") -> dict:
     dates = list_prediction_dates()
     if year_filter and year_filter != "all":
         dates = [d for d in dates if d.startswith(year_filter)]
+    else:
+        # 「全期間」主要KPIは学習リーク版(2025〜2026-01の後追い再生成)を除外し、
+        # リーク無起点以降のみで集計する。年別指定は歴史参照用にそのまま(opt-in)。
+        from config.settings import RESULTS_LEAK_FREE_START
+        dates = [d for d in dates if d >= RESULTS_LEAK_FREE_START]
 
     summary = {
         "total_races": 0,
@@ -4295,6 +4300,10 @@ def aggregate_detailed(year_filter: str = "all", after_filter: str = "",
     dates = list_prediction_dates()
     if year_filter and year_filter != "all":
         dates = [d for d in dates if d.startswith(year_filter)]
+    else:
+        # 「全期間」はリーク版(2025〜2026-01の後追い再生成)を除外 (aggregate_all と同基準)
+        from config.settings import RESULTS_LEAK_FREE_START
+        dates = [d for d in dates if d >= RESULTS_LEAK_FREE_START]
     if after_filter:
         # after_filter: "YYYY-MM-DD" → dates は "YYYY-MM-DD" 形式
         dates = [d for d in dates if d >= after_filter]

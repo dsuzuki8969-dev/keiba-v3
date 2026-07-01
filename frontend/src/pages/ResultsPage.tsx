@@ -73,7 +73,7 @@ export default function ResultsPage() {
                         : "text-muted-foreground hover:text-foreground hover:bg-background/60",
                     ].join(" ")}
                   >
-                    {y === "all" ? "全期間" : y + "年"}
+                    {y === "all" ? "全期間(リーク無)" : y + "年"}
                   </button>
                 );
               })}
@@ -87,6 +87,17 @@ export default function ResultsPage() {
 
       {/* サマリーカード（的中率ヒーロー: 勝率・連対率・複勝率）— cat(全体/JRA/NAR)連動 */}
       {summaryData && <SummaryCards data={summaryData} detailed={detailedData} cat={cat} selectedVenue={selectedVenue} />}
+
+      {/* 学習リーク注記: 全期間=リーク無(2026-02〜) / 2024-2025=リーク版で過大評価 */}
+      {summaryData && (
+        <p className="text-[11px] leading-snug text-muted-foreground px-1 -mt-1">
+          {year === "all"
+            ? "※「全期間(リーク無)」は学習リーク版(〜2026-01の後追い再生成pred・的中率を約+10pt過大評価)を除外した運用実績（2026-02〜）です。"
+            : Number(year) <= 2025
+              ? "⚠ この年のpredはレース後に再生成された学習リーク版で、的中率を過大評価しています（参考値）。実力は「全期間(リーク無)」を参照。"
+              : "※2026年は学習リーク版（2026-01）を含みます。リーク無の実力は「全期間(リーク無)」を参照。"}
+        </p>
+      )}
 
       {/* データなし */}
       {summaryData && !summaryData.total_races && (
