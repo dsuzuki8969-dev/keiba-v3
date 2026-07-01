@@ -6,7 +6,22 @@
 
 ---
 
-## ✅ 過去予想カレンダー●的中化 + 🚨学習リーク水増し確定→KPIリーク無化（2026-07-01・master B・未push）
+## ✅ 被り解消 / 穴印②分離 / dashboard自己再起動口 完了（2026-07-01 v2・全push origin=`402a449`・ライブ反映済）
+
+> 詳細 `memory/handoff_2026-07-01_v2.md`。master逐次指示を完遂。
+- **被り解消**(`8a77734`): データ分析パネルの騎手/調教師被り=netkeiba系ID↔兵庫ローカルID(短縮名+「(兵庫)」)の2系統分裂。正規化名集約+兵庫短縮名の前方一致統合(表示専用・`dashboard.py`のみ)。本番実測=園田jockey194人・吉村智洋統合(total2895)。`database.py`兵庫追加はengine偏差値フォールバック波及ゆえ撤回。
+- **穴印②分離**(`47d6f0d`): ☆(=総合composite6位の序列印=押さえ)と穴(=select_dark_horses厳選穴馬)の表示混同(6/29 markDisplay ☆→穴)を是正。frontend8ファイル・backend印/pred/formatter無改変(印別履歴保全)。
+- **自己再起動口**(`402a449`): `/api/admin/restart`(localhost直結限定・多重排他409・os._exit→ping遅延respawn+watchdog二重化・fail-secure)。security/python-reviewer承認可。実restart自己テスト成功(新PID3416復帰)。**今後backend変更を私から自己反映可=インフラの壁 根治**。
+- 🚨反省: ツール記法崩れ累犯2回(`feedback_tool_call_format`追記・「count漏れ=破損」内面化) / subagent委託が孫起動で暴走(検証が動く標的に→再ビルドで確定)。
+
+### 将来課題（P2・任意）
+- 被り: 非前方一致の兵庫短縮名(尾林二等)は表示層で不能→深層(入口統一+race_log再構築)要 / 地名接頭除去の姓衝突(現データ無害・表示名は無傷)
+- 穴印: 成績印別にelite穴(厳選穴馬)行追加 / MarkSummaryの飾りalias整理
+- restart: in-flight DB書込み完了待ち(WALクラッシュ安全で許容)
+
+---
+
+## ✅ 過去予想カレンダー●的中化 + 🚨学習リーク水増し確定→KPIリーク無化（2026-07-01・master B・push済）
 
 > master「カレンダーの赤●緑●は単勝を買った前提?」→ その通り(profit=◎単勝100円/R収支)。的中率特化と不整合→的中ベース化。さらに「本命率の分布は?」→月次で2026-02断層発見→「過去走リークだよね」→**実データで水増し確定**。詳細 `memory/project_results_kpi_leak_inflation.md` / `memory/handoff_2026-07-01.md`。
 
