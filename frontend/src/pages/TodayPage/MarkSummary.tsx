@@ -44,8 +44,8 @@ interface MarkDef {
   border: string;
 }
 
-// 色体系: ◉/◎=緑, ○=青, ▲=赤, △=紫, ★=黒(注目), 穴(☆)=amber
-// ★→「注目」・☆→「穴」に統一。抑(무)は非表示のため除外。
+// 色体系: ◉/◎=緑, ○=青, ▲=赤, △=紫, ★=黒(注目), ☆=青(押さえ), 穴=amber(厳選穴馬)
+// ☆(総合6位の序列印)と穴(select_dark_horses厳選穴馬)は別物のため表示を分離 (2026-07-01)
 const MARK_ORDER: MarkDef[] = [
   { key: "◉", sym: "◉", label: "鉄板", aliases: ["tekipan"], color: "text-emerald-700", bg: "bg-emerald-50 dark:bg-emerald-950/30", border: "border-l-emerald-200" },
   { key: "◎", sym: "◎", label: "本命", aliases: ["honmei"], color: "text-emerald-700", bg: "bg-emerald-50 dark:bg-emerald-950/30", border: "border-l-emerald-200" },
@@ -53,8 +53,10 @@ const MARK_ORDER: MarkDef[] = [
   { key: "▲", sym: "▲", label: "単穴", aliases: ["tannuke"], color: "text-red-700", bg: "bg-red-50 dark:bg-red-950/30", border: "border-l-red-200" },
   { key: "△", sym: "△", label: "連下", aliases: ["rendashi"], color: "text-purple-700", bg: "bg-purple-50 dark:bg-purple-950/30", border: "border-l-purple-200" },
   { key: "★", sym: "★", label: "注目", aliases: ["rendashi2"], color: "text-foreground", bg: "bg-gray-50 dark:bg-gray-950/30", border: "border-l-gray-200" },
-  // ☆は「穴」表記で統一 (2026-06-28)
-  { key: "穴", sym: "穴", label: "穴", aliases: ["oana", "☆"], color: "text-amber-600 dark:text-amber-400", bg: "bg-amber-50 dark:bg-amber-950/30", border: "border-l-amber-300" },
+  // ☆(押さえ): 総合composite6位の序列印。青系で中立表示 (2026-07-01 分離)
+  { key: "☆", sym: "☆", label: "押さえ", aliases: ["oana"], color: "text-blue-700", bg: "bg-blue-50 dark:bg-blue-950/30", border: "border-l-blue-200" },
+  // 穴: 厳選穴馬(select_dark_horses)専用。amber系で穴馬を強調
+  { key: "穴", sym: "穴", label: "穴", aliases: ["ana_home"], color: "text-amber-600 dark:text-amber-400", bg: "bg-amber-50 dark:bg-amber-950/30", border: "border-l-amber-300" },
 ];
 
 /** 全馬の値から順位・色を計算 */

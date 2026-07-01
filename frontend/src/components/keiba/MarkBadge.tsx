@@ -27,8 +27,10 @@ const STYLES: Record<string, Style> = {
   rendashi:  { color: "text-mark-rendashi",  glow: "rgba(124,58,237,0.45)" },
   // rendashi2 (★): 注目印としてフォアグラウンド色
   rendashi2: { color: "text-foreground",     glow: "rgba(148,163,184,0.45)" },
-  // oana (穴表記): amber系で穴馬を強調
-  oana:      { color: "text-amber-600 dark:text-amber-400", glow: "rgba(217,119,6,0.45)" },
+  // oana (☆＝押さえ・総合6位の序列印): 青系。constants.ts markCls() の色系統と整合 (2026-07-01 分離)
+  oana:      { color: "text-blue-600 dark:text-blue-400", glow: "rgba(37,99,235,0.45)" },
+  // ana_home (穴＝厳選穴馬 select_dark_horses): amber系で穴馬を強調 (2026-07-01 分離)
+  ana_home:  { color: "text-amber-600 dark:text-amber-400", glow: "rgba(217,119,6,0.45)" },
   // oshi (抑): 削除（表示しない）
 };
 
@@ -44,8 +46,14 @@ export const MarkBadge = memo(function MarkBadge({ mark, size = "md", subtle = f
   // 무 (抑え) / × (危険・廃止印) は表示しない
   if (mark === "무" || mark === "抑" || mark === "×") return null;
 
-  // ☆ は「穴」表記にマップして表示
-  const normalizedMark = mark === "☆" ? "oana" : mark;
+  // ☆ は MARKS.oana（symbol:"☆" label:"押さえ"）にマップして表示 (2026-07-01 分離)
+  // 生の "穴"（厳選穴馬 select_dark_horses が付与するシンボル）は MARKS の直接キーとして
+  // 存在しない（MARKS.ana_home に symbol:"穴" で登録）ため ana_home へマップする。
+  // ここを通さないと m が undefined になり厳選穴馬バッジが描画されないリスクがあった。
+  const normalizedMark =
+    mark === "☆" ? "oana" :
+    mark === "穴" ? "ana_home" :
+    mark;
 
   const m = MARKS[normalizedMark as MarkType] ?? MARKS[mark as MarkType];
   if (!m) return null;
@@ -65,10 +73,9 @@ export const MarkBadge = memo(function MarkBadge({ mark, size = "md", subtle = f
   // インライン style でホバー glow を可変色に
   const glowVar = !subtle && style.glow ? { "--mb-glow": style.glow } as React.CSSProperties : undefined;
 
-  // ☆（穴馬）は表示シンボルを「穴」に変換
-  const displaySymbol = mark === "☆" ? "穴" : m.symbol;
-  // ☆（穴馬）のラベルも「穴」に統一
-  const displayLabel = mark === "☆" ? "穴" : m.label;
+  // 表示シンボル・ラベルは MARKS 定義をそのまま使用（☆と穴の上書き変換は廃止）
+  const displaySymbol = m.symbol;
+  const displayLabel = m.label;
 
   return (
     <span

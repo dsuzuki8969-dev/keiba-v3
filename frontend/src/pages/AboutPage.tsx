@@ -56,7 +56,8 @@ const MARKS_V5 = [
   { symbol: "▲", label: "単穴", color: "text-red-600",     bg: "bg-red-50 dark:bg-red-950/30",      border: "border-red-300 dark:border-red-700",      desc: "一発の魅力あり。条件次第で上位食い込み" },
   { symbol: "△", label: "連下",  color: "text-purple-600",  bg: "bg-purple-50 dark:bg-purple-950/30", border: "border-purple-300 dark:border-purple-700", desc: "連対圏に絡む可能性。紐として有力" },
   { symbol: "★", label: "注目",   color: "text-foreground",  bg: "bg-muted/50",                           border: "border-border",                               desc: "注目馬。展開次第で上位食い込みの可能性" },
-  { symbol: "穴", label: "穴",    color: "text-amber-600",   bg: "bg-amber-50 dark:bg-amber-950/30",     border: "border-amber-300 dark:border-amber-700",      desc: "穴馬候補。高配当を狙う時の選択肢。過小評価されている馬" },
+  { symbol: "☆", label: "押さえ", color: "text-blue-600",    bg: "bg-blue-50 dark:bg-blue-950/30",     border: "border-blue-300 dark:border-blue-700",     desc: "総合6番手の押さえ。3連系の広め買いで拾う位置" },
+  { symbol: "穴", label: "厳選穴馬", color: "text-amber-600",  bg: "bg-amber-50 dark:bg-amber-950/30",     border: "border-amber-300 dark:border-amber-700",      desc: "過小評価された人気薄の妙味馬。高配当・買い目対象（人気1〜3番は除外）" },
 ] as const;
 
 // ================================================================
@@ -327,7 +328,7 @@ export default function AboutPage() {
         </PremiumCardHeader>
         <div className="space-y-4">
           {/* 印カード横並び */}
-          <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-2">
+          <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-2">
             {MARKS_V5.map((m) => (
               <div
                 key={m.symbol}

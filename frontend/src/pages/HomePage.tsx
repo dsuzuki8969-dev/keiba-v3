@@ -96,7 +96,7 @@ export default function HomePage() {
     return _all.slice(0, 5);
   }, [pred]);
 
-  // 厳選穴馬 — ☆印 + 高乖離馬（バックエンドで計算済み）: 乖離ショーケース「妙味」枠
+  // 厳選穴馬 — 内部mark="穴"(select_dark_horses由来)の馬のみ（バックエンドで計算済み・☆印は含まない）
   // master指示 2026-06-28: 穴馬度(ana_do)の降順で並べる
   const anaHorses = ((pred?.ana_horses || []) as AnaHorse[])
     .slice()
@@ -308,7 +308,7 @@ export default function HomePage() {
                           /G1|Jpn1/i.test(r.grade) ? "bg-red-600" : /G2|Jpn2/i.test(r.grade) ? "bg-blue-600" : /G3|Jpn3/i.test(r.grade) ? "bg-green-600" : "bg-orange-500"
                         }`}>{r.grade}</span>
                       )}
-                      {/* displayMark で ☆→穴 / 抑|무|× を非表示に変換 */}
+                      {/* displayMark は抑|무|×のみ非表示変換。☆はそのまま「☆」表示（2026-07-01 分離） */}
                       {displayMark(r.honmei_mark) && (
                         <span className="font-bold text-foreground">{displayMark(r.honmei_mark)}</span>
                       )}
@@ -393,7 +393,7 @@ export default function HomePage() {
                     {/* 1行目: 競馬場 ・ レースNo ・ 印(穴) ・ 馬名 */}
                     <div className="flex items-center gap-2 mb-1.5 flex-wrap">
                       <span className="font-bold text-sm">{h.venue}{h.race_no}R</span>
-                      {/* displayMark で ☆→穴 / 抑|무|× を非表示に変換。未設定時は「穴」 */}
+                      {/* h.mark は backend(dashboard.py)で常に「穴」固定セット済み。displayMark は抑|무|×のみ非表示変換 */}
                       <span className="font-bold text-emerald-600 dark:text-emerald-400">{displayMark(h.mark) || "穴"}</span>
                       <span className="text-base font-bold">{h.horse_name}</span>
                     </div>
@@ -467,7 +467,7 @@ export default function HomePage() {
                     {/* 1行目: 競馬場 ・ レースNo ・ 印 ・ 馬名 */}
                     <div className="flex items-center gap-2 mb-1.5 flex-wrap">
                       <span className="font-bold text-sm">{h.venue}{h.race_no}R</span>
-                      {/* displayMark で ☆→穴 / 抑|무|× を非表示に変換 */}
+                      {/* displayMark は抑|무|×のみ非表示変換。☆はそのまま「☆」表示（2026-07-01 分離） */}
                       {displayMark(h.mark) && displayMark(h.mark) !== "－" && (
                         <span className="font-bold text-foreground">{displayMark(h.mark)}</span>
                       )}
@@ -553,7 +553,7 @@ export default function HomePage() {
                     <div className="flex items-center gap-2 mb-1.5 flex-wrap">
                       <JikuConfBadge tier={kitsuTier} />
                       <span className="font-bold text-sm">{r.venue}{r.race_no}R</span>
-                      {/* displayMark で ☆→穴 / 抑|무|× を非表示に変換 */}
+                      {/* displayMark は抑|무|×のみ非表示変換。☆はそのまま「☆」表示（2026-07-01 分離） */}
                       {displayMark(r.honmei_mark) && displayMark(r.honmei_mark) !== "－" && (
                         <span className="font-bold text-foreground">{displayMark(r.honmei_mark)}</span>
                       )}

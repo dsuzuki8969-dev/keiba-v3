@@ -152,7 +152,7 @@ function MarkTable({ data }: { data: Record<string, MarkStatRow> }) {
             const s = data[m];
             return (
               <tr key={m} className="border-b border-border/50 hover:bg-brand-gold/5 transition-colors">
-                {/* ☆ は「穴」表示に変換（データキー自体は変更しない） */}
+                {/* displayMark は抑/무/×のみ非表示変換。☆はそのまま「☆」表示（2026-07-01 分離） */}
                 <td className="py-1 px-1 font-bold">{displayMark(m)}</td>
                 <td className="text-right py-1 px-1 tabular-nums">
                   {s.total}

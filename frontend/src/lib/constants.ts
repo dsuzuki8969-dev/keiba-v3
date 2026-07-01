@@ -33,7 +33,8 @@ export const MARKS = {
   tannuke:  { symbol: "▲", label: "単穴" },
   rendashi: { symbol: "△", label: "連下" },
   rendashi2:{ symbol: "★", label: "注目" },
-  oana:     { symbol: "穴", label: "穴" },
+  // oana(☆): 総合composite6位の序列印。厳選穴馬(select_dark_horses)とは別物 (2026-07-01 分離)
+  oana:     { symbol: "☆", label: "押さえ" },
   // v5: kiken(×) は廃止
   // ホーム穴馬カード専用印 (2026-06-22 マスター指示: 無印馬のみを「穴」で表示)
   ana_home: { symbol: "穴", label: "穴" },

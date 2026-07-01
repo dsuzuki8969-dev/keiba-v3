@@ -164,7 +164,7 @@ export function RaceResultPanel({ date, raceId }: Props) {
             </thead>
             <tbody>
               {order.map((o: RaceResultEntry, i: number) => {
-                // displayMark で ☆→穴 / 抑|무|× → 非表示に変換
+                // displayMark は抑|무|×のみ非表示変換。☆はそのまま「☆」表示（2026-07-01 分離）
                 const markSym = o.mark ? displayMark(MARK_SYMBOL[o.mark] || o.mark) : "";
                 const mCls = markSym && markSym !== "－" ? markCls(markSym) : "";
                 const corners = o.corners;
