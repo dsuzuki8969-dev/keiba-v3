@@ -1630,6 +1630,62 @@ def _get_pending_fetch_stats(date: str, races: list) -> tuple:
     )
 
 
+# 騎手/調教師名の表示ゆれ判定用: 地方競馬場の地名接頭辞
+# （netkeiba系フル名 vs 地方ローカルID系の短縮名＋地名接頭/末尾括弧注記を吸収する）
+_PERSON_VENUE_PREFIXES = (
+    "兵庫", "大井", "川崎", "船橋", "浦和", "高知", "佐賀", "笠松", "名古屋",
+    "愛知", "園田", "姫路", "金沢", "水沢", "盛岡", "門別", "帯広",
+    "荒尾", "福山", "岩見沢", "旭川", "札幌", "上山", "JRA",
+)
+
+# 地方ローカルID体系のパターン（騎手: 3-0/3-1始まり5桁、調教師: 1-0/1-1始まり5桁）
+_PERSON_ABBREV_JOCKEY_ID_RE = re.compile(r"^3[01]\d{3}$")
+_PERSON_ABBREV_TRAINER_ID_RE = re.compile(r"^1[01]\d{3}$")
+
+
+def _normalize_person_name(name: str) -> str:
+    """騎手/調教師名の表示ゆれを吸収して比較キー化する。
+
+    - 先頭の印・空白を除去
+    - 全角/半角の空白を除去
+    - 末尾の括弧注記（（兵庫）(JRA) 等）を除去
+    - 先頭の地名接頭（兵庫○○ 等）を除去
+
+    同一人物が netkeiba 系フル名と地方ローカル短縮名で分裂しているのを
+    表示専用で名寄せするための比較キー生成のみに使う（DB は無改変）。
+    """
+    if not name:
+        return ""
+    s = str(name).strip()
+    s = s.lstrip("◉◎○●▲△☆★◇◆✓ 　")  # 先頭の印・空白
+    s = s.replace(" ", "").replace("　", "")  # 全角/半角空白除去
+    s = re.sub(r"[（(][^（）()]*[）)]\s*$", "", s)  # 末尾の（兵庫）(JRA)等
+    for p in _PERSON_VENUE_PREFIXES:  # 先頭地名接頭
+        if s.startswith(p) and len(s) > len(p):
+            s = s[len(p):]
+            break
+    return s.strip()
+
+
+def _is_person_abbrev_row(person_type: str, pid: str, raw_name: str) -> bool:
+    """この行が地方ローカル短縮名/短縮ID由来（＝分裂の子側）かどうかを判定する。"""
+    raw = str(raw_name or "")
+    # (a) 末尾に（兵庫）等の括弧注記がある
+    if re.search(r"[（(][^（）()]*[）)]\s*$", raw):
+        return True
+    # (b) 先頭が地名接頭
+    for p in _PERSON_VENUE_PREFIXES:
+        if raw.startswith(p) and len(raw) > len(p):
+            return True
+    # (c) pid が地方ローカルIDパターン
+    pid_s = str(pid or "")
+    if person_type == "jockey" and _PERSON_ABBREV_JOCKEY_ID_RE.match(pid_s):
+        return True
+    if person_type == "trainer" and _PERSON_ABBREV_TRAINER_ID_RE.match(pid_s):
+        return True
+    return False
+
+
 def _collect_sanrentan_tickets(race: dict) -> list:
     """pred.json から三連単チケット集合を取得 (T-039 / LIVE STATS 共通)。
 
@@ -6083,45 +6139,148 @@ function dNavRefreshOdds(date){{
         max_d = period_row["mx"] if period_row and period_row["mx"] else ""
         race_count = period_row["rc"] if period_row and period_row["rc"] else 0
 
-        # 同一人物集約（sire/bms は name キー、jockey/trainer は pid キー）
-        agg: dict = {}
-        for r in rows:
-            pid = r["pid"] or ""
-            if not pid:
-                continue
-            if pid not in agg:
-                agg[pid] = {
-                    "id": pid,
-                    "name": r["name"] or pid,
-                    "total": 0, "win": 0, "place2": 0, "place3": 0,
-                    "win_odds_sum": 0.0,
-                }
-            a = agg[pid]
-            a["total"]        += int(r["total"] or 0)
-            a["win"]          += int(r["win"] or 0)
-            a["place2"]       += int(r["place2"] or 0)
-            a["place3"]       += int(r["place3"] or 0)
-            a["win_odds_sum"] += float(r["win_odds_sum"] or 0.0)
+        # 同一人物集約
+        # - sire/bms: 従来通り pid(=name) キーで集約（変更なし）
+        # - jockey/trainer: netkeiba系ID と 地方ローカルID の分裂を名寄せするため
+        #   正規化名キーで一次集約 → 地方短縮名を前方一致でフル名に統合（中層解決）
+        if person_type in ("jockey", "trainer"):
+            # --- 表層: 正規化名キーで一次バケツ化 ---
+            buckets: dict = {}  # norm -> agg dict
+            for r in rows:
+                pid = r["pid"] or ""
+                raw_name = r["name"] or ""
+                if not pid:
+                    continue
+                norm = _normalize_person_name(raw_name)
+                if not norm:
+                    continue
+                is_abbrev = _is_person_abbrev_row(person_type, pid, raw_name)
+                if norm not in buckets:
+                    buckets[norm] = {
+                        "norm": norm,
+                        "total": 0, "win": 0, "place2": 0, "place3": 0,
+                        "win_odds_sum": 0.0,
+                        "is_abbrev": False,
+                        # (raw_name, pid, total寄与) のリスト。表示名/代表pid選定に使う
+                        "name_contribs": {},  # raw_name -> {"total": int, "pid": pid}
+                    }
+                b = buckets[norm]
+                b["total"]        += int(r["total"] or 0)
+                b["win"]          += int(r["win"] or 0)
+                b["place2"]       += int(r["place2"] or 0)
+                b["place3"]       += int(r["place3"] or 0)
+                b["win_odds_sum"] += float(r["win_odds_sum"] or 0.0)
+                b["is_abbrev"]     = b["is_abbrev"] or is_abbrev
+                nc = b["name_contribs"].setdefault(raw_name, {"total": 0, "pid": pid})
+                nc["total"] += int(r["total"] or 0)
 
-        persons = []
-        for pid, a in agg.items():
-            t = a["total"]
-            if t <= 0:
-                continue
-            roi = round(a["win_odds_sum"] / t * 100, 1) if t else 0.0
-            persons.append({
-                "id": pid,
-                "name": a["name"],
-                "location": "",
-                "total": t,
-                "win": a["win"],
-                "place2": a["place2"],
-                "place3": a["place3"],
-                "win_rate":    round(a["win"]    / t * 100, 1),
-                "place2_rate": round(a["place2"] / t * 100, 1),
-                "place3_rate": round(a["place3"] / t * 100, 1),
-                "roi": roi,
-            })
+            # --- 中層: 短縮名バケツを非abbrevバケツへ統合（前方一致・一意な場合のみ）---
+            non_abbrev_norms = [n for n, b in buckets.items() if not b["is_abbrev"]]
+            merge_log = []  # (abbrev_norm -> target_norm) のログ
+            for norm in list(buckets.keys()):
+                b = buckets.get(norm)
+                if b is None or not b["is_abbrev"]:
+                    continue
+                if norm in non_abbrev_norms:
+                    # 正規化後に非abbrev側と完全一致 → 表層集約で既に同一バケツのはず
+                    continue
+                candidates = [
+                    f for f in non_abbrev_norms
+                    if f.startswith(norm) and len(norm) >= 3
+                ]
+                if len(candidates) == 1:
+                    target = candidates[0]
+                    tgt = buckets[target]
+                    tgt["total"]        += b["total"]
+                    tgt["win"]          += b["win"]
+                    tgt["place2"]       += b["place2"]
+                    tgt["place3"]       += b["place3"]
+                    tgt["win_odds_sum"] += b["win_odds_sum"]
+                    for nm, c in b["name_contribs"].items():
+                        nc = tgt["name_contribs"].setdefault(nm, {"total": 0, "pid": c["pid"]})
+                        nc["total"] += c["total"]
+                    merge_log.append((norm, target, b["total"]))
+                    del buckets[norm]
+                    logger.debug(
+                        f"[personnel_agg_course] 短縮名統合: {person_type} "
+                        f"'{norm}' -> '{target}' (total={b['total']})"
+                    )
+                # candidates が 0件 or 2件以上 は統合しない（誤統合防止）
+
+            if merge_log:
+                logger.info(
+                    f"[personnel_agg_course] {person_type} 短縮名統合 {len(merge_log)}件: "
+                    + ", ".join(f"{a}->{t}({n})" for a, t, n in merge_log)
+                )
+
+            # --- 表示名/代表pid確定 & persons構築 ---
+            persons = []
+            for norm, b in buckets.items():
+                t = b["total"]
+                if t <= 0:
+                    continue
+                # 表示名は「非abbrevのフル名を優先」しつつ「最多total寄与」を採用。
+                # 同点ならより長い名前を優先。
+                contribs = b["name_contribs"]
+                def _name_sort_key(item):
+                    nm, c = item
+                    is_abbrev_name = _is_person_abbrev_row(person_type, c["pid"], nm)
+                    return (is_abbrev_name, -c["total"], -len(nm))
+                best_name, best_c = sorted(contribs.items(), key=_name_sort_key)[0]
+                roi = round(b["win_odds_sum"] / t * 100, 1) if t else 0.0
+                persons.append({
+                    "id": best_c["pid"],
+                    "name": best_name,
+                    "location": "",
+                    "total": t,
+                    "win": b["win"],
+                    "place2": b["place2"],
+                    "place3": b["place3"],
+                    "win_rate":    round(b["win"]    / t * 100, 1),
+                    "place2_rate": round(b["place2"] / t * 100, 1),
+                    "place3_rate": round(b["place3"] / t * 100, 1),
+                    "roi": roi,
+                })
+        else:
+            # sire/bms は従来通り pid キーで集約（変更なし）
+            agg: dict = {}
+            for r in rows:
+                pid = r["pid"] or ""
+                if not pid:
+                    continue
+                if pid not in agg:
+                    agg[pid] = {
+                        "id": pid,
+                        "name": r["name"] or pid,
+                        "total": 0, "win": 0, "place2": 0, "place3": 0,
+                        "win_odds_sum": 0.0,
+                    }
+                a = agg[pid]
+                a["total"]        += int(r["total"] or 0)
+                a["win"]          += int(r["win"] or 0)
+                a["place2"]       += int(r["place2"] or 0)
+                a["place3"]       += int(r["place3"] or 0)
+                a["win_odds_sum"] += float(r["win_odds_sum"] or 0.0)
+
+            persons = []
+            for pid, a in agg.items():
+                t = a["total"]
+                if t <= 0:
+                    continue
+                roi = round(a["win_odds_sum"] / t * 100, 1) if t else 0.0
+                persons.append({
+                    "id": pid,
+                    "name": a["name"],
+                    "location": "",
+                    "total": t,
+                    "win": a["win"],
+                    "place2": a["place2"],
+                    "place3": a["place3"],
+                    "win_rate":    round(a["win"]    / t * 100, 1),
+                    "place2_rate": round(a["place2"] / t * 100, 1),
+                    "place3_rate": round(a["place3"] / t * 100, 1),
+                    "roi": roi,
+                })
 
         # 総出走降順
         persons.sort(key=lambda x: x["total"], reverse=True)
