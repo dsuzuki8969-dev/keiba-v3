@@ -4219,6 +4219,72 @@ def create_app():
         except Exception as e:
             return jsonify(error=str(e)), 500
 
+    # 破壊的な自己再起動の多重実行ガード（2026-04-19 の 2プロセス pred.json 破損事故対策）。
+    # 一度 acquire したら解放しない（プロセスが落ちるため）＝連打の2回目以降は 409 で弾く。
+    _admin_restart_lock = threading.Lock()
+
+    @app.route("/api/admin/restart", methods=["POST"])
+    def api_admin_restart():
+        """ダッシュボードを再起動する（管理者=localhost直結限定）。
+
+        backend 変更（pred/集計ロジック等）を手動再起動なしで反映するための自己再起動口。
+        機構: レスポンス返却後に os._exit(0) で自プロセスを落とす。復帰は二重化:
+          ① 即時(best-effort): デタッチした子が約5秒待機→scripts/start_dashboard.bat 起動
+             （bat は :5051 LISTENING チェック付きで二重起動を防ぐ）
+          ② 保険: DAI_Keiba_Watchdog（5分毎・port監視）が respawn
+        認証は _is_admin（cloudflared ヘッダを弾き loopback のみ）＋ access_route 単一の
+        positive 判定を二枚重ね。多重restartは _admin_restart_lock で 409 排他。
+        """
+        # 認証: _is_admin(CFヘッダ拒否+loopback) に加え、破壊的操作ゆえプロキシ跳躍が
+        # 無い（access_route が loopback 単一）ことを positive 判定して二枚重ねにする。
+        _route = request.access_route or []
+        _direct_local = len(_route) == 1 and request.remote_addr in ("127.0.0.1", "::1")
+        if not _is_admin(request) or not _direct_local:
+            return jsonify(error="管理者のみ実行可能（localhost直結限定）"), 403
+
+        # 多重restartガード: 進行中(=既にlock保持)なら 409（respawn子の二重起動→2プロセス化を防ぐ）
+        if not _admin_restart_lock.acquire(blocking=False):
+            return jsonify(error="既に再起動処理中です"), 409
+
+        logger.warning("[admin/restart] 再起動要求を受理 (localhost admin)")
+
+        # ① 即時 respawn（best-effort）。子起動に成功した場合のみ os._exit する
+        #    （fail-secure: 子起動が例外で全失敗したら restart を中止し現プロセスを生かす）。
+        _child_ok = False
+        try:
+            _bat = os.path.join(PROJECT_ROOT, "scripts", "start_dashboard.bat")
+            # ping で約5秒待機（detached=コンソール無しでは timeout が失敗するため ping を使う）。
+            # DETACHED_PROCESS|CREATE_NEW_PROCESS_GROUP: 自プロセス終了後も子を生存させる。
+            _cflags = 0
+            if sys.platform == "win32":
+                _cflags = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+            # 注: 組み立て文字列に渡すのは信頼された定数(_bat)のみ。リクエスト値は一切混入させない。
+            subprocess.Popen(
+                ["cmd", "/c", f'ping -n 6 127.0.0.1 >nul & call "{_bat}"'],
+                cwd=PROJECT_ROOT,
+                creationflags=_cflags,
+                close_fds=True,
+            )
+            _child_ok = True
+            logger.warning("[admin/restart] 即時respawn子を起動（約5秒後 start_dashboard.bat）")
+        except Exception as e:
+            logger.warning("[admin/restart] 即時respawn子の起動失敗: %s", e, exc_info=True)
+
+        if not _child_ok:
+            # respawn 経路を用意できなかった → 落とさず現プロセス維持（ダウン継続を回避）
+            _admin_restart_lock.release()
+            return jsonify(error="再起動子の起動に失敗したため再起動を中止しました"), 500
+
+        # ② レスポンスを flush してから自プロセスを落とす（daemon scheduler は自動終了）。
+        #    sleep(1.0) = jsonify レスポンス送信 + OS 送信バッファ確定の経験的猶予。
+        def _do_exit():
+            time.sleep(1.0)
+            logger.warning("[admin/restart] os._exit(0) 実行 — respawn を待機")
+            os._exit(0)
+
+        threading.Thread(target=_do_exit, daemon=True).start()
+        return jsonify(ok=True, message="再起動中（即時数秒 / watchdog保険≤5分で復帰）")
+
     # ============================================================
     # 成績ページ用 事前計算キャッシュ (scripts/build_results_cache.py)
     #   - data/cache/results/{kind}_{year}.json を読むだけなら <50ms
