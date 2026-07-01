@@ -75,7 +75,7 @@ function CalendarTooltip({
             連対<span className="font-bold text-white">{rentaiRate.toFixed(0)}%</span>
           </span>
           <span className="text-gray-300">
-            複勝<span className={`font-bold ${fukushoRate >= 60 ? "text-emerald-300" : "text-white"}`}>{fukushoRate.toFixed(0)}%</span>
+            複勝<span className={`font-bold ${fukushoRate >= 68 ? "text-emerald-300" : "text-white"}`}>{fukushoRate.toFixed(0)}%</span>
           </span>
         </div>
         {/* 吹き出し矢印 */}
@@ -162,14 +162,16 @@ function Calendar({
           // 的中インジケータ（小さいドット）— ◎本命の複勝率で色分け（単勝収支は廃止）
           const dayFukushoRate =
             stat && stat.total > 0 ? (stat.placed / stat.total) * 100 : null;
+          // 閾値は直近レジーム(2026-02〜・学習リーク無)の日別複勝率分布で較正。
+          // 2025〜2026-01はリークで水増しの可能性が高く基準から除外(直近 中央62%/P25=56/P75=68)。
           const dotColor =
             dayFukushoRate === null
               ? ""
-              : dayFukushoRate >= 60
-                ? "bg-emerald-400" // 好調（複勝率60%以上）
-                : dayFukushoRate >= 40
-                  ? "bg-amber-400" // 標準（40-60%）
-                  : "bg-red-400"; // 不調（40%未満）
+              : dayFukushoRate >= 68
+                ? "bg-emerald-400" // 好調（複勝率68%≈直近P75以上=上位約25%）
+                : dayFukushoRate >= 56
+                  ? "bg-amber-400" // 標準（56-68%=直近P25-P75の中位約50%）
+                  : "bg-red-400"; // 不調（56%≈直近P25未満=下位約25%）
           return (
             <div
               key={day}
